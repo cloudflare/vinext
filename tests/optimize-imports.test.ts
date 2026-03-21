@@ -646,4 +646,72 @@ describe("vinext:optimize-imports transform", () => {
     // Must use an absolute path, not a relative one
     expect(result!.code).not.toContain(`from "./`);
   });
+
+  it("prefers react-server export condition in RSC but not in SSR", async () => {
+    // Simulates a package (like react-dom) that exposes different barrel entries
+    // under "react-server" vs "import" export conditions.
+    // In the RSC environment the plugin should pick the react-server entry;
+    // in SSR it must use the standard import entry (SSR uses the full React runtime).
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(pkgDir, { recursive: true });
+
+    // Package with diverging react-server vs import entries
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "antd",
+        type: "module",
+        exports: {
+          ".": {
+            "react-server": "./rsc-index.js",
+            import: "./index.js",
+            default: "./index.js",
+          },
+        },
+        main: "./index.js",
+      }),
+    );
+    // RSC barrel: exports RscButton
+    fs.writeFileSync(path.join(pkgDir, "rsc-index.js"), `export { RscButton } from "./rsc-btn";`);
+    // Standard barrel: exports Button
+    fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Button } from "./btn";`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    // RSC environment: should use react-server entry → knows about RscButton
+    const rscCall = (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+    // SSR environment: should use import entry → knows about Button, not RscButton
+    const ssrCall = (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+
+    // RSC: RscButton is exported from the react-server barrel → rewrite succeeds
+    const rscResult = rscCall(`import { RscButton } from "antd";`, "/app/page.tsx");
+    expect(rscResult).not.toBeNull();
+    expect(rscResult!.code).not.toContain(`from "antd"`);
+    expect(rscResult!.code).toContain("rsc-btn");
+
+    // SSR: RscButton is NOT in the standard barrel → rewrite must be skipped
+    const ssrResultUnknown = ssrCall(`import { RscButton } from "antd";`, "/app/page.tsx");
+    expect(ssrResultUnknown).toBeNull();
+
+    // SSR: Button IS in the standard barrel → rewrite succeeds
+    const ssrResultKnown = ssrCall(`import { Button } from "antd";`, "/app/page.tsx");
+    expect(ssrResultKnown).not.toBeNull();
+    expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
+    expect(ssrResultKnown!.code).toContain("btn");
+  });
 });

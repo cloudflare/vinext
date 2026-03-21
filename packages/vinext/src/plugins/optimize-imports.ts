@@ -155,19 +155,24 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
 
 /**
  * Resolve a package.json exports value to a string entry path.
- * Prefers react-server → node → import → module → default conditions, recursing into
- * nested objects. The "react-server" condition is checked first because this plugin
- * targets RSC/SSR environments where packages like `react` and `react-dom` expose
- * RSC-compatible entry points under that condition.
+ * Prefers node → import → module → default conditions, recursing into nested objects.
+ * When `preferReactServer` is true (RSC environment), "react-server" is checked first
+ * so that packages like `react` and `react-dom` resolve their RSC-compatible entry points.
  */
-function resolveExportsValue(value: ExportsValue): string | null {
+function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "object" && value !== null) {
-    // Prefer ESM conditions in order; "react-server" first for RSC/SSR environments
-    for (const key of ["react-server", "node", "import", "module", "default"]) {
+    // In the RSC environment prefer "react-server" before standard conditions so that
+    // packages exposing RSC-only entry points (e.g. react, react-dom) are resolved
+    // to their server-compatible barrel. In the SSR environment the "react-server"
+    // condition must NOT be preferred — SSR renders with the full React runtime.
+    const conditions = preferReactServer
+      ? ["react-server", "node", "import", "module", "default"]
+      : ["node", "import", "module", "default"];
+    for (const key of conditions) {
       const nested = value[key];
       if (nested !== undefined) {
-        const resolved = resolveExportsValue(nested);
+        const resolved = resolveExportsValue(nested, preferReactServer);
         if (resolved) return resolved;
       }
     }
@@ -231,8 +236,14 @@ function resolvePackageInfo(packageName: string, projectRoot: string): PackageIn
 /**
  * Resolve a package name to its ESM entry file path.
  * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
+ * Pass `preferReactServer: true` in the RSC environment to prefer the "react-server"
+ * export condition over "node"/"import" when resolving the barrel entry.
  */
-function resolvePackageEntry(packageName: string, projectRoot: string): string | null {
+function resolvePackageEntry(
+  packageName: string,
+  projectRoot: string,
+  preferReactServer: boolean,
+): string | null {
   try {
     const info = resolvePackageInfo(packageName, projectRoot);
     if (!info) return null;
@@ -244,7 +255,7 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
       // the barrel entry point, not individual sub-module paths.
       const dotExport = pkgJson.exports["."];
       if (dotExport) {
-        const entryPath = resolveExportsValue(dotExport);
+        const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
           return path.resolve(pkgDir, entryPath).split(path.sep).join("/");
         }
@@ -545,6 +556,9 @@ export function createOptimizeImportsPlugin(
         // dep optimizer which handles barrel imports correctly.
         const env = (this as { environment?: { name?: string } }).environment;
         if (env?.name === "client") return null;
+        // "react-server" export condition should only be preferred in the RSC environment.
+        // SSR renders with the full React runtime and must NOT resolve react-server entries.
+        const preferReactServer = env?.name === "rsc";
         // Skip virtual modules
         if (id.startsWith("\0")) return null;
 
@@ -580,10 +594,14 @@ export function createOptimizeImportsPlugin(
 
           // Build or retrieve the barrel export map for this package.
           // Cache the resolved entry path to avoid repeated FS work.
-          let barrelEntry: string | null | undefined = entryPathCache.get(importSource);
+          // The cache key includes the environment prefix because RSC resolves the
+          // "react-server" export condition while SSR uses the standard conditions —
+          // the same package can have different barrel entry paths in each environment.
+          const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${importSource}`;
+          let barrelEntry: string | null | undefined = entryPathCache.get(cacheKey);
           if (barrelEntry === undefined) {
-            barrelEntry = resolvePackageEntry(importSource, root);
-            entryPathCache.set(importSource, barrelEntry);
+            barrelEntry = resolvePackageEntry(importSource, root, preferReactServer);
+            entryPathCache.set(cacheKey, barrelEntry);
           }
           const exportMap = buildBarrelExportMap(
             importSource,
