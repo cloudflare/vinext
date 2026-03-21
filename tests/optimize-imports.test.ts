@@ -117,6 +117,7 @@ export * as Tooltip from "@radix-ui/react-tooltip";`;
 
   it("handles export { A, B } from 'sub-pkg'", () => {
     const entryPath = uniquePath("named-reexport");
+    const entryDir = path.dirname(entryPath);
     const barrelCode = `export { Button, buttonVariants } from "./button";
 export { Input } from "./input";`;
 
@@ -127,18 +128,19 @@ export { Input } from "./input";`;
     );
 
     expect(map).not.toBeNull();
+    // Relative sources are resolved to absolute paths during map building
     expect(map!.get("Button")).toEqual({
-      source: "./button",
+      source: path.resolve(entryDir, "./button").split(path.sep).join("/"),
       isNamespace: false,
       originalName: "Button",
     });
     expect(map!.get("buttonVariants")).toEqual({
-      source: "./button",
+      source: path.resolve(entryDir, "./button").split(path.sep).join("/"),
       isNamespace: false,
       originalName: "buttonVariants",
     });
     expect(map!.get("Input")).toEqual({
-      source: "./input",
+      source: path.resolve(entryDir, "./input").split(path.sep).join("/"),
       isNamespace: false,
       originalName: "Input",
     });
@@ -146,6 +148,7 @@ export { Input } from "./input";`;
 
   it("handles export { default as Name } from 'sub-pkg'", () => {
     const entryPath = uniquePath("default-reexport");
+    const entryDir = path.dirname(entryPath);
     const barrelCode = `export { default as Calendar } from "./calendar";`;
 
     const map = buildBarrelExportMap(
@@ -156,7 +159,7 @@ export { Input } from "./input";`;
 
     expect(map).not.toBeNull();
     expect(map!.get("Calendar")).toEqual({
-      source: "./calendar",
+      source: path.resolve(entryDir, "./calendar").split(path.sep).join("/"),
       isNamespace: false,
       originalName: "default",
     });
@@ -245,9 +248,9 @@ export { format };`;
     );
 
     expect(map).not.toBeNull();
-    // Button from the barrel
+    // Button from the barrel — resolved to absolute path relative to entry dir
     expect(map!.get("Button")).toEqual({
-      source: "./button",
+      source: "/fake/wildcard-test/button",
       isNamespace: false,
       originalName: "Button",
     });
@@ -272,9 +275,9 @@ export { format };`;
     );
 
     expect(map).not.toBeNull();
-    // The explicit export wins over the wildcard
+    // The explicit export wins over the wildcard — resolved to absolute path
     expect(map!.get("format")).toEqual({
-      source: "./explicit",
+      source: "/fake/wildcard-nooverwrite/explicit",
       isNamespace: false,
       originalName: "format",
     });
@@ -318,6 +321,36 @@ export { Button } from "./button";`;
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("lucide-react");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("radix-ui");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
+  });
+
+  it("resolves nested subdirectory wildcard re-exports to the correct absolute path", () => {
+    // Simulates an antd-style structure:
+    //   index.js         → export * from "./components"
+    //   components/index.js → export { Button } from "./Button"
+    //   components/Button.js → (exists)
+    //
+    // When Button is resolved, its source "./Button" must be resolved relative to
+    // components/, not to the barrel root. Without the fix this produces
+    // /fake/nested/Button instead of /fake/nested/components/Button.
+    const entryPath = "/fake/nested/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./components/index.js";`,
+      "/fake/nested/components/index.js": `export { Button } from "./Button";`,
+      "/fake/nested/components/Button.js": `export function Button() {}`,
+    };
+
+    const map = buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => files[fp] ?? null,
+    );
+
+    expect(map).not.toBeNull();
+    const buttonEntry = map!.get("Button");
+    expect(buttonEntry).toBeDefined();
+    // Must resolve relative to components/, not to the barrel root
+    expect(buttonEntry!.source).toBe("/fake/nested/components/Button");
+    expect(buttonEntry!.source).not.toBe("/fake/nested/Button");
   });
 });
 

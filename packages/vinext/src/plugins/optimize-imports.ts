@@ -155,18 +155,16 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
 
 /**
  * Resolve a package.json exports value to a string entry path.
- * Prefers node → import → module → default conditions, recursing into nested objects.
- *
- * TODO: The "react-server" condition is increasingly common — packages like `react`,
- * `react-dom`, and `next-intl` use it to expose RSC-compatible entry points. Since this
- * plugin targets RSC/SSR environments, "react-server" should be added to the preferred
- * condition list (before "node") in a future pass.
+ * Prefers react-server → node → import → module → default conditions, recursing into
+ * nested objects. The "react-server" condition is checked first because this plugin
+ * targets RSC/SSR environments where packages like `react` and `react-dom` expose
+ * RSC-compatible entry points under that condition.
  */
 function resolveExportsValue(value: ExportsValue): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "object" && value !== null) {
-    // Prefer ESM conditions in order
-    for (const key of ["node", "import", "module", "default"]) {
+    // Prefer ESM conditions in order; "react-server" first for RSC/SSR environments
+    for (const key of ["react-server", "node", "import", "module", "default"]) {
       const nested = value[key];
       if (nested !== undefined) {
         const resolved = resolveExportsValue(nested);
@@ -241,7 +239,9 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
     const { pkgDir, pkgJson } = info;
 
     if (pkgJson.exports) {
-      // Check exports["."] for the barrel entry
+      // NOTE: Only the root export (".") is checked here. Subpath exports like
+      // "./Button" or "./*" are intentionally ignored — this function resolves
+      // the barrel entry point, not individual sub-module paths.
       const dotExport = pkgJson.exports["."];
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport);
@@ -272,12 +272,16 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
  *   - `export { A, B } from "sub-pkg"` — named re-export
  *   - `import * as X; export { X }` — indirect namespace re-export
  *   - `export * from "./sub"` — wildcard: recursively parse sub-module and merge exports
+ *
+ * @param initialContent - Pre-read file content for `filePath`. If provided, skips the
+ *   `readFile` call for the entry file — useful when the caller already has the content.
  */
 function buildExportMapFromFile(
   filePath: string,
   readFile: (filepath: string) => string | null,
   cache: Map<string, BarrelExportMap>,
   visited: Set<string>,
+  initialContent?: string,
 ): BarrelExportMap {
   // Guard against circular re-exports
   if (visited.has(filePath)) return new Map();
@@ -286,7 +290,7 @@ function buildExportMapFromFile(
   const cached = cache.get(filePath);
   if (cached) return cached;
 
-  const content = readFile(filePath);
+  const content = initialContent ?? readFile(filePath);
   if (!content) return new Map();
 
   let ast: ReturnType<typeof parseAst>;
@@ -306,11 +310,23 @@ function buildExportMapFromFile(
 
   const fileDir = path.dirname(filePath);
 
+  /**
+   * Normalize a source specifier: resolve relative paths to absolute so that
+   * entries in the export map always store absolute paths for file references.
+   * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
+   */
+  function normalizeSource(source: string): string {
+    return source.startsWith(".")
+      ? path.resolve(fileDir, source).split(path.sep).join("/")
+      : source;
+  }
+
   for (const node of ast.body as AstBodyNode[]) {
     switch (node.type) {
       case "ImportDeclaration": {
-        const source = typeof node.source?.value === "string" ? node.source.value : null;
-        if (!source) break;
+        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        if (!rawSource) break;
+        const source = normalizeSource(rawSource);
         for (const spec of node.specifiers ?? []) {
           switch (spec.type) {
             case "ImportNamespaceSpecifier":
@@ -338,17 +354,17 @@ function buildExportMapFromFile(
       }
 
       case "ExportAllDeclaration": {
-        const source = typeof node.source?.value === "string" ? node.source.value : null;
-        if (!source) break;
+        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        if (!rawSource) break;
 
         if (node.exported) {
           // export * as Name from "sub-pkg" — namespace re-export
           const name = astName(node.exported);
-          exportMap.set(name, { source, isNamespace: true });
+          exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
-          if (source.startsWith(".")) {
-            const subPath = path.resolve(fileDir, source).split(path.sep).join("/");
+          if (rawSource.startsWith(".")) {
+            const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
             // Try with the path as-is first, then with common extensions
             const candidates = [subPath, `${subPath}.js`, `${subPath}.mjs`, `${subPath}.ts`];
             for (const candidate of candidates) {
@@ -371,8 +387,9 @@ function buildExportMapFromFile(
       }
 
       case "ExportNamedDeclaration": {
-        const source = typeof node.source?.value === "string" ? node.source.value : null;
-        if (source) {
+        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        if (rawSource) {
+          const source = normalizeSource(rawSource);
           // export { A, B } from "sub-pkg"
           for (const spec of node.specifiers ?? []) {
             if (spec.exported) {
@@ -447,7 +464,9 @@ export function buildBarrelExportMap(
   }
 
   const visited = new Set<string>();
-  const exportMap = buildExportMapFromFile(entryPath, readFile, exportMapCache, visited);
+  // Pass the already-read content so buildExportMapFromFile skips the redundant
+  // readFile call for the entry file (it would otherwise read it a second time).
+  const exportMap = buildExportMapFromFile(entryPath, readFile, exportMapCache, visited, content);
 
   // Store under the entry path key so the transform handler's cache lookup hits
   exportMapCache.set(entryPath, exportMap);
@@ -581,9 +600,15 @@ export function createOptimizeImportsPlugin(
           if (!exportMap || !barrelEntry) continue;
 
           // Register sub-package sources so resolveId can find them from
-          // the barrel's context (needed for pnpm strict hoisting)
+          // the barrel's context (needed for pnpm strict hoisting).
+          // Only bare specifiers (npm packages) need this — absolute paths are
+          // already fully resolved and don't require context-aware resolution.
           for (const entry of exportMap.values()) {
-            if (!entry.source.startsWith(".") && !barrelCaches.subpkgOrigin.has(entry.source)) {
+            if (
+              !entry.source.startsWith("/") &&
+              !entry.source.startsWith(".") &&
+              !barrelCaches.subpkgOrigin.has(entry.source)
+            ) {
               // First barrel to register this specifier wins. This is safe because the
               // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
               // path regardless of which barrel we resolve from — only the importer context
@@ -637,24 +662,17 @@ export function createOptimizeImportsPlugin(
               isNamespace: boolean;
             }
           >();
-          const barrelDir = path.dirname(barrelEntry);
           for (const { local, imported } of specifiers) {
             const entry = exportMap.get(imported);
             if (!entry) continue;
-            // Resolve relative sources against the barrel entry's directory so
-            // that `./chunk.js` in `/node_modules/lodash-es/index.js` becomes
-            // `/node_modules/lodash-es/chunk.js` — not resolved against the
-            // importing user file (`/app/chunk.js`).
-            // Normalize to forward slashes for cross-platform safety (Windows
-            // uses backslashes in path.resolve output).
+            // Sources in the export map are already absolute paths (for file references)
+            // or bare package specifiers — no further resolution needed.
             // TODO: barrel sources without extensions (e.g. `"./chunk"`) produce
             // extensionless absolute paths (e.g. `/node_modules/lodash-es/chunk`).
             // Vite's resolver handles extension resolution on these paths, so this
             // works in practice, but a future improvement would be to resolve the
             // extension here (or verify via the barrel AST that the file exists).
-            const resolvedSource = entry.source.startsWith(".")
-              ? path.resolve(barrelDir, entry.source).split(path.sep).join("/")
-              : entry.source;
+            const resolvedSource = entry.source;
             // Key on both resolved source and isNamespace: a named import and a
             // namespace import from the same sub-module must produce separate
             // import statements.
@@ -722,5 +740,5 @@ export function createOptimizeImportsPlugin(
         };
       },
     },
-  } as Plugin;
+  };
 }
