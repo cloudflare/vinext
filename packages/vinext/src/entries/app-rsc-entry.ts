@@ -47,6 +47,9 @@ const appRouteHandlerPolicyPath = fileURLToPath(
 const appRouteHandlerExecutionPath = fileURLToPath(
   new URL("../server/app-route-handler-execution.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appRouteHandlerCachePath = fileURLToPath(
+  new URL("../server/app-route-handler-cache.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -352,12 +355,10 @@ import {
 } from ${JSON.stringify(appRouteHandlerPolicyPath)};
 import {
   executeAppRouteHandler as __executeAppRouteHandler,
-  runAppRouteHandler as __runAppRouteHandler,
 } from ${JSON.stringify(appRouteHandlerExecutionPath)};
+import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from ${JSON.stringify(appRouteHandlerCachePath)};
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
-  buildAppRouteCacheValue as __buildAppRouteCacheValue,
-  buildRouteHandlerCachedResponse as __buildRouteHandlerCachedResponse,
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
@@ -2251,80 +2252,46 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         revalidateSeconds,
       })
     ) {
-      const __routeKey = __isrRouteKey(cleanPathname);
-      try {
-        const __cached = await __isrGet(__routeKey);
-        if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_ROUTE") {
-          // HIT — return cached response immediately
-          const __cv = __cached.value.value;
-          __isrDebug?.("HIT (route)", cleanPathname);
+      const __cachedRouteResponse = await __readAppRouteHandlerCacheResponse({
+        basePath: __basePath,
+        buildPageCacheTags: __pageCacheTags,
+        cleanPathname,
+        clearRequestContext: function() {
           setHeadersContext(null);
           setNavigationContext(null);
-          return __applyRouteHandlerMiddlewareContext(
-            __buildRouteHandlerCachedResponse(__cv, {
-              cacheState: "HIT",
-              isHead: isAutoHead,
-              revalidateSeconds,
-            }),
-            _mwCtx,
-          );
-        }
-        if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_ROUTE") {
-          // STALE — serve stale response, trigger background regeneration
-          const __sv = __cached.value.value;
-          const __revalSecs = revalidateSeconds;
-          const __revalHandlerFn = handlerFn;
-          const __revalParams = params;
-          const __revalUrl = request.url;
-          const __revalSearchParams = new URLSearchParams(url.searchParams);
-          __triggerBackgroundRegeneration(__routeKey, async function() {
-            const __revalHeadCtx = { headers: new Headers(), cookies: new Map() };
-            const __revalUCtx = _createUnifiedCtx({
-              headersContext: __revalHeadCtx,
-              executionContext: _getRequestExecutionContext(),
-            });
-            await _runWithUnifiedCtx(__revalUCtx, async () => {
-              _ensureFetchPatch();
-              setNavigationContext({ pathname: cleanPathname, searchParams: __revalSearchParams, params: __revalParams });
-              const {
-                dynamicUsedInHandler: __regenDynamic,
-                response: __revalResponse,
-              } = await __runAppRouteHandler({
-                basePath: __basePath,
-                consumeDynamicUsage,
-                handlerFn: __revalHandlerFn,
-                i18n: __i18nConfig,
-                markDynamicUsage,
-                params: __revalParams,
-                request: new Request(__revalUrl, { method: "GET" }),
-              });
-              setNavigationContext(null);
-              if (__regenDynamic) {
-                __markKnownDynamicAppRoute(route.pattern);
-                __isrDebug?.("route regen skipped (dynamic usage)", cleanPathname);
-                return;
-              }
-              const __routeTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-              const __routeCacheValue = await __buildAppRouteCacheValue(__revalResponse);
-              await __isrSet(__routeKey, __routeCacheValue, __revalSecs, __routeTags);
-              __isrDebug?.("route regen complete", __routeKey);
-            });
+        },
+        consumeDynamicUsage,
+        getCollectedFetchTags,
+        handlerFn,
+        i18n: __i18nConfig,
+        isAutoHead,
+        isrDebug: __isrDebug,
+        isrGet: __isrGet,
+        isrRouteKey: __isrRouteKey,
+        isrSet: __isrSet,
+        markDynamicUsage,
+        middlewareContext: _mwCtx,
+        params,
+        requestUrl: request.url,
+        revalidateSearchParams: url.searchParams,
+        revalidateSeconds,
+        routePattern: route.pattern,
+        runInRevalidationContext: async function(renderFn) {
+          const __revalHeadCtx = { headers: new Headers(), cookies: new Map() };
+          const __revalUCtx = _createUnifiedCtx({
+            headersContext: __revalHeadCtx,
+            executionContext: _getRequestExecutionContext(),
           });
-          __isrDebug?.("STALE (route)", cleanPathname);
-          setHeadersContext(null);
-          setNavigationContext(null);
-          return __applyRouteHandlerMiddlewareContext(
-            __buildRouteHandlerCachedResponse(__sv, {
-              cacheState: "STALE",
-              isHead: isAutoHead,
-              revalidateSeconds,
-            }),
-            _mwCtx,
-          );
-        }
-      } catch (__routeCacheErr) {
-        // Cache read failure — fall through to normal handler execution
-        console.error("[vinext] ISR route cache read error:", __routeCacheErr);
+          await _runWithUnifiedCtx(__revalUCtx, async () => {
+            _ensureFetchPatch();
+            await renderFn();
+          });
+        },
+        scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
+        setNavigationContext,
+      });
+      if (__cachedRouteResponse) {
+        return __cachedRouteResponse;
       }
     }
 

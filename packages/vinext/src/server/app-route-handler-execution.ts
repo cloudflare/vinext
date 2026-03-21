@@ -21,14 +21,14 @@ import {
   markKnownDynamicAppRoute,
 } from "./app-route-handler-runtime.js";
 
-type AppRouteParams = Record<string, string | string[]>;
-type AppRouteDynamicUsageFn = () => boolean;
-type MarkAppRouteDynamicUsageFn = () => void;
-type AppRouteHandlerFunction = (
+export type AppRouteParams = Record<string, string | string[]>;
+export type AppRouteDynamicUsageFn = () => boolean;
+export type MarkAppRouteDynamicUsageFn = () => void;
+export type AppRouteHandlerFunction = (
   request: Request,
   context: { params: AppRouteParams },
 ) => Response | Promise<Response>;
-type RouteHandlerCacheSetter = (
+export type RouteHandlerCacheSetter = (
   key: string,
   data: CachedRouteValue,
   revalidateSeconds: number,
@@ -39,7 +39,7 @@ type AppRouteErrorReporter = (
   request: { path: string; method: string; headers: Record<string, string> },
   route: { routerKind: "App Router"; routePath: string; routeType: "route" },
 ) => void;
-type AppRouteDebugLogger = (event: string, detail: string) => void;
+export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
 export interface RunAppRouteHandlerOptions {
   basePath?: string;
