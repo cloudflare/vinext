@@ -362,7 +362,10 @@ import {
   executeAppRouteHandler as __executeAppRouteHandler,
 } from ${JSON.stringify(appRouteHandlerExecutionPath)};
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from ${JSON.stringify(appRouteHandlerCachePath)};
-import { readAppPageCacheResponse as __readAppPageCacheResponse } from ${JSON.stringify(appPageCachePath)};
+import {
+  finalizeAppPageHtmlCacheResponse as __finalizeAppPageHtmlCacheResponse,
+  readAppPageCacheResponse as __readAppPageCacheResponse,
+} from ${JSON.stringify(appPageCachePath)};
 import {
   buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
   buildAppPageRscResponse as __buildAppPageRscResponse,
@@ -2923,11 +2926,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
   if (__htmlResponsePolicy.shouldWriteToCache) {
-    // In production, tee the HTML response body to simultaneously stream to the
-    // client and collect the full HTML string for the ISR cache. rscData was
-    // already captured above by teeing the RSC stream before SSR.
-    // In dev, skip the tee and the X-Vinext-Cache header — every request renders
-    // fresh (no cache reads or writes in dev mode).
     const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
       draftCookie,
       fontLinkHeader,
@@ -2935,55 +2933,23 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       policy: __htmlResponsePolicy,
       timing: __htmlResponseTiming,
     });
-    if (__isrResponseProd.body) {
-      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-      const __isrKey = __isrHtmlKey(cleanPathname);
-      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-      const __revalSecs = revalidateSeconds;
-      const __capturedRscDataPromise = __isrRscDataPromise;
-      const __cachePromise = (async () => {
-        try {
-          const __reader = __streamForCache.getReader();
-          const __decoder = new TextDecoder();
-          const __chunks = [];
-          for (;;) {
-            const { done, value } = await __reader.read();
-            if (done) break;
-            __chunks.push(__decoder.decode(value, { stream: true }));
-          }
-          __chunks.push(__decoder.decode());
-          const __fullHtml = __chunks.join("");
-          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-          // Write HTML and RSC to their own keys independently.
-          // RSC data was captured by the tee above (before isRscRequest branch)
-          // so an initial browser visit (HTML request) also populates the RSC key,
-          // ensuring the first client-side navigation after a direct visit is a
-          // cache hit rather than a miss.
-          const __writes = [
-            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-          ];
-          if (__capturedRscDataPromise) {
-            __writes.push(
-              __capturedRscDataPromise.then((__rscBuf) =>
-                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-              )
-            );
-          }
-          await Promise.all(__writes);
-          __isrDebug?.("HTML cache written", __isrKey);
-        } catch (__cacheErr) {
-          console.error("[vinext] ISR cache write error:", __cacheErr);
-        }
-      })();
-      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-      // the isolate alive until the cache write finishes, even after the response is sent.
-      _getRequestExecutionContext()?.waitUntil(__cachePromise);
-      return new Response(__streamForClient, {
-        status: __isrResponseProd.status,
-        headers: __isrResponseProd.headers,
-      });
-    }
-    return __isrResponseProd;
+    return __finalizeAppPageHtmlCacheResponse(__isrResponseProd, {
+      capturedRscDataPromise: __isrRscDataPromise,
+      cleanPathname,
+      getPageTags: function() {
+        return __pageCacheTags(cleanPathname, getCollectedFetchTags());
+      },
+      isrDebug: __isrDebug,
+      isrHtmlKey: __isrHtmlKey,
+      isrRscKey: __isrRscKey,
+      isrSet: __isrSet,
+      revalidateSeconds,
+      waitUntil: function(__cachePromise) {
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      },
+    });
   }
 
   return __buildAppPageHtmlResponse(htmlStream, {

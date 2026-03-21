@@ -37,6 +37,18 @@ export interface ReadAppPageCacheResponseOptions {
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 }
 
+export interface FinalizeAppPageHtmlCacheResponseOptions {
+  capturedRscDataPromise: Promise<ArrayBuffer> | null;
+  cleanPathname: string;
+  getPageTags: () => string[];
+  isrDebug?: AppPageDebugLogger;
+  isrHtmlKey: (pathname: string) => string;
+  isrRscKey: (pathname: string) => string;
+  isrSet: AppPageCacheSetter;
+  revalidateSeconds: number;
+  waitUntil?: (promise: Promise<void>) => void;
+}
+
 function buildAppPageCacheControl(
   cacheState: BuildAppPageCachedResponseOptions["cacheState"],
   revalidateSeconds: number,
@@ -172,4 +184,69 @@ export async function readAppPageCacheResponse(
   }
 
   return null;
+}
+
+export function finalizeAppPageHtmlCacheResponse(
+  response: Response,
+  options: FinalizeAppPageHtmlCacheResponseOptions,
+): Response {
+  if (!response.body) {
+    return response;
+  }
+
+  const [streamForClient, streamForCache] = response.body.tee();
+  const htmlKey = options.isrHtmlKey(options.cleanPathname);
+  const rscKey = options.isrRscKey(options.cleanPathname);
+
+  const cachePromise = (async () => {
+    try {
+      const reader = streamForCache.getReader();
+      const decoder = new TextDecoder();
+      const chunks: string[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        chunks.push(decoder.decode(value, { stream: true }));
+      }
+      chunks.push(decoder.decode());
+
+      const pageTags = options.getPageTags();
+      const writes = [
+        options.isrSet(
+          htmlKey,
+          buildAppPageCacheValue(chunks.join(""), undefined, 200),
+          options.revalidateSeconds,
+          pageTags,
+        ),
+      ];
+
+      if (options.capturedRscDataPromise) {
+        writes.push(
+          options.capturedRscDataPromise.then((rscData) =>
+            options.isrSet(
+              rscKey,
+              buildAppPageCacheValue("", rscData, 200),
+              options.revalidateSeconds,
+              pageTags,
+            ),
+          ),
+        );
+      }
+
+      await Promise.all(writes);
+      options.isrDebug?.("HTML cache written", htmlKey);
+    } catch (cacheError) {
+      console.error("[vinext] ISR cache write error:", cacheError);
+    }
+  })();
+
+  options.waitUntil?.(cachePromise);
+
+  return new Response(streamForClient, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }

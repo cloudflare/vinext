@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageCachedResponse,
+  finalizeAppPageHtmlCacheResponse,
   readAppPageCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -264,5 +265,82 @@ describe("app page cache helpers", () => {
     expect(response).toBeNull();
     expect(errorSpy).toHaveBeenCalledOnce();
     errorSpy.mockRestore();
+  });
+
+  it("finalizes HTML responses by teeing the stream and writing HTML and RSC cache keys", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSetCalls: Array<{
+      key: string;
+      html: string;
+      hasRscData: boolean;
+      revalidateSeconds: number;
+      tags: string[];
+    }> = [];
+    const debugCalls: Array<[string, string]> = [];
+    const rscData = new TextEncoder().encode("flight").buffer;
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>fresh</h1>", {
+        status: 201,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          Vary: "RSC, Accept",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(rscData),
+        cleanPathname: "/fresh",
+        getPageTags() {
+          return ["/fresh", "_N_T_/fresh"];
+        },
+        isrDebug(event, detail) {
+          debugCalls.push([event, detail]);
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet(key, data, revalidateSeconds, tags) {
+          isrSetCalls.push({
+            key,
+            html: data.html,
+            hasRscData: Boolean(data.rscData),
+            revalidateSeconds,
+            tags,
+          });
+        },
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.text()).resolves.toBe("<h1>fresh</h1>");
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSetCalls).toEqual([
+      {
+        key: "html:/fresh",
+        html: "<h1>fresh</h1>",
+        hasRscData: false,
+        revalidateSeconds: 60,
+        tags: ["/fresh", "_N_T_/fresh"],
+      },
+      {
+        key: "rsc:/fresh",
+        html: "",
+        hasRscData: true,
+        revalidateSeconds: 60,
+        tags: ["/fresh", "_N_T_/fresh"],
+      },
+    ]);
+    expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
   });
 });
