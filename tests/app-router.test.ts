@@ -3703,21 +3703,25 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code stores rscData in the ISR cache entry", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The HTML-path cache write must include rscData (not always undefined)
-    expect(code).toContain("rscData: __rscData");
-    // Background regen must also store rscData
+    // The HTML-path cache write now delegates to the typed cache helper, which
+    // receives the captured RSC payload promise so it can persist the paired
+    // RSC entry alongside the streamed HTML response.
+    expect(code).toContain(
+      "finalizeAppPageHtmlCacheResponse as __finalizeAppPageHtmlCacheResponse",
+    );
+    expect(code).toContain("capturedRscDataPromise: __isrRscDataPromise");
+    // Background regen still writes fresh RSC bytes directly.
     expect(code).toContain("rscData: __freshRscData");
   });
 
   it("generated code writes RSC-first partial cache entry on RSC MISS", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The RSC-path cache write must store rscData with html:"" as a partial entry.
-    // This lets subsequent RSC requests hit cache immediately without waiting
-    // for an HTML request to come in and populate a complete entry.
-    expect(code).toContain('html: ""');
-    // The RSC write must use __isrKeyRsc / __rscDataForCache variable names
-    expect(code).toContain("__rscDataForCache");
-    expect(code).toContain("__isrKeyRsc");
+    // The RSC-path cache write now delegates to a typed helper instead of
+    // embedding the partial APP_PAGE cache value inline in generated code.
+    expect(code).toContain("scheduleAppPageRscCacheWrite as __scheduleAppPageRscCacheWrite");
+    expect(code).toContain("__scheduleAppPageRscCacheWrite({");
+    expect(code).toContain("capturedRscDataPromise:");
+    expect(code).toContain("isrRscKey: __isrRscKey");
   });
 
   it("generated code treats html:'' partial entries as MISS for HTML requests", () => {
