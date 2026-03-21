@@ -625,9 +625,12 @@ describe("App Router integration", () => {
     const html = await res.text();
     // The response status is 200 because headers were sent before notFound()
     expect(res.status).toBe(200);
-    // The $RX call should include the NEXT_HTTP_ERROR_FALLBACK digest so the
-    // NotFoundBoundary can catch it and render not-found.tsx
-    expect(html).toMatch(/\$RX\("[^"]*","NEXT_HTTP_ERROR_FALLBACK/);
+    // React's dev output can surface the digest in different equivalent places:
+    // the legacy $RX client-render marker, the <template data-dgst="..."> shell,
+    // or the embedded RSC error chunk. Any of those proves the digest survived.
+    expect(html).toMatch(
+      /(\$RX\("[^"]*","NEXT_HTTP_ERROR_FALLBACK|data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"|\\"digest\\":\\"NEXT_HTTP_ERROR_FALLBACK;404\\")/,
+    );
   });
 
   it("async server throw in Suspense falls back to client rendering without dev decode crash (React 19 regression)", async () => {
@@ -3796,9 +3799,10 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("ISR cache read fires before buildPageElement (early return on HIT)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The page-cache helper call must appear before the main buildPageElement render call.
+    // The page-cache helper call must appear before the typed page-build helper
+    // so cache hits still short-circuit before the page render path starts.
     const isrReadIdx = code.indexOf("await __readAppPageCacheResponse(");
-    const buildPageIdx = code.indexOf("element = await buildPageElement");
+    const buildPageIdx = code.indexOf("const __pageBuildResult = await __buildAppPageElement");
     expect(isrReadIdx).toBeGreaterThan(-1);
     expect(buildPageIdx).toBeGreaterThan(-1);
     expect(isrReadIdx).toBeLessThan(buildPageIdx);
@@ -3806,10 +3810,12 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("ISR cache read fires before generateStaticParams (skips expensive work on HIT)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The page-cache helper call must appear before generateStaticParams so cache hits
-    // skip the static params validation entirely.
+    // The page-cache helper call must appear before the dynamic params validation helper
+    // so cache hits skip the generateStaticParams path entirely.
     const isrReadIdx = code.indexOf("await __readAppPageCacheResponse(");
-    const gspIdx = code.indexOf("generateStaticParams(");
+    const gspIdx = code.indexOf(
+      "const __dynamicParamsResponse = await __validateAppPageDynamicParams",
+    );
     expect(isrReadIdx).toBeGreaterThan(-1);
     expect(gspIdx).toBeGreaterThan(-1);
     expect(isrReadIdx).toBeLessThan(gspIdx);
