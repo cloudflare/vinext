@@ -3719,6 +3719,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("createAppPageRscErrorTracker as __createAppPageRscErrorTracker");
   });
 
+  it("generated code delegates page request orchestration to typed helpers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("validateAppPageDynamicParams as __validateAppPageDynamicParams");
+    expect(code).toContain("resolveAppPageIntercept as __resolveAppPageIntercept");
+    expect(code).toContain("buildAppPageElement as __buildAppPageElement");
+    expect(code).toContain("const __dynamicParamsResponse = await __validateAppPageDynamicParams");
+    expect(code).toContain("const __interceptResult = await __resolveAppPageIntercept({");
+    expect(code).toContain("const __pageBuildResult = await __buildAppPageElement({");
+  });
+
   it("generated code delegates page cache HIT handling to a typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");

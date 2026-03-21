@@ -62,6 +62,9 @@ const appPageExecutionPath = fileURLToPath(
 const appPageStreamPath = fileURLToPath(
   new URL("../server/app-page-stream.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appPageRequestPath = fileURLToPath(
+  new URL("../server/app-page-request.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -395,6 +398,11 @@ import {
   renderAppPageHtmlStream as __renderAppPageHtmlStream,
   shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError,
 } from ${JSON.stringify(appPageStreamPath)};
+import {
+  buildAppPageElement as __buildAppPageElement,
+  resolveAppPageIntercept as __resolveAppPageIntercept,
+  validateAppPageDynamicParams as __validateAppPageDynamicParams,
+} from ${JSON.stringify(appPageRequestPath)};
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
@@ -2492,86 +2500,81 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // dynamicParams = false: only params from generateStaticParams are allowed.
   // This runs AFTER the ISR cache read so that a cache hit skips this work entirely.
-  if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
-    try {
-      // Pass parent params to generateStaticParams (Next.js top-down params passing).
-      // Parent params = all matched params that DON'T belong to the leaf page's own dynamic segments.
-      // We pass the full matched params; the function uses only what it needs.
-      const staticParams = await route.page.generateStaticParams({ params });
-      if (Array.isArray(staticParams)) {
-        const paramKeys = Object.keys(params);
-        const isAllowed = staticParams.some(sp =>
-          paramKeys.every(key => {
-            const val = params[key];
-            const staticVal = sp[key];
-            // Allow parent params to not be in the returned set (they're inherited)
-            if (staticVal === undefined) return true;
-            if (Array.isArray(val)) return JSON.stringify(val) === JSON.stringify(staticVal);
-            return String(val) === String(staticVal);
-          })
-        );
-        if (!isAllowed) {
-          setHeadersContext(null);
-          setNavigationContext(null);
-          return new Response("Not Found", { status: 404 });
-        }
-      }
-    } catch (err) {
+  const __dynamicParamsResponse = await __validateAppPageDynamicParams({
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
+    },
+    enforceStaticParamsOnly: dynamicParamsConfig === false,
+    generateStaticParams: route.page?.generateStaticParams,
+    isDynamicRoute: route.isDynamic,
+    logGenerateStaticParamsError(err) {
       console.error("[vinext] generateStaticParams error:", err);
-    }
+    },
+    params,
+  });
+  if (__dynamicParamsResponse) {
+    return __dynamicParamsResponse;
   }
 
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
-  let interceptOpts = undefined;
-  if (isRscRequest) {
-    const intercept = findIntercept(cleanPathname);
-    if (intercept) {
-      const sourceRoute = routes[intercept.sourceRouteIndex];
-      if (sourceRoute && sourceRoute !== route) {
-        // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern);
-        const sourceParams = sourceMatch ? sourceMatch.params : {};
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: intercept.matchedParams,
-        });
-        const interceptElement = await buildPageElement(sourceRoute, sourceParams, {
-          interceptSlot: intercept.slotName,
-          interceptPage: intercept.page,
-          interceptParams: intercept.matchedParams,
-        }, url.searchParams);
-        const interceptOnError = createRscOnErrorHandler(
-          request,
-          cleanPathname,
-          sourceRoute.pattern,
-        );
-        const interceptStream = renderToReadableStream(interceptElement, { onError: interceptOnError });
-        // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-        // by the client, and async server components that run during consumption need the
-        // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-        // handles cleanup naturally when all async continuations complete.
-        return new Response(interceptStream, {
-          headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
-        });
-      }
-      // If sourceRoute === route, apply intercept opts to the normal render
-      interceptOpts = {
+  const __interceptResult = await __resolveAppPageIntercept({
+    buildPageElement,
+    cleanPathname,
+    currentRoute: route,
+    findIntercept,
+    getRoutePattern(sourceRoute) {
+      return sourceRoute.pattern;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    matchSourceRouteParams(pattern) {
+      return matchRoute(pattern)?.params ?? {};
+    },
+    renderInterceptResponse(sourceRoute, interceptElement) {
+      const interceptOnError = createRscOnErrorHandler(
+        request,
+        cleanPathname,
+        sourceRoute.pattern,
+      );
+      const interceptStream = renderToReadableStream(interceptElement, {
+        onError: interceptOnError,
+      });
+      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
+      // by the client, and async server components that run during consumption need the
+      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
+      // handles cleanup naturally when all async continuations complete.
+      return new Response(interceptStream, {
+        headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
+      });
+    },
+    searchParams: url.searchParams,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
         interceptSlot: intercept.slotName,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
       };
-    }
+    },
+  });
+  if (__interceptResult.response) {
+    return __interceptResult.response;
   }
+  const interceptOpts = __interceptResult.interceptOpts;
 
-  let element;
-  try {
-    element = await buildPageElement(route, params, interceptOpts, url.searchParams);
-  } catch (buildErr) {
-    const __buildSpecialError = __resolveAppPageSpecialError(buildErr);
-    if (__buildSpecialError) {
+  const __pageBuildResult = await __buildAppPageElement({
+    buildPageElement() {
+      return buildPageElement(route, params, interceptOpts, url.searchParams);
+    },
+    renderErrorBoundaryPage(buildErr) {
+      return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params);
+    },
+    renderSpecialError(__buildSpecialError) {
       return __buildAppPageSpecialErrorResponse({
         clearRequestContext() {
           setHeadersContext(null);
@@ -2585,12 +2588,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         requestUrl: request.url,
         specialError: __buildSpecialError,
       });
-    }
-    // Non-special error (e.g. generateMetadata() threw) — render error.tsx if available
-    const errorBoundaryResp = await renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params);
-    if (errorBoundaryResp) return errorBoundaryResp;
-    throw buildErr;
+    },
+    resolveSpecialError: __resolveAppPageSpecialError,
+  });
+  if (__pageBuildResult.response) {
+    return __pageBuildResult.response;
   }
+  const element = __pageBuildResult.element;
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
