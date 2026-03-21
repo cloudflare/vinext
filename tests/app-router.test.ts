@@ -3713,8 +3713,11 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code handles SSR special errors without a legacy handleRenderError helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("const __ssrSpecialError = __resolveAppPageSpecialError(ssrErr);");
-    expect(code).toContain("specialError: __ssrSpecialError");
+    expect(code).toContain(
+      "renderAppPageHtmlStreamWithRecovery as __renderAppPageHtmlStreamWithRecovery",
+    );
+    expect(code).toContain("const __htmlRender = await __renderAppPageHtmlStreamWithRecovery({");
+    expect(code).toContain("resolveSpecialError: __resolveAppPageSpecialError");
     expect(code).not.toContain("handleRenderError(ssrErr)");
   });
 
@@ -3723,6 +3726,9 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("createAppPageFontData as __createAppPageFontData");
     expect(code).toContain("renderAppPageHtmlResponse as __renderAppPageHtmlResponse");
     expect(code).toContain("renderAppPageHtmlStream as __renderAppPageHtmlStream");
+    expect(code).toContain(
+      "renderAppPageHtmlStreamWithRecovery as __renderAppPageHtmlStreamWithRecovery",
+    );
     expect(code).toContain(
       "shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError",
     );

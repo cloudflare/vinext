@@ -33,6 +33,19 @@ export interface RenderAppPageHtmlResponseOptions extends RenderAppPageHtmlStrea
   status: number;
 }
 
+export interface AppPageHtmlStreamRecoveryResult {
+  htmlStream: ReadableStream<Uint8Array> | null;
+  response: Response | null;
+}
+
+export interface RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> {
+  onShellRendered?: () => void;
+  renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
+  renderHtmlStream: () => Promise<ReadableStream<Uint8Array>>;
+  renderSpecialErrorResponse: (specialError: TSpecialError) => Promise<Response>;
+  resolveSpecialError: (error: unknown) => TSpecialError | null;
+}
+
 export interface AppPageRscErrorTracker {
   getCapturedError: () => unknown;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
@@ -80,6 +93,37 @@ export async function renderAppPageHtmlResponse(
     status: options.status,
     headers,
   });
+}
+
+export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
+  options: RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError>,
+): Promise<AppPageHtmlStreamRecoveryResult> {
+  try {
+    const htmlStream = await options.renderHtmlStream();
+    options.onShellRendered?.();
+    return {
+      htmlStream,
+      response: null,
+    };
+  } catch (error) {
+    const specialError = options.resolveSpecialError(error);
+    if (specialError) {
+      return {
+        htmlStream: null,
+        response: await options.renderSpecialErrorResponse(specialError),
+      };
+    }
+
+    const boundaryResponse = await options.renderErrorBoundaryResponse(error);
+    if (boundaryResponse) {
+      return {
+        htmlStream: null,
+        response: boundaryResponse,
+      };
+    }
+
+    throw error;
+  }
 }
 
 export function createAppPageRscErrorTracker(

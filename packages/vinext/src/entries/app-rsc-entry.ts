@@ -409,6 +409,7 @@ import {
   createAppPageRscErrorTracker as __createAppPageRscErrorTracker,
   renderAppPageHtmlResponse as __renderAppPageHtmlResponse,
   renderAppPageHtmlStream as __renderAppPageHtmlStream,
+  renderAppPageHtmlStreamWithRecovery as __renderAppPageHtmlStreamWithRecovery,
   shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError,
 } from ${JSON.stringify(appPageStreamPath)};
 import {
@@ -2713,41 +2714,42 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // __isrRscDataPromise resolves to rscData bytes used by the RSC write path above;
   // the HTML write path below uses its own separate key and does not need rscData.
 
-  // Delegate to SSR environment for HTML rendering
-  let htmlStream;
-  try {
-    const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await __renderAppPageHtmlStream({
-      fontData,
-      navigationContext: _getNavigationContext(),
-      rscStream: __rscForResponse,
-      ssrHandler: ssrEntry,
-    });
-    // Shell render complete; Suspense boundaries stream asynchronously
-    if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
-  } catch (ssrErr) {
-    const __ssrSpecialError = __resolveAppPageSpecialError(ssrErr);
-    const specialResponse = __ssrSpecialError
-      ? await __buildAppPageSpecialErrorResponse({
-          clearRequestContext() {
-            setHeadersContext(null);
-            setNavigationContext(null);
-          },
-          renderFallbackPage(statusCode) {
-            return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-              matchedParams: params,
-            });
-          },
-          requestUrl: request.url,
-          specialError: __ssrSpecialError,
-        })
-      : null;
-    if (specialResponse) return specialResponse;
-    // Non-special error during SSR — render error.tsx if available
-    const errorBoundaryResp = await renderErrorBoundaryPage(route, ssrErr, isRscRequest, request, params);
-    if (errorBoundaryResp) return errorBoundaryResp;
-    throw ssrErr;
-  }
+  const __htmlRender = await __renderAppPageHtmlStreamWithRecovery({
+    onShellRendered() {
+      // Shell render complete; Suspense boundaries stream asynchronously.
+      if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+    },
+    renderErrorBoundaryResponse(ssrErr) {
+      return renderErrorBoundaryPage(route, ssrErr, isRscRequest, request, params);
+    },
+    async renderHtmlStream() {
+      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      return __renderAppPageHtmlStream({
+        fontData,
+        navigationContext: _getNavigationContext(),
+        rscStream: __rscForResponse,
+        ssrHandler: ssrEntry,
+      });
+    },
+    renderSpecialErrorResponse(__ssrSpecialError) {
+      return __buildAppPageSpecialErrorResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        renderFallbackPage(statusCode) {
+          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+            matchedParams: params,
+          });
+        },
+        requestUrl: request.url,
+        specialError: __ssrSpecialError,
+      });
+    },
+    resolveSpecialError: __resolveAppPageSpecialError,
+  });
+  if (__htmlRender.response) return __htmlRender.response;
+  const htmlStream = __htmlRender.htmlStream;
 
   // If an RSC error was caught by the in-tree global ErrorBoundary during SSR,
   // the HTML output has double <html>/<body> (root layout + global-error.tsx).

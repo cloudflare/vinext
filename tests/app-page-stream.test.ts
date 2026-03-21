@@ -4,6 +4,7 @@ import {
   createAppPageRscErrorTracker,
   renderAppPageHtmlResponse,
   renderAppPageHtmlStream,
+  renderAppPageHtmlStreamWithRecovery,
   shouldRerenderAppPageWithGlobalError,
 } from "../packages/vinext/src/server/app-page-stream.js";
 
@@ -90,6 +91,88 @@ describe("app page stream helpers", () => {
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("returns the HTML stream and marks shell render completion when SSR succeeds", async () => {
+    const onShellRendered = vi.fn();
+
+    const result = await renderAppPageHtmlStreamWithRecovery({
+      onShellRendered,
+      async renderErrorBoundaryResponse() {
+        throw new Error("should not render an error boundary");
+      },
+      async renderHtmlStream() {
+        return createStream(["<html>ok</html>"]);
+      },
+      async renderSpecialErrorResponse() {
+        throw new Error("should not render a special response");
+      },
+      resolveSpecialError() {
+        return null;
+      },
+    });
+
+    expect(onShellRendered).toHaveBeenCalledTimes(1);
+    expect(result.response).toBeNull();
+    await expect(new Response(result.htmlStream).text()).resolves.toBe("<html>ok</html>");
+  });
+
+  it("turns special SSR failures into the provided response", async () => {
+    const ssrError = new Error("redirect");
+    const renderSpecialErrorResponse = vi.fn(async () => new Response("special", { status: 307 }));
+
+    const result = await renderAppPageHtmlStreamWithRecovery({
+      async renderErrorBoundaryResponse() {
+        throw new Error("should not render an error boundary");
+      },
+      async renderHtmlStream() {
+        throw ssrError;
+      },
+      renderSpecialErrorResponse,
+      resolveSpecialError(error) {
+        return error === ssrError
+          ? {
+              kind: "redirect",
+              location: "/target",
+              statusCode: 307,
+            }
+          : null;
+      },
+    });
+
+    expect(renderSpecialErrorResponse).toHaveBeenCalledWith({
+      kind: "redirect",
+      location: "/target",
+      statusCode: 307,
+    });
+    expect(result.htmlStream).toBeNull();
+    expect(result.response?.status).toBe(307);
+    await expect(result.response?.text()).resolves.toBe("special");
+  });
+
+  it("falls back to the error boundary response for non-special SSR failures", async () => {
+    const ssrError = new Error("boom");
+    const renderErrorBoundaryResponse = vi.fn(
+      async () => new Response("boundary", { status: 200 }),
+    );
+
+    const result = await renderAppPageHtmlStreamWithRecovery({
+      renderErrorBoundaryResponse,
+      async renderHtmlStream() {
+        throw ssrError;
+      },
+      async renderSpecialErrorResponse() {
+        throw new Error("should not render a special response");
+      },
+      resolveSpecialError() {
+        return null;
+      },
+    });
+
+    expect(renderErrorBoundaryResponse).toHaveBeenCalledWith(ssrError);
+    expect(result.htmlStream).toBeNull();
+    expect(result.response?.status).toBe(200);
+    await expect(result.response?.text()).resolves.toBe("boundary");
   });
 
   it("tracks non-navigation RSC errors while preserving the base onError callback", () => {
