@@ -55,7 +55,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
@@ -2906,7 +2905,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
@@ -5760,7 +5758,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
@@ -8649,7 +8646,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
@@ -11533,7 +11529,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
@@ -14391,7 +14386,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,

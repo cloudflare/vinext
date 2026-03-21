@@ -345,7 +345,6 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from ${JSON.stringify(appRouteHandlerRuntimePath)};
 import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
