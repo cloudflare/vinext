@@ -68,6 +68,12 @@ import {
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
+import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
@@ -2455,73 +2461,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -2536,7 +2498,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -2590,51 +2552,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -2645,137 +2562,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
@@ -2849,6 +2726,12 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
+import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
@@ -5240,73 +5123,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -5321,7 +5160,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -5375,51 +5214,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -5430,137 +5224,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
@@ -5634,6 +5388,12 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
+import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
@@ -8052,73 +7812,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -8133,7 +7849,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -8195,51 +7911,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -8250,137 +7921,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
@@ -8454,6 +8085,12 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
+import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
@@ -10875,73 +10512,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -10956,7 +10549,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -11010,51 +10603,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -11065,137 +10613,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
@@ -11269,6 +10777,12 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
+import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
@@ -13664,73 +13178,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -13745,7 +13215,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -13799,51 +13269,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -13854,137 +13279,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
@@ -14058,6 +13443,12 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
+import {
+  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
+  buildAppPageRscResponse as __buildAppPageRscResponse,
+  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
+  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
+} from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
@@ -16806,73 +16197,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-    // Include matched route params so the client can hydrate useParams()
-    if (params && Object.keys(params).length > 0) {
-      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
-    }
-    if (isForceDynamic) {
-      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
-    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds === Infinity) {
-      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "STATIC";
-    } else if (revalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-    }
-    // Merge middleware response headers into the RSC response.
-    // set-cookie and vary are accumulated to preserve existing values
-    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
-    // assignment so middleware headers win over config headers, which
-    // the outer handler applies afterward and skips keys already present.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        const lk = key.toLowerCase();
-        if (lk === "set-cookie") {
-          const existing = responseHeaders[lk];
-          if (Array.isArray(existing)) {
-            existing.push(value);
-          } else if (existing) {
-            responseHeaders[lk] = [existing, value];
-          } else {
-            responseHeaders[lk] = [value];
+    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      isDynamicError,
+      isForceDynamic,
+      isForceStatic,
+      isProduction: process.env.NODE_ENV === "production",
+      revalidateSeconds,
+    });
+    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
+      middlewareContext: _mwCtx,
+      params,
+      policy: __rscResponsePolicy,
+      timing: process.env.NODE_ENV !== "production"
+        ? {
+            compileEnd: __compileEnd,
+            handlerStart: __reqStart,
+            responseKind: "rsc",
           }
-        } else if (lk === "vary") {
-          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
-          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-          if (existing) {
-            responseHeaders["Vary"] = existing + ", " + value;
-            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-          } else {
-            responseHeaders[key] = value;
-          }
-        } else {
-          responseHeaders[key] = value;
-        }
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //                  -1 sentinel means compile time is not measured.
-    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
-    //                  rendering is handled asynchronously by the client. The
-    //                  logging middleware computes render time as totalMs - compileMs.
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
-    }
+        : undefined,
+    });
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
@@ -16887,7 +16234,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       })();
       _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
-    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return __rscResponse;
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -16941,51 +16288,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
-  function attachMiddlewareContext(response) {
-    if (draftCookie) {
-      response.headers.append("Set-Cookie", draftCookie);
-    }
-    // Set HTTP Link header for font preloading
-    if (fontLinkHeader) {
-      response.headers.set("Link", fontLinkHeader);
-    }
-    // Merge middleware response headers into the final response.
-    // The response is freshly constructed above (new Response(htmlStream, {...})),
-    // so set() and append() are equivalent — there are no same-key conflicts yet.
-    // Precedence over config headers is handled by the outer handler, which
-    // skips config keys that middleware already placed on the response.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        response.headers.append(key, value);
-      }
-    }
-    // Attach internal timing header so the dev server middleware can log it.
-    // Format: "handlerStart,compileMs,renderMs"
-    //   handlerStart - absolute performance.now() when _handleRequest began,
-    //                  used by the logging middleware to compute true compile
-    //                  time as (handlerStart - middlewareReqStart).
-    //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion,
-    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
-    if (process.env.NODE_ENV !== "production") {
-      const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
-      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
-        ? Math.round(__renderEnd - __compileEnd)
-        : -1;
-      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
-    }
-    // Apply custom status code from middleware rewrite
-    if (_mwCtx.status) {
-      return new Response(response.body, {
-        status: _mwCtx.status,
-        headers: response.headers,
-      });
-    }
-    return response;
-  }
-
   // Check if any component called connection(), cookies(), headers(), or noStore()
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
@@ -16996,137 +16298,97 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
-
-  // force-dynamic: always return no-store (highest priority)
-  if (isForceDynamic) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // force-static / error: treat as static regardless of dynamic usage.
-  // force-static intentionally provides empty headers/cookies context so
-  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
-  // dynamic='error' should have already thrown via the request API accessError
-  // trap if user code touched a dynamic API, so reaching here means rendering succeeded.
-  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
-  // searchParams access) opts the page into dynamic rendering with no-store.
-  if (dynamicUsedDuringRender) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, must-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
+  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
+    dynamicUsedDuringRender,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    revalidateSeconds,
+  });
+  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
+    ? {
+        compileEnd: __compileEnd,
+        handlerStart: __reqStart,
+        renderEnd: __renderEnd,
+        responseKind: "html",
+      }
+    : undefined;
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+  if (__htmlResponsePolicy.shouldWriteToCache) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
-    if (process.env.NODE_ENV === "production") {
-      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "MISS",
-        },
-      }));
-      if (__isrResponseProd.body) {
-        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
-        const __revalSecs = revalidateSeconds;
-        const __capturedRscDataPromise = __isrRscDataPromise;
-        const __cachePromise = (async () => {
-          try {
-            const __reader = __streamForCache.getReader();
-            const __decoder = new TextDecoder();
-            const __chunks = [];
-            for (;;) {
-              const { done, value } = await __reader.read();
-              if (done) break;
-              __chunks.push(__decoder.decode(value, { stream: true }));
-            }
-            __chunks.push(__decoder.decode());
-            const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-            // Write HTML and RSC to their own keys independently.
-            // RSC data was captured by the tee above (before isRscRequest branch)
-            // so an initial browser visit (HTML request) also populates the RSC key,
-            // ensuring the first client-side navigation after a direct visit is a
-            // cache hit rather than a miss.
-            const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
-            ];
-            if (__capturedRscDataPromise) {
-              __writes.push(
-                __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
-                )
-              );
-            }
-            await Promise.all(__writes);
-            __isrDebug?.("HTML cache written", __isrKey);
-          } catch (__cacheErr) {
-            console.error("[vinext] ISR cache write error:", __cacheErr);
+    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
+      draftCookie,
+      fontLinkHeader,
+      middlewareContext: _mwCtx,
+      policy: __htmlResponsePolicy,
+      timing: __htmlResponseTiming,
+    });
+    if (__isrResponseProd.body) {
+      const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+      const __isrKey = __isrHtmlKey(cleanPathname);
+      const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __capturedRscDataPromise = __isrRscDataPromise;
+      const __cachePromise = (async () => {
+        try {
+          const __reader = __streamForCache.getReader();
+          const __decoder = new TextDecoder();
+          const __chunks = [];
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            __chunks.push(__decoder.decode(value, { stream: true }));
           }
-        })();
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
-      }
-      return __isrResponseProd;
+          __chunks.push(__decoder.decode());
+          const __fullHtml = __chunks.join("");
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          // Write HTML and RSC to their own keys independently.
+          // RSC data was captured by the tee above (before isRscRequest branch)
+          // so an initial browser visit (HTML request) also populates the RSC key,
+          // ensuring the first client-side navigation after a direct visit is a
+          // cache hit rather than a miss.
+          const __writes = [
+            __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
+          ];
+          if (__capturedRscDataPromise) {
+            __writes.push(
+              __capturedRscDataPromise.then((__rscBuf) =>
+                __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
+              )
+            );
+          }
+          await Promise.all(__writes);
+          __isrDebug?.("HTML cache written", __isrKey);
+        } catch (__cacheErr) {
+          console.error("[vinext] ISR cache write error:", __cacheErr);
+        }
+      })();
+      // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+      // the isolate alive until the cache write finishes, even after the response is sent.
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
+      return new Response(__streamForClient, {
+        status: __isrResponseProd.status,
+        headers: __isrResponseProd.headers,
+      });
     }
-    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "Vary": "RSC, Accept",
-      },
-    }));
+    return __isrResponseProd;
   }
 
-  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
-  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
-  if (revalidateSeconds === Infinity) {
-    return attachMiddlewareContext(new Response(htmlStream, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
-        "X-Vinext-Cache": "STATIC",
-        "Vary": "RSC, Accept",
-      },
-    }));
-  }
-
-  return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
-  }));
+  return __buildAppPageHtmlResponse(htmlStream, {
+    draftCookie,
+    fontLinkHeader,
+    middlewareContext: _mwCtx,
+    policy: __htmlResponsePolicy,
+    timing: __htmlResponseTiming,
+  });
 }
 
 if (import.meta.hot) {
