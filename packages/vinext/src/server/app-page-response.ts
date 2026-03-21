@@ -91,6 +91,10 @@ export function resolveAppPageRscResponsePolicy(
   if (options.revalidateSeconds) {
     return {
       cacheControl: buildRevalidateCacheControl(options.revalidateSeconds),
+      // Emit MISS as part of the initial RSC response shape rather than bolting
+      // it on later in the cache-write block so response construction stays
+      // centralized in this helper. This matches the eventual write path: the
+      // first ISR-eligible production response is a cache miss.
       cacheState: options.isProduction ? "MISS" : undefined,
     };
   }
