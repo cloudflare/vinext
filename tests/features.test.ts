@@ -101,6 +101,9 @@ async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
   endMs: number;
 }> {
   const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+  // ReadableStream.start() begins running during construction, so start timing
+  // before creating the Response to include the full delayed chunk interval.
+  const startedAt = performance.now();
 
   const response = new Response(
     createStreamingBody([
@@ -123,7 +126,6 @@ async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
   const decoder = encoding === "br" ? zlib.createBrotliDecompress() : zlib.createGunzip();
   const rawChunks: Buffer[] = [];
   const decodedChunks: Buffer[] = [];
-  const startedAt = Date.now();
   let firstDecodedMs = -1;
 
   res.on("data", (chunk: Buffer) => {
@@ -135,7 +137,7 @@ async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
   decoder.on("data", (chunk: Buffer) => {
     decodedChunks.push(Buffer.from(chunk));
     if (firstDecodedMs === -1) {
-      firstDecodedMs = Date.now() - startedAt;
+      firstDecodedMs = performance.now() - startedAt;
     }
   });
   decoder.on("error", () => {
@@ -152,7 +154,7 @@ async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
     headers: res.headers,
     statusCode: res.statusCode,
     firstDecodedMs,
-    endMs: Date.now() - startedAt,
+    endMs: performance.now() - startedAt,
   };
 }
 
