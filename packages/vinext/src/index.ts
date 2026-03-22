@@ -1035,6 +1035,27 @@ function createDirectiveOnwarn(
   };
 }
 
+/**
+ * Helper to suppress "Module level directives cause errors when bundled"
+ * warnings for "use client" / "use server" directives.
+ */
+function createDirectiveOnwarn(userOnwarn?: (warning: any, handler: (w: any) => void) => void) {
+  return (warning: any, defaultHandler: (warning: any) => void) => {
+    if (
+      warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+      (warning.message?.includes('"use client"') ||
+        warning.message?.includes('"use server"'))
+    ) {
+      return;
+    }
+    if (userOnwarn) {
+      userOnwarn(warning, defaultHandler);
+    } else {
+      defaultHandler(warning);
+    }
+  };
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
