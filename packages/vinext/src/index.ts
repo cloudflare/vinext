@@ -835,8 +835,7 @@ export interface VinextOptions {
   react?: VitePluginReactOptions | boolean;
   /**
    * Run `next typegen` automatically in development when Next.js is installed.
-   * This generates route-aware helpers like `PageProps`/`LayoutProps` and
-   * typed route metadata into `.next/types` for editor type-checking.
+   * This generates route-aware helpers like `PageProps`/`LayoutProps`.
    * Set to `false` to disable automatic type generation.
    * @default true
    */
