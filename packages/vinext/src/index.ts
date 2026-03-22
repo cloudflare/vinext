@@ -4175,8 +4175,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `    if (mod) {`,
             `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
             `    } else {`,
-            `      var b = typeof Buffer !== "undefined" ? Buffer.from(__vi_yoga_b64, "base64")`,
-            `        : Uint8Array.from(atob(__vi_yoga_b64), function(c) { return c.charCodeAt(0); });`,
+            `      var b = Buffer.from(__vi_yoga_b64, "base64");`,
             `      WebAssembly.instantiate(b, imports).then(function(r) { callback(r.instance); });`,
             `    }`,
             `  });`,
@@ -4212,7 +4211,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
             `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
             `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
-            `    return WebAssembly.compile(mods[0].readFileSync(p));`,
+            `    return mods[0].promises.readFile(p).then(function(buf) { return WebAssembly.compile(buf); });`,
             `  });`,
             `});`,
           ].join("\n");
