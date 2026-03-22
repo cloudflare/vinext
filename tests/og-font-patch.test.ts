@@ -151,9 +151,13 @@ describe("vinext:og-font-patch plugin", () => {
       expect(code).toMatch(/resvg.*\.catch\(/s);
     });
 
-    it("uses new URL() for disk-based fallback (resvg is too large to inline)", () => {
+    it("uses new URL() inside catch handler, not at top level (workerd compat)", () => {
       const { code } = transformEdgeEntry(path.join(fakeOgDistDir, "index.edge.js"));
+      // new URL("./resvg.wasm", import.meta.url) must be inside the .catch() handler,
+      // NOT at the top level. In workerd, import.meta.url is "worker" (not a valid URL
+      // base), so top-level new URL() would throw TypeError at module load time.
       expect(code).toContain('new URL("./resvg.wasm"');
+      expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/resvg\.wasm"/m);
       expect(code).toContain("node:fs");
       expect(code).toContain("WebAssembly.compile");
     });

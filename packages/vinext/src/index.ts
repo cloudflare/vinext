@@ -4204,11 +4204,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
         const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
         if (resvgMatch) {
+          // Note: new URL("./resvg.wasm", import.meta.url) MUST be inside the catch handler,
+          // not at the top level. In workerd, import.meta.url is "worker" (not a valid URL
+          // base), so new URL(..., "worker") throws TypeError at module load time.
+          // The catch block only runs on Node.js where import.meta.url is a file:// URL.
           const resvgLoader = [
-            `var __vi_resvg_url = new URL("./resvg.wasm", import.meta.url);`,
             `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
             `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
-            `    return WebAssembly.compile(mods[0].readFileSync(mods[1].fileURLToPath(__vi_resvg_url)));`,
+            `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
+            `    return WebAssembly.compile(mods[0].readFileSync(p));`,
             `  });`,
             `});`,
           ].join("\n");
