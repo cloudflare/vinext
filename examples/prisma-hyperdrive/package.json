@@ -1,0 +1,33 @@
+{
+  "name": "vinext-prisma-hyperdrive",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vite": "catalog:",
+    "vinext": "workspace:*",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "@cloudflare/vite-plugin": "catalog:",
+    "wrangler": "catalog:",
+    "@prisma/client": "^7.0.0",
+    "@prisma/adapter-pg": "^7.0.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "vite-plus": "catalog:",
+    "prisma": "^7.0.0",
+    "@types/pg": "^8.11.0"
+  }
+}
