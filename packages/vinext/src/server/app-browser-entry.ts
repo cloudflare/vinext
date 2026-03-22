@@ -141,7 +141,7 @@ function registerServerActionCallback(): void {
           return undefined;
         }
       } catch {
-        // Fall through to client-side navigation if URL parsing fails.
+        // Fall through to hard redirect below if URL parsing fails.
       }
 
       // Use hard redirect for all action redirects because vinext's server
