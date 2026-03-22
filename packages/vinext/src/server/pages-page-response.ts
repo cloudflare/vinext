@@ -14,7 +14,7 @@ export interface PagesI18nRenderContext {
 
 export interface PagesGsspResponse {
   statusCode: number;
-  getHeaders(): Record<string, unknown>;
+  getHeaders(): Record<string, string | number | boolean | string[]>;
 }
 
 interface PagesStreamedHtmlResponse extends Response {
@@ -191,10 +191,15 @@ function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): 
   const gsspHeaders = gsspRes.getHeaders();
   for (const key of Object.keys(gsspHeaders)) {
     const value = gsspHeaders[key];
-    if (key === "set-cookie" && Array.isArray(value)) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "set-cookie" && Array.isArray(value)) {
       for (const cookie of value) {
         headers.append("set-cookie", String(cookie));
       }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      headers.set(key, value.join(", "));
       continue;
     }
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {

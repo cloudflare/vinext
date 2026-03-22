@@ -116,6 +116,28 @@ describe("pages page response", () => {
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves array-valued non-set-cookie headers from gSSP responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return {
+            vary: ["Accept", "Accept-Encoding"],
+            "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+            "x-custom": 42,
+          };
+        },
+      },
+    });
+
+    expect(response.headers.get("vary")).toBe("Accept, Accept-Encoding");
+    expect(response.headers.get("x-custom")).toBe("42");
+    expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
   it("writes the ISR HTML cache entry for cacheable page responses", async () => {
     const common = createCommonOptions();
 
