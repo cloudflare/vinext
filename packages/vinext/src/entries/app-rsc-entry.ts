@@ -53,20 +53,14 @@ const appRouteHandlerCachePath = fileURLToPath(
 const appPageCachePath = fileURLToPath(
   new URL("../server/app-page-cache.js", import.meta.url),
 ).replace(/\\/g, "/");
-const appPageResponsePath = fileURLToPath(
-  new URL("../server/app-page-response.js", import.meta.url),
-).replace(/\\/g, "/");
 const appPageExecutionPath = fileURLToPath(
   new URL("../server/app-page-execution.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageProbePath = fileURLToPath(
-  new URL("../server/app-page-probe.js", import.meta.url),
 ).replace(/\\/g, "/");
 const appPageBoundaryRenderPath = fileURLToPath(
   new URL("../server/app-page-boundary-render.js", import.meta.url),
 ).replace(/\\/g, "/");
-const appPageStreamPath = fileURLToPath(
-  new URL("../server/app-page-stream.js", import.meta.url),
+const appPageRenderPath = fileURLToPath(
+  new URL("../server/app-page-render.js", import.meta.url),
 ).replace(/\\/g, "/");
 const appPageRequestPath = fileURLToPath(
   new URL("../server/app-page-request.js", import.meta.url),
@@ -377,17 +371,7 @@ import {
   executeAppRouteHandler as __executeAppRouteHandler,
 } from ${JSON.stringify(appRouteHandlerExecutionPath)};
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from ${JSON.stringify(appRouteHandlerCachePath)};
-import {
-  finalizeAppPageHtmlCacheResponse as __finalizeAppPageHtmlCacheResponse,
-  readAppPageCacheResponse as __readAppPageCacheResponse,
-  scheduleAppPageRscCacheWrite as __scheduleAppPageRscCacheWrite,
-} from ${JSON.stringify(appPageCachePath)};
-import {
-  buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
-  buildAppPageRscResponse as __buildAppPageRscResponse,
-  resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy,
-  resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
-} from ${JSON.stringify(appPageResponsePath)};
+import { readAppPageCacheResponse as __readAppPageCacheResponse } from ${JSON.stringify(appPageCachePath)};
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse as __buildAppPageSpecialErrorResponse,
@@ -396,20 +380,12 @@ import {
   teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture,
 } from ${JSON.stringify(appPageExecutionPath)};
 import {
-  probeAppPageBeforeRender as __probeAppPageBeforeRender,
-} from ${JSON.stringify(appPageProbePath)};
-import {
   renderAppPageErrorBoundary as __renderAppPageErrorBoundary,
   renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback,
 } from ${JSON.stringify(appPageBoundaryRenderPath)};
 import {
-  createAppPageFontData as __createAppPageFontData,
-  createAppPageRscErrorTracker as __createAppPageRscErrorTracker,
-  renderAppPageHtmlResponse as __renderAppPageHtmlResponse,
-  renderAppPageHtmlStream as __renderAppPageHtmlStream,
-  renderAppPageHtmlStreamWithRecovery as __renderAppPageHtmlStreamWithRecovery,
-  shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError,
-} from ${JSON.stringify(appPageStreamPath)};
+  renderAppPageLifecycle as __renderAppPageLifecycle,
+} from ${JSON.stringify(appPageRenderPath)};
 import {
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
@@ -1423,8 +1399,6 @@ export default async function handler(request, ctx) {
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
-  let __compileEnd;
-  let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
@@ -2405,12 +2379,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
-
   const _hasLoadingBoundary = !!(route.loading && route.loading.default);
   const _asyncLayoutParams = makeThenableParams(params);
-  const __preRenderResponse = await __probeAppPageBeforeRender({
+  return __renderAppPageLifecycle({
+    cleanPathname,
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
+    },
+    consumeDynamicUsage,
+    createRscOnErrorHandler(pathname, routePath) {
+      return createRscOnErrorHandler(request, pathname, routePath);
+    },
+    element,
+    getDraftModeCookieHeader,
+    getFontLinks: _getSSRFontLinks,
+    getFontPreloads: _getSSRFontPreloads,
+    getFontStyles: _getSSRFontStyles,
+    getNavigationContext: _getNavigationContext,
+    getPageTags() {
+      return __pageCacheTags(cleanPathname, getCollectedFetchTags());
+    },
+    getRequestCacheLife() {
+      return _consumeRequestScopedCacheLife();
+    },
+    handlerStart: __reqStart,
     hasLoadingBoundary: _hasLoadingBoundary,
+    isDynamicError,
+    isForceDynamic,
+    isForceStatic,
+    isProduction: process.env.NODE_ENV === "production",
+    isRscRequest,
+    isrDebug: __isrDebug,
+    isrHtmlKey: __isrHtmlKey,
+    isrRscKey: __isrRscKey,
+    isrSet: __isrSet,
     layoutCount: route.layouts?.length ?? 0,
+    loadSsrHandler() {
+      return import.meta.viteRsc.loadModule("ssr", "index");
+    },
+    middlewareContext: _mwCtx,
+    params,
     probeLayoutAt(li) {
       const LayoutComp = route.layouts[li]?.default;
       if (!LayoutComp) return null;
@@ -2418,6 +2427,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
     probePage() {
       return PageComponent({ params });
+    },
+    revalidateSeconds,
+    renderErrorBoundaryResponse(renderErr) {
+      return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params);
     },
     async renderLayoutSpecialError(__layoutSpecialError, li) {
       return __buildAppPageSpecialErrorResponse({
@@ -2465,237 +2478,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         specialError,
       });
     },
-    resolveSpecialError: __resolveAppPageSpecialError,
+    renderToReadableStream,
+    routeHasLocalBoundary: !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; })),
+    routePattern: route.pattern,
     runWithSuppressedHookWarning(probe) {
       // Run inside ALS context so the module-level console.error patch suppresses
       // "Invalid hook call" only for this request's probe — concurrent requests
       // each have their own ALS store and are unaffected.
       return _suppressHookWarningAls.run(true, probe);
     },
-  });
-  if (__preRenderResponse) return __preRenderResponse;
-
-  // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
-
-  // Render to RSC stream.
-  // Track non-navigation RSC errors so we can detect when the in-tree global
-  // ErrorBoundary catches during SSR (producing double <html>/<body>) and
-  // re-render with renderErrorBoundaryPage (which skips layouts for global-error).
-  const _baseOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
-  const _rscErrorTracker = __createAppPageRscErrorTracker(_baseOnError);
-  const onRenderError = _rscErrorTracker.onRenderError;
-  const rscStream = renderToReadableStream(element, { onError: onRenderError });
-
-  // For ISR pages in production: tee the RSC stream immediately after creation so we
-  // can capture rscData for BOTH RSC requests (client-side nav/prefetch) and HTML
-  // requests. The tee must happen here — before the isRscRequest branch — so both
-  // paths can use the captured bytes when writing to the ISR cache.
-  //   __rscForResponse  → sent to the client (RSC response) or to SSR (HTML response)
-  //   __isrRscDataPromise → resolves to ArrayBuffer of captured RSC wire bytes
-  const __rscCapture = __teeAppPageRscStreamForCapture(
-    rscStream,
-    process.env.NODE_ENV === "production" &&
-      revalidateSeconds !== null &&
-      revalidateSeconds > 0 &&
-      revalidateSeconds !== Infinity &&
-      !isForceDynamic,
-  );
-  const __rscForResponse = __rscCapture.responseStream;
-  const __isrRscDataPromise = __rscCapture.capturedRscDataPromise;
-
-  if (isRscRequest) {
-    // Direct RSC stream response (for client-side navigation)
-    // NOTE: Do NOT clear headers/navigation context here!
-    // The RSC stream is consumed lazily - components render when chunks are read.
-    // If we clear context now, headers()/cookies() will fail during rendering.
-    // Context will be cleared when the next request starts (via runWithRequestContext).
-    const __dynamicUsedInRsc = consumeDynamicUsage();
-    const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
-      dynamicUsedDuringBuild: __dynamicUsedInRsc,
-      isDynamicError,
-      isForceDynamic,
-      isForceStatic,
-      isProduction: process.env.NODE_ENV === "production",
-      revalidateSeconds,
-    });
-    const __rscResponse = __buildAppPageRscResponse(__rscForResponse, {
-      middlewareContext: _mwCtx,
-      params,
-      policy: __rscResponsePolicy,
-      timing: process.env.NODE_ENV !== "production"
-        ? {
-            compileEnd: __compileEnd,
-            handlerStart: __reqStart,
-            responseKind: "rsc",
-          }
-        : undefined,
-    });
-    // For ISR-eligible RSC requests in production: write rscData to its own key.
-    // HTML is stored under a separate key (written by the HTML path below) so
-    // these writes never race or clobber each other.
-    __scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: process.env.NODE_ENV === "production" ? __isrRscDataPromise : null,
-      cleanPathname,
-      consumeDynamicUsage,
-      dynamicUsedDuringBuild: __dynamicUsedInRsc,
-      getPageTags() {
-        return __pageCacheTags(cleanPathname, getCollectedFetchTags());
-      },
-      isrDebug: __isrDebug,
-      isrRscKey: __isrRscKey,
-      isrSet: __isrSet,
-      revalidateSeconds,
-      waitUntil(promise) {
-        _getRequestExecutionContext()?.waitUntil(promise);
-      },
-    });
-    return __rscResponse;
-  }
-
-  // Collect font data from RSC environment before passing to SSR
-  // (Fonts are loaded during RSC rendering when layout.tsx calls Geist() etc.)
-  const fontData = __createAppPageFontData({
-    getLinks: _getSSRFontLinks,
-    getPreloads: _getSSRFontPreloads,
-    getStyles: _getSSRFontStyles,
-  });
-
-  // Build HTTP Link header for font preloading.
-  // This lets the browser (and CDN) start fetching font files before parsing HTML,
-  // eliminating the CSS → woff2 download waterfall.
-  const fontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
-
-  // __rscForResponse was already teed above (before isRscRequest) for ISR pages in
-  // production. For non-ISR or dev, __rscForResponse === rscStream (no tee).
-  // __isrRscDataPromise resolves to rscData bytes used by the RSC write path above;
-  // the HTML write path below uses its own separate key and does not need rscData.
-
-  const __htmlRender = await __renderAppPageHtmlStreamWithRecovery({
-    onShellRendered() {
-      // Shell render complete; Suspense boundaries stream asynchronously.
-      if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+    waitUntil(__cachePromise) {
+      _getRequestExecutionContext()?.waitUntil(__cachePromise);
     },
-    renderErrorBoundaryResponse(ssrErr) {
-      return renderErrorBoundaryPage(route, ssrErr, isRscRequest, request, params);
-    },
-    async renderHtmlStream() {
-      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-      return __renderAppPageHtmlStream({
-        fontData,
-        navigationContext: _getNavigationContext(),
-        rscStream: __rscForResponse,
-        ssrHandler: ssrEntry,
-      });
-    },
-    renderSpecialErrorResponse(__ssrSpecialError) {
-      return __buildAppPageSpecialErrorResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        renderFallbackPage(statusCode) {
-          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-            matchedParams: params,
-          });
-        },
-        requestUrl: request.url,
-        specialError: __ssrSpecialError,
-      });
-    },
-    resolveSpecialError: __resolveAppPageSpecialError,
-  });
-  if (__htmlRender.response) return __htmlRender.response;
-  const htmlStream = __htmlRender.htmlStream;
-
-  // If an RSC error was caught by the in-tree global ErrorBoundary during SSR,
-  // the HTML output has double <html>/<body> (root layout + global-error.tsx).
-  // Discard it and re-render using renderErrorBoundaryPage which skips layouts
-  // when the error falls through to global-error.tsx.
-  ${
-    globalErrorVar
-      ? `
-  const _capturedRscError = _rscErrorTracker.getCapturedError();
-  if (__shouldRerenderAppPageWithGlobalError({
-    capturedError: _capturedRscError,
-    hasLocalBoundary: !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; })),
-  })) {
-      const cleanResp = await renderErrorBoundaryPage(route, _capturedRscError, false, request, params);
-      if (cleanResp) return cleanResp;
-  }
-  `
-      : ""
-  }
-
-  // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
-  const draftCookie = getDraftModeCookieHeader();
-
-  setHeadersContext(null);
-  setNavigationContext(null);
-
-  // Check if any component called connection(), cookies(), headers(), or noStore()
-  // during rendering. If so, treat as dynamic (skip ISR, set no-store).
-  const dynamicUsedDuringRender = consumeDynamicUsage();
-
-  // Check if cacheLife() was called during rendering (e.g., page with file-level "use cache").
-  // If so, use its revalidation period for the Cache-Control header.
-  const requestCacheLife = _consumeRequestScopedCacheLife();
-  if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
-    revalidateSeconds = requestCacheLife.revalidate;
-  }
-  const __htmlResponsePolicy = __resolveAppPageHtmlResponsePolicy({
-    dynamicUsedDuringRender,
-    isDynamicError,
-    isForceDynamic,
-    isForceStatic,
-    isProduction: process.env.NODE_ENV === "production",
-    revalidateSeconds,
-  });
-  const __htmlResponseTiming = process.env.NODE_ENV !== "production"
-    ? {
-        compileEnd: __compileEnd,
-        handlerStart: __reqStart,
-        renderEnd: __renderEnd,
-        responseKind: "html",
-      }
-    : undefined;
-
-  // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
-  // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
-  // static here so we emit s-maxage=31536000 but skip ISR cache management.
-  if (__htmlResponsePolicy.shouldWriteToCache) {
-    const __isrResponseProd = __buildAppPageHtmlResponse(htmlStream, {
-      draftCookie,
-      fontLinkHeader,
-      middlewareContext: _mwCtx,
-      policy: __htmlResponsePolicy,
-      timing: __htmlResponseTiming,
-    });
-    return __finalizeAppPageHtmlCacheResponse(__isrResponseProd, {
-      capturedRscDataPromise: __isrRscDataPromise,
-      cleanPathname,
-      getPageTags: function() {
-        return __pageCacheTags(cleanPathname, getCollectedFetchTags());
-      },
-      isrDebug: __isrDebug,
-      isrHtmlKey: __isrHtmlKey,
-      isrRscKey: __isrRscKey,
-      isrSet: __isrSet,
-      revalidateSeconds,
-      waitUntil: function(__cachePromise) {
-        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
-        // the isolate alive until the cache write finishes, even after the response is sent.
-        _getRequestExecutionContext()?.waitUntil(__cachePromise);
-      },
-    });
-  }
-
-  return __buildAppPageHtmlResponse(htmlStream, {
-    draftCookie,
-    fontLinkHeader,
-    middlewareContext: _mwCtx,
-    policy: __htmlResponsePolicy,
-    timing: __htmlResponseTiming,
   });
 }
 
