@@ -62,8 +62,8 @@ const appPageExecutionPath = fileURLToPath(
 const appPageProbePath = fileURLToPath(
   new URL("../server/app-page-probe.js", import.meta.url),
 ).replace(/\\/g, "/");
-const appPageBoundaryPath = fileURLToPath(
-  new URL("../server/app-page-boundary.js", import.meta.url),
+const appPageBoundaryRenderPath = fileURLToPath(
+  new URL("../server/app-page-boundary-render.js", import.meta.url),
 ).replace(/\\/g, "/");
 const appPageStreamPath = fileURLToPath(
   new URL("../server/app-page-stream.js", import.meta.url),
@@ -399,11 +399,9 @@ import {
   probeAppPageBeforeRender as __probeAppPageBeforeRender,
 } from ${JSON.stringify(appPageProbePath)};
 import {
-  renderAppPageBoundaryResponse as __renderAppPageBoundaryResponse,
-  resolveAppPageErrorBoundary as __resolveAppPageErrorBoundary,
-  resolveAppPageHttpAccessBoundaryComponent as __resolveAppPageHttpAccessBoundaryComponent,
-  wrapAppPageBoundaryElement as __wrapAppPageBoundaryElement,
-} from ${JSON.stringify(appPageBoundaryPath)};
+  renderAppPageErrorBoundary as __renderAppPageErrorBoundary,
+  renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback,
+} from ${JSON.stringify(appPageBoundaryRenderPath)};
 import {
   createAppPageFontData as __createAppPageFontData,
   createAppPageRscErrorTracker as __createAppPageRscErrorTracker,
@@ -788,118 +786,37 @@ const rootLayouts = [${rootLayoutVars.join(", ")}];
  * @param opts.layouts - Override the layouts to wrap with (for layout-level notFound, excludes the throwing layout)
  */
 async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts) {
-  const BoundaryComponent =
-    opts?.boundaryComponent ??
-    __resolveAppPageHttpAccessBoundaryComponent({
-      getDefaultExport(boundaryModule) {
-        return boundaryModule?.default ?? null;
-      },
-      rootForbiddenModule: rootForbiddenModule,
-      rootNotFoundModule: rootNotFoundModule,
-      rootUnauthorizedModule: rootUnauthorizedModule,
-      routeForbiddenModule: route?.forbidden,
-      routeNotFoundModule: route?.notFound,
-      routeUnauthorizedModule: route?.unauthorized,
-      statusCode,
-    });
-  const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
-  if (!BoundaryComponent) return null;
-
-  // Resolve metadata and viewport from parent layouts so that not-found/error
-  // pages inherit title, description, OG tags etc. — matching Next.js behavior.
-  // Build the serial parent chain for layout metadata (same as buildPageElement).
-  const _filteredLayouts = layouts.filter(Boolean);
-  const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-  const _layoutMetaPromises = [];
-  let _accumulatedMeta = Promise.resolve({});
-  for (let _i = 0; _i < _filteredLayouts.length; _i++) {
-    const _parentForLayout = _accumulatedMeta;
-    const _metaP = resolveModuleMetadata(_filteredLayouts[_i], _fallbackParams, undefined, _parentForLayout)
-      .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
-    _layoutMetaPromises.push(_metaP);
-    _accumulatedMeta = _metaP.then(async (_r) =>
-      _r ? mergeMetadata([await _parentForLayout, _r]) : await _parentForLayout
-    );
-  }
-  const [_metaResults, _vpResults] = await Promise.all([
-    Promise.all(_layoutMetaPromises),
-    Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod, _fallbackParams).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-  ]);
-  const metadataList = _metaResults.filter(Boolean);
-  const viewportList = _vpResults.filter(Boolean);
-  const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
-  const resolvedViewport = mergeViewport(viewportList);
-
-  // Build element: metadata head + noindex meta + boundary component wrapped in layouts
-  // Always include charset and default viewport for parity with Next.js.
-  const charsetMeta = createElement("meta", { charSet: "utf-8" });
-  const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
-  const headElements = [charsetMeta, noindexMeta];
-  if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
-  headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
-  let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
-  element = __wrapAppPageBoundaryElement({
-    element,
-    getDefaultExport(layoutModule) {
-      return layoutModule?.default ?? null;
+  return __renderAppPageHttpAccessFallback({
+    boundaryComponent: opts?.boundaryComponent ?? null,
+    buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
     },
-    globalErrorComponent: ${globalErrorVar ? `${globalErrorVar}.default` : "null"},
-    includeGlobalErrorBoundary: true,
+    createRscOnErrorHandler(pathname, routePath) {
+      return createRscOnErrorHandler(request, pathname, routePath);
+    },
+    getFontLinks: _getSSRFontLinks,
+    getFontPreloads: _getSSRFontPreloads,
+    getFontStyles: _getSSRFontStyles,
+    getNavigationContext: _getNavigationContext,
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     isRscRequest,
-    layoutModules: layouts,
-    layoutTreePositions: route?.layoutTreePositions,
+    layoutModules: opts?.layouts ?? null,
+    loadSsrHandler() {
+      return import.meta.viteRsc.loadModule("ssr", "index");
+    },
     makeThenableParams,
-    matchedParams: _fallbackParams,
-    renderErrorBoundary(GlobalErrorComponent, children) {
-      return createElement(ErrorBoundary, {
-        fallback: GlobalErrorComponent,
-        children,
-      });
-    },
-    renderLayout(LayoutComponent, children, asyncParams) {
-      return createElement(LayoutComponent, { children, params: asyncParams });
-    },
-    renderLayoutSegmentProvider(childSegments, children) {
-      return createElement(LayoutSegmentProvider, { childSegments }, children);
-    },
-    resolveChildSegments(routeSegments, treePosition, boundaryParams) {
-      return __resolveChildSegments(routeSegments, treePosition, boundaryParams);
-    },
-    routeSegments: route?.routeSegments || [],
-  });
-  const _pathname = new URL(request.url).pathname;
-  return __renderAppPageBoundaryResponse({
-    async createHtmlResponse(rscStream, responseStatus) {
-      const fontData = __createAppPageFontData({
-        getLinks: _getSSRFontLinks,
-        getPreloads: _getSSRFontPreloads,
-        getStyles: _getSSRFontStyles,
-      });
-      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-      return __renderAppPageHtmlResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        fontData,
-        fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
-        navigationContext: _getNavigationContext(),
-        rscStream,
-        ssrHandler: ssrEntry,
-        status: responseStatus,
-      });
-    },
-    createRscOnErrorHandler() {
-      return createRscOnErrorHandler(
-        request,
-        _pathname,
-        route?.pattern ?? _pathname,
-      );
-    },
-    element,
-    isRscRequest,
+    matchedParams: opts?.matchedParams ?? route?.params ?? {},
+    requestUrl: request.url,
+    resolveChildSegments: __resolveChildSegments,
+    rootForbiddenModule: rootForbiddenModule,
+    rootLayouts: rootLayouts,
+    rootNotFoundModule: rootNotFoundModule,
+    rootUnauthorizedModule: rootUnauthorizedModule,
+    route,
     renderToReadableStream,
-    status: statusCode,
+    statusCode,
   });
 }
 
@@ -916,93 +833,33 @@ async function renderNotFoundPage(route, isRscRequest, request, matchedParams) {
  * by the boundary). This matches that behavior intentionally.
  */
 async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams) {
-  const __errorBoundary = __resolveAppPageErrorBoundary({
-    getDefaultExport(errorModule) {
-      return errorModule?.default ?? null;
+  return __renderAppPageErrorBoundary({
+    buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
     },
+    createRscOnErrorHandler(pathname, routePath) {
+      return createRscOnErrorHandler(request, pathname, routePath);
+    },
+    error,
+    getFontLinks: _getSSRFontLinks,
+    getFontPreloads: _getSSRFontPreloads,
+    getFontStyles: _getSSRFontStyles,
+    getNavigationContext: _getNavigationContext,
     globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    layoutErrorModules: route?.errors,
-    pageErrorModule: route?.error,
-  });
-  if (!__errorBoundary.component) return null;
-
-  const rawError = error instanceof Error ? error : new Error(String(error));
-  // Sanitize the error in production to avoid leaking internal details
-  // (database errors, file paths, stack traces) through error.tsx to the client.
-  // In development, pass the original error for debugging.
-  const errorObj = __sanitizeErrorForClient(rawError);
-  // Only pass error — reset is a client-side concern (re-renders the segment) and
-  // can't be serialized through RSC. The error.tsx component will receive reset=undefined
-  // during SSR, which is fine — onClick={undefined} is harmless, and the real reset
-  // function is only meaningful after hydration.
-  let element = createElement(__errorBoundary.component, {
-    error: errorObj,
-  });
-  const _errParams = matchedParams ?? route?.params ?? {};
-  element = __wrapAppPageBoundaryElement({
-    element,
-    getDefaultExport(layoutModule) {
-      return layoutModule?.default ?? null;
-    },
-    globalErrorComponent: ${globalErrorVar ? `${globalErrorVar}.default` : "null"},
-    includeGlobalErrorBoundary: !__errorBoundary.isGlobalError,
     isRscRequest,
-    layoutModules: route?.layouts ?? rootLayouts,
-    layoutTreePositions: route?.layoutTreePositions,
+    loadSsrHandler() {
+      return import.meta.viteRsc.loadModule("ssr", "index");
+    },
     makeThenableParams,
-    matchedParams: _errParams,
-    renderErrorBoundary(GlobalErrorComponent, children) {
-      return createElement(ErrorBoundary, {
-        fallback: GlobalErrorComponent,
-        children,
-      });
-    },
-    renderLayout(LayoutComponent, children, asyncParams) {
-      return createElement(LayoutComponent, { children, params: asyncParams });
-    },
-    renderLayoutSegmentProvider(childSegments, children) {
-      return createElement(LayoutSegmentProvider, { childSegments }, children);
-    },
-    resolveChildSegments(routeSegments, treePosition, boundaryParams) {
-      return __resolveChildSegments(routeSegments, treePosition, boundaryParams);
-    },
-    routeSegments: route?.routeSegments || [],
-    skipLayoutWrapping: __errorBoundary.isGlobalError,
-  });
-
-  const _pathname = new URL(request.url).pathname;
-  return __renderAppPageBoundaryResponse({
-    async createHtmlResponse(rscStream, responseStatus) {
-      const fontData = __createAppPageFontData({
-        getLinks: _getSSRFontLinks,
-        getPreloads: _getSSRFontPreloads,
-        getStyles: _getSSRFontStyles,
-      });
-      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-      return __renderAppPageHtmlResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        fontData,
-        fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
-        navigationContext: _getNavigationContext(),
-        rscStream,
-        ssrHandler: ssrEntry,
-        status: responseStatus,
-      });
-    },
-    createRscOnErrorHandler() {
-      return createRscOnErrorHandler(
-        request,
-        _pathname,
-        route?.pattern ?? _pathname,
-      );
-    },
-    element,
-    isRscRequest,
+    matchedParams: matchedParams ?? route?.params ?? {},
+    requestUrl: request.url,
+    resolveChildSegments: __resolveChildSegments,
+    rootLayouts: rootLayouts,
+    route,
     renderToReadableStream,
-    status: 200,
+    sanitizeErrorForClient: __sanitizeErrorForClient,
   });
 }
 

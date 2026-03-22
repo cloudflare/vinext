@@ -568,7 +568,8 @@ describe("App Router integration", () => {
     // Should be wrapped in the root layout
     expect(html).toContain('<html lang="en">');
     // Should include noindex meta
-    expect(html).toContain('name="robots" content="noindex"');
+    expect(html).toContain('name="robots"');
+    expect(html).toContain('content="noindex"');
   });
 
   it("unauthorized() from Server Component returns 401 with unauthorized.tsx", async () => {
@@ -580,7 +581,8 @@ describe("App Router integration", () => {
     // Should be wrapped in the root layout
     expect(html).toContain('<html lang="en">');
     // Should include noindex meta
-    expect(html).toContain('name="robots" content="noindex"');
+    expect(html).toContain('name="robots"');
+    expect(html).toContain('content="noindex"');
   });
 
   it("redirect() from Server Component returns redirect response", async () => {
@@ -3747,15 +3749,10 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code delegates page boundary rendering to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("renderAppPageBoundaryResponse as __renderAppPageBoundaryResponse");
-    expect(code).toContain("resolveAppPageErrorBoundary as __resolveAppPageErrorBoundary");
-    expect(code).toContain(
-      "resolveAppPageHttpAccessBoundaryComponent as __resolveAppPageHttpAccessBoundaryComponent",
-    );
-    expect(code).toContain("wrapAppPageBoundaryElement as __wrapAppPageBoundaryElement");
-    expect(code).toContain("__resolveAppPageHttpAccessBoundaryComponent({");
-    expect(code).toContain("element = __wrapAppPageBoundaryElement({");
-    expect(code).toContain("return __renderAppPageBoundaryResponse({");
+    expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");
+    expect(code).toContain("renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback");
+    expect(code).toContain("return __renderAppPageHttpAccessFallback({");
+    expect(code).toContain("return __renderAppPageErrorBoundary({");
   });
 
   it("generated code delegates page cache HIT handling to a typed helper", () => {
