@@ -109,12 +109,20 @@ function createWindowStub() {
       history: {
         pushState,
         replaceState,
+        state: null,
       },
       location: {
         origin: "http://localhost:3000",
         href: "http://localhost:3000/current",
+        pathname: "/current",
+        search: "",
+        hash: "",
       },
+      scrollX: 0,
+      scrollY: 0,
       scrollTo,
+      addEventListener: () => {},
+      dispatchEvent: () => {},
     },
   };
 }
@@ -240,7 +248,7 @@ describe("Form useActionState", () => {
 
 describe("Form client GET interception", () => {
   it("strips existing query params from the action URL and warns in development", async () => {
-    const { navigate, pushState, scrollTo } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search?lang=en" });
     const event = createSubmitEvent({
@@ -253,13 +261,11 @@ describe("Form client GET interception", () => {
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(pushState).toHaveBeenCalledWith(null, "", "/search?q=react");
-    expect(navigate).toHaveBeenCalledWith("/search?q=react");
-    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    expect(navigate).toHaveBeenCalledWith("/search?q=react", 0, "navigate", "push");
   });
 
   it("honors submitter formAction, formMethod, and submitter name/value", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const { onSubmit } = renderClientForm({ action: "/search", method: "POST" });
     const submitter = new FakeButtonElement({
       attributes: {
@@ -280,12 +286,12 @@ describe("Form client GET interception", () => {
     await onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(pushState).toHaveBeenCalledWith(
-      null,
-      "",
+    expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=button&lang=fr&source=submitter-action",
+      0,
+      "navigate",
+      "push",
     );
-    expect(navigate).toHaveBeenCalledWith("/search-alt?q=button&lang=fr&source=submitter-action");
   });
 
   it("falls back to appending submitter name/value when FormData submitter overload is unavailable", async () => {
@@ -310,6 +316,9 @@ describe("Form client GET interception", () => {
 
     expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=fallback&lang=de&source=fallback-submitter",
+      0,
+      "navigate",
+      "push",
     );
   });
 
@@ -328,7 +337,7 @@ describe("Form client GET interception", () => {
   });
 
   it("strips submitter formAction query params and warns in development", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search" });
     const submitter = new FakeButtonElement({
@@ -348,12 +357,12 @@ describe("Form client GET interception", () => {
     expect(warn).toHaveBeenCalledWith(
       '<Form> received a `formAction` that contains search params: "/search-alt?lang=fr". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
-    expect(pushState).toHaveBeenCalledWith(
-      null,
-      "",
+    expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=button&source=submitter-action",
+      0,
+      "navigate",
+      "push",
     );
-    expect(navigate).toHaveBeenCalledWith("/search-alt?q=button&source=submitter-action");
   });
 
   it("does not intercept submitters with unsupported formTarget overrides", async () => {
