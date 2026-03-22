@@ -3695,12 +3695,15 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code delegates page response policy to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("buildAppPageHtmlResponse as __buildAppPageHtmlResponse");
-    expect(code).toContain("buildAppPageRscResponse as __buildAppPageRscResponse");
-    expect(code).toContain(
+    expect(code).toContain("renderAppPageLifecycle as __renderAppPageLifecycle");
+    expect(code).not.toContain("buildAppPageHtmlResponse as __buildAppPageHtmlResponse");
+    expect(code).not.toContain("buildAppPageRscResponse as __buildAppPageRscResponse");
+    expect(code).not.toContain(
       "resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy",
     );
-    expect(code).toContain("resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy");
+    expect(code).not.toContain(
+      "resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy",
+    );
   });
 
   it("generated code delegates page render lifecycle to a typed helper", () => {
