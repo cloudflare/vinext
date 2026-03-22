@@ -487,8 +487,6 @@ test.describe("App Router navigation regressions", () => {
     );
 
     expect(firstDestinationFrame).toBeTruthy();
-    expect(firstDestinationFrame?.firstRowOpacity).toBe("1");
-    expect(firstDestinationFrame?.firstRowAnimation).toBe("none");
   });
 
   test("cold Link navigation keeps client URL state aligned with the committed tree", async ({
@@ -598,8 +596,6 @@ test.describe("App Router navigation regressions", () => {
     );
 
     expect(firstDestinationFrame).toBeTruthy();
-    expect(firstDestinationFrame?.firstRowOpacity).toBe("1");
-    expect(firstDestinationFrame?.firstRowAnimation).toBe("none");
   });
 
   test("hover prefetch followed by immediate click navigates without blocking on the prefetch", async ({

@@ -118,25 +118,6 @@ function clearClientNavigationCaches(): void {
   clearPrefetchState();
 }
 
-function suppressFreshNavigationAnimations(): void {
-  if (typeof document === "undefined") {
-    return;
-  }
-
-  for (const element of document.body.querySelectorAll<HTMLElement>("*")) {
-    const style = window.getComputedStyle(element);
-    if (style.animationName === "none") {
-      continue;
-    }
-
-    if (Number(style.opacity) > 0.01) {
-      continue;
-    }
-
-    element.style.animation = "none";
-  }
-}
-
 function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
   if (!effect) {
     return;
@@ -152,21 +133,6 @@ function runPrePaintNavigationEffect(renderId: number): void {
 
   pendingNavigationPrePaintEffects.delete(renderId);
   effect();
-}
-
-function composePrePaintNavigationEffects(
-  ...effects: Array<(() => void) | null | undefined>
-): (() => void) | null {
-  const activeEffects = effects.filter((effect): effect is () => void => effect != null);
-  if (activeEffects.length === 0) {
-    return null;
-  }
-
-  return () => {
-    for (const effect of activeEffects) {
-      effect();
-    }
-  };
 }
 
 function createNavigationCommitEffect(
@@ -624,11 +590,7 @@ async function main(): Promise<void> {
       const rscPayload = await createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
       );
-      await renderNavigationPayload(
-        rscPayload,
-        navigationSnapshot,
-        composePrePaintNavigationEffects(navigationCommitEffect, suppressFreshNavigationAnimations),
-      );
+      await renderNavigationPayload(rscPayload, navigationSnapshot, navigationCommitEffect);
     } catch (error) {
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
