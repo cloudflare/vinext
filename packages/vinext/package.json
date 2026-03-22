@@ -48,6 +48,10 @@
     "./server/worker-utils": {
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
+    },
+    "./server/seed-cache-workers": {
+      "types": "./dist/server/seed-cache-workers.d.ts",
+      "import": "./dist/server/seed-cache-workers.js"
     }
   },
   "scripts": {

@@ -453,6 +453,7 @@ import { setCacheHandler } from "vinext/shims/cache";
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import type { ImageConfig } from "vinext/server/image-optimization";
+import { seedRouteFromAssets } from "vinext/server/seed-cache-workers";
 import handler from "vinext/server/app-router-entry";
 ${isrImports}
 interface Env {
@@ -494,6 +495,12 @@ ${isrSetup}    const url = new URL(request.url);
         },
       }, allowedWidths);
     }
+
+    // Seed the memory cache from pre-rendered assets (lazy, per-route).
+    // On first request for a pre-rendered page, fetches HTML/RSC from the
+    // assets binding and inserts into the cache. Subsequent requests in the
+    // same isolate get cache HITs. No-op for non-prerendered routes.
+    await seedRouteFromAssets(url.pathname, (p) => env.ASSETS.fetch(new Request(new URL(p, request.url))));
 
     // Delegate everything else to vinext, forwarding ctx so that
     // ctx.waitUntil() is available to background cache writes and
@@ -1195,6 +1202,29 @@ export function buildWranglerDeployArgs(
   return { args, env };
 }
 
+/**
+ * Copy pre-rendered files to dist/client/__prerender/ so they're deployed
+ * as static assets and accessible via env.ASSETS.fetch() at runtime.
+ * No-op if no prerender manifest exists.
+ */
+function copyPrerenderToAssets(root: string): void {
+  const serverDir = path.join(root, "dist", "server");
+  const manifestPath = path.join(serverDir, "vinext-prerender.json");
+  if (!fs.existsSync(manifestPath)) return;
+
+  const targetDir = path.join(root, "dist", "client", "__prerender");
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  // Copy manifest
+  fs.copyFileSync(manifestPath, path.join(targetDir, "vinext-prerender.json"));
+
+  // Copy prerendered HTML/RSC files
+  const sourceDir = path.join(serverDir, "prerendered-routes");
+  if (!fs.existsSync(sourceDir)) return;
+
+  fs.cpSync(sourceDir, targetDir, { recursive: true });
+}
+
 function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
   // Walk up ancestor directories so the binary is found even when node_modules
   // is hoisted to the workspace root in a monorepo.
@@ -1355,6 +1385,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log(`  TPR: Skipped (${tprResult.skipped})`);
     }
   }
+
+  // Step 6c: Copy prerender data to dist/client/__prerender/ so the Worker
+  // can access it via env.ASSETS.fetch() for lazy per-route cache seeding.
+  // With not_found_handling: "none", these files are never auto-served —
+  // only accessible programmatically through the assets binding.
+  copyPrerenderToAssets(root);
 
   // Step 7: Deploy via wrangler
   const url = runWranglerDeploy(root, {
