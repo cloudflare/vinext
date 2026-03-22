@@ -65,9 +65,9 @@ async function* walkFiles(dir: string, base: string = dir): AsyncGenerator<strin
 /**
  * Precompress all compressible hashed assets under `clientDir/assets/`.
  *
- * Writes `.br` and `.gz` files alongside each original. Idempotent — skips
- * files that already have compressed variants, and never compresses `.br`
- * or `.gz` files themselves.
+ * Writes `.br`, `.gz`, and `.zst` files alongside each original. Idempotent —
+ * skips files that already have compressed variants, and never compresses
+ * `.br`, `.gz`, or `.zst` files themselves.
  */
 export async function precompressAssets(clientDir: string): Promise<PrecompressResult> {
   const assetsDir = path.join(clientDir, "assets");
@@ -99,7 +99,7 @@ export async function precompressAssets(clientDir: string): Promise<PrecompressR
     result.filesCompressed++;
     result.totalOriginalBytes += content.length;
 
-    // Compress both variants concurrently
+    // Compress all three variants concurrently
     compressionWork.push(
       (async () => {
         const [brContent, gzContent, zstdContent] = await Promise.all([
