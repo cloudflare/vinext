@@ -59,11 +59,8 @@ import {
 import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
-import {
-  hasWranglerConfig,
-  formatMissingCloudflarePluginError,
-} from "./deploy.js";
-import tsconfigPaths from "vite-tsconfig-paths";
+import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path from "node:path";
