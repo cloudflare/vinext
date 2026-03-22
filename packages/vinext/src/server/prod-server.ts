@@ -50,6 +50,7 @@ import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
+import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -768,6 +769,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
   const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
+
+  // Seed the memory cache with pre-rendered routes so the first request to
+  // any pre-rendered page is a cache HIT instead of a full re-render.
+  await seedMemoryCacheFromPrerender(path.dirname(rscEntryPath));
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
