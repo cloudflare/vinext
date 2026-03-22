@@ -364,7 +364,7 @@ function sendCompressed(
  * Try to serve a static file from the client build directory.
  *
  * When a `StaticFileCache` is provided, lookups are pure in-memory Map.get()
- * with zero filesystem calls. Precompressed .br/.gz variants (generated at
+ * with zero filesystem calls. Precompressed .br/.gz/.zst variants (generated at
  * build time) are served directly — no per-request compression needed for
  * hashed assets.
  *

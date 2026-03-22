@@ -202,9 +202,11 @@ export class StaticFileCache {
     // faster than createReadStream().pipe() because it skips fd open/close
     // and stream plumbing overhead.
     const bufferReads: Promise<void>[] = [];
+    const bufferedPaths = new Set<string>();
     for (const entry of entries.values()) {
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
-        if (!variant) continue;
+        if (!variant || bufferedPaths.has(variant.path)) continue;
+        bufferedPaths.add(variant.path);
         const size = parseInt(variant.headers["Content-Length"], 10);
         if (size <= BUFFER_THRESHOLD) {
           bufferReads.push(

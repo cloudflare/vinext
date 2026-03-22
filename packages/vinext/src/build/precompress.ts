@@ -1,8 +1,8 @@
 /**
  * Build-time precompression for hashed static assets.
  *
- * Generates .br (brotli quality 11) and .gz (gzip level 9) files alongside
- * compressible assets in dist/client/assets/. These are served directly by
+ * Generates .br (brotli q11), .gz (gzip l9), and .zst (zstd l19) files
+ * alongside compressible assets in dist/client/assets/. Served directly by
  * the production server — no per-request compression needed for immutable
  * build output.
  *
