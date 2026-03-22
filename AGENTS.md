@@ -128,6 +128,15 @@ gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit
 
 **Always run targeted tests, not the full suite.** The full Vitest suite takes ~2 minutes because test files run serially (to avoid Vite deps optimizer cache races). Running the full suite during development wastes time, especially when multiple agents are working on the repo simultaneously.
 
+**Prefer `vp` for day-to-day local work.** The `pnpm` scripts above still work, but current repo workflow and CI debugging usually use the direct Vite+ commands:
+
+```bash
+vp check tests/app-router.test.ts
+vp test run tests/app-router.test.ts
+vp test run tests/app-router.test.ts -t "route handler"
+vp run vinext#build
+```
+
 **During development**, run only the test file(s) relevant to your change:
 
 ```bash
@@ -329,6 +338,14 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
 
+- **For large refactors, prefer small stacked PRs.** When extracting logic out of generated entries or other high-risk files, do the work in reviewable slices:
+  1. Move one cohesive runtime seam into a typed helper
+  2. Add focused helper tests plus minimal generator assertion updates
+  3. Push, fix CI, and re-request review
+  4. Rebase the next stacked branch after each merge
+
+- **Use `/bigbonk` after meaningful updates on stacked refactor PRs.** That is the normal re-review loop for this repo once a PR has been rebased or a review comment has been addressed.
+
 ### CI for External Contributors
 
 CI is split into safe checks (no secrets) and deploy previews (requires secrets). This lets external contributors get feedback on their PRs without exposing credentials.
@@ -392,6 +409,36 @@ vinext handles everything else:
 - All `next/*` module shims
 
 The RSC entry's `default` export is the request handler. The plugin calls it for every request; vinext does route matching, builds the React tree, renders to RSC stream, and delegates to the SSR entry for HTML.
+
+### Generated Entry Modules Should Stay Thin
+
+The generated entry files under `packages/vinext/src/entries/*` are one of the easiest places for the codebase to become hard to maintain. Treat them as **codegen glue**, not as the home for large runtime subsystems.
+
+**Rule of thumb:** generated code may describe route-specific imports, manifests, and thin closures, but it should not own substantial request lifecycle logic.
+
+Move real behavior into normal typed modules under `packages/vinext/src/server/*` whenever the code involves:
+
+- request/response orchestration
+- streaming or teeing streams
+- ISR/cache policy or cache writes
+- route-handler method dispatch
+- redirect / not-found / access-fallback handling
+- response shaping, header merging, or middleware merge behavior
+- logic that needs direct unit tests
+
+**Preferred layering:**
+
+1. `entries/*` — generate route-specific imports, manifests, and thin wiring
+2. `server/*` — implement runtime behavior in importable typed modules
+3. `tests/*` — unit test the runtime helpers directly; keep generated-entry tests focused on delegation and wiring
+
+**Testing guidance for entry refactors:**
+
+- If you move behavior out of a template string, add a focused unit test for the new helper module
+- Update `tests/entry-templates.test.ts` or other generated-code assertions to check the new helper delegation, not the old inline implementation detail
+- Prefer verifying stream/cache/error behavior in helper tests instead of asserting on giant generated strings
+
+**App Router examples:** the long-term pattern is for files like `entries/app-rsc-entry.ts`, `entries/app-browser-entry.ts`, and `entries/app-ssr-entry.ts` to stay thin and delegate to `server/app-*.ts` helpers.
 
 ### Production Builds Require `createBuilder`
 
