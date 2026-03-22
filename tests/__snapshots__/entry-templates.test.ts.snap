@@ -13705,6 +13705,7 @@ import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutio
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from "<ROOT>/packages/vinext/src/server/pages-i18n.js";
+import { renderPagesPageResponse as __renderPagesPageResponse } from "<ROOT>/packages/vinext/src/server/pages-page-response.js";
 import * as _instrumentation from "<ROOT>/tests/fixtures/pages-basic/instrumentation.ts";
 import * as middlewareModule from "<ROOT>/tests/fixtures/pages-basic/middleware.ts";
 import { NextRequest, NextFetchEvent } from "next/server";
@@ -14497,153 +14498,70 @@ async function _renderPage(request, url, manifest) {
       }
     }
 
-    let element;
-    if (AppComponent) {
-      element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-    } else {
-      element = React.createElement(PageComponent, pageProps);
-    }
-    element = wrapWithRouterContext(element);
-
-    if (typeof resetSSRHead === "function") resetSSRHead();
-    if (typeof flushPreloads === "function") await flushPreloads();
-
-    const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
-
-    // Collect SSR font data (Google Font links, font preloads, font-face styles)
-    var fontHeadHTML = "";
-    function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
-    try {
-      var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
-      for (var fl of fontLinks) { fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  '; }
-    } catch (e) { /* next/font/google not used */ }
-    // Emit <link rel="preload"> for all font files (reuse _allFp collected earlier for Link header)
-    for (var fp of _allFp) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
-    try {
-      var allFontStyles = [];
-      if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
-      if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
-      if (allFontStyles.length > 0) { fontHeadHTML += '<style data-vinext-fonts>' + allFontStyles.join("\\n") + '</style>\\n  '; }
-    } catch (e) { /* font styles not available */ }
-
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
-    const nextDataPayload = {
-      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
-    };
-    if (i18nConfig) {
-      nextDataPayload.locale = locale;
-      nextDataPayload.locales = i18nConfig.locales;
-      nextDataPayload.defaultLocale = currentDefaultLocale;
-      nextDataPayload.domainLocales = domainLocales;
-    }
-    const localeGlobals = i18nConfig
-      ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
-        ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
-      : "";
-    const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
 
-    // Build the document shell with a placeholder for the streamed body
-    var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-    var shellHtml;
-    if (DocumentComponent) {
-      const docElement = React.createElement(DocumentComponent);
-      shellHtml = await renderToStringAsync(docElement);
-      shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
-      if (ssrHeadHTML || assetTags || fontHeadHTML) {
-        shellHtml = shellHtml.replace("</head>", "  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
-      }
-      shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
-      if (!shellHtml.includes("__NEXT_DATA__")) {
-        shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
-      }
-    } else {
-      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
-    }
-
-    if (typeof setSSRContext === "function") setSSRContext(null);
-
-    // Split the shell at the body marker
-    var markerIdx = shellHtml.indexOf(BODY_MARKER);
-    var shellPrefix = shellHtml.slice(0, markerIdx);
-    var shellSuffix = shellHtml.slice(markerIdx + BODY_MARKER.length);
-
-    // Start the React body stream — progressive SSR (no allReady wait)
-    var bodyStream = await renderToReadableStream(element);
-    var encoder = new TextEncoder();
-
-    // Create a composite stream: prefix + body + suffix
-    var compositeStream = new ReadableStream({
-      async start(controller) {
-        controller.enqueue(encoder.encode(shellPrefix));
-        var reader = bodyStream.getReader();
+    return __renderPagesPageResponse({
+      assetTags,
+      buildId,
+      clearSsrContext() {
+        if (typeof setSSRContext === "function") setSSRContext(null);
+      },
+      createPageElement(currentPageProps) {
+        var currentElement;
+        if (AppComponent) {
+          currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
+        } else {
+          currentElement = React.createElement(PageComponent, currentPageProps);
+        }
+        return wrapWithRouterContext(currentElement);
+      },
+      DocumentComponent,
+      flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+      fontLinkHeader: _fontLinkHeader,
+      fontPreloads: _allFp,
+      getFontLinks() {
         try {
-          for (;;) {
-            var chunk = await reader.read();
-            if (chunk.done) break;
-            controller.enqueue(chunk.value);
-          }
-        } finally {
-          reader.releaseLock();
+          return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+        } catch (e) {
+          return [];
         }
-        controller.enqueue(encoder.encode(shellSuffix));
-        controller.close();
-      }
-    });
-
-    // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
-    if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-      // Tee the stream so we can cache and respond simultaneously would be ideal,
-      // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
-      var isrElement;
-      if (AppComponent) {
-        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-      } else {
-        isrElement = React.createElement(PageComponent, pageProps);
-      }
-      isrElement = wrapWithRouterContext(isrElement);
-      var isrHtml = await renderIsrPassToStringAsync(isrElement);
-      var fullHtml = shellPrefix + isrHtml + shellSuffix;
-      var isrPathname = url.split("?")[0];
-      var _cacheKey = isrCacheKey("pages", isrPathname);
-      await isrSet(_cacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
-    }
-
-    // Merge headers/status/cookies set by getServerSideProps on the res object.
-    // gSSP commonly uses res.setHeader("Set-Cookie", ...) or res.status(304).
-    var finalStatus = 200;
-    const responseHeaders = new Headers({ "Content-Type": "text/html" });
-    if (gsspRes) {
-      finalStatus = gsspRes.statusCode;
-      var gsspHeaders = gsspRes.getHeaders();
-      for (var hk of Object.keys(gsspHeaders)) {
-        var hv = gsspHeaders[hk];
-        if (hk === "set-cookie" && Array.isArray(hv)) {
-          for (var sc of hv) responseHeaders.append("set-cookie", sc);
-        } else if (hv != null) {
-          responseHeaders.set(hk, String(hv));
+      },
+      getFontStyles() {
+        try {
+          var allFontStyles = [];
+          if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+          if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+          return allFontStyles;
+        } catch (e) {
+          return [];
         }
-      }
-      // Ensure Content-Type stays text/html (gSSP shouldn't override it for page renders)
-      responseHeaders.set("Content-Type", "text/html");
-    }
-    if (isrRevalidateSeconds) {
-      responseHeaders.set("Cache-Control", "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate");
-      responseHeaders.set("X-Vinext-Cache", "MISS");
-    }
-    // Set HTTP Link header for font preloading
-    if (_fontLinkHeader) {
-      responseHeaders.set("Link", _fontLinkHeader);
-    }
-    const streamedPageResponse = new Response(compositeStream, {
-      status: finalStatus,
-      headers: responseHeaders,
+      },
+      getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+      gsspRes,
+      isrCacheKey,
+      isrRevalidateSeconds,
+      isrSet,
+      i18n: {
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+      },
+      pageProps,
+      params,
+      renderDocumentToString(element) {
+        return renderToStringAsync(element);
+      },
+      renderIsrPassToStringAsync,
+      renderToReadableStream(element) {
+        return renderToReadableStream(element);
+      },
+      resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+      routePattern: patternToNextFormat(route.pattern),
+      routeUrl,
+      safeJsonStringify,
     });
-    // Mark the normal streamed HTML render so the Node prod server can strip
-    // stale Content-Length only for this path, not for custom gSSP responses.
-    streamedPageResponse.__vinextStreamedHtmlResponse = true;
-    return streamedPageResponse;
     } catch (e) {
     console.error("[vinext] SSR error:", e);
     _reportRequestError(

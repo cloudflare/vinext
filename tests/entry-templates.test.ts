@@ -327,6 +327,15 @@ describe("Pages Router entry templates", () => {
     expect(callbackSection).toContain("ensureFetchPatch");
   });
 
+  it("server entry delegates Pages HTML stream/response shaping to a typed helper", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("renderPagesPageResponse as __renderPagesPageResponse");
+    expect(code).toContain("return __renderPagesPageResponse({");
+    expect(code).not.toContain('var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";');
+    expect(code).not.toContain("var compositeStream = new ReadableStream({");
+  });
+
   it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 
@@ -337,7 +346,7 @@ describe("Pages Router entry templates", () => {
     expect(code).toContain(
       "runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element)))",
     );
-    expect(code).toContain("var isrHtml = await renderIsrPassToStringAsync(isrElement);");
+    expect(code).toContain("renderIsrPassToStringAsync,");
   });
 
   it("server entry registers i18n state without wrapping the unified request scope", async () => {
