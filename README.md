@@ -166,6 +166,23 @@ Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and 
 **What happens when Next.js releases a new feature?**
 We track the public Next.js API surface and add support for new stable features. Experimental or unstable Next.js features are lower priority. The plan is to add commit-level tracking of the Next.js repo so we can stay current as new versions are released.
 
+## Type Safety
+
+vinext uses Next.js's own type generation for route-aware helpers like `PageProps`, `LayoutProps`. During development, the Vite plugin runs [`next typegen`](https://nextjs.org/docs/app/api-reference/cli/next#next-typegen-options) automatically when `next` is installed.
+
+If you want to turn this off, disable it in your Vite config:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext({ typegen: false })],
+});
+```
+
+For CI, `tsc --noEmit`, or production builds that rely on these helpers, run `next typegen` before your type-check step. vinext only auto-runs type generation in dev mode.
+
 ## Deployment
 
 ### Cloudflare Workers
