@@ -99,6 +99,535 @@ async function readProbe(page: import("@playwright/test").Page, name: string) {
 }
 
 test.describe("App Router navigation regressions", () => {
+  test("client route params stay in sync with the committed tree during cold dynamic navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/param-sync/alpha`);
+    await waitForHydration(page);
+    await expect(page.locator("#client-param-label")).toHaveText("Client param: alpha");
+    await expect(page.locator("#param-filter-title")).toHaveText("Server param: alpha");
+    await expect(page.locator("#param-filter-first-row")).toHaveText("Alpha 1");
+
+    await page.evaluate(() => {
+      let active = true;
+      const events: Array<{
+        clientParam: string | null;
+        serverParam: string | null;
+        firstRow: string | null;
+        pathname: string;
+      }> = [];
+
+      const capture = () => {
+        events.push({
+          clientParam: document.querySelector("#client-param-label")?.textContent ?? null,
+          serverParam: document.querySelector("#param-filter-title")?.textContent ?? null,
+          firstRow: document.querySelector("#param-filter-first-row")?.textContent ?? null,
+          pathname: window.location.pathname,
+        });
+      };
+
+      capture();
+      const sample = () => {
+        if (!active) return;
+        capture();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+
+      (
+        window as typeof window & {
+          __vinextParamSyncProbe__?: typeof events;
+          __stopVinextParamSyncProbe__?: () => void;
+        }
+      ).__vinextParamSyncProbe__ = events;
+      (
+        window as typeof window & {
+          __vinextParamSyncProbe__?: typeof events;
+          __stopVinextParamSyncProbe__?: () => void;
+        }
+      ).__stopVinextParamSyncProbe__ = () => {
+        active = false;
+      };
+    });
+
+    await page.locator("#param-filter-beta").click();
+    await expect(page.locator("#client-param-label")).toHaveText("Client param: beta");
+    await expect(page.locator("#param-filter-title")).toHaveText("Server param: beta");
+    await expect(page.locator("#param-filter-first-row")).toHaveText("Beta 1");
+    await page.waitForTimeout(100);
+
+    const events = await page.evaluate(() => {
+      (
+        window as typeof window & {
+          __stopVinextParamSyncProbe__?: () => void;
+          __vinextParamSyncProbe__?: Array<{
+            clientParam: string | null;
+            serverParam: string | null;
+            firstRow: string | null;
+            pathname: string;
+          }>;
+        }
+      ).__stopVinextParamSyncProbe__?.();
+
+      return (
+        (
+          window as typeof window & {
+            __vinextParamSyncProbe__?: Array<{
+              clientParam: string | null;
+              serverParam: string | null;
+              firstRow: string | null;
+              pathname: string;
+            }>;
+          }
+        ).__vinextParamSyncProbe__ ?? []
+      );
+    });
+
+    expect(
+      events.some(
+        (event) =>
+          event.clientParam === "Client param: beta" &&
+          (event.serverParam !== "Server param: beta" || event.firstRow !== "Beta 1"),
+      ),
+    ).toBe(false);
+  });
+
+  test("client URL hooks stay in sync with the committed tree during cold filter navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/query-sync`);
+    await waitForHydration(page);
+    await expect(page.locator("#client-filter-label")).toHaveText("Client filter: alpha");
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: alpha");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Alpha 1");
+
+    await page.evaluate(() => {
+      let active = true;
+      const events: Array<{
+        clientFilter: string | null;
+        serverFilter: string | null;
+        firstRow: string | null;
+        search: string;
+      }> = [];
+
+      const capture = () => {
+        events.push({
+          clientFilter: document.querySelector("#client-filter-label")?.textContent ?? null,
+          serverFilter: document.querySelector("#query-filter-title")?.textContent ?? null,
+          firstRow: document.querySelector("#query-filter-first-row")?.textContent ?? null,
+          search: window.location.search,
+        });
+      };
+
+      capture();
+      const sample = () => {
+        if (!active) return;
+        capture();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+
+      (
+        window as typeof window & {
+          __vinextQuerySyncProbe__?: typeof events;
+          __stopVinextQuerySyncProbe__?: () => void;
+        }
+      ).__vinextQuerySyncProbe__ = events;
+      (
+        window as typeof window & {
+          __vinextQuerySyncProbe__?: typeof events;
+          __stopVinextQuerySyncProbe__?: () => void;
+        }
+      ).__stopVinextQuerySyncProbe__ = () => {
+        active = false;
+      };
+    });
+
+    await page.locator("#query-filter-beta").click();
+    const paintedFrames: Array<{
+      clientFilter: string | null;
+      serverFilter: string | null;
+      firstRow: string | null;
+      search: string;
+    }> = [];
+    for (let i = 0; i < 90; i++) {
+      await page.waitForTimeout(16);
+      paintedFrames.push(
+        await page.evaluate(() => ({
+          clientFilter: document.querySelector("#client-filter-label")?.textContent ?? null,
+          serverFilter: document.querySelector("#query-filter-title")?.textContent ?? null,
+          firstRow: document.querySelector("#query-filter-first-row")?.textContent ?? null,
+          search: window.location.search,
+        })),
+      );
+    }
+    await expect(page.locator("#client-filter-label")).toHaveText("Client filter: beta");
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
+    await page.waitForTimeout(100);
+
+    const events = await page.evaluate(() => {
+      (
+        window as typeof window & {
+          __stopVinextQuerySyncProbe__?: () => void;
+          __vinextQuerySyncProbe__?: Array<{
+            clientFilter: string | null;
+            serverFilter: string | null;
+            firstRow: string | null;
+            search: string;
+          }>;
+        }
+      ).__stopVinextQuerySyncProbe__?.();
+
+      return (
+        (
+          window as typeof window & {
+            __vinextQuerySyncProbe__?: Array<{
+              clientFilter: string | null;
+              serverFilter: string | null;
+              firstRow: string | null;
+              search: string;
+            }>;
+          }
+        ).__vinextQuerySyncProbe__ ?? []
+      );
+    });
+
+    expect(
+      events.some(
+        (event) =>
+          event.clientFilter === "Client filter: beta" &&
+          (event.serverFilter !== "Server filter: beta" || event.firstRow !== "Beta 1"),
+      ),
+    ).toBe(false);
+    expect(
+      paintedFrames.some(
+        (event) =>
+          event.serverFilter === "Server filter: beta" &&
+          (event.clientFilter !== "Client filter: beta" ||
+            event.firstRow !== "Beta 1" ||
+            event.search !== "?filter=beta"),
+      ),
+    ).toBe(false);
+  });
+
+  test("cold filter navigation does not reveal the destination shell before its list is ready", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/query-sync`);
+    await waitForHydration(page);
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: alpha");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Alpha 1");
+
+    await page.evaluate(() => {
+      let active = true;
+      const events: Array<{
+        heading: string | null;
+        loadingVisible: boolean;
+        firstRow: string | null;
+      }> = [];
+
+      const capture = () => {
+        events.push({
+          heading: document.querySelector("#query-filter-title")?.textContent ?? null,
+          loadingVisible: !!document.querySelector("#query-filter-loading"),
+          firstRow: document.querySelector("#query-filter-first-row")?.textContent ?? null,
+        });
+      };
+
+      capture();
+      const sample = () => {
+        if (!active) return;
+        capture();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+
+      (
+        window as typeof window & {
+          __vinextColdShellProbe__?: typeof events;
+          __stopVinextColdShellProbe__?: () => void;
+        }
+      ).__vinextColdShellProbe__ = events;
+      (
+        window as typeof window & {
+          __vinextColdShellProbe__?: typeof events;
+          __stopVinextColdShellProbe__?: () => void;
+        }
+      ).__stopVinextColdShellProbe__ = () => {
+        active = false;
+      };
+    });
+
+    await page.locator("#query-filter-beta").click();
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
+    await page.waitForTimeout(100);
+
+    const events = await page.evaluate(() => {
+      (
+        window as typeof window & {
+          __stopVinextColdShellProbe__?: () => void;
+          __vinextColdShellProbe__?: Array<{
+            heading: string | null;
+            loadingVisible: boolean;
+            firstRow: string | null;
+          }>;
+        }
+      ).__stopVinextColdShellProbe__?.();
+
+      return (
+        (
+          window as typeof window & {
+            __vinextColdShellProbe__?: Array<{
+              heading: string | null;
+              loadingVisible: boolean;
+              firstRow: string | null;
+            }>;
+          }
+        ).__vinextColdShellProbe__ ?? []
+      );
+    });
+
+    expect(
+      events.some(
+        (event) =>
+          event.heading === "Server filter: beta" &&
+          (event.loadingVisible || event.firstRow !== "Beta 1"),
+      ),
+    ).toBe(false);
+  });
+
+  test("fresh filter navigation suppresses mount-time row animations on the first visible frame", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/query-sync`);
+    await waitForHydration(page);
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: alpha");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Alpha 1");
+
+    await page.evaluate(() => {
+      let active = true;
+      const events: Array<{
+        heading: string | null;
+        firstRow: string | null;
+        firstRowOpacity: string | null;
+        firstRowAnimation: string | null;
+      }> = [];
+
+      const capture = () => {
+        const firstRow = document.querySelector("#query-filter-first-row");
+        const style = firstRow ? getComputedStyle(firstRow) : null;
+        events.push({
+          heading: document.querySelector("#query-filter-title")?.textContent ?? null,
+          firstRow: firstRow?.textContent ?? null,
+          firstRowOpacity: style?.opacity ?? null,
+          firstRowAnimation: style?.animationName ?? null,
+        });
+      };
+
+      capture();
+      const sample = () => {
+        if (!active) return;
+        capture();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+
+      (
+        window as typeof window & {
+          __vinextAnimationProbe__?: typeof events;
+          __stopVinextAnimationProbe__?: () => void;
+        }
+      ).__vinextAnimationProbe__ = events;
+      (
+        window as typeof window & {
+          __vinextAnimationProbe__?: typeof events;
+          __stopVinextAnimationProbe__?: () => void;
+        }
+      ).__stopVinextAnimationProbe__ = () => {
+        active = false;
+      };
+    });
+
+    await page.locator("#query-filter-beta").click();
+    await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
+    await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
+    await page.waitForTimeout(100);
+
+    const events = await page.evaluate(() => {
+      (
+        window as typeof window & {
+          __stopVinextAnimationProbe__?: () => void;
+          __vinextAnimationProbe__?: Array<{
+            heading: string | null;
+            firstRow: string | null;
+            firstRowOpacity: string | null;
+            firstRowAnimation: string | null;
+          }>;
+        }
+      ).__stopVinextAnimationProbe__?.();
+
+      return (
+        (
+          window as typeof window & {
+            __vinextAnimationProbe__?: Array<{
+              heading: string | null;
+              firstRow: string | null;
+              firstRowOpacity: string | null;
+              firstRowAnimation: string | null;
+            }>;
+          }
+        ).__vinextAnimationProbe__ ?? []
+      );
+    });
+
+    const firstDestinationFrame = events.find(
+      (event) => event.heading === "Server filter: beta" && event.firstRow === "Beta 1",
+    );
+
+    expect(firstDestinationFrame).toBeTruthy();
+    expect(firstDestinationFrame?.firstRowOpacity).toBe("1");
+    expect(firstDestinationFrame?.firstRowAnimation).toBe("none");
+  });
+
+  test("cold Link navigation keeps client URL state aligned with the committed tree", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/link-sync`);
+    await waitForHydration(page);
+    await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: alpha");
+    await expect(page.locator("#link-filter-title")).toHaveText("Server filter: alpha");
+    await expect(page.locator("#link-filter-first-row")).toHaveText("Alpha 1");
+
+    await page.evaluate(() => {
+      let active = true;
+      const events: Array<{
+        clientFilter: string | null;
+        serverFilter: string | null;
+        firstRow: string | null;
+        firstRowOpacity: string | null;
+        firstRowAnimation: string | null;
+        search: string;
+      }> = [];
+
+      const capture = () => {
+        const firstRow = document.querySelector("#link-filter-first-row");
+        const style = firstRow ? getComputedStyle(firstRow) : null;
+        events.push({
+          clientFilter: document.querySelector("#link-client-filter-label")?.textContent ?? null,
+          serverFilter: document.querySelector("#link-filter-title")?.textContent ?? null,
+          firstRow: firstRow?.textContent ?? null,
+          firstRowOpacity: style?.opacity ?? null,
+          firstRowAnimation: style?.animationName ?? null,
+          search: window.location.search,
+        });
+      };
+
+      capture();
+      const sample = () => {
+        if (!active) return;
+        capture();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+
+      (
+        window as typeof window & {
+          __vinextLinkSyncProbe__?: typeof events;
+          __stopVinextLinkSyncProbe__?: () => void;
+        }
+      ).__vinextLinkSyncProbe__ = events;
+      (
+        window as typeof window & {
+          __vinextLinkSyncProbe__?: typeof events;
+          __stopVinextLinkSyncProbe__?: () => void;
+        }
+      ).__stopVinextLinkSyncProbe__ = () => {
+        active = false;
+      };
+    });
+
+    await page.locator("#link-filter-beta").click();
+    await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: beta");
+    await expect(page.locator("#link-filter-title")).toHaveText("Server filter: beta");
+    await expect(page.locator("#link-filter-first-row")).toHaveText("Beta 1");
+    await page.waitForTimeout(100);
+
+    const events = await page.evaluate(() => {
+      (
+        window as typeof window & {
+          __stopVinextLinkSyncProbe__?: () => void;
+          __vinextLinkSyncProbe__?: Array<{
+            clientFilter: string | null;
+            serverFilter: string | null;
+            firstRow: string | null;
+            firstRowOpacity: string | null;
+            firstRowAnimation: string | null;
+            search: string;
+          }>;
+        }
+      ).__stopVinextLinkSyncProbe__?.();
+
+      return (
+        (
+          window as typeof window & {
+            __vinextLinkSyncProbe__?: Array<{
+              clientFilter: string | null;
+              serverFilter: string | null;
+              firstRow: string | null;
+              firstRowOpacity: string | null;
+              firstRowAnimation: string | null;
+              search: string;
+            }>;
+          }
+        ).__vinextLinkSyncProbe__ ?? []
+      );
+    });
+
+    expect(
+      events.some(
+        (event) =>
+          event.clientFilter === "Client filter: beta" &&
+          (event.serverFilter !== "Server filter: beta" || event.firstRow !== "Beta 1"),
+      ),
+    ).toBe(false);
+
+    const firstDestinationFrame = events.find(
+      (event) => event.serverFilter === "Server filter: beta" && event.firstRow === "Beta 1",
+    );
+
+    expect(firstDestinationFrame).toBeTruthy();
+    expect(firstDestinationFrame?.firstRowOpacity).toBe("1");
+    expect(firstDestinationFrame?.firstRowAnimation).toBe("none");
+  });
+
+  test("hover prefetch reuses the in-flight RSC request on immediate Link click", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nav-flash/link-sync`);
+    await waitForHydration(page);
+
+    const betaRscRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/nav-flash/link-sync.rsc?filter=beta")) {
+        betaRscRequests.push(request.url());
+      }
+    });
+
+    await page.locator("#link-filter-beta").hover();
+    await page.waitForTimeout(50);
+
+    expect(betaRscRequests.length).toBeGreaterThan(0);
+
+    await page.locator("#link-filter-beta").click();
+    await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: beta");
+    await expect(page.locator("#link-filter-title")).toHaveText("Server filter: beta");
+    await expect(page.locator("#link-filter-first-row")).toHaveText("Beta 1");
+
+    expect(betaRscRequests).toHaveLength(1);
+  });
+
   test("returning to the providers list via Link does not flash the loading fallback", async ({
     page,
   }) => {
