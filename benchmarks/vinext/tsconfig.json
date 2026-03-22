@@ -12,7 +12,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "vinext": ["../../packages/vinext/src/index.ts"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],

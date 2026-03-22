@@ -11,11 +11,17 @@ export interface BuildRouteHandlerCachedResponseOptions {
   revalidateSeconds: number;
 }
 
-export interface FinalizeRouteHandlerResponseOptions {
-  pendingCookies: string[];
-  draftCookie?: string | null;
-  isHead: boolean;
+export interface ApplyRouteHandlerMiddlewareContextOptions {
+  applyRewriteStatus?: boolean;
 }
+
+export interface FinalizeRouteHandlerResponseOptions {
+  isHead: boolean;
+  renderHeaders?: Record<string, string | string[]>;
+}
+
+type ResponseHeaderSource = Headers | Record<string, string | string[]>;
+type ResponseHeaderMergeMode = "fallback" | "override";
 
 function buildRouteHandlerCacheControl(
   cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],
@@ -28,26 +34,109 @@ function buildRouteHandlerCacheControl(
   return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
 }
 
+function isAppendOnlyResponseHeader(lowerKey: string): boolean {
+  return (
+    lowerKey === "set-cookie" ||
+    lowerKey === "vary" ||
+    lowerKey === "www-authenticate" ||
+    lowerKey === "proxy-authenticate"
+  );
+}
+
+function mergeResponseHeaderValues(
+  targetHeaders: Headers,
+  key: string,
+  value: string | string[],
+  mode: ResponseHeaderMergeMode,
+): void {
+  const lowerKey = key.toLowerCase();
+  const values = Array.isArray(value) ? value : [value];
+
+  if (isAppendOnlyResponseHeader(lowerKey)) {
+    for (const item of values) {
+      targetHeaders.append(key, item);
+    }
+    return;
+  }
+
+  if (mode === "fallback" && targetHeaders.has(key)) {
+    return;
+  }
+
+  targetHeaders.delete(key);
+  if (values.length === 1) {
+    targetHeaders.set(key, values[0]!);
+    return;
+  }
+
+  for (const item of values) {
+    targetHeaders.append(key, item);
+  }
+}
+
+function mergeResponseHeaders(
+  targetHeaders: Headers,
+  sourceHeaders: ResponseHeaderSource | null | undefined,
+  mode: ResponseHeaderMergeMode,
+): void {
+  if (!sourceHeaders) {
+    return;
+  }
+
+  if (sourceHeaders instanceof Headers) {
+    const setCookies = sourceHeaders.getSetCookie();
+    for (const [key, value] of sourceHeaders) {
+      if (key.toLowerCase() === "set-cookie") {
+        continue;
+      }
+      mergeResponseHeaderValues(targetHeaders, key, value, mode);
+    }
+    for (const cookie of setCookies) {
+      targetHeaders.append("Set-Cookie", cookie);
+    }
+    return;
+  }
+
+  for (const [key, value] of Object.entries(sourceHeaders)) {
+    mergeResponseHeaderValues(targetHeaders, key, value, mode);
+  }
+}
+
+function headersWithRenderResponseHeaders(
+  baseHeaders: ResponseHeaderSource,
+  renderHeaders: Record<string, string | string[]> | undefined,
+): Headers {
+  const headers = new Headers();
+  mergeResponseHeaders(headers, renderHeaders, "fallback");
+  mergeResponseHeaders(headers, baseHeaders, "override");
+  return headers;
+}
+
 export function applyRouteHandlerMiddlewareContext(
   response: Response,
   middlewareContext: RouteHandlerMiddlewareContext,
+  options?: ApplyRouteHandlerMiddlewareContextOptions,
 ): Response {
-  if (!middlewareContext.headers && middlewareContext.status == null) {
+  const rewriteStatus = options?.applyRewriteStatus === false ? null : middlewareContext.status;
+
+  if (!middlewareContext.headers && rewriteStatus == null) {
     return response;
   }
 
   const responseHeaders = new Headers(response.headers);
-  if (middlewareContext.headers) {
-    for (const [key, value] of middlewareContext.headers) {
-      responseHeaders.append(key, value);
-    }
+  mergeResponseHeaders(responseHeaders, middlewareContext.headers, "override");
+
+  const status = rewriteStatus ?? response.status;
+  const responseInit: ResponseInit = {
+    status,
+    headers: responseHeaders,
+  };
+
+  if (status === response.status && response.statusText) {
+    responseInit.statusText = response.statusText;
   }
 
-  return new Response(response.body, {
-    status: middlewareContext.status ?? response.status,
-    statusText: response.statusText,
-    headers: responseHeaders,
-  });
+  return new Response(response.body, responseInit);
 }
 
 export function buildRouteHandlerCachedResponse(
@@ -109,22 +198,20 @@ export function finalizeRouteHandlerResponse(
   response: Response,
   options: FinalizeRouteHandlerResponseOptions,
 ): Response {
-  const { pendingCookies, draftCookie, isHead } = options;
-  if (pendingCookies.length === 0 && !draftCookie && !isHead) {
+  const { isHead, renderHeaders } = options;
+  if (!renderHeaders && !isHead) {
     return response;
   }
 
-  const headers = new Headers(response.headers);
-  for (const cookie of pendingCookies) {
-    headers.append("Set-Cookie", cookie);
-  }
-  if (draftCookie) {
-    headers.append("Set-Cookie", draftCookie);
+  const headers = headersWithRenderResponseHeaders(response.headers, renderHeaders);
+  const responseInit: ResponseInit = {
+    status: response.status,
+    headers,
+  };
+
+  if (response.statusText) {
+    responseInit.statusText = response.statusText;
   }
 
-  return new Response(isHead ? null : response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return new Response(isHead ? null : response.body, responseInit);
 }

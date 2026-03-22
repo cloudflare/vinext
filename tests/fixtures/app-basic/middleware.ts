@@ -27,12 +27,35 @@ export function middleware(request: NextRequest) {
 
   const response = NextResponse.next();
 
+  const applyRenderHeaderParityHeaders = (target: NextResponse) => {
+    target.headers.set("x-mw-conflict", "middleware");
+    target.headers.set("Vary", "x-middleware-test");
+    target.headers.append("WWW-Authenticate", 'Digest realm="middleware"');
+    target.cookies.set("middleware-render", "1", { path: "/", httpOnly: true });
+    return target;
+  };
+
   // Add headers to prove middleware ran and NextRequest APIs worked
   response.headers.set("x-mw-pathname", pathname);
   response.headers.set("x-mw-ran", "true");
 
   if (sessionToken) {
     response.headers.set("x-mw-has-session", "true");
+  }
+
+  if (
+    pathname === "/nextjs-compat/cached-render-headers" ||
+    pathname === "/nextjs-compat/cached-render-headers-stream" ||
+    pathname === "/nextjs-compat/cached-render-headers-rsc-first" ||
+    pathname === "/nextjs-compat/cached-render-headers-rsc-parity"
+  ) {
+    applyRenderHeaderParityHeaders(response);
+    response.cookies.set("middleware-render-second", "1", { path: "/", httpOnly: true });
+  } else if (
+    pathname === "/nextjs-compat/render-headers-metadata-redirect" ||
+    pathname.startsWith("/nextjs-compat/render-headers-layout-notfound/")
+  ) {
+    applyRenderHeaderParityHeaders(response);
   }
 
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
@@ -61,6 +84,42 @@ export function middleware(request: NextRequest) {
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite with status
   if (pathname === "/middleware-rewrite-status") {
     return NextResponse.rewrite(new URL("/", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-redirect") {
+    return NextResponse.rewrite(new URL("/redirect-test", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-not-found") {
+    return NextResponse.rewrite(new URL("/nextjs-compat/not-found-no-boundary/404", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-route-status-text") {
+    return NextResponse.rewrite(new URL("/api/custom-status-text", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-route-redirect-with-cookie") {
+    return NextResponse.rewrite(new URL("/api/redirect-with-cookie", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-route-not-found-with-cookie") {
+    return NextResponse.rewrite(new URL("/api/not-found-with-cookie", request.url), {
+      status: 403,
+    });
+  }
+
+  if (pathname === "/middleware-rewrite-status-route-unauthorized-with-cookie") {
+    return NextResponse.rewrite(new URL("/api/unauthorized-with-cookie", request.url), {
       status: 403,
     });
   }
@@ -149,16 +208,42 @@ export function middleware(request: NextRequest) {
   if (sessionToken) {
     r.headers.set("x-mw-has-session", "true");
   }
+  if (
+    pathname === "/nextjs-compat/cached-render-headers" ||
+    pathname === "/nextjs-compat/cached-render-headers-stream" ||
+    pathname === "/nextjs-compat/cached-render-headers-rsc-first" ||
+    pathname === "/nextjs-compat/cached-render-headers-rsc-parity"
+  ) {
+    applyRenderHeaderParityHeaders(r);
+    r.cookies.set("middleware-render-second", "1", { path: "/", httpOnly: true });
+  } else if (
+    pathname === "/nextjs-compat/render-headers-metadata-redirect" ||
+    pathname.startsWith("/nextjs-compat/render-headers-layout-notfound/")
+  ) {
+    applyRenderHeaderParityHeaders(r);
+  }
   return r;
 }
 
 export const config = {
   matcher: [
     "/about",
+    "/nextjs-compat/cached-render-headers",
+    "/nextjs-compat/cached-render-headers-stream",
+    "/nextjs-compat/cached-render-headers-rsc-first",
+    "/nextjs-compat/cached-render-headers-rsc-parity",
+    "/nextjs-compat/render-headers-metadata-redirect",
+    "/nextjs-compat/render-headers-layout-notfound/:path*",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewrite-query",
     "/middleware-rewrite-status",
+    "/middleware-rewrite-status-redirect",
+    "/middleware-rewrite-status-not-found",
+    "/middleware-rewrite-status-route-status-text",
+    "/middleware-rewrite-status-route-redirect-with-cookie",
+    "/middleware-rewrite-status-route-not-found-with-cookie",
+    "/middleware-rewrite-status-route-unauthorized-with-cookie",
     "/middleware-blocked",
     "/middleware-throw",
     "/search-query",

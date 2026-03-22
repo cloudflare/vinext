@@ -160,7 +160,7 @@ describe("app page boundary render helpers", () => {
     });
 
     expect(common.loadSsrHandler).toHaveBeenCalledTimes(1);
-    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(common.clearRequestContext).not.toHaveBeenCalled();
     expect(response?.status).toBe(404);
     expect(response?.headers.get("link")).toContain("/font.woff2");
 
@@ -194,7 +194,7 @@ describe("app page boundary render helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(sanitizeErrorForClient).toHaveBeenCalledTimes(1);
-    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(common.clearRequestContext).not.toHaveBeenCalled();
 
     const html = await response?.text();
     expect(html).toContain('data-layout="root"');

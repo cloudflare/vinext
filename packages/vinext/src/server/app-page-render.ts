@@ -47,9 +47,12 @@ interface AppPageRequestCacheLife {
 }
 
 export interface RenderAppPageLifecycleOptions {
+  buildDynamicUsage: boolean;
+  buildRenderHeaders?: Record<string, string | string[]>;
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
+  consumeRenderResponseHeaders: () => Record<string, string | string[]> | undefined;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
@@ -73,6 +76,8 @@ export interface RenderAppPageLifecycleOptions {
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
   params: Record<string, unknown>;
+  peekDynamicUsage: () => boolean;
+  peekRenderResponseHeaders: () => Record<string, string | string[]> | undefined;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
   revalidateSeconds: number | null;
@@ -86,6 +91,10 @@ export interface RenderAppPageLifecycleOptions {
     element: ReactNode,
     options: { onError: AppPageBoundaryOnError },
   ) => ReadableStream<Uint8Array>;
+  restoreDynamicUsage: (dynamicUsed: boolean) => void;
+  restoreRenderResponseHeaders: (
+    renderHeaders: Record<string, string | string[]> | undefined,
+  ) => void;
   routeHasLocalBoundary: boolean;
   routePattern: string;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
@@ -139,6 +148,9 @@ export async function renderAppPageLifecycle(
     return preRenderResponse;
   }
 
+  options.restoreRenderResponseHeaders(options.buildRenderHeaders);
+  options.restoreDynamicUsage(options.buildDynamicUsage);
+
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
@@ -160,8 +172,12 @@ export async function renderAppPageLifecycle(
 
   if (options.isRscRequest) {
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();
+    const lateDynamicUsage = isrRscDataPromise ? options.peekDynamicUsage() : false;
+    const rscResponseRenderHeaders = isrRscDataPromise
+      ? options.peekRenderResponseHeaders()
+      : options.consumeRenderResponseHeaders();
     const rscResponsePolicy = resolveAppPageRscResponsePolicy({
-      dynamicUsedDuringBuild,
+      dynamicUsedDuringBuild: dynamicUsedDuringBuild || lateDynamicUsage,
       isDynamicError: options.isDynamicError,
       isForceDynamic: options.isForceDynamic,
       isForceStatic: options.isForceStatic,
@@ -172,6 +188,7 @@ export async function renderAppPageLifecycle(
       middlewareContext: options.middlewareContext,
       params: options.params,
       policy: rscResponsePolicy,
+      renderHeaders: rscResponseRenderHeaders,
       timing: buildResponseTiming({
         compileEnd,
         handlerStart: options.handlerStart,
@@ -184,10 +201,12 @@ export async function renderAppPageLifecycle(
       capturedRscDataPromise: options.isProduction ? isrRscDataPromise : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
-      dynamicUsedDuringBuild,
+      consumeRenderResponseHeaders: options.consumeRenderResponseHeaders,
+      dynamicUsedDuringBuild: dynamicUsedDuringBuild || lateDynamicUsage,
       getPageTags() {
         return options.getPageTags();
       },
+      initialRenderHeaders: rscResponseRenderHeaders,
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
@@ -253,10 +272,15 @@ export async function renderAppPageLifecycle(
     }
   }
 
+  const renderResponseHeaders = isrRscDataPromise
+    ? options.peekRenderResponseHeaders()
+    : options.consumeRenderResponseHeaders();
   options.clearRequestContext();
   const draftCookie = options.getDraftModeCookieHeader();
 
-  const dynamicUsedDuringRender = options.consumeDynamicUsage();
+  const dynamicUsedDuringRender = isrRscDataPromise
+    ? options.peekDynamicUsage()
+    : options.consumeDynamicUsage();
   const requestCacheLife = options.getRequestCacheLife();
   if (requestCacheLife?.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
@@ -284,14 +308,18 @@ export async function renderAppPageLifecycle(
       fontLinkHeader,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
+      renderHeaders: renderResponseHeaders,
       timing: htmlResponseTiming,
     });
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
       capturedRscDataPromise: isrRscDataPromise,
       cleanPathname: options.cleanPathname,
+      consumeDynamicUsage: options.consumeDynamicUsage,
+      consumeRenderResponseHeaders: options.consumeRenderResponseHeaders,
       getPageTags() {
         return options.getPageTags();
       },
+      initialRenderHeaders: renderResponseHeaders,
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
@@ -308,6 +336,7 @@ export async function renderAppPageLifecycle(
     fontLinkHeader,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
+    renderHeaders: renderResponseHeaders,
     timing: htmlResponseTiming,
   });
 }

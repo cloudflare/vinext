@@ -146,8 +146,21 @@ describe("buildAppPageCacheValue", () => {
   });
 
   it("includes status when provided", () => {
-    const value = buildAppPageCacheValue("<html>app</html>", undefined, 200);
+    const value = buildAppPageCacheValue("<html>app</html>", undefined, undefined, 200);
     expect(value.status).toBe(200);
+  });
+
+  it("includes serialized render headers when provided", () => {
+    const value = buildAppPageCacheValue(
+      "<html>app</html>",
+      undefined,
+      { "x-rendered": "yes", "set-cookie": ["a=1; Path=/"] },
+      200,
+    );
+    expect(value.headers).toEqual({
+      "x-rendered": "yes",
+      "set-cookie": ["a=1; Path=/"],
+    });
   });
 });
 

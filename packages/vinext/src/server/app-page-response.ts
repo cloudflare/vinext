@@ -39,6 +39,7 @@ export interface BuildAppPageRscResponseOptions {
   middlewareContext: AppPageMiddlewareContext;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
+  renderHeaders?: Record<string, string | string[]>;
   timing?: AppPageResponseTiming;
 }
 
@@ -47,14 +48,96 @@ export interface BuildAppPageHtmlResponseOptions {
   fontLinkHeader?: string;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
+  renderHeaders?: Record<string, string | string[]>;
   timing?: AppPageResponseTiming;
 }
 
 const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
+type ResponseHeaderSource = Headers | Record<string, string | string[]>;
+type ResponseHeaderMergeMode = "fallback" | "override";
+
 function buildRevalidateCacheControl(revalidateSeconds: number): string {
   return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
+}
+
+function isAppendOnlyResponseHeader(lowerKey: string): boolean {
+  return (
+    lowerKey === "set-cookie" ||
+    lowerKey === "vary" ||
+    lowerKey === "www-authenticate" ||
+    lowerKey === "proxy-authenticate"
+  );
+}
+
+function mergeResponseHeaderValues(
+  targetHeaders: Headers,
+  key: string,
+  value: string | string[],
+  mode: ResponseHeaderMergeMode,
+): void {
+  const lowerKey = key.toLowerCase();
+  const values = Array.isArray(value) ? value : [value];
+
+  if (isAppendOnlyResponseHeader(lowerKey)) {
+    for (const item of values) {
+      targetHeaders.append(key, item);
+    }
+    return;
+  }
+
+  if (mode === "fallback" && targetHeaders.has(key)) {
+    return;
+  }
+
+  targetHeaders.delete(key);
+  if (values.length === 1) {
+    targetHeaders.set(key, values[0]!);
+    return;
+  }
+
+  for (const item of values) {
+    targetHeaders.append(key, item);
+  }
+}
+
+function mergeResponseHeaders(
+  targetHeaders: Headers,
+  sourceHeaders: ResponseHeaderSource | null | undefined,
+  mode: ResponseHeaderMergeMode,
+): void {
+  if (!sourceHeaders) {
+    return;
+  }
+
+  if (sourceHeaders instanceof Headers) {
+    const setCookies = sourceHeaders.getSetCookie();
+    for (const [key, value] of sourceHeaders) {
+      if (key.toLowerCase() === "set-cookie") {
+        continue;
+      }
+      mergeResponseHeaderValues(targetHeaders, key, value, mode);
+    }
+    for (const cookie of setCookies) {
+      targetHeaders.append("Set-Cookie", cookie);
+    }
+    return;
+  }
+
+  for (const [key, value] of Object.entries(sourceHeaders)) {
+    mergeResponseHeaderValues(targetHeaders, key, value, mode);
+  }
+}
+
+function headersWithRenderResponseHeaders(
+  baseHeaders: ResponseHeaderSource,
+  renderHeaders: Record<string, string | string[]> | undefined,
+): Headers {
+  const headers = new Headers();
+  mergeResponseHeaders(headers, renderHeaders, "fallback");
+  mergeResponseHeaders(headers, baseHeaders, "override");
+  return headers;
 }
 
 function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): void {
@@ -161,35 +244,23 @@ export function buildAppPageRscResponse(
   body: ReadableStream,
   options: BuildAppPageRscResponseOptions,
 ): Response {
-  const headers = new Headers({
+  const baseHeaders = new Headers({
     "Content-Type": "text/x-component; charset=utf-8",
     Vary: "RSC, Accept",
   });
 
   if (options.params && Object.keys(options.params).length > 0) {
-    headers.set("X-Vinext-Params", JSON.stringify(options.params));
+    baseHeaders.set("X-Vinext-Params", JSON.stringify(options.params));
   }
   if (options.policy.cacheControl) {
-    headers.set("Cache-Control", options.policy.cacheControl);
+    baseHeaders.set("Cache-Control", options.policy.cacheControl);
   }
   if (options.policy.cacheState) {
-    headers.set("X-Vinext-Cache", options.policy.cacheState);
+    baseHeaders.set("X-Vinext-Cache", options.policy.cacheState);
   }
 
-  if (options.middlewareContext.headers) {
-    for (const [key, value] of options.middlewareContext.headers) {
-      const lowerKey = key.toLowerCase();
-      if (lowerKey === "set-cookie" || lowerKey === "vary") {
-        headers.append(key, value);
-      } else {
-        // Keep parity with the old inline RSC path: middleware owns singular
-        // response headers like Cache-Control here, while Set-Cookie and Vary
-        // are accumulated. The HTML helper intentionally keeps its legacy
-        // append-for-everything behavior below.
-        headers.set(key, value);
-      }
-    }
-  }
+  const headers = headersWithRenderResponseHeaders(baseHeaders, options.renderHeaders);
+  mergeResponseHeaders(headers, options.middlewareContext.headers, "override");
 
   applyTimingHeader(headers, options.timing);
 
@@ -203,29 +274,26 @@ export function buildAppPageHtmlResponse(
   body: ReadableStream,
   options: BuildAppPageHtmlResponseOptions,
 ): Response {
-  const headers = new Headers({
+  const baseHeaders = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     Vary: "RSC, Accept",
   });
 
   if (options.policy.cacheControl) {
-    headers.set("Cache-Control", options.policy.cacheControl);
+    baseHeaders.set("Cache-Control", options.policy.cacheControl);
   }
   if (options.policy.cacheState) {
-    headers.set("X-Vinext-Cache", options.policy.cacheState);
+    baseHeaders.set("X-Vinext-Cache", options.policy.cacheState);
   }
   if (options.draftCookie) {
-    headers.append("Set-Cookie", options.draftCookie);
+    baseHeaders.append("Set-Cookie", options.draftCookie);
   }
   if (options.fontLinkHeader) {
-    headers.set("Link", options.fontLinkHeader);
+    baseHeaders.set("Link", options.fontLinkHeader);
   }
 
-  if (options.middlewareContext.headers) {
-    for (const [key, value] of options.middlewareContext.headers) {
-      headers.append(key, value);
-    }
-  }
+  const headers = headersWithRenderResponseHeaders(baseHeaders, options.renderHeaders);
+  mergeResponseHeaders(headers, options.middlewareContext.headers, "override");
 
   applyTimingHeader(headers, options.timing);
 

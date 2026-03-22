@@ -69,19 +69,18 @@ describe("app route handler execution helpers", () => {
         didClearRequestContext = true;
       },
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      consumeRenderResponseHeaders() {
+        return {
+          "set-cookie": ["session=1; Path=/", "draft=1; Path=/"],
+        };
+      },
       executionContext: {
         waitUntil(promise) {
           waitUntilPromises.push(promise);
         },
       },
-      getAndClearPendingCookies() {
-        return ["session=1; Path=/"];
-      },
       getCollectedFetchTags() {
         return ["tag:demo"];
-      },
-      getDraftModeCookieHeader() {
-        return "draft=1; Path=/";
       },
       handler: { dynamic: "auto" },
       handlerFn() {
@@ -153,15 +152,12 @@ describe("app route handler execution helpers", () => {
       cleanPathname: "/api/dynamic",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
-      executionContext: null,
-      getAndClearPendingCookies() {
-        return [];
+      consumeRenderResponseHeaders() {
+        return undefined;
       },
+      executionContext: null,
       getCollectedFetchTags() {
         return [];
-      },
-      getDraftModeCookieHeader() {
-        return null;
       },
       handler: { dynamic: "auto" },
       handlerFn(request) {
@@ -211,15 +207,14 @@ describe("app route handler execution helpers", () => {
       cleanPathname: "/api/redirect",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
-      executionContext: null,
-      getAndClearPendingCookies() {
-        return [];
+      consumeRenderResponseHeaders() {
+        return {
+          "set-cookie": "route-special=redirect; Path=/; HttpOnly",
+        };
       },
+      executionContext: null,
       getCollectedFetchTags() {
         return [];
-      },
-      getDraftModeCookieHeader() {
-        return null;
       },
       handler: { dynamic: "auto" },
       handlerFn() {
@@ -233,7 +228,10 @@ describe("app route handler execution helpers", () => {
       async isrSet() {},
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       method: "GET",
-      middlewareContext: { headers: null, status: null },
+      middlewareContext: {
+        headers: new Headers([["x-middleware", "present"]]),
+        status: 403,
+      },
       params: {},
       reportRequestError(error) {
         reportedErrors.push(error);
@@ -248,6 +246,10 @@ describe("app route handler execution helpers", () => {
 
     expect(redirectResponse.status).toBe(308);
     expect(redirectResponse.headers.get("location")).toBe("https://example.com/target");
+    expect(redirectResponse.headers.getSetCookie?.()).toEqual([
+      "route-special=redirect; Path=/; HttpOnly",
+    ]);
+    expect(redirectResponse.headers.get("x-middleware")).toBe("present");
     expect(reportedErrors).toEqual([]);
 
     const errorResponse = await executeAppRouteHandler({
@@ -257,15 +259,12 @@ describe("app route handler execution helpers", () => {
       cleanPathname: "/api/error",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
-      executionContext: null,
-      getAndClearPendingCookies() {
-        return [];
+      consumeRenderResponseHeaders() {
+        return undefined;
       },
+      executionContext: null,
       getCollectedFetchTags() {
         return [];
-      },
-      getDraftModeCookieHeader() {
-        return null;
       },
       handler: { dynamic: "auto" },
       handlerFn() {

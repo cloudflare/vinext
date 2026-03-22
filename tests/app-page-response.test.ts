@@ -211,6 +211,11 @@ describe("app page response helpers", () => {
         cacheControl: "s-maxage=60, stale-while-revalidate",
         cacheState: "MISS",
       },
+      renderHeaders: {
+        "set-cookie": "rendered=1; Path=/",
+        vary: "x-render",
+        "x-rendered": "yes",
+      },
       timing: {
         compileEnd: 15,
         handlerStart: 10,
@@ -223,18 +228,22 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-vinext-params")).toBe('{"slug":"test"}');
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    expect(response.headers.get("vary")).toBe("x-render, RSC, Accept, Next-Router-State-Tree");
+    expect(response.headers.get("x-rendered")).toBe("yes");
+    expect(response.headers.getSetCookie?.()).toEqual([
+      "rendered=1; Path=/",
+      "session=abc; Path=/",
+    ]);
     expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
     await expect(response.text()).resolves.toBe("flight");
   });
 
-  it("builds HTML responses with draft cookies, preload links, middleware, and timing", async () => {
+  it("builds HTML responses with render headers, preload links, middleware, and timing", async () => {
     const middlewareHeaders = new Headers();
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
     middlewareHeaders.append("x-extra", "present");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
-      draftCookie: "__prerender_bypass=token; Path=/",
       fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       middlewareContext: {
         headers: middlewareHeaders,
@@ -243,6 +252,11 @@ describe("app page response helpers", () => {
       policy: {
         cacheControl: "s-maxage=31536000, stale-while-revalidate",
         cacheState: "STATIC",
+      },
+      renderHeaders: {
+        "set-cookie": "rendered=1; Path=/",
+        vary: "x-render",
+        "x-rendered": "yes",
       },
       timing: {
         compileEnd: 12,
@@ -259,11 +273,13 @@ describe("app page response helpers", () => {
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
+    expect(response.headers.get("vary")).toBe("x-render, RSC, Accept");
+    expect(response.headers.get("x-rendered")).toBe("yes");
     expect(response.headers.get("x-extra")).toBe("present");
     expect(response.headers.get("x-vinext-timing")).toBe("10,2,8");
 
     const setCookies = response.headers.getSetCookie();
-    expect(setCookies).toContain("__prerender_bypass=token; Path=/");
+    expect(setCookies).toContain("rendered=1; Path=/");
     expect(setCookies).toContain("mw=1; Path=/");
     await expect(response.text()).resolves.toBe("<h1>page</h1>");
   });

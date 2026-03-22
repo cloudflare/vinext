@@ -52,9 +52,44 @@ describe("app route handler response helpers", () => {
 
     expect(result.status).toBe(202);
     expect(result.headers.get("content-type")).toBe("text/plain");
-    expect(result.headers.get("x-response")).toBe("app, middleware-copy");
+    expect(result.headers.get("x-response")).toBe("middleware-copy");
     expect(result.headers.get("x-middleware")).toBe("mw");
     await expect(result.text()).resolves.toBe("hello");
+  });
+
+  it("drops stale statusText when middleware overrides the route-handler status", () => {
+    const response = new Response("hello", {
+      status: 201,
+      statusText: "Created",
+    });
+
+    const result = applyRouteHandlerMiddlewareContext(response, {
+      headers: null,
+      status: 403,
+    });
+
+    expect(result.status).toBe(403);
+    expect(result.statusText).not.toBe("Created");
+  });
+
+  it("can preserve special-response status codes when rewrite status must not apply", () => {
+    const response = new Response(null, {
+      status: 307,
+      headers: { Location: "https://example.com/about" },
+    });
+
+    const result = applyRouteHandlerMiddlewareContext(
+      response,
+      {
+        headers: new Headers([["x-middleware", "present"]]),
+        status: 403,
+      },
+      { applyRewriteStatus: false },
+    );
+
+    expect(result.status).toBe(307);
+    expect(result.headers.get("location")).toBe("https://example.com/about");
+    expect(result.headers.get("x-middleware")).toBe("present");
   });
 
   it("builds cached HIT and STALE route handler responses", async () => {
@@ -103,7 +138,7 @@ describe("app route handler response helpers", () => {
     expect(new TextDecoder().decode(value.body)).toBe("cache me");
   });
 
-  it("finalizes route handler responses with cookies and auto-head semantics", async () => {
+  it("finalizes route handler responses with render headers and auto-head semantics", async () => {
     const response = new Response("body", {
       status: 202,
       statusText: "Accepted",
@@ -113,14 +148,17 @@ describe("app route handler response helpers", () => {
     });
 
     const result = finalizeRouteHandlerResponse(response, {
-      pendingCookies: ["a=1; Path=/"],
-      draftCookie: "draft=1; Path=/",
       isHead: true,
+      renderHeaders: {
+        "set-cookie": ["a=1; Path=/", "draft=1; Path=/"],
+        vary: "x-test",
+      },
     });
 
     expect(result.status).toBe(202);
     expect(result.statusText).toBe("Accepted");
     expect(result.headers.getSetCookie?.()).toEqual(["a=1; Path=/", "draft=1; Path=/"]);
+    expect(result.headers.get("vary")).toBe("x-test");
     await expect(result.text()).resolves.toBe("");
   });
 

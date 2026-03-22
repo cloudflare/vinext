@@ -243,6 +243,30 @@ describe("Next.js compat: app-routes", () => {
     expect(res.status).toBe(404);
   });
 
+  it("redirect() preserves queued Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/api/redirect-with-cookie`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+    expect(res.headers.getSetCookie()).toContain("route-special=redirect; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("notFound() preserves queued Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/api/not-found-with-cookie`);
+    expect(res.status).toBe(404);
+    expect(res.headers.getSetCookie()).toContain("route-special=not-found; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("unauthorized() preserves queued Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/api/unauthorized-with-cookie`);
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toContain("route-special=unauthorized; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
   // ── cookies().set() ──────────────────────────────────────────
   // Next.js: tests cookie setting via cookies() in route handlers
   // Using pre-existing /api/set-cookie

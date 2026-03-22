@@ -78,7 +78,6 @@ export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
   const htmlStream = await renderAppPageHtmlStream(options);
-  options.clearRequestContext();
 
   const headers: Record<string, string> = {
     "Content-Type": "text/html; charset=utf-8",

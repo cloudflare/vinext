@@ -131,13 +131,14 @@ export function buildPagesCacheValue(
 export function buildAppPageCacheValue(
   html: string,
   rscData?: ArrayBuffer,
+  headers?: Record<string, string | string[]>,
   status?: number,
 ): CachedAppPageValue {
   return {
     kind: "APP_PAGE",
     html,
     rscData,
-    headers: undefined,
+    headers,
     postponed: undefined,
     status,
   };

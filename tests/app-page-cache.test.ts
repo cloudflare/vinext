@@ -22,12 +22,13 @@ function buildCachedAppPageValue(
   html: string,
   rscData?: ArrayBuffer,
   status?: number,
+  headers?: Record<string, string | string[]>,
 ): CachedAppPageValue {
   return {
     kind: "APP_PAGE",
     html,
     rscData,
-    headers: undefined,
+    headers,
     postponed: undefined,
     status,
   };
@@ -36,7 +37,11 @@ function buildCachedAppPageValue(
 describe("app page cache helpers", () => {
   it("builds cached HTML and RSC responses", async () => {
     const rscData = new TextEncoder().encode("flight").buffer;
-    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData, 201);
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData, 201, {
+      "set-cookie": "rendered=1; Path=/",
+      vary: "x-render",
+      "x-rendered": "yes",
+    });
 
     const htmlResponse = buildAppPageCachedResponse(cachedValue, {
       cacheState: "HIT",
@@ -46,6 +51,9 @@ describe("app page cache helpers", () => {
     expect(htmlResponse?.status).toBe(201);
     expect(htmlResponse?.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(htmlResponse?.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(htmlResponse?.headers.get("vary")).toBe("x-render, RSC, Accept");
+    expect(htmlResponse?.headers.get("x-rendered")).toBe("yes");
+    expect(htmlResponse?.headers.getSetCookie?.()).toEqual(["rendered=1; Path=/"]);
     await expect(htmlResponse?.text()).resolves.toBe("<h1>cached</h1>");
 
     const rscResponse = buildAppPageCachedResponse(cachedValue, {
@@ -127,6 +135,7 @@ describe("app page cache helpers", () => {
   it("serves stale entries and regenerates HTML and RSC cache keys", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrSetCalls: Array<{
+      headers: Record<string, string | string[]> | undefined;
       key: string;
       html: string;
       hasRscData: boolean;
@@ -150,6 +159,7 @@ describe("app page cache helpers", () => {
       },
       async isrSet(key, data, revalidateSeconds, tags) {
         isrSetCalls.push({
+          headers: data.headers,
           key,
           html: data.html,
           hasRscData: Boolean(data.rscData),
@@ -160,6 +170,10 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
         return {
+          headers: {
+            "set-cookie": "rendered=1; Path=/",
+            "x-rendered": "yes",
+          },
           html: "<h1>fresh</h1>",
           rscData,
           tags: ["/stale", "_N_T_/stale"],
@@ -177,6 +191,10 @@ describe("app page cache helpers", () => {
 
     expect(isrSetCalls).toEqual([
       {
+        headers: {
+          "set-cookie": "rendered=1; Path=/",
+          "x-rendered": "yes",
+        },
         key: "html:/stale",
         html: "<h1>fresh</h1>",
         hasRscData: false,
@@ -184,6 +202,10 @@ describe("app page cache helpers", () => {
         tags: ["/stale", "_N_T_/stale"],
       },
       {
+        headers: {
+          "set-cookie": "rendered=1; Path=/",
+          "x-rendered": "yes",
+        },
         key: "rsc:/stale",
         html: "",
         hasRscData: true,
@@ -222,6 +244,7 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
         return {
+          headers: undefined,
           html: "<h1>fresh</h1>",
           rscData: new TextEncoder().encode("fresh-flight").buffer,
           tags: ["/stale-html-miss", "_N_T_/stale-html-miss"],
@@ -271,6 +294,7 @@ describe("app page cache helpers", () => {
   it("finalizes HTML responses by teeing the stream and writing HTML and RSC cache keys", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const isrSetCalls: Array<{
+      headers: Record<string, string | string[]> | undefined;
       key: string;
       html: string;
       hasRscData: boolean;
@@ -292,8 +316,20 @@ describe("app page cache helpers", () => {
       {
         capturedRscDataPromise: Promise.resolve(rscData),
         cleanPathname: "/fresh",
+        consumeDynamicUsage() {
+          return false;
+        },
+        consumeRenderResponseHeaders() {
+          return {
+            "set-cookie": "rendered=1; Path=/",
+            "x-rendered": "yes",
+          };
+        },
         getPageTags() {
           return ["/fresh", "_N_T_/fresh"];
+        },
+        initialRenderHeaders: {
+          "set-cookie": "fallback=1; Path=/",
         },
         isrDebug(event, detail) {
           debugCalls.push([event, detail]);
@@ -306,6 +342,7 @@ describe("app page cache helpers", () => {
         },
         async isrSet(key, data, revalidateSeconds, tags) {
           isrSetCalls.push({
+            headers: data.headers,
             key,
             html: data.html,
             hasRscData: Boolean(data.rscData),
@@ -328,6 +365,10 @@ describe("app page cache helpers", () => {
 
     expect(isrSetCalls).toEqual([
       {
+        headers: {
+          "set-cookie": "rendered=1; Path=/",
+          "x-rendered": "yes",
+        },
         key: "html:/fresh",
         html: "<h1>fresh</h1>",
         hasRscData: false,
@@ -335,6 +376,10 @@ describe("app page cache helpers", () => {
         tags: ["/fresh", "_N_T_/fresh"],
       },
       {
+        headers: {
+          "set-cookie": "rendered=1; Path=/",
+          "x-rendered": "yes",
+        },
         key: "rsc:/fresh",
         html: "",
         hasRscData: true,
@@ -349,6 +394,7 @@ describe("app page cache helpers", () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const debugCalls: Array<[string, string]> = [];
     const isrSetCalls: Array<{
+      headers: Record<string, string | string[]> | undefined;
       key: string;
       html: string;
       hasRscData: boolean;
@@ -362,9 +408,17 @@ describe("app page cache helpers", () => {
       consumeDynamicUsage() {
         return false;
       },
+      consumeRenderResponseHeaders() {
+        return {
+          "set-cookie": "rendered=1; Path=/",
+        };
+      },
       dynamicUsedDuringBuild: false,
       getPageTags() {
         return ["/fresh-rsc", "_N_T_/fresh-rsc"];
+      },
+      initialRenderHeaders: {
+        "set-cookie": "fallback=1; Path=/",
       },
       isrDebug(event, detail) {
         debugCalls.push([event, detail]);
@@ -374,6 +428,7 @@ describe("app page cache helpers", () => {
       },
       async isrSet(key, data, revalidateSeconds, tags) {
         isrSetCalls.push({
+          headers: data.headers,
           key,
           html: data.html,
           hasRscData: Boolean(data.rscData),
@@ -394,6 +449,9 @@ describe("app page cache helpers", () => {
 
     expect(isrSetCalls).toEqual([
       {
+        headers: {
+          "set-cookie": "rendered=1; Path=/",
+        },
         key: "rsc:/fresh-rsc",
         html: "",
         hasRscData: true,
@@ -415,9 +473,17 @@ describe("app page cache helpers", () => {
       consumeDynamicUsage() {
         return true;
       },
+      consumeRenderResponseHeaders() {
+        return {
+          "set-cookie": "rendered=1; Path=/",
+        };
+      },
       dynamicUsedDuringBuild: false,
       getPageTags() {
         return ["/dynamic-rsc", "_N_T_/dynamic-rsc"];
+      },
+      initialRenderHeaders: {
+        "set-cookie": "fallback=1; Path=/",
       },
       isrDebug(event, detail) {
         debugCalls.push([event, detail]);

@@ -47,6 +47,10 @@ export interface UnifiedRequestContext
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
+  /** Legacy cookie queue kept for compatibility with existing unified-scope tests. */
+  pendingSetCookies: string[];
+  /** Legacy draft-mode header mirror kept for compatibility with existing tests. */
+  draftModeCookieHeader: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +88,10 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     dynamicUsageDetected: false,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
+    renderResponseHeaders: {
+      headers: new Map(),
+      setCookies: [],
+    },
     phase: "render",
     i18nContext: null,
     serverContext: null,
@@ -129,13 +137,13 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), the
-  // _privateCache Map, and object fields (headersContext, i18nContext,
-  // serverContext, ssrContext, executionContext, requestScopedCacheLife)
-  // still share references with the parent until replaced. The mutate
-  // callback must replace those reference-typed slices (for example
-  // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
-  // example `ctx.currentRequestTags.push(...)`) or the parent scope will
-  // observe those changes too. Keep this enumeration in sync with
+  // _privateCache Map, and object fields (headersContext, renderResponseHeaders,
+  // i18nContext, serverContext, ssrContext, executionContext,
+  // requestScopedCacheLife) still share references with the parent until
+  // replaced. The mutate callback must replace those reference-typed slices
+  // (for example `ctx.currentRequestTags = []`) rather than mutating them
+  // in-place (for example `ctx.currentRequestTags.push(...)`) or the parent
+  // scope will observe those changes too. Keep this enumeration in sync with
   // UnifiedRequestContext: when adding a new reference-typed field, add it
   // here too and verify callers still follow the replace-not-mutate rule.
   mutate(childCtx);

@@ -30,6 +30,20 @@ async function createImageFixture(router: "app" | "pages"): Promise<string> {
   if (router === "app") {
     await fs.rm(path.join(rootDir, "app", "alias-test"), { recursive: true, force: true });
     await fs.rm(path.join(rootDir, "app", "baseurl-test"), { recursive: true, force: true });
+    const renderResponseHeaderFile = path.join(rootDir, "app", "lib", "render-response-header.ts");
+    const renderResponseHeaderImport = path
+      .relative(
+        path.dirname(renderResponseHeaderFile),
+        path.resolve(import.meta.dirname, "../packages/vinext/src/shims/headers.js"),
+      )
+      .replace(/\\/g, "/");
+    const normalizedImport = renderResponseHeaderImport.startsWith(".")
+      ? renderResponseHeaderImport
+      : `./${renderResponseHeaderImport}`;
+    await fs.writeFile(
+      renderResponseHeaderFile,
+      `export { appendRenderResponseHeader } from ${JSON.stringify(normalizedImport)};\n`,
+    );
     await fs.mkdir(path.join(rootDir, "app", "image-parity"), { recursive: true });
     await fs.writeFile(
       path.join(rootDir, "app", "image-parity", "page.tsx"),

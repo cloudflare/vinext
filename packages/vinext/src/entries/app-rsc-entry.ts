@@ -348,7 +348,7 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, consumeDynamicUsage, peekDynamicUsage, restoreDynamicUsage, peekRenderResponseHeaders, restoreRenderResponseHeaders, consumeRenderResponseHeaders, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
@@ -471,16 +471,81 @@ function __pageCacheTags(pathname, extraTags) {
   }
   return tags;
 }
-// Note: cache entries are written with \`headers: undefined\`. Next.js stores
-// response headers (e.g. set-cookie from cookies().set() during render) in the
-// cache entry so they can be replayed on HIT. We don't do this because:
-//   1. Pages that call cookies().set() during render trigger dynamicUsedDuringRender,
-//      which opts them out of ISR caching before we reach the write path.
-//   2. Custom response headers set via next/headers are not yet captured separately
-//      from the live Response object in vinext's server pipeline.
-// In practice this means ISR-cached responses won't replay render-time set-cookie
-// headers — but that case is already prevented by the dynamic-usage opt-out.
-// TODO: capture render-time response headers for full Next.js parity.
+function __isAppendOnlyResponseHeader(lowerKey) {
+  return lowerKey === "set-cookie" || lowerKey === "vary" || lowerKey === "www-authenticate" || lowerKey === "proxy-authenticate";
+}
+function __mergeResponseHeaderValues(targetHeaders, key, value, mode) {
+  const lowerKey = key.toLowerCase();
+  const values = Array.isArray(value) ? value : [value];
+  if (__isAppendOnlyResponseHeader(lowerKey)) {
+    for (const item of values) targetHeaders.append(key, item);
+    return;
+  }
+  if (mode === "fallback" && targetHeaders.has(key)) return;
+  targetHeaders.delete(key);
+  if (values.length === 1) {
+    targetHeaders.set(key, values[0]);
+    return;
+  }
+  for (const item of values) targetHeaders.append(key, item);
+}
+function __mergeResponseHeaders(targetHeaders, sourceHeaders, mode) {
+  if (!sourceHeaders) return;
+  if (sourceHeaders instanceof Headers) {
+    const __setCookies = sourceHeaders.getSetCookie();
+    for (const [key, value] of sourceHeaders) {
+      if (key.toLowerCase() === "set-cookie") {
+        continue;
+      }
+      __mergeResponseHeaderValues(targetHeaders, key, value, mode);
+    }
+    for (const cookie of __setCookies) {
+      targetHeaders.append("Set-Cookie", cookie);
+    }
+    return;
+  }
+  for (const [key, value] of Object.entries(sourceHeaders)) {
+    __mergeResponseHeaderValues(targetHeaders, key, value, mode);
+  }
+}
+function __headersWithRenderResponseHeaders(baseHeaders, renderHeaders) {
+  const headers = new Headers();
+  __mergeResponseHeaders(headers, renderHeaders, "fallback");
+  __mergeResponseHeaders(headers, baseHeaders, "override");
+  return headers;
+}
+function __applyMiddlewareResponseHeaders(targetHeaders, middlewareHeaders) {
+  __mergeResponseHeaders(targetHeaders, middlewareHeaders, "override");
+}
+function __copyResponseHeaders(targetHeaders, sourceHeaders, excludedKeys) {
+  const __excluded = new Set(excludedKeys.map((key) => key.toLowerCase()));
+  const __setCookies = sourceHeaders.getSetCookie();
+  for (const [key, value] of sourceHeaders) {
+    const __lowerKey = key.toLowerCase();
+    if (__excluded.has(__lowerKey) || __lowerKey === "set-cookie") continue;
+    targetHeaders.append(key, value);
+  }
+  if (!__excluded.has("set-cookie")) {
+    for (const cookie of __setCookies) {
+      targetHeaders.append("Set-Cookie", cookie);
+    }
+  }
+}
+function __responseWithMiddlewareContext(response, middlewareCtx, renderHeaders, options) {
+  const rewriteStatus = options?.applyRewriteStatus === false ? null : middlewareCtx?.status;
+  if (!middlewareCtx?.headers && rewriteStatus == null && !renderHeaders) return response;
+  const responseHeaders = __headersWithRenderResponseHeaders(response.headers, renderHeaders);
+  __applyMiddlewareResponseHeaders(responseHeaders, middlewareCtx?.headers);
+  const status = rewriteStatus ?? response.status;
+  const responseInit = {
+    status,
+    headers: responseHeaders,
+  };
+  if (status === response.status && response.statusText) {
+    responseInit.statusText = response.statusText;
+  }
+  return new Response(response.body, responseInit);
+}
 const __pendingRegenerations = new Map();
 function __triggerBackgroundRegeneration(key, renderFn) {
   if (__pendingRegenerations.has(key)) return;
@@ -1621,11 +1686,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           // the blanket strip loop after that call removes every remaining
           // x-middleware-* header before the set is merged into the response.
            _mwCtx.headers = new Headers();
-          for (const [key, value] of mwResponse.headers) {
-            if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-              _mwCtx.headers.append(key, value);
-            }
-          }
+          __copyResponseHeaders(_mwCtx.headers, mwResponse.headers, [
+            "x-middleware-next",
+            "x-middleware-rewrite",
+          ]);
         } else {
           // Check for redirect
           if (mwResponse.status >= 300 && mwResponse.status < 400) {
@@ -1646,11 +1710,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             }
             // Also save any other headers from the rewrite response
             _mwCtx.headers = new Headers();
-            for (const [key, value] of mwResponse.headers) {
-              if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-                _mwCtx.headers.append(key, value);
-              }
-            }
+            __copyResponseHeaders(_mwCtx.headers, mwResponse.headers, [
+              "x-middleware-next",
+              "x-middleware-rewrite",
+            ]);
           } else {
             // Middleware returned a custom response
             return mwResponse;
@@ -1874,21 +1937,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       // and receive a page HTML instead of RSC stream). Instead, we return a 200
       // with x-action-redirect header that the client entry detects and handles.
       if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
+        const actionRenderHeaders = consumeRenderResponseHeaders();
         setHeadersContext(null);
         setNavigationContext(null);
-        const redirectHeaders = new Headers({
+        const redirectHeaders = __headersWithRenderResponseHeaders({
           "Content-Type": "text/x-component; charset=utf-8",
           "Vary": "RSC, Accept",
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
-        });
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
+        }, actionRenderHeaders);
         // Send an empty RSC-like body (client will navigate instead of parsing)
         return new Response("", { status: 200, headers: redirectHeaders });
       }
@@ -1924,20 +1982,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       // by the client, and async server components that run during consumption need the
       // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
       // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
+      const actionRenderHeaders = consumeRenderResponseHeaders();
 
-      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
-      const actionResponse = new Response(rscStream, { headers: actionHeaders });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
+      const actionHeaders = __headersWithRenderResponseHeaders({
+        "Content-Type": "text/x-component; charset=utf-8",
+        "Vary": "RSC, Accept",
+      }, actionRenderHeaders);
+      return new Response(rscStream, { headers: actionHeaders });
     } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
+      consumeRenderResponseHeaders(); // Clear any pending render-time response headers on error
       console.error("[vinext] Server action error:", err);
       _reportRequestError(
         err instanceof Error ? err : new Error(String(err)),
@@ -2127,10 +2180,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           setNavigationContext(null);
         },
         consumeDynamicUsage,
+        consumeRenderResponseHeaders,
         executionContext: _getRequestExecutionContext(),
-        getAndClearPendingCookies,
         getCollectedFetchTags,
-        getDraftModeCookieHeader,
         handler,
         handlerFn,
         i18n: __i18nConfig,
@@ -2264,18 +2316,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             _getNavigationContext(),
             __revalFontData,
           );
-          setHeadersContext(null);
-          setNavigationContext(null);
           const __freshHtml = await __readAppPageTextStream(__revalHtmlStream);
           const __freshRscData = await __revalRscCapture.capturedRscDataPromise;
+          const __renderHeaders = consumeRenderResponseHeaders();
+          setHeadersContext(null);
+          setNavigationContext(null);
           const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-          return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
+          return { html: __freshHtml, rscData: __freshRscData, headers: __renderHeaders, tags: __pageTags };
         });
       },
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
     if (__cachedPageResponse) {
-      return __cachedPageResponse;
+      return __responseWithMiddlewareContext(__cachedPageResponse, _mwCtx);
     }
   }
 
@@ -2348,27 +2401,88 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
   const interceptOpts = __interceptResult.interceptOpts;
 
+  async function __renderPageSpecialErrorResponse(__specialError, __fallbackOpts) {
+    if (__specialError.kind === "redirect") {
+      const __renderResponseHeaders = consumeRenderResponseHeaders();
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return __responseWithMiddlewareContext(
+        new Response(null, {
+          status: __specialError.statusCode,
+          headers: {
+            Location: new URL(__specialError.location, request.url).toString(),
+          },
+        }),
+        _mwCtx,
+        __renderResponseHeaders,
+        { applyRewriteStatus: false },
+      );
+    }
+
+    const __fallbackResp = await renderHTTPAccessFallbackPage(
+      route,
+      __specialError.statusCode,
+      isRscRequest,
+      request,
+      {
+        matchedParams: params,
+        ...__fallbackOpts,
+      },
+    );
+    const __renderResponseHeaders = consumeRenderResponseHeaders();
+    if (__fallbackResp) {
+      return __responseWithMiddlewareContext(
+        __fallbackResp,
+        _mwCtx,
+        __renderResponseHeaders,
+        { applyRewriteStatus: false },
+      );
+    }
+
+    setHeadersContext(null);
+    setNavigationContext(null);
+    const __statusText = __specialError.statusCode === 403
+      ? "Forbidden"
+      : __specialError.statusCode === 401
+        ? "Unauthorized"
+        : "Not Found";
+    return __responseWithMiddlewareContext(
+      new Response(__statusText, { status: __specialError.statusCode }),
+      _mwCtx,
+      __renderResponseHeaders,
+      { applyRewriteStatus: false },
+    );
+  }
+
+  async function __renderPageErrorBoundaryResponse(__error) {
+    const __errorBoundaryResp = await renderErrorBoundaryPage(
+      route,
+      __error,
+      isRscRequest,
+      request,
+      params,
+    );
+    if (!__errorBoundaryResp) {
+      return null;
+    }
+
+    return __responseWithMiddlewareContext(
+      __errorBoundaryResp,
+      _mwCtx,
+      consumeRenderResponseHeaders(),
+      { applyRewriteStatus: false },
+    );
+  }
+
   const __pageBuildResult = await __buildAppPageElement({
     buildPageElement() {
       return buildPageElement(route, params, interceptOpts, url.searchParams);
     },
     renderErrorBoundaryPage(buildErr) {
-      return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params);
+      return __renderPageErrorBoundaryResponse(buildErr);
     },
     renderSpecialError(__buildSpecialError) {
-      return __buildAppPageSpecialErrorResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        renderFallbackPage(statusCode) {
-          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-            matchedParams: params,
-          });
-        },
-        requestUrl: request.url,
-        specialError: __buildSpecialError,
-      });
+      return __renderPageSpecialErrorResponse(__buildSpecialError);
     },
     resolveSpecialError: __resolveAppPageSpecialError,
   });
@@ -2376,18 +2490,23 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return __pageBuildResult.response;
   }
   const element = __pageBuildResult.element;
+  const __buildRenderResponseHeaders = peekRenderResponseHeaders();
+  const __buildDynamicUsage = peekDynamicUsage();
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
   const _hasLoadingBoundary = !!(route.loading && route.loading.default);
   const _asyncLayoutParams = makeThenableParams(params);
   return __renderAppPageLifecycle({
+    buildDynamicUsage: __buildDynamicUsage,
+    buildRenderHeaders: __buildRenderResponseHeaders,
     cleanPathname,
     clearRequestContext() {
       setHeadersContext(null);
       setNavigationContext(null);
     },
     consumeDynamicUsage,
+    consumeRenderResponseHeaders,
     createRscOnErrorHandler(pathname, routePath) {
       return createRscOnErrorHandler(request, pathname, routePath);
     },
@@ -2420,6 +2539,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
     middlewareContext: _mwCtx,
     params,
+    peekDynamicUsage,
+    peekRenderResponseHeaders,
     probeLayoutAt(li) {
       const LayoutComp = route.layouts[li]?.default;
       if (!LayoutComp) return null;
@@ -2430,55 +2551,34 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
     revalidateSeconds,
     renderErrorBoundaryResponse(renderErr) {
-      return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params);
+      return __renderPageErrorBoundaryResponse(renderErr);
     },
     async renderLayoutSpecialError(__layoutSpecialError, li) {
-      return __buildAppPageSpecialErrorResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        renderFallbackPage(statusCode) {
-          // Find the not-found component from the parent level (the boundary that
-          // would catch this in Next.js). Walk up from the throwing layout to find
-          // the nearest not-found at a parent layout's directory.
-          let parentNotFound = null;
-          if (route.notFounds) {
-            for (let pi = li - 1; pi >= 0; pi--) {
-              if (route.notFounds[pi]?.default) {
-                parentNotFound = route.notFounds[pi].default;
-                break;
-              }
-            }
+      // Find the not-found component from the parent level (the boundary that
+      // would catch this in Next.js). Walk up from the throwing layout to find
+      // the nearest not-found at a parent layout's directory.
+      let parentNotFound = null;
+      if (route.notFounds) {
+        for (let pi = li - 1; pi >= 0; pi--) {
+          if (route.notFounds[pi]?.default) {
+            parentNotFound = route.notFounds[pi].default;
+            break;
           }
-          if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
-          const parentLayouts = route.layouts.slice(0, li);
-          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-            boundaryComponent: parentNotFound,
-            layouts: parentLayouts,
-            matchedParams: params,
-          });
-        },
-        requestUrl: request.url,
-        specialError: __layoutSpecialError,
+        }
+      }
+      if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+      const parentLayouts = route.layouts.slice(0, li);
+      return __renderPageSpecialErrorResponse(__layoutSpecialError, {
+        boundaryComponent: parentNotFound,
+        layouts: parentLayouts,
       });
     },
     async renderPageSpecialError(specialError) {
-      return __buildAppPageSpecialErrorResponse({
-        clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
-        },
-        renderFallbackPage(statusCode) {
-          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-            matchedParams: params,
-          });
-        },
-        requestUrl: request.url,
-        specialError,
-      });
+      return __renderPageSpecialErrorResponse(specialError);
     },
     renderToReadableStream,
+    restoreDynamicUsage,
+    restoreRenderResponseHeaders,
     routeHasLocalBoundary: !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; })),
     routePattern: route.pattern,
     runWithSuppressedHookWarning(probe) {

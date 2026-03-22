@@ -46,9 +46,12 @@ function createCommonOptions() {
     renderToReadableStream,
     waitUntilPromises,
     options: {
+      buildDynamicUsage: false,
+      buildRenderHeaders: undefined,
       cleanPathname: "/posts/post",
       clearRequestContext() {},
       consumeDynamicUsage: vi.fn(() => false),
+      consumeRenderResponseHeaders: vi.fn(() => undefined),
       createRscOnErrorHandler() {
         return () => null;
       },
@@ -95,6 +98,8 @@ function createCommonOptions() {
         status: null,
       },
       params: { slug: "post" },
+      peekDynamicUsage: vi.fn(() => false),
+      peekRenderResponseHeaders: vi.fn(() => undefined),
       probeLayoutAt() {
         return null;
       },
@@ -106,6 +111,8 @@ function createCommonOptions() {
       renderLayoutSpecialError,
       renderPageSpecialError,
       renderToReadableStream,
+      restoreDynamicUsage: vi.fn(),
+      restoreRenderResponseHeaders: vi.fn(),
       routeHasLocalBoundary: false,
       routePattern: "/posts/[slug]",
       runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {

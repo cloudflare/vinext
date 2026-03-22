@@ -559,6 +559,28 @@ describe("App Router integration", () => {
     expect(html).toContain('<html lang="en">');
   });
 
+  it("replays render-time headers and middleware context for layout-level notFound()", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/render-headers-layout-notfound/missing`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-layout-notfound")).toBe("yes");
+    expect(res.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe(
+      "/nextjs-compat/render-headers-layout-notfound/missing",
+    );
+    expect(res.headers.getSetCookie()).toEqual([
+      "layout-notfound=1; Path=/; HttpOnly",
+      "middleware-render=1; Path=/; HttpOnly",
+    ]);
+    expect(res.headers.get("vary")).toContain("RSC");
+    expect(res.headers.get("vary")).toContain("Accept");
+    expect(res.headers.get("vary")).toContain("x-middleware-test");
+
+    const html = await res.text();
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).toContain("does not exist");
+  });
+
   it("forbidden() from Server Component returns 403 with forbidden.tsx", async () => {
     const res = await fetch(`${baseUrl}/forbidden-test`);
     expect(res.status).toBe(403);
@@ -592,6 +614,96 @@ describe("App Router integration", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  it("middleware rewrite status does not override redirect() or notFound() responses", async () => {
+    const redirectRes = await fetch(`${baseUrl}/middleware-rewrite-status-redirect`, {
+      redirect: "manual",
+    });
+    expect(redirectRes.status).toBe(307);
+    expect(redirectRes.headers.get("location")).toContain("/about");
+
+    const notFoundRes = await fetch(`${baseUrl}/middleware-rewrite-status-not-found`);
+    expect(notFoundRes.status).toBe(404);
+
+    const html = await notFoundRes.text();
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).toContain("does not exist");
+  });
+
+  it("middleware rewrite status does not reuse a route handler's stale statusText", async () => {
+    const directRes = await fetch(`${baseUrl}/api/custom-status-text`);
+    expect(directRes.status).toBe(201);
+    expect(directRes.statusText).toBe("Created");
+    expect(await directRes.text()).toBe("custom status text route");
+
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-status-text`);
+    expect(res.status).toBe(403);
+    expect(res.statusText).not.toBe("Created");
+    expect(await res.text()).toBe("custom status text route");
+  });
+
+  it("middleware rewrite status does not override route-handler redirects with queued cookies", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-redirect-with-cookie`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+    expect(res.headers.getSetCookie()).toContain("route-special=redirect; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("middleware rewrite status does not override route-handler notFound() with queued cookies", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-not-found-with-cookie`);
+    expect(res.status).toBe(404);
+    expect(res.headers.getSetCookie()).toContain("route-special=not-found; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("middleware rewrite status does not override route-handler unauthorized() with queued cookies", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-unauthorized-with-cookie`);
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toContain("route-special=unauthorized; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("preserves render-time headers and middleware context for redirects thrown during metadata resolution", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/render-headers-metadata-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+    expect(res.headers.get("x-rendered-in-metadata")).toBe("yes");
+    expect(res.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe(
+      "/nextjs-compat/render-headers-metadata-redirect",
+    );
+    expect(res.headers.getSetCookie()).toEqual([
+      "metadata-redirect=1; Path=/; HttpOnly",
+      "middleware-render=1; Path=/; HttpOnly",
+    ]);
+    expect(res.headers.get("vary")).toBe("x-middleware-test");
+  });
+
+  it("preserves render-time headers set during generateMetadata on normal renders", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/render-headers-metadata-normal`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-metadata-normal")).toBe("yes");
+    expect(res.headers.getSetCookie()).toContain("metadata-normal=1; Path=/; HttpOnly");
+    const html = await res.text();
+    expect(html).toContain("metadata normal route");
+  });
+
+  it("preserves build-time render headers on direct non-ISR RSC responses", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/render-headers-metadata-normal.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-metadata-normal")).toBe("yes");
+    expect(res.headers.getSetCookie()).toContain("metadata-normal=1; Path=/; HttpOnly");
+    expect((await res.text()).length).toBeGreaterThan(0);
   });
 
   it("permanentRedirect() returns 308 status code", async () => {
@@ -1480,6 +1592,36 @@ describe("App Router Production server (startProdServer)", () => {
     );
   }
 
+  async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function fetchUntilCacheState(
+    pathname: string,
+    expectedState: string,
+    init?: RequestInit,
+    timeoutMs: number = 3000,
+  ): Promise<Response> {
+    const deadline = Date.now() + timeoutMs;
+    let lastState: string | null = null;
+
+    while (Date.now() < deadline) {
+      const res = await fetch(`${baseUrl}${pathname}`, init);
+      const cacheState = res.headers.get("x-vinext-cache");
+      if (cacheState === expectedState) {
+        return res;
+      }
+
+      lastState = cacheState;
+      await res.arrayBuffer();
+      await sleep(25);
+    }
+
+    throw new Error(
+      `Timed out waiting for ${pathname} to reach cache state ${expectedState}; last state was ${lastState}`,
+    );
+  }
+
   beforeAll(async () => {
     // Build the app-basic fixture to the default dist/ directory
     const builder = await createBuilder({
@@ -1639,6 +1781,287 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(400);
     const body = await res.text();
     expect(body).toContain("Bad Request");
+  });
+
+  it("replays render-time response headers across HTML MISS/HIT/STALE and regeneration", async () => {
+    const expectedVaryPrefix = [
+      "x-render-one",
+      "x-render-two",
+      "RSC",
+      "Accept",
+      "x-middleware-test",
+    ];
+    const expectedWwwAuthenticate =
+      'Basic realm="render", Bearer realm="render", Digest realm="middleware"';
+    const expectMergedVary = (value: string | null) => {
+      expect(value).not.toBeNull();
+      const tokens = value!.split(",").map((part) => part.trim());
+      expect(tokens.slice(0, expectedVaryPrefix.length)).toEqual(expectedVaryPrefix);
+    };
+    const expectedMissSetCookies = [
+      "rendered=1; Path=/; HttpOnly",
+      "rendered-second=1; Path=/; HttpOnly",
+      "middleware-render=1; Path=/; HttpOnly",
+      "middleware-render-second=1; Path=/; HttpOnly",
+    ];
+    const expectedCachedSetCookies = [
+      "rendered=1; Path=/; HttpOnly",
+      "rendered-second=1; Path=/; HttpOnly",
+      "rendered-late=1; Path=/; HttpOnly",
+      "middleware-render=1; Path=/; HttpOnly",
+      "middleware-render-second=1; Path=/; HttpOnly",
+    ];
+
+    const res1 = await fetch(`${baseUrl}/nextjs-compat/cached-render-headers`);
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(res1.headers.get("x-rendered-in-page")).toBe("yes");
+    expect(res1.headers.get("x-rendered-late")).toBeNull();
+    expect(res1.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(res1.headers.get("x-mw-ran")).toBe("true");
+    expect(res1.headers.get("x-mw-pathname")).toBe("/nextjs-compat/cached-render-headers");
+    expectMergedVary(res1.headers.get("vary"));
+    expect(res1.headers.get("www-authenticate")).toBe(expectedWwwAuthenticate);
+    expect(res1.headers.getSetCookie()).toEqual(expectedMissSetCookies);
+
+    const res2 = await fetchUntilCacheState("/nextjs-compat/cached-render-headers", "HIT");
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(res2.headers.get("x-rendered-in-page")).toBe("yes");
+    expect(res2.headers.get("x-rendered-late")).toBe("yes");
+    expect(res2.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(res2.headers.get("x-mw-ran")).toBe("true");
+    expect(res2.headers.get("x-mw-pathname")).toBe("/nextjs-compat/cached-render-headers");
+    expectMergedVary(res2.headers.get("vary"));
+    expect(res2.headers.get("www-authenticate")).toBe(expectedWwwAuthenticate);
+    expect(res2.headers.getSetCookie()).toEqual(expectedCachedSetCookies);
+
+    await sleep(1100);
+
+    const staleRes = await fetchUntilCacheState("/nextjs-compat/cached-render-headers", "STALE");
+    expect(staleRes.status).toBe(200);
+    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(staleRes.headers.get("x-rendered-in-page")).toBe("yes");
+    expect(staleRes.headers.get("x-rendered-late")).toBe("yes");
+    expect(staleRes.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(staleRes.headers.get("x-mw-ran")).toBe("true");
+    expect(staleRes.headers.get("x-mw-pathname")).toBe("/nextjs-compat/cached-render-headers");
+    expectMergedVary(staleRes.headers.get("vary"));
+    expect(staleRes.headers.get("www-authenticate")).toBe(expectedWwwAuthenticate);
+    expect(staleRes.headers.getSetCookie()).toEqual(expectedCachedSetCookies);
+
+    const regenHitRes = await fetchUntilCacheState("/nextjs-compat/cached-render-headers", "HIT");
+    expect(regenHitRes.status).toBe(200);
+    expect(regenHitRes.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(regenHitRes.headers.get("x-rendered-in-page")).toBe("yes");
+    expect(regenHitRes.headers.get("x-rendered-late")).toBe("yes");
+    expect(regenHitRes.headers.get("x-mw-conflict")).toBe("middleware");
+    expect(regenHitRes.headers.get("x-mw-ran")).toBe("true");
+    expect(regenHitRes.headers.get("x-mw-pathname")).toBe("/nextjs-compat/cached-render-headers");
+    expectMergedVary(regenHitRes.headers.get("vary"));
+    expect(regenHitRes.headers.get("www-authenticate")).toBe(expectedWwwAuthenticate);
+    expect(regenHitRes.headers.getSetCookie()).toEqual(expectedCachedSetCookies);
+  });
+
+  it("streams HTML ISR MISSes without waiting for full RSC capture", async () => {
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const streamServer = await startProdServer({ port: 0, outDir, noCompression: true });
+    try {
+      const streamBaseUrl = `http://localhost:${streamServer.port}`;
+
+      const start = performance.now();
+      const res = await fetch(`${streamBaseUrl}/nextjs-compat/cached-render-headers-stream`);
+      const fetchResolvedAt = performance.now();
+      const reader = res.body?.getReader();
+      expect(reader).toBeDefined();
+
+      const first = await reader!.read();
+      expect(first.done).toBe(false);
+      for (;;) {
+        const chunk = await reader!.read();
+        if (chunk.done) break;
+      }
+      const doneAt = performance.now();
+
+      expect(res.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(fetchResolvedAt - start).toBeLessThan(doneAt - start);
+    } finally {
+      await new Promise<void>((resolve) => streamServer.server.close(() => resolve()));
+    }
+  });
+
+  it("streams direct RSC ISR MISSes without waiting for the full RSC payload", async () => {
+    const expectedMiddlewareSetCookies = [
+      "middleware-render=1; Path=/; HttpOnly",
+      "middleware-render-second=1; Path=/; HttpOnly",
+    ];
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const streamServer = await startProdServer({ port: 0, outDir, noCompression: true });
+    try {
+      const streamBaseUrl = `http://localhost:${streamServer.port}`;
+
+      const start = performance.now();
+      const res = await fetch(
+        `${streamBaseUrl}/nextjs-compat/cached-render-headers-rsc-first.rsc`,
+        {
+          headers: { Accept: "text/x-component" },
+        },
+      );
+      const fetchResolvedAt = performance.now();
+      const reader = res.body?.getReader();
+      expect(reader).toBeDefined();
+
+      const first = await reader!.read();
+      const firstAt = performance.now();
+      expect(first.done).toBe(false);
+      for (;;) {
+        const chunk = await reader!.read();
+        if (chunk.done) break;
+      }
+      const doneAt = performance.now();
+
+      expect(res.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(res.headers.get("x-rendered-late")).toBeNull();
+      expect(res.headers.getSetCookie()).toEqual(
+        expect.arrayContaining(expectedMiddlewareSetCookies),
+      );
+      expect(res.headers.getSetCookie()).not.toContain("rendered-late=1; Path=/; HttpOnly");
+      expect(fetchResolvedAt - start).toBeLessThan(doneAt - start);
+      expect(doneAt - firstAt).toBeGreaterThan(15);
+    } finally {
+      await new Promise<void>((resolve) => streamServer.server.close(() => resolve()));
+    }
+  });
+
+  it("replays final render-time headers on direct RSC HITs after streamed MISSes", async () => {
+    const expectedMissVary = "RSC, Accept, x-middleware-test";
+    const expectedHitVary = "x-render-one, x-render-two, RSC, Accept, x-middleware-test";
+    const expectedMissWwwAuthenticate = 'Digest realm="middleware"';
+    const expectedHitWwwAuthenticate =
+      'Basic realm="render", Bearer realm="render", Digest realm="middleware"';
+    const expectedMiddlewareSetCookies = [
+      "middleware-render=1; Path=/; HttpOnly",
+      "middleware-render-second=1; Path=/; HttpOnly",
+    ];
+    const expectedHitSetCookies = [
+      "rendered=1; Path=/; HttpOnly",
+      "rendered-second=1; Path=/; HttpOnly",
+      "rendered-late=1; Path=/; HttpOnly",
+      "middleware-render=1; Path=/; HttpOnly",
+      "middleware-render-second=1; Path=/; HttpOnly",
+    ];
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const rscServer = await startProdServer({ port: 0, outDir, noCompression: true });
+
+    const fetchUntilLocalCacheState = async (
+      localBaseUrl: string,
+      pathname: string,
+      expectedState: string,
+      init?: RequestInit,
+      timeoutMs: number = 3000,
+    ): Promise<Response> => {
+      const deadline = Date.now() + timeoutMs;
+      let lastState: string | null = null;
+
+      while (Date.now() < deadline) {
+        const res = await fetch(`${localBaseUrl}${pathname}`, init);
+        const cacheState = res.headers.get("x-vinext-cache");
+        if (cacheState === expectedState) {
+          return res;
+        }
+
+        lastState = cacheState;
+        await res.arrayBuffer();
+        await sleep(25);
+      }
+
+      throw new Error(
+        `Timed out waiting for ${pathname} to reach cache state ${expectedState}; last state was ${lastState}`,
+      );
+    };
+
+    try {
+      const localBaseUrl = `http://localhost:${rscServer.port}`;
+
+      const missRes = await fetch(
+        `${localBaseUrl}/nextjs-compat/cached-render-headers-rsc-parity.rsc`,
+        {
+          headers: { Accept: "text/x-component" },
+        },
+      );
+      expect(missRes.status).toBe(200);
+      expect(missRes.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(missRes.headers.get("x-rendered-in-page")).toBeNull();
+      expect(missRes.headers.get("x-rendered-late")).toBeNull();
+      expect(missRes.headers.get("x-mw-conflict")).toBe("middleware");
+      expect(missRes.headers.get("x-mw-ran")).toBe("true");
+      expect(missRes.headers.get("vary")).toBe(expectedMissVary);
+      expect(missRes.headers.get("www-authenticate")).toBe(expectedMissWwwAuthenticate);
+      expect(missRes.headers.getSetCookie()).toEqual(
+        expect.arrayContaining(expectedMiddlewareSetCookies),
+      );
+      expect(missRes.headers.getSetCookie()).not.toContain("rendered-late=1; Path=/; HttpOnly");
+      const missBody = await missRes.text();
+      expect(missBody.length).toBeGreaterThan(0);
+
+      const hitRes = await fetchUntilLocalCacheState(
+        localBaseUrl,
+        "/nextjs-compat/cached-render-headers-rsc-parity.rsc",
+        "HIT",
+        {
+          headers: { Accept: "text/x-component" },
+        },
+      );
+      expect(hitRes.status).toBe(200);
+      expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(hitRes.headers.get("x-rendered-in-page")).toBe("yes");
+      expect(hitRes.headers.get("x-rendered-late")).toBe("yes");
+      expect(hitRes.headers.get("x-mw-conflict")).toBe("middleware");
+      expect(hitRes.headers.get("x-mw-ran")).toBe("true");
+      expect(hitRes.headers.get("vary")).toBe(expectedHitVary);
+      expect(hitRes.headers.get("www-authenticate")).toBe(expectedHitWwwAuthenticate);
+      expect(hitRes.headers.getSetCookie()).toEqual(expectedHitSetCookies);
+      const hitBody = await hitRes.text();
+      expect(hitBody.length).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolve) => rscServer.server.close(() => resolve()));
+    }
+  });
+
+  it("middleware rewrite status does not reuse a route handler's stale statusText in production", async () => {
+    const directRes = await fetch(`${baseUrl}/api/custom-status-text`);
+    expect(directRes.status).toBe(201);
+    expect(directRes.statusText).toBe("Created");
+    expect(await directRes.text()).toBe("custom status text route");
+
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-status-text`);
+    expect(res.status).toBe(403);
+    expect(res.statusText).not.toBe("Created");
+    expect(await res.text()).toBe("custom status text route");
+  });
+
+  it("middleware rewrite status does not override route-handler redirects with queued cookies in production", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-redirect-with-cookie`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+    expect(res.headers.getSetCookie()).toContain("route-special=redirect; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("middleware rewrite status does not override route-handler notFound() with queued cookies in production", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-not-found-with-cookie`);
+    expect(res.status).toBe(404);
+    expect(res.headers.getSetCookie()).toContain("route-special=not-found; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
+  });
+
+  it("middleware rewrite status does not override route-handler unauthorized() with queued cookies in production", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-route-unauthorized-with-cookie`);
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toContain("route-special=unauthorized; Path=/; HttpOnly");
+    expect(await res.text()).toBe("");
   });
 
   it("revalidateTag invalidates App Router ISR page entries by fetch tag", async () => {
@@ -3719,7 +4142,8 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated code handles SSR special errors without a legacy handleRenderError helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderErrorBoundaryResponse(renderErr) {");
-    expect(code).toContain("return renderErrorBoundaryPage(route, renderErr");
+    expect(code).toContain("async function __renderPageErrorBoundaryResponse(__error) {");
+    expect(code).toContain("return __renderPageErrorBoundaryResponse(renderErr);");
     expect(code).not.toContain("handleRenderError(ssrErr)");
   });
 
@@ -3840,6 +4264,23 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("return _consumeRequestScopedCacheLife()");
   });
 
+  it("generated code imports render-header helpers from next/headers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("peekRenderResponseHeaders");
+    expect(code).toContain("restoreRenderResponseHeaders");
+    expect(code).toContain("consumeRenderResponseHeaders");
+  });
+
+  it("generated code forwards render-header snapshots through page cache helpers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("const __buildRenderResponseHeaders = peekRenderResponseHeaders();");
+    expect(code).toContain("buildRenderHeaders: __buildRenderResponseHeaders");
+    expect(code).toContain("consumeRenderResponseHeaders,");
+    expect(code).toContain("peekRenderResponseHeaders");
+    expect(code).toContain("restoreRenderResponseHeaders");
+    expect(code).toContain("headers: __renderHeaders");
+  });
+
   // Route handler ISR code generation tests
   it("generated code contains __isrRouteKey helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
@@ -3862,7 +4303,9 @@ describe("generateRscEntry ISR code generation", () => {
     // Route handler ISR writes now flow through the typed execution helper.
     expect(code).toContain("executeAppRouteHandler as __executeAppRouteHandler");
     expect(code).toContain("return __executeAppRouteHandler({");
+    expect(code).toContain("consumeRenderResponseHeaders,");
     expect(code).toContain("isrRouteKey: __isrRouteKey");
     expect(code).toContain("isrSet: __isrSet");
+    expect(code).not.toContain("getAndClearPendingCookies,");
   });
 });

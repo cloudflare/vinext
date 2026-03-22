@@ -32,13 +32,90 @@ export interface HeadersContext {
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
+type RenderSetCookieSource = "cookie" | "draft" | "header";
+
+interface RenderSetCookieEntry {
+  source: RenderSetCookieSource;
+  value: string;
+}
+
+interface RenderResponseHeaderEntry {
+  name: string;
+  values: string[];
+}
+
+interface RenderResponseHeaders {
+  headers: Map<string, RenderResponseHeaderEntry>;
+  setCookies: RenderSetCookieEntry[];
+}
+
 export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
-  pendingSetCookies: string[];
-  draftModeCookieHeader: string | null;
+  renderResponseHeaders: RenderResponseHeaders;
   phase: HeadersAccessPhase;
 };
+
+function createRenderResponseHeaders(): RenderResponseHeaders {
+  return {
+    headers: new Map(),
+    setCookies: [],
+  };
+}
+
+function serializeRenderResponseHeaders(
+  renderResponseHeaders: RenderResponseHeaders,
+): Record<string, string | string[]> | undefined {
+  if (renderResponseHeaders.headers.size === 0 && renderResponseHeaders.setCookies.length === 0) {
+    return undefined;
+  }
+
+  const serialized: Record<string, string | string[]> = {};
+
+  for (const entry of renderResponseHeaders.headers.values()) {
+    if (entry.values.length === 1) {
+      serialized[entry.name] = entry.values[0]!;
+      continue;
+    }
+    if (entry.values.length > 1) {
+      serialized[entry.name] = [...entry.values];
+    }
+  }
+
+  if (renderResponseHeaders.setCookies.length > 0) {
+    serialized["set-cookie"] = renderResponseHeaders.setCookies.map((entry) => entry.value);
+  }
+
+  return Object.keys(serialized).length > 0 ? serialized : undefined;
+}
+
+function deserializeRenderResponseHeaders(
+  serialized?: Record<string, string | string[]>,
+): RenderResponseHeaders {
+  const renderResponseHeaders = createRenderResponseHeaders();
+
+  if (!serialized) {
+    return renderResponseHeaders;
+  }
+
+  for (const [key, value] of Object.entries(serialized)) {
+    if (key.toLowerCase() === "set-cookie") {
+      const values = Array.isArray(value) ? value : [value];
+      renderResponseHeaders.setCookies = values.map((item) => ({
+        source: "header",
+        value: item,
+      }));
+      continue;
+    }
+
+    renderResponseHeaders.headers.set(key.toLowerCase(), {
+      name: key,
+      values: Array.isArray(value) ? [...value] : [value],
+    });
+  }
+
+  return renderResponseHeaders;
+}
 
 // NOTE:
 // - This shim can be loaded under multiple module specifiers in Vite's
@@ -56,8 +133,7 @@ const _als = (_g[_ALS_KEY] ??=
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
-  pendingSetCookies: [],
-  draftModeCookieHeader: null,
+  renderResponseHeaders: createRenderResponseHeaders(),
   phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
 const EXPIRED_COOKIE_DATE = new Date(0).toUTCString();
@@ -66,7 +142,31 @@ function _getState(): VinextHeadersShimState {
   if (isInsideUnifiedScope()) {
     return getRequestContext();
   }
-  return _als.getStore() ?? _fallbackState;
+
+  const state = _als.getStore();
+  return state ?? _fallbackState;
+}
+
+function _appendRenderResponseHeaderWithSource(
+  name: string,
+  value: string,
+  source: RenderSetCookieSource,
+): void {
+  const state = _getState();
+  if (name.toLowerCase() === "set-cookie") {
+    state.renderResponseHeaders.setCookies.push({ source, value });
+    return;
+  }
+  const lowerName = name.toLowerCase();
+  const existing = state.renderResponseHeaders.headers.get(lowerName);
+  if (existing) {
+    existing.values.push(value);
+    return;
+  }
+  state.renderResponseHeaders.headers.set(lowerName, {
+    name,
+    values: [value],
+  });
 }
 
 /**
@@ -142,6 +242,14 @@ export function consumeDynamicUsage(): boolean {
   return used;
 }
 
+export function peekDynamicUsage(): boolean {
+  return _getState().dynamicUsageDetected;
+}
+
+export function restoreDynamicUsage(used: boolean): void {
+  _getState().dynamicUsageDetected = used;
+}
+
 function _setStatePhase(
   state: VinextHeadersShimState,
   phase: HeadersAccessPhase,
@@ -183,8 +291,13 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
   if (ctx !== null) {
     state.headersContext = ctx;
     state.dynamicUsageDetected = false;
-    state.pendingSetCookies = [];
-    state.draftModeCookieHeader = null;
+    state.renderResponseHeaders = createRenderResponseHeaders();
+    const legacyState = state as VinextHeadersShimState & {
+      pendingSetCookies?: string[];
+      draftModeCookieHeader?: string | null;
+    };
+    legacyState.pendingSetCookies = [];
+    legacyState.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
     state.headersContext = null;
@@ -212,6 +325,7 @@ export function runWithHeadersContext<T>(
       uCtx.dynamicUsageDetected = false;
       uCtx.pendingSetCookies = [];
       uCtx.draftModeCookieHeader = null;
+      uCtx.renderResponseHeaders = createRenderResponseHeaders();
       uCtx.phase = "render";
     }, fn);
   }
@@ -219,8 +333,7 @@ export function runWithHeadersContext<T>(
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,
-    pendingSetCookies: [],
-    draftModeCookieHeader: null,
+    renderResponseHeaders: createRenderResponseHeaders(),
     phase: "render",
   };
 
@@ -566,11 +679,19 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
 /**
  * Get and clear all pending Set-Cookie headers generated by cookies().set()/delete().
  * Called by the framework after rendering to attach headers to the response.
+ *
+ * @deprecated Prefer consumeRenderResponseHeaders() when you need the full
+ * render-time response header set.
  */
 export function getAndClearPendingCookies(): string[] {
   const state = _getState();
-  const cookies = state.pendingSetCookies;
-  state.pendingSetCookies = [];
+  const cookies = state.renderResponseHeaders.setCookies
+    .filter((entry) => entry.source === "cookie")
+    .map((entry) => entry.value);
+  if (cookies.length === 0) return [];
+  state.renderResponseHeaders.setCookies = state.renderResponseHeaders.setCookies.filter(
+    (entry) => entry.source !== "cookie",
+  );
   return cookies;
 }
 
@@ -597,12 +718,60 @@ function getDraftSecret(): string {
 /**
  * Get any Set-Cookie header generated by draftMode().enable()/disable().
  * Called by the framework after rendering to attach the header to the response.
+ *
+ * @deprecated Prefer consumeRenderResponseHeaders() when you need the full
+ * render-time response header set.
  */
 export function getDraftModeCookieHeader(): string | null {
   const state = _getState();
-  const header = state.draftModeCookieHeader;
-  state.draftModeCookieHeader = null;
-  return header;
+  const draftEntries = state.renderResponseHeaders.setCookies.filter(
+    (entry) => entry.source === "draft",
+  );
+  if (draftEntries.length === 0) return null;
+  state.renderResponseHeaders.setCookies = state.renderResponseHeaders.setCookies.filter(
+    (entry) => entry.source !== "draft",
+  );
+  return draftEntries[draftEntries.length - 1]?.value ?? null;
+}
+
+export function appendRenderResponseHeader(name: string, value: string): void {
+  _appendRenderResponseHeaderWithSource(name, value, "header");
+}
+
+export function setRenderResponseHeader(name: string, value: string): void {
+  const state = _getState();
+  if (name.toLowerCase() === "set-cookie") {
+    state.renderResponseHeaders.setCookies = [{ source: "header", value }];
+    return;
+  }
+  state.renderResponseHeaders.headers.set(name.toLowerCase(), {
+    name,
+    values: [value],
+  });
+}
+
+export function deleteRenderResponseHeader(name: string): void {
+  const state = _getState();
+  if (name.toLowerCase() === "set-cookie") {
+    state.renderResponseHeaders.setCookies = [];
+    return;
+  }
+  state.renderResponseHeaders.headers.delete(name.toLowerCase());
+}
+
+export function peekRenderResponseHeaders(): Record<string, string | string[]> | undefined {
+  return serializeRenderResponseHeaders(_getState().renderResponseHeaders);
+}
+
+export function restoreRenderResponseHeaders(serialized?: Record<string, string | string[]>): void {
+  _getState().renderResponseHeaders = deserializeRenderResponseHeaders(serialized);
+}
+
+export function consumeRenderResponseHeaders(): Record<string, string | string[]> | undefined {
+  const state = _getState();
+  const serialized = serializeRenderResponseHeaders(state.renderResponseHeaders);
+  state.renderResponseHeaders = createRenderResponseHeaders();
+  return serialized;
 }
 
 interface DraftModeResult {
@@ -642,7 +811,11 @@ export async function draftMode(): Promise<DraftModeResult> {
       }
       const secure =
         typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+      _appendRenderResponseHeaderWithSource(
+        "Set-Cookie",
+        `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+        "draft",
+      );
     },
     disable(): void {
       if (state.headersContext?.accessError) {
@@ -653,7 +826,11 @@ export async function draftMode(): Promise<DraftModeResult> {
       }
       const secure =
         typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
+      _appendRenderResponseHeaderWithSource(
+        "Set-Cookie",
+        `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`,
+        "draft",
+      );
     },
   };
 }
@@ -783,12 +960,12 @@ class RequestCookies {
     if (opts?.secure) parts.push("Secure");
     if (opts?.sameSite) parts.push(`SameSite=${opts.sameSite}`);
 
-    _getState().pendingSetCookies.push(parts.join("; "));
+    _appendRenderResponseHeaderWithSource("Set-Cookie", parts.join("; "), "cookie");
     return this;
   }
 
   /**
-   * Delete a cookie by emitting an expired Set-Cookie header.
+   * Delete a cookie by setting it with Max-Age=0.
    */
   delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
@@ -805,7 +982,7 @@ class RequestCookies {
     const parts = [`${name}=`, `Path=${path}`];
     if (domain) parts.push(`Domain=${domain}`);
     parts.push(`Expires=${EXPIRED_COOKIE_DATE}`);
-    _getState().pendingSetCookies.push(parts.join("; "));
+    _appendRenderResponseHeaderWithSource("Set-Cookie", parts.join("; "), "cookie");
     return this;
   }
 

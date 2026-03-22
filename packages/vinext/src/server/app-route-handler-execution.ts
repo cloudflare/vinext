@@ -60,10 +60,9 @@ export interface ExecuteAppRouteHandlerOptions extends RunAppRouteHandlerOptions
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   clearRequestContext: () => void;
   cleanPathname: string;
+  consumeRenderResponseHeaders: () => Record<string, string | string[]> | undefined;
   executionContext: ExecutionContextLike | null;
-  getAndClearPendingCookies: () => string[];
   getCollectedFetchTags: () => string[];
-  getDraftModeCookieHeader: () => string | null | undefined;
   handler: AppRouteHandlerModule;
   isAutoHead: boolean;
   isProduction: boolean;
@@ -162,37 +161,50 @@ export async function executeAppRouteHandler(
       options.executionContext?.waitUntil(routeWritePromise);
     }
 
-    const pendingCookies = options.getAndClearPendingCookies();
-    const draftCookie = options.getDraftModeCookieHeader();
+    const renderResponseHeaders = options.consumeRenderResponseHeaders();
     options.clearRequestContext();
 
     return applyRouteHandlerMiddlewareContext(
       finalizeRouteHandlerResponse(response, {
-        pendingCookies,
-        draftCookie,
         isHead: options.isAutoHead,
+        renderHeaders: renderResponseHeaders,
       }),
       options.middlewareContext,
     );
   } catch (error) {
-    options.getAndClearPendingCookies();
+    const renderResponseHeaders = options.consumeRenderResponseHeaders();
     const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url);
     options.clearRequestContext();
 
     if (specialError) {
       if (specialError.kind === "redirect") {
         return applyRouteHandlerMiddlewareContext(
-          new Response(null, {
-            status: specialError.statusCode,
-            headers: { Location: specialError.location },
-          }),
+          finalizeRouteHandlerResponse(
+            new Response(null, {
+              status: specialError.statusCode,
+              headers: { Location: specialError.location },
+            }),
+            {
+              isHead: false,
+              renderHeaders: renderResponseHeaders,
+            },
+          ),
           options.middlewareContext,
+          {
+            applyRewriteStatus: false,
+          },
         );
       }
 
       return applyRouteHandlerMiddlewareContext(
-        new Response(null, { status: specialError.statusCode }),
+        finalizeRouteHandlerResponse(new Response(null, { status: specialError.statusCode }), {
+          isHead: false,
+          renderHeaders: renderResponseHeaders,
+        }),
         options.middlewareContext,
+        {
+          applyRewriteStatus: false,
+        },
       );
     }
 

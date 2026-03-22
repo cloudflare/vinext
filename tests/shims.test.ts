@@ -1081,6 +1081,153 @@ describe("next/headers phase-aware cookies", () => {
   });
 });
 
+describe("next/headers render response headers", () => {
+  it("preserves repeated non-cookie headers and multi-value Set-Cookie deterministically", async () => {
+    const {
+      setHeadersContext,
+      appendRenderResponseHeader,
+      restoreRenderResponseHeaders,
+      peekRenderResponseHeaders,
+      setRenderResponseHeader,
+      deleteRenderResponseHeader,
+      consumeRenderResponseHeaders,
+      markDynamicUsage,
+      peekDynamicUsage,
+      restoreDynamicUsage,
+      consumeDynamicUsage,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    try {
+      appendRenderResponseHeader("x-test", "one");
+      appendRenderResponseHeader("x-test", "two");
+      setRenderResponseHeader("x-test", "final");
+      appendRenderResponseHeader("Vary", "x-render-one");
+      appendRenderResponseHeader("Vary", "x-render-two");
+      appendRenderResponseHeader("Set-Cookie", "a=1; Path=/");
+      appendRenderResponseHeader("Set-Cookie", "b=2; Path=/");
+      deleteRenderResponseHeader("x-missing");
+      appendRenderResponseHeader("x-delete-me", "temp");
+      deleteRenderResponseHeader("x-delete-me");
+
+      expect(peekRenderResponseHeaders()).toEqual({
+        "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+        Vary: ["x-render-one", "x-render-two"],
+        "x-test": "final",
+      });
+      expect(peekRenderResponseHeaders()).toEqual({
+        "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+        Vary: ["x-render-one", "x-render-two"],
+        "x-test": "final",
+      });
+      expect(consumeRenderResponseHeaders()).toEqual({
+        "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+        Vary: ["x-render-one", "x-render-two"],
+        "x-test": "final",
+      });
+      expect(consumeRenderResponseHeaders()).toBeUndefined();
+
+      restoreRenderResponseHeaders({
+        "set-cookie": ["restored=1; Path=/"],
+        vary: ["x-restored-one", "x-restored-two"],
+        "x-restored": "yes",
+      });
+      expect(peekRenderResponseHeaders()).toEqual({
+        "set-cookie": ["restored=1; Path=/"],
+        vary: ["x-restored-one", "x-restored-two"],
+        "x-restored": "yes",
+      });
+
+      expect(peekDynamicUsage()).toBe(false);
+      markDynamicUsage();
+      expect(peekDynamicUsage()).toBe(true);
+      restoreDynamicUsage(false);
+      expect(peekDynamicUsage()).toBe(false);
+      restoreDynamicUsage(true);
+      expect(peekDynamicUsage()).toBe(true);
+      expect(consumeDynamicUsage()).toBe(true);
+      expect(peekDynamicUsage()).toBe(false);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("keeps cookie helper queues separate from generic header serialization until consumed", async () => {
+    const {
+      setHeadersContext,
+      setHeadersAccessPhase,
+      cookies,
+      draftMode,
+      getAndClearPendingCookies,
+      getDraftModeCookieHeader,
+      consumeRenderResponseHeaders,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      const cookieStore = await cookies();
+      cookieStore.set("session", "abc");
+      const draft = await draftMode();
+      draft.enable();
+
+      expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("session=abc")]);
+      expect(getDraftModeCookieHeader()).toContain("__prerender_bypass=");
+      expect(consumeRenderResponseHeaders()).toBeUndefined();
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("serializes public cookie and draft-mode mutations into render response headers", async () => {
+    const {
+      setHeadersContext,
+      setHeadersAccessPhase,
+      cookies,
+      draftMode,
+      consumeRenderResponseHeaders,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      const cookieStore = await cookies();
+      cookieStore.set("session", "abc", { path: "/", httpOnly: true });
+      cookieStore.delete("session");
+
+      const draft = await draftMode();
+      draft.enable();
+      draft.disable();
+
+      expect(consumeRenderResponseHeaders()).toEqual({
+        "set-cookie": [
+          "session=abc; Path=/; HttpOnly",
+          expect.stringContaining("session=; Path=/; Expires="),
+          expect.stringContaining("__prerender_bypass="),
+          expect.stringContaining("__prerender_bypass=; Path=/; HttpOnly; SameSite=Lax"),
+        ],
+      });
+      expect(consumeRenderResponseHeaders()).toBeUndefined();
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+});
+
 describe("next/server shim", () => {
   it("NextRequest wraps a standard Request with nextUrl and cookies", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");

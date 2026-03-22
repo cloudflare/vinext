@@ -63,7 +63,7 @@ describe("app page stream helpers", () => {
     await expect(new Response(htmlStream).text()).resolves.toBe("<html>ok</html>");
   });
 
-  it("builds an HTML response, including link headers, after clearing request context", async () => {
+  it("builds an HTML response, including link headers", async () => {
     const clearRequestContext = vi.fn();
 
     const response = await renderAppPageHtmlResponse({
@@ -84,7 +84,7 @@ describe("app page stream helpers", () => {
       status: 203,
     });
 
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(clearRequestContext).not.toHaveBeenCalled();
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("link")).toBe(

@@ -12,6 +12,7 @@ type AppPageCacheSetter = (
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 
 export interface AppPageCacheRenderResult {
+  headers?: Record<string, string | string[]>;
   html: string;
   rscData: ArrayBuffer;
   tags: string[];
@@ -40,7 +41,10 @@ export interface ReadAppPageCacheResponseOptions {
 export interface FinalizeAppPageHtmlCacheResponseOptions {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
+  consumeDynamicUsage: () => boolean;
+  consumeRenderResponseHeaders: () => Record<string, string | string[]> | undefined;
   getPageTags: () => string[];
+  initialRenderHeaders?: Record<string, string | string[]>;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (pathname: string) => string;
@@ -53,8 +57,10 @@ export interface ScheduleAppPageRscCacheWriteOptions {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
+  consumeRenderResponseHeaders: () => Record<string, string | string[]> | undefined;
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
+  initialRenderHeaders?: Record<string, string | string[]>;
   isrDebug?: AppPageDebugLogger;
   isrRscKey: (pathname: string) => string;
   isrSet: AppPageCacheSetter;
@@ -77,6 +83,70 @@ function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue 
   return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
 }
 
+function isAppendOnlyResponseHeader(lowerKey: string): boolean {
+  return (
+    lowerKey === "set-cookie" ||
+    lowerKey === "vary" ||
+    lowerKey === "www-authenticate" ||
+    lowerKey === "proxy-authenticate"
+  );
+}
+
+function mergeResponseHeaderValues(
+  targetHeaders: Headers,
+  key: string,
+  value: string | string[],
+  mode: "fallback" | "override",
+): void {
+  const lowerKey = key.toLowerCase();
+  const values = Array.isArray(value) ? value : [value];
+
+  if (isAppendOnlyResponseHeader(lowerKey)) {
+    for (const item of values) {
+      targetHeaders.append(key, item);
+    }
+    return;
+  }
+
+  if (mode === "fallback" && targetHeaders.has(key)) {
+    return;
+  }
+
+  targetHeaders.delete(key);
+  if (values.length === 1) {
+    targetHeaders.set(key, values[0]!);
+    return;
+  }
+
+  for (const item of values) {
+    targetHeaders.append(key, item);
+  }
+}
+
+function mergeResponseHeaders(
+  targetHeaders: Headers,
+  sourceHeaders: Record<string, string | string[]> | null | undefined,
+  mode: "fallback" | "override",
+): void {
+  if (!sourceHeaders) {
+    return;
+  }
+
+  for (const [key, value] of Object.entries(sourceHeaders)) {
+    mergeResponseHeaderValues(targetHeaders, key, value, mode);
+  }
+}
+
+function headersWithCachedHeaders(
+  baseHeaders: HeadersInit,
+  cachedHeaders: Record<string, string | string[]> | undefined,
+): Headers {
+  const headers = new Headers();
+  mergeResponseHeaders(headers, cachedHeaders, "fallback");
+  mergeResponseHeaders(headers, Object.fromEntries(new Headers(baseHeaders)), "override");
+  return headers;
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
@@ -97,10 +167,13 @@ export function buildAppPageCachedResponse(
 
     return new Response(cachedValue.rscData, {
       status,
-      headers: {
-        "Content-Type": "text/x-component; charset=utf-8",
-        ...headers,
-      },
+      headers: headersWithCachedHeaders(
+        {
+          "Content-Type": "text/x-component; charset=utf-8",
+          ...headers,
+        },
+        cachedValue.headers,
+      ),
     });
   }
 
@@ -110,10 +183,13 @@ export function buildAppPageCachedResponse(
 
   return new Response(cachedValue.html, {
     status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      ...headers,
-    },
+    headers: headersWithCachedHeaders(
+      {
+        "Content-Type": "text/html; charset=utf-8",
+        ...headers,
+      },
+      cachedValue.headers,
+    ),
   });
 }
 
@@ -157,13 +233,13 @@ export async function readAppPageCacheResponse(
         await Promise.all([
           options.isrSet(
             options.isrHtmlKey(options.cleanPathname),
-            buildAppPageCacheValue(revalidatedPage.html, undefined, 200),
+            buildAppPageCacheValue(revalidatedPage.html, undefined, revalidatedPage.headers, 200),
             options.revalidateSeconds,
             revalidatedPage.tags,
           ),
           options.isrSet(
             options.isrRscKey(options.cleanPathname),
-            buildAppPageCacheValue("", revalidatedPage.rscData, 200),
+            buildAppPageCacheValue("", revalidatedPage.rscData, revalidatedPage.headers, 200),
             options.revalidateSeconds,
             revalidatedPage.tags,
           ),
@@ -225,11 +301,19 @@ export function finalizeAppPageHtmlCacheResponse(
       }
       chunks.push(decoder.decode());
 
+      const renderHeadersForCache =
+        options.consumeRenderResponseHeaders() ?? options.initialRenderHeaders;
+
+      if (options.consumeDynamicUsage()) {
+        options.isrDebug?.("skip HTML cache write after late dynamic usage", options.cleanPathname);
+        return;
+      }
+
       const pageTags = options.getPageTags();
       const writes = [
         options.isrSet(
           htmlKey,
-          buildAppPageCacheValue(chunks.join(""), undefined, 200),
+          buildAppPageCacheValue(chunks.join(""), undefined, renderHeadersForCache, 200),
           options.revalidateSeconds,
           pageTags,
         ),
@@ -240,7 +324,7 @@ export function finalizeAppPageHtmlCacheResponse(
           options.capturedRscDataPromise.then((rscData) =>
             options.isrSet(
               rscKey,
-              buildAppPageCacheValue("", rscData, 200),
+              buildAppPageCacheValue("", rscData, renderHeadersForCache, 200),
               options.revalidateSeconds,
               pageTags,
             ),
@@ -252,6 +336,8 @@ export function finalizeAppPageHtmlCacheResponse(
       options.isrDebug?.("HTML cache written", htmlKey);
     } catch (cacheError) {
       console.error("[vinext] ISR cache write error:", cacheError);
+    } finally {
+      options.consumeRenderResponseHeaders();
     }
   })();
 
@@ -276,6 +362,8 @@ export function scheduleAppPageRscCacheWrite(
   const cachePromise = (async () => {
     try {
       const rscData = await capturedRscDataPromise;
+      const renderHeadersForCache =
+        options.consumeRenderResponseHeaders() ?? options.initialRenderHeaders;
 
       // Two-phase dynamic detection:
       // 1. dynamicUsedDuringBuild catches searchParams-driven opt-in before the
@@ -289,7 +377,7 @@ export function scheduleAppPageRscCacheWrite(
 
       await options.isrSet(
         rscKey,
-        buildAppPageCacheValue("", rscData, 200),
+        buildAppPageCacheValue("", rscData, renderHeadersForCache, 200),
         options.revalidateSeconds,
         options.getPageTags(),
       );
