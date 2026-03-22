@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { RevalidateForm } from "./revalidate-form";
 
 async function getData() {
@@ -13,6 +14,9 @@ export default async function RevalidatePage() {
       <h1>Revalidate Test</h1>
       <div id="time">{time}</div>
       <RevalidateForm />
+      <Link href="/about" id="action-revalidate-about-link">
+        Go to About
+      </Link>
     </div>
   );
 }

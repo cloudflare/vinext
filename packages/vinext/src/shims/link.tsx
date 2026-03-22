@@ -168,9 +168,9 @@ function prefetchUrl(href: string): void {
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
       })
-        .then((response) => {
+        .then(async (response) => {
           if (response.ok) {
-            storePrefetchResponse(rscUrl, response);
+            await storePrefetchResponse(rscUrl, response);
           } else {
             // Non-ok response: allow retry on next viewport intersection
             prefetched.delete(rscUrl);

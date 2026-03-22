@@ -15,6 +15,15 @@ export default function HomePage() {
         <Link href="/redirect-test-config" data-testid="redirect-test-link">
           Go to Redirect Test
         </Link>
+        <Link href="/nextjs-compat/action-revalidate" id="action-revalidate-link">
+          Go to Action Revalidate
+        </Link>
+        <Link href="/nextjs-compat/refresh-test" id="refresh-test-link">
+          Go to Refresh Test
+        </Link>
+        <Link href="/nav-flash/list" id="nav-flash-link">
+          Go to Providers
+        </Link>
       </nav>
     </main>
   );

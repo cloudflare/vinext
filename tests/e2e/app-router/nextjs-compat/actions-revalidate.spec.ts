@@ -44,8 +44,10 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
 
   // Test router.refresh() re-renders with fresh data
   test("router.refresh() updates page data", async ({ page }) => {
-    await page.goto(`${BASE}/nextjs-compat/refresh-test`);
+    await page.goto(`${BASE}/`);
     await waitForHydration(page);
+    await page.click("#refresh-test-link");
+    await expect(page.locator("h1")).toHaveText("Refresh Test");
 
     // Read initial timestamp
     const time1 = await page.locator("#time").textContent();
@@ -59,6 +61,39 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       const time2 = await page.locator("#time").textContent();
       expect(time2).toBeTruthy();
       expect(time2).not.toBe(time1);
+    }).toPass({ timeout: 10_000 });
+  });
+
+  test("server action invalidates stale traversal data before back navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+    await page.click("#action-revalidate-link");
+    await expect(page.locator("h1")).toHaveText("Revalidate Test");
+
+    const time1 = await page.locator("#time").textContent();
+    expect(time1).toBeTruthy();
+
+    await page.click("#revalidate");
+
+    let time2: string | null = null;
+    await expect(async () => {
+      time2 = await page.locator("#time").textContent();
+      expect(time2).toBeTruthy();
+      expect(time2).not.toBe(time1);
+    }).toPass({ timeout: 10_000 });
+
+    await page.click("#action-revalidate-about-link");
+    await expect(page.locator("h1")).toHaveText("About");
+
+    await page.goBack();
+    await expect(page.locator("h1")).toHaveText("Revalidate Test");
+
+    await expect(async () => {
+      const timeBack = await page.locator("#time").textContent();
+      expect(timeBack).toBeTruthy();
+      expect(timeBack).not.toBe(time1);
     }).toPass({ timeout: 10_000 });
   });
 });

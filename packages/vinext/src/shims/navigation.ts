@@ -189,9 +189,35 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
 
+export interface CachedRscResponse {
+  body: ArrayBuffer;
+  headers: Array<[string, string]>;
+  status: number;
+  statusText: string;
+  url: string;
+}
+
 export interface PrefetchCacheEntry {
-  response: Response;
+  response: CachedRscResponse;
   timestamp: number;
+}
+
+export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
+  return {
+    body: await response.arrayBuffer(),
+    headers: [...response.headers.entries()],
+    status: response.status,
+    statusText: response.statusText,
+    url: response.url,
+  };
+}
+
+export function restoreRscResponse(snapshot: CachedRscResponse): Response {
+  return new Response(snapshot.body.slice(0), {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  });
 }
 
 /**
@@ -236,7 +262,7 @@ export function getPrefetchedUrls(): Set<string> {
  * Enforces a maximum cache size to prevent unbounded memory growth on
  * link-heavy pages.
  */
-export function storePrefetchResponse(rscUrl: string, response: Response): void {
+export async function storePrefetchResponse(rscUrl: string, response: Response): Promise<void> {
   const cache = getPrefetchCache();
   const now = Date.now();
 
@@ -260,7 +286,7 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
     }
   }
 
-  cache.set(rscUrl, { response, timestamp: now });
+  cache.set(rscUrl, { response: await snapshotRscResponse(response), timestamp: now });
 }
 
 // Client navigation listeners
@@ -616,7 +642,7 @@ const _appRouter = {
     if (isServer) return;
     // Re-fetch the current page's RSC stream
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      void window.__VINEXT_RSC_NAVIGATE__(window.location.href);
+      void window.__VINEXT_RSC_NAVIGATE__(window.location.href, 0, "refresh");
     }
   },
   prefetch(href: string): void {
@@ -632,9 +658,9 @@ const _appRouter = {
       credentials: "include",
       priority: "low" as RequestInit["priority"],
     })
-      .then((response) => {
+      .then(async (response) => {
         if (response.ok) {
-          storePrefetchResponse(rscUrl, response);
+          await storePrefetchResponse(rscUrl, response);
         } else {
           // Non-ok response: allow retry on next prefetch() call
           prefetched.delete(rscUrl);
@@ -869,7 +895,9 @@ if (!isServer) {
   window.addEventListener("popstate", (event) => {
     notifyListeners();
     // Restore scroll position for back/forward navigation
-    restoreScrollPosition(event.state);
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function") {
+      restoreScrollPosition(event.state);
+    }
   });
 
   // ---------------------------------------------------------------------------
