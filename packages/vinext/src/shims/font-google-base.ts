@@ -422,9 +422,10 @@ const googleFonts = new Proxy({} as Record<string, (options?: FontOptions) => Fo
   get(_target, prop: string) {
     if (prop === "__esModule") return true;
     if (prop === "default") return googleFonts;
-    // Convert camelCase/PascalCase to proper font family name
-    // e.g., "Inter" -> "Inter", "RobotoMono" -> "Roboto Mono"
-    const family = prop.replace(/([a-z])([A-Z])/g, "$1 $2");
+    // Convert export-style names to proper font family names:
+    // - Underscores to spaces: "Roboto_Mono" -> "Roboto Mono"
+    // - PascalCase to spaces:  "RobotoMono"  -> "Roboto Mono"
+    const family = prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
     return createFontLoader(family);
   },
 });

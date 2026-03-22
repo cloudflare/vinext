@@ -445,10 +445,22 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_GOOGLE_FONTS = "virtual:vinext-google-fonts";
+const RESOLVED_VIRTUAL_GOOGLE_FONTS = "\0" + VIRTUAL_GOOGLE_FONTS;
 
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
+
+// IMPORTANT: keep this set in sync with the non-default exports from
+// packages/vinext/src/shims/font-google.ts (and its re-export barrel).
+const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
+  "buildGoogleFontsUrl",
+  "getSSRFontLinks",
+  "getSSRFontStyles",
+  "getSSRFontPreloads",
+  "createFontLoader",
+]);
 
 /**
  * Extract the npm package name from a module ID (file path).
@@ -471,6 +483,162 @@ function getPackageName(id: string): string | null {
 
 /** Absolute path to vinext's shims directory, used by clientManualChunks. */
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
+const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+
+type GoogleFontNamedSpecifier = {
+  imported: string;
+  local: string;
+  isType: boolean;
+  raw: string;
+};
+
+function parseGoogleFontNamedSpecifiers(
+  specifiersStr: string,
+  forceType = false,
+): GoogleFontNamedSpecifier[] {
+  return specifiersStr
+    .split(",")
+    .map((spec) => spec.trim())
+    .filter(Boolean)
+    .map((raw) => {
+      const isType = forceType || raw.startsWith("type ");
+      const valueSpec = isType ? raw.replace(/^type\s+/, "") : raw;
+      const asParts = valueSpec.split(/\s+as\s+/);
+      const imported = asParts[0]?.trim() ?? "";
+      const local = (asParts[1] || asParts[0] || "").trim();
+      return { imported, local, isType, raw };
+    })
+    .filter((spec) => spec.imported.length > 0 && spec.local.length > 0);
+}
+
+function parseGoogleFontImportClause(clause: string): {
+  defaultLocal: string | null;
+  namespaceLocal: string | null;
+  named: GoogleFontNamedSpecifier[];
+} {
+  const trimmed = clause.trim();
+
+  if (trimmed.startsWith("type ")) {
+    const braceStart = trimmed.indexOf("{");
+    const braceEnd = trimmed.lastIndexOf("}");
+    if (braceStart === -1 || braceEnd === -1) {
+      return { defaultLocal: null, namespaceLocal: null, named: [] };
+    }
+    return {
+      defaultLocal: null,
+      namespaceLocal: null,
+      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd), true),
+    };
+  }
+
+  const braceStart = trimmed.indexOf("{");
+  const braceEnd = trimmed.lastIndexOf("}");
+  if (braceStart !== -1 && braceEnd !== -1) {
+    const beforeNamed = trimmed.slice(0, braceStart).trim().replace(/,\s*$/, "").trim();
+    return {
+      defaultLocal: beforeNamed || null,
+      namespaceLocal: null,
+      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd)),
+    };
+  }
+
+  const commaIndex = trimmed.indexOf(",");
+  if (commaIndex !== -1) {
+    const defaultLocal = trimmed.slice(0, commaIndex).trim() || null;
+    const rest = trimmed.slice(commaIndex + 1).trim();
+    if (rest.startsWith("* as ")) {
+      return {
+        defaultLocal,
+        namespaceLocal: rest.slice("* as ".length).trim() || null,
+        named: [],
+      };
+    }
+  }
+
+  if (trimmed.startsWith("* as ")) {
+    return {
+      defaultLocal: null,
+      namespaceLocal: trimmed.slice("* as ".length).trim() || null,
+      named: [],
+    };
+  }
+
+  return {
+    defaultLocal: trimmed || null,
+    namespaceLocal: null,
+    named: [],
+  };
+}
+
+function encodeGoogleFontsVirtualId(payload: {
+  hasDefault: boolean;
+  fonts: string[];
+  utilities: string[];
+}): string {
+  const params = new URLSearchParams();
+  if (payload.hasDefault) params.set("default", "1");
+  if (payload.fonts.length > 0) params.set("fonts", payload.fonts.join(","));
+  if (payload.utilities.length > 0) params.set("utilities", payload.utilities.join(","));
+  return `${VIRTUAL_GOOGLE_FONTS}?${params.toString()}`;
+}
+
+function parseGoogleFontsVirtualId(id: string): {
+  hasDefault: boolean;
+  fonts: string[];
+  utilities: string[];
+} | null {
+  const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+  if (!cleanId.startsWith(VIRTUAL_GOOGLE_FONTS)) return null;
+  const queryIndex = cleanId.indexOf("?");
+  const params = new URLSearchParams(queryIndex === -1 ? "" : cleanId.slice(queryIndex + 1));
+  return {
+    hasDefault: params.get("default") === "1",
+    fonts:
+      params
+        .get("fonts")
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) ?? [],
+    utilities:
+      params
+        .get("utilities")
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) ?? [],
+  };
+}
+
+function generateGoogleFontsVirtualModule(id: string): string | null {
+  const payload = parseGoogleFontsVirtualId(id);
+  if (!payload) return null;
+
+  const utilities = Array.from(new Set(payload.utilities));
+  const fonts = Array.from(new Set(payload.fonts));
+  const lines: string[] = [];
+
+  lines.push(`import { createFontLoader } from ${JSON.stringify(_fontGoogleShimPath)};`);
+
+  const reExports: string[] = [];
+  if (payload.hasDefault) reExports.push("default");
+  reExports.push(...utilities);
+  if (reExports.length > 0) {
+    lines.push(`export { ${reExports.join(", ")} } from ${JSON.stringify(_fontGoogleShimPath)};`);
+  }
+
+  for (const fontName of fonts) {
+    const family = fontName.replace(/_/g, " ");
+    lines.push(
+      `export const ${fontName} = /*#__PURE__*/ createFontLoader(${JSON.stringify(family)});`,
+    );
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+function propertyNameToGoogleFontFamily(prop: string): string {
+  return prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+}
 
 /**
  * manualChunks function for client builds.
@@ -2166,6 +2334,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
+            return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
+          }
           if (
             cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
             cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
@@ -2183,6 +2354,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
           ) {
             return RESOLVED_APP_BROWSER_ENTRY;
+          }
+          if (
+            cleanId.includes("/" + VIRTUAL_GOOGLE_FONTS + "?") ||
+            cleanId.includes("\\" + VIRTUAL_GOOGLE_FONTS + "?")
+          ) {
+            const queryIndex = cleanId.indexOf(VIRTUAL_GOOGLE_FONTS + "?");
+            return (
+              RESOLVED_VIRTUAL_GOOGLE_FONTS +
+              cleanId.slice(queryIndex + VIRTUAL_GOOGLE_FONTS.length)
+            );
           }
         },
       },
@@ -2227,6 +2408,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           return generateBrowserEntry();
+        }
+        if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
+          return generateGoogleFontsVirtualModule(id);
         }
       },
     },
@@ -3232,11 +3416,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
-    // Google Fonts self-hosting:
-    // During production builds, fetches Google Fonts CSS + .woff2 files,
-    // caches them locally in .vinext/fonts/, and rewrites font constructor
-    // calls to pass _selfHostedCSS with @font-face rules pointing at local assets.
-    // In dev mode, this plugin is a no-op (CDN loading is used instead).
+    // Google Fonts import rewrite + self-hosting:
+    //
+    // 1. Rewrites named next/font/google imports/exports to a tiny virtual module
+    //    that exports only the requested fonts plus any utility exports.
+    //    This lets us delete the generated ~1,900-line runtime catalog while
+    //    keeping ESM import semantics intact.
+    // 2. During production builds, fetches Google Fonts CSS + font files and
+    //    injects _selfHostedCSS into statically analyzable font loader calls.
     {
       name: "vinext:google-fonts",
       enforce: "pre",
@@ -3252,64 +3439,129 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       transform: {
         // Hook filter: only invoke JS when code contains 'next/font/google'.
-        // The _isBuild runtime check can't be expressed as a filter, but this
-        // still eliminates nearly all Rust-to-JS calls since very few files
+        // This still eliminates nearly all Rust-to-JS calls since very few files
         // import from next/font/google.
         filter: {
           id: {
             include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
           },
           code: "next/font/google",
         },
         async handler(code, id) {
-          if (!(this as any)._isBuild) return null;
           // Defensive guard — duplicates filter logic
-          if (id.includes("node_modules")) return null;
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("next/font/google")) return null;
-
-          // Match font constructor calls: Inter({ weight: ..., subsets: ... })
-          // We look for PascalCase or Name_Name identifiers followed by ({...})
-          // This regex captures the font name and the options object literal
-          const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
-
-          // Also need to verify these names came from next/font/google import
-          const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
-          const importMatch = code.match(importRe);
-          if (!importMatch) return null;
-
-          const importedNames = new Set(
-            importMatch[1]
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean),
-          );
+          if (id.startsWith(_shimsDir)) return null;
 
           const s = new MagicString(code);
           let hasChanges = false;
+          let proxyImportCounter = 0;
+          const overwrittenRanges: Array<[number, number]> = [];
+          const fontLocals = new Map<string, string>();
+          const proxyObjectLocals = new Set<string>();
+
+          const importRe = /^[ \t]*import\s+([^;]+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
+          let importMatch;
+          while ((importMatch = importRe.exec(code)) !== null) {
+            const [fullMatch, clause] = importMatch;
+            const matchStart = importMatch.index;
+            const matchEnd = matchStart + fullMatch.length;
+            const parsed = parseGoogleFontImportClause(clause);
+            const utilityImports = parsed.named.filter(
+              (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
+            );
+            const fontImports = parsed.named.filter(
+              (spec) => !spec.isType && !GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
+            );
+
+            if (parsed.defaultLocal) {
+              proxyObjectLocals.add(parsed.defaultLocal);
+            }
+            for (const fontImport of fontImports) {
+              fontLocals.set(fontImport.local, fontImport.imported);
+            }
+
+            if (fontImports.length > 0) {
+              const virtualId = encodeGoogleFontsVirtualId({
+                hasDefault: Boolean(parsed.defaultLocal),
+                fonts: Array.from(new Set(fontImports.map((spec) => spec.imported))),
+                utilities: Array.from(new Set(utilityImports.map((spec) => spec.imported))),
+              });
+              s.overwrite(
+                matchStart,
+                matchEnd,
+                `import ${clause} from ${JSON.stringify(virtualId)};`,
+              );
+              overwrittenRanges.push([matchStart, matchEnd]);
+              hasChanges = true;
+              continue;
+            }
+
+            if (parsed.namespaceLocal) {
+              const proxyImportName = `__vinext_google_fonts_proxy_${proxyImportCounter++}`;
+              const replacementLines = [
+                `import ${proxyImportName} from ${JSON.stringify(_fontGoogleShimPath)};`,
+              ];
+              if (parsed.defaultLocal) {
+                replacementLines.push(`var ${parsed.defaultLocal} = ${proxyImportName};`);
+              }
+              replacementLines.push(`var ${parsed.namespaceLocal} = ${proxyImportName};`);
+              s.overwrite(matchStart, matchEnd, replacementLines.join("\n"));
+              overwrittenRanges.push([matchStart, matchEnd]);
+              proxyObjectLocals.add(parsed.namespaceLocal);
+              hasChanges = true;
+            }
+          }
+
+          const exportRe = /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
+          let exportMatch;
+          while ((exportMatch = exportRe.exec(code)) !== null) {
+            const [fullMatch, specifiers] = exportMatch;
+            const matchStart = exportMatch.index;
+            const matchEnd = matchStart + fullMatch.length;
+            const namedExports = parseGoogleFontNamedSpecifiers(specifiers);
+            const utilityExports = namedExports.filter(
+              (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
+            );
+            const fontExports = namedExports.filter(
+              (spec) => !spec.isType && !GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
+            );
+            if (fontExports.length === 0) continue;
+
+            const virtualId = encodeGoogleFontsVirtualId({
+              hasDefault: false,
+              fonts: Array.from(new Set(fontExports.map((spec) => spec.imported))),
+              utilities: Array.from(new Set(utilityExports.map((spec) => spec.imported))),
+            });
+            s.overwrite(
+              matchStart,
+              matchEnd,
+              `export { ${specifiers.trim()} } from ${JSON.stringify(virtualId)};`,
+            );
+            overwrittenRanges.push([matchStart, matchEnd]);
+            hasChanges = true;
+          }
 
           const cacheDir = (this as any)._cacheDir as string;
           const fontCache = (this as any)._fontCache as Map<string, string>;
 
-          let match;
-          while ((match = fontCallRe.exec(code)) !== null) {
-            const [fullMatch, fontName, optionsStr] = match;
-            if (!importedNames.has(fontName)) continue;
-
-            // Convert PascalCase/Underscore to font family
-            const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
-
+          async function injectSelfHostedCss(
+            callStart: number,
+            callEnd: number,
+            optionsStr: string,
+            family: string,
+            calleeSource: string,
+          ) {
             // Parse options safely via AST — no eval/new Function
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             let options: Record<string, any> = {};
             try {
               const parsed = parseStaticObjectLiteral(optionsStr);
-              if (!parsed) continue; // Contains dynamic expressions, skip
+              if (!parsed) return; // Contains dynamic expressions, skip
               options = parsed as Record<string, any>;
             } catch {
-              continue; // Can't parse options statically, skip
+              return; // Can't parse options statically, skip
             }
 
             // Build the Google Fonts CSS URL
@@ -3356,13 +3608,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 fontCache.set(cssUrl, localCSS);
               } catch {
                 // Fetch failed (offline?) — fall back to CDN mode
-                continue;
+                return;
               }
             }
 
             // Inject _selfHostedCSS into the options object
-            const matchStart = match.index;
-            const matchEnd = matchStart + fullMatch.length;
             const escapedCSS = JSON.stringify(localCSS);
             const closingBrace = optionsStr.lastIndexOf("}");
             const optionsWithCSS =
@@ -3371,9 +3621,55 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               `_selfHostedCSS: ${escapedCSS}` +
               optionsStr.slice(closingBrace);
 
-            const replacement = `${fontName}(${optionsWithCSS})`;
-            s.overwrite(matchStart, matchEnd, replacement);
+            const replacement = `${calleeSource}(${optionsWithCSS})`;
+            s.overwrite(callStart, callEnd, replacement);
             hasChanges = true;
+          }
+
+          if ((this as any)._isBuild) {
+            const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+            let namedCallMatch;
+            while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
+              const [fullMatch, localName, optionsStr] = namedCallMatch;
+              const importedName = fontLocals.get(localName);
+              if (!importedName) continue;
+
+              const callStart = namedCallMatch.index;
+              const callEnd = callStart + fullMatch.length;
+              if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+                continue;
+              }
+
+              await injectSelfHostedCss(
+                callStart,
+                callEnd,
+                optionsStr,
+                importedName.replace(/_/g, " "),
+                localName,
+              );
+            }
+
+            const memberCallRe =
+              /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+            let memberCallMatch;
+            while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
+              const [fullMatch, objectName, propName, optionsStr] = memberCallMatch;
+              if (!proxyObjectLocals.has(objectName)) continue;
+
+              const callStart = memberCallMatch.index;
+              const callEnd = callStart + fullMatch.length;
+              if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+                continue;
+              }
+
+              await injectSelfHostedCss(
+                callStart,
+                callEnd,
+                optionsStr,
+                propertyNameToGoogleFontFamily(propName),
+                `${objectName}.${propName}`,
+              );
+            }
           }
 
           if (!hasChanges) return null;
