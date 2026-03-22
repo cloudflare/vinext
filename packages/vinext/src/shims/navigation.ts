@@ -25,11 +25,13 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 // still line up if Vite loads this shim through multiple resolved module IDs.
 const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
 const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+const _CLIENT_NAVIGATION_RENDER_CTX_KEY = Symbol.for("vinext.clientNavigationRenderContext");
 type _LayoutSegmentGlobal = typeof globalThis & {
   [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<string[]> | null;
   [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
     ((callback: () => unknown) => void) | null
   > | null;
+  [_CLIENT_NAVIGATION_RENDER_CTX_KEY]?: React.Context<ClientNavigationRenderSnapshot | null> | null;
 };
 
 // ─── ServerInsertedHTML context ────────────────────────────────────────────────
@@ -64,6 +66,34 @@ function getServerInsertedHTMLContext(): React.Context<
 export const ServerInsertedHTMLContext: React.Context<
   ((callback: () => unknown) => void) | null
 > | null = getServerInsertedHTMLContext();
+
+export interface ClientNavigationRenderSnapshot {
+  pathname: string;
+  searchParams: ReadonlyURLSearchParams;
+  params: Record<string, string | string[]>;
+}
+
+export function getClientNavigationRenderContext(): React.Context<ClientNavigationRenderSnapshot | null> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_CLIENT_NAVIGATION_RENDER_CTX_KEY]) {
+    globalState[_CLIENT_NAVIGATION_RENDER_CTX_KEY] =
+      React.createContext<ClientNavigationRenderSnapshot | null>(null);
+  }
+
+  return globalState[_CLIENT_NAVIGATION_RENDER_CTX_KEY] ?? null;
+}
+
+function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | null {
+  const ctx = getClientNavigationRenderContext();
+  if (!ctx) return null;
+  try {
+    return React.useContext(ctx);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Get or create the layout segment context.
@@ -198,7 +228,8 @@ export interface CachedRscResponse {
 }
 
 export interface PrefetchCacheEntry {
-  response: CachedRscResponse;
+  response?: CachedRscResponse;
+  pendingResponse?: Promise<CachedRscResponse | null>;
   timestamp: number;
 }
 
@@ -245,6 +276,37 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
   return window.__VINEXT_RSC_PREFETCH_CACHE__;
 }
 
+function deletePrefetchEntry(rscUrl: string): void {
+  getPrefetchCache().delete(rscUrl);
+  getPrefetchedUrls().delete(rscUrl);
+}
+
+function pruneExpiredPrefetchEntries(now: number): void {
+  const cache = getPrefetchCache();
+  for (const [key, entry] of cache) {
+    if (entry.pendingResponse) {
+      continue;
+    }
+    if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
+      deletePrefetchEntry(key);
+    }
+  }
+}
+
+function evictPrefetchCacheIfNeeded(): void {
+  const cache = getPrefetchCache();
+
+  while (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    const oldestSettledEntry = [...cache.entries()].find(
+      ([, entry]) => entry.pendingResponse == null,
+    );
+    if (!oldestSettledEntry) {
+      return;
+    }
+    deletePrefetchEntry(oldestSettledEntry[0]);
+  }
+}
+
 /**
  * Get or create the shared set of already-prefetched RSC URLs on window.
  * Keyed by rscUrl so that the browser entry can clear entries when consumed.
@@ -268,58 +330,188 @@ export async function storePrefetchResponse(rscUrl: string, response: Response):
 
   // Sweep expired entries before resorting to FIFO eviction
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
-    const prefetched = getPrefetchedUrls();
-    for (const [key, entry] of cache) {
-      if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
-        cache.delete(key);
-        prefetched.delete(key);
-      }
-    }
+    pruneExpiredPrefetchEntries(now);
   }
 
   // FIFO fallback if still at capacity after sweep
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) {
-      cache.delete(oldest);
-      getPrefetchedUrls().delete(oldest);
-    }
+    evictPrefetchCacheIfNeeded();
   }
 
   cache.set(rscUrl, { response: await snapshotRscResponse(response), timestamp: now });
 }
 
+export function prefetchRscResponse(rscUrl: string, responsePromise: Promise<Response>): void {
+  const cache = getPrefetchCache();
+  const existing = cache.get(rscUrl);
+  if (existing?.response || existing?.pendingResponse) {
+    return;
+  }
+
+  const now = Date.now();
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    pruneExpiredPrefetchEntries(now);
+  }
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    evictPrefetchCacheIfNeeded();
+  }
+
+  let pendingResponse: Promise<CachedRscResponse | null>;
+  pendingResponse = responsePromise
+    .then(async (response) => {
+      if (!response.ok) {
+        if (cache.get(rscUrl)?.pendingResponse === pendingResponse) {
+          deletePrefetchEntry(rscUrl);
+        }
+        return null;
+      }
+
+      const snapshot = await snapshotRscResponse(response);
+      if (cache.get(rscUrl)?.pendingResponse === pendingResponse) {
+        cache.set(rscUrl, { response: snapshot, timestamp: Date.now() });
+      }
+      return snapshot;
+    })
+    .catch(() => {
+      if (cache.get(rscUrl)?.pendingResponse === pendingResponse) {
+        deletePrefetchEntry(rscUrl);
+      }
+      return null;
+    });
+
+  cache.set(rscUrl, { pendingResponse, timestamp: now });
+}
+
+export async function consumePrefetchResponse(rscUrl: string): Promise<CachedRscResponse | null> {
+  const cache = getPrefetchCache();
+  const entry = cache.get(rscUrl);
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.pendingResponse) {
+    const snapshot = await entry.pendingResponse;
+    const settledEntry = cache.get(rscUrl);
+    if (settledEntry?.response) {
+      deletePrefetchEntry(rscUrl);
+      return settledEntry.response;
+    }
+    if (snapshot) {
+      deletePrefetchEntry(rscUrl);
+      return snapshot;
+    }
+    return null;
+  }
+
+  if (!entry.response) {
+    deletePrefetchEntry(rscUrl);
+    return null;
+  }
+
+  if (Date.now() - entry.timestamp >= PREFETCH_CACHE_TTL) {
+    deletePrefetchEntry(rscUrl);
+    return null;
+  }
+
+  deletePrefetchEntry(rscUrl);
+  return entry.response;
+}
+
 // Client navigation listeners
 type NavigationListener = () => void;
-const _listeners: Set<NavigationListener> = new Set();
+const _CLIENT_NAV_STATE_KEY = Symbol.for("vinext.clientNavigationState");
 
-function notifyListeners(): void {
-  for (const fn of _listeners) fn();
+type ClientNavigationState = {
+  listeners: Set<NavigationListener>;
+  cachedSearch: string;
+  cachedReadonlySearchParams: ReadonlyURLSearchParams;
+  cachedPathname: string;
+  clientParams: Record<string, string | string[]>;
+  clientParamsJson: string;
+  pendingClientParams: Record<string, string | string[]> | null;
+  pendingClientParamsJson: string | null;
+  originalPushState: typeof window.history.pushState;
+  originalReplaceState: typeof window.history.replaceState;
+  patchInstalled: boolean;
+  hasPendingNavigationUpdate: boolean;
+  suppressUrlNotifyCount: number;
+};
+
+type ClientNavigationGlobal = typeof globalThis & {
+  [_CLIENT_NAV_STATE_KEY]?: ClientNavigationState;
+};
+
+function getClientNavigationState(): ClientNavigationState | null {
+  if (isServer) return null;
+
+  const globalState = window as ClientNavigationGlobal;
+  if (!globalState[_CLIENT_NAV_STATE_KEY]) {
+    globalState[_CLIENT_NAV_STATE_KEY] = {
+      listeners: new Set<NavigationListener>(),
+      cachedSearch: window.location.search,
+      cachedReadonlySearchParams: new ReadonlyURLSearchParams(window.location.search),
+      cachedPathname: stripBasePath(window.location.pathname, __basePath),
+      clientParams: {},
+      clientParamsJson: "{}",
+      pendingClientParams: null,
+      pendingClientParamsJson: null,
+      originalPushState: window.history.pushState.bind(window.history),
+      originalReplaceState: window.history.replaceState.bind(window.history),
+      patchInstalled: false,
+      hasPendingNavigationUpdate: false,
+      suppressUrlNotifyCount: 0,
+    };
+  }
+
+  return globalState[_CLIENT_NAV_STATE_KEY]!;
+}
+
+function notifyNavigationListeners(): void {
+  const state = getClientNavigationState();
+  if (!state) return;
+  for (const fn of state.listeners) fn();
 }
 
 // Cached URLSearchParams, pathname, etc. for referential stability
 // useSyncExternalStore compares snapshots with Object.is — avoid creating
 // new instances on every render (infinite re-renders).
-let _cachedSearch = !isServer ? window.location.search : "";
-let _cachedReadonlySearchParams = new ReadonlyURLSearchParams(_cachedSearch);
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
-let _cachedPathname = !isServer ? stripBasePath(window.location.pathname, __basePath) : "/";
 
 function getPathnameSnapshot(): string {
-  const current = stripBasePath(window.location.pathname, __basePath);
-  if (current !== _cachedPathname) {
-    _cachedPathname = current;
-  }
-  return _cachedPathname;
+  return getClientNavigationState()?.cachedPathname ?? "/";
 }
 
+let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
+
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
-  const current = window.location.search;
-  if (current !== _cachedSearch) {
-    _cachedSearch = current;
-    _cachedReadonlySearchParams = new ReadonlyURLSearchParams(current);
+  const cached = getClientNavigationState()?.cachedReadonlySearchParams;
+  if (cached) return cached;
+  if (_cachedEmptyClientSearchParams === null) {
+    _cachedEmptyClientSearchParams = new ReadonlyURLSearchParams();
   }
-  return _cachedReadonlySearchParams;
+  return _cachedEmptyClientSearchParams;
+}
+
+function syncCommittedUrlStateFromLocation(): boolean {
+  const state = getClientNavigationState();
+  if (!state) return false;
+
+  let changed = false;
+
+  const pathname = stripBasePath(window.location.pathname, __basePath);
+  if (pathname !== state.cachedPathname) {
+    state.cachedPathname = pathname;
+    changed = true;
+  }
+
+  const search = window.location.search;
+  if (search !== state.cachedSearch) {
+    state.cachedSearch = search;
+    state.cachedReadonlySearchParams = new ReadonlyURLSearchParams(search);
+    changed = true;
+  }
+
+  return changed;
 }
 
 function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
@@ -342,26 +534,65 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
 const _EMPTY_PARAMS: Record<string, string | string[]> = {};
-let _clientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
-let _clientParamsJson = "{}";
+
+export function createClientNavigationRenderSnapshot(
+  href: string,
+  params: Record<string, string | string[]>,
+): ClientNavigationRenderSnapshot {
+  const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+  const url = new URL(href, origin);
+
+  return {
+    pathname: stripBasePath(url.pathname, __basePath),
+    searchParams: new ReadonlyURLSearchParams(url.search),
+    params,
+  };
+}
+
+// Module-level fallback for environments without window (tests, SSR).
+let _fallbackClientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
+let _fallbackClientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
+  const state = getClientNavigationState();
+  if (!state) {
+    const json = JSON.stringify(params);
+    if (json !== _fallbackClientParamsJson) {
+      _fallbackClientParams = params;
+      _fallbackClientParamsJson = json;
+    }
+    return;
+  }
+
   const json = JSON.stringify(params);
-  if (json !== _clientParamsJson) {
-    _clientParams = params;
-    _clientParamsJson = json;
-    // Notify useSyncExternalStore subscribers so useParams() re-renders.
-    notifyListeners();
+  if (json !== state.clientParamsJson) {
+    state.clientParams = params;
+    state.clientParamsJson = json;
+    state.pendingClientParams = null;
+    state.pendingClientParamsJson = null;
+    notifyNavigationListeners();
+  }
+}
+
+export function replaceClientParamsWithoutNotify(params: Record<string, string | string[]>): void {
+  const state = getClientNavigationState();
+  if (!state) return;
+
+  const json = JSON.stringify(params);
+  if (json !== state.clientParamsJson || json !== state.pendingClientParamsJson) {
+    state.pendingClientParams = params;
+    state.pendingClientParamsJson = json;
+    state.hasPendingNavigationUpdate = true;
   }
 }
 
 /** Get the current client params (for testing referential stability). */
 export function getClientParams(): Record<string, string | string[]> {
-  return _clientParams;
+  return getClientNavigationState()?.clientParams ?? _fallbackClientParams;
 }
 
 function getClientParamsSnapshot(): Record<string, string | string[]> {
-  return _clientParams;
+  return getClientNavigationState()?.clientParams ?? _EMPTY_PARAMS;
 }
 
 function getServerParamsSnapshot(): Record<string, string | string[]> {
@@ -369,9 +600,12 @@ function getServerParamsSnapshot(): Record<string, string | string[]> {
 }
 
 function subscribeToNavigation(cb: () => void): () => void {
-  _listeners.add(cb);
+  const state = getClientNavigationState();
+  if (!state) return () => {};
+
+  state.listeners.add(cb);
   return () => {
-    _listeners.delete(cb);
+    state.listeners.delete(cb);
   };
 }
 
@@ -389,12 +623,14 @@ export function usePathname(): string {
     // Return a safe fallback — the client will hydrate with the real value.
     return _getServerContext()?.pathname ?? "/";
   }
+  const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
-  return React.useSyncExternalStore(
+  const pathname = React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
+  return renderSnapshot?.pathname ?? pathname;
 }
 
 /**
@@ -406,11 +642,13 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     // Return a safe fallback — the client will hydrate with the real value.
     return getServerSearchParamsSnapshot();
   }
-  return React.useSyncExternalStore(
+  const renderSnapshot = useClientNavigationRenderSnapshot();
+  const searchParams = React.useSyncExternalStore(
     subscribeToNavigation,
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
+  return renderSnapshot?.searchParams ?? searchParams;
 }
 
 /**
@@ -423,11 +661,13 @@ export function useParams<
     // During SSR of "use client" components, the navigation context may not be set.
     return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
-  return React.useSyncExternalStore(
+  const renderSnapshot = useClientNavigationRenderSnapshot();
+  const params = React.useSyncExternalStore(
     subscribeToNavigation,
     getClientParamsSnapshot as () => T,
     getServerParamsSnapshot as () => T,
   );
+  return (renderSnapshot?.params as T | undefined) ?? params;
 }
 
 /**
@@ -473,9 +713,61 @@ function scrollToHash(hash: string): void {
  * (e.g. saving scroll position shouldn't cause re-renders).
  * Captured before the history method patching at the bottom of this module.
  */
-const _nativeReplaceState: typeof window.history.replaceState | null = !isServer
-  ? window.history.replaceState.bind(window.history)
-  : null;
+function withSuppressedUrlNotifications<T>(fn: () => T): T {
+  const state = getClientNavigationState();
+  if (!state) {
+    return fn();
+  }
+
+  state.suppressUrlNotifyCount += 1;
+  try {
+    return fn();
+  } finally {
+    state.suppressUrlNotifyCount -= 1;
+  }
+}
+
+export function commitClientNavigationState(): void {
+  if (isServer) return;
+  const state = getClientNavigationState();
+  if (!state) return;
+
+  const urlChanged = syncCommittedUrlStateFromLocation();
+  if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
+    state.clientParams = state.pendingClientParams;
+    state.clientParamsJson = state.pendingClientParamsJson;
+    state.pendingClientParams = null;
+    state.pendingClientParamsJson = null;
+  }
+  const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
+  state.hasPendingNavigationUpdate = false;
+
+  if (shouldNotify) {
+    notifyNavigationListeners();
+  }
+}
+
+export function pushHistoryStateWithoutNotify(
+  data: unknown,
+  unused: string,
+  url?: string | URL | null,
+): void {
+  withSuppressedUrlNotifications(() => {
+    const state = getClientNavigationState();
+    state?.originalPushState.call(window.history, data, unused, url);
+  });
+}
+
+export function replaceHistoryStateWithoutNotify(
+  data: unknown,
+  unused: string,
+  url?: string | URL | null,
+): void {
+  withSuppressedUrlNotifications(() => {
+    const state = getClientNavigationState();
+    state?.originalReplaceState.call(window.history, data, unused, url);
+  });
+}
 
 /**
  * Save the current scroll position into the current history state.
@@ -485,10 +777,8 @@ const _nativeReplaceState: typeof window.history.replaceState | null = !isServer
  * interception (which would cause spurious re-renders from notifyListeners).
  */
 function saveScrollPosition(): void {
-  if (!_nativeReplaceState) return;
   const state = window.history.state ?? {};
-  _nativeReplaceState.call(
-    window.history,
+  replaceHistoryStateWithoutNotify(
     { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
     "",
   );
@@ -573,11 +863,11 @@ async function navigateImpl(
   if (isHashOnlyChange(fullHref)) {
     const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
     if (mode === "replace") {
-      window.history.replaceState(null, "", fullHref);
+      replaceHistoryStateWithoutNotify(null, "", fullHref);
     } else {
-      window.history.pushState(null, "", fullHref);
+      pushHistoryStateWithoutNotify(null, "", fullHref);
     }
-    notifyListeners();
+    commitClientNavigationState();
     if (scroll) {
       scrollToHash(hash);
     }
@@ -587,19 +877,30 @@ async function navigateImpl(
   // Extract hash for post-navigation scrolling
   const hashIdx = fullHref.indexOf("#");
   const hash = hashIdx !== -1 ? fullHref.slice(hashIdx) : "";
-
-  if (mode === "replace") {
-    window.history.replaceState(null, "", fullHref);
-  } else {
-    window.history.pushState(null, "", fullHref);
-  }
-  notifyListeners();
+  const previousHref = window.location.pathname + window.location.search + window.location.hash;
 
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
   // top before the new content paints.
   if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-    await window.__VINEXT_RSC_NAVIGATE__(fullHref);
+    await window.__VINEXT_RSC_NAVIGATE__(fullHref, 0, "navigate", mode);
+  } else {
+    if (mode === "replace") {
+      replaceHistoryStateWithoutNotify(null, "", fullHref);
+    } else {
+      pushHistoryStateWithoutNotify(null, "", fullHref);
+    }
+    commitClientNavigationState();
+  }
+
+  const currentHref = window.location.pathname + window.location.search + window.location.hash;
+  if (currentHref === previousHref) {
+    if (mode === "replace") {
+      replaceHistoryStateWithoutNotify(null, "", fullHref);
+    } else {
+      pushHistoryStateWithoutNotify(null, "", fullHref);
+    }
+    commitClientNavigationState();
   }
 
   if (scroll) {
@@ -609,6 +910,14 @@ async function navigateImpl(
       window.scrollTo(0, 0);
     }
   }
+}
+
+export async function navigateClientSide(
+  href: string,
+  mode: "push" | "replace",
+  scroll: boolean,
+): Promise<void> {
+  await navigateImpl(href, mode, scroll);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,11 +933,11 @@ async function navigateImpl(
 const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    void navigateImpl(href, "push", options?.scroll !== false);
+    void navigateClientSide(href, "push", options?.scroll !== false);
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    void navigateImpl(href, "replace", options?.scroll !== false);
+    void navigateClientSide(href, "replace", options?.scroll !== false);
   },
   back(): void {
     if (isServer) return;
@@ -653,23 +962,14 @@ const _appRouter = {
     const prefetched = getPrefetchedUrls();
     if (prefetched.has(rscUrl)) return;
     prefetched.add(rscUrl);
-    fetch(rscUrl, {
-      headers: { Accept: "text/x-component" },
-      credentials: "include",
-      priority: "low" as RequestInit["priority"],
-    })
-      .then(async (response) => {
-        if (response.ok) {
-          await storePrefetchResponse(rscUrl, response);
-        } else {
-          // Non-ok response: allow retry on next prefetch() call
-          prefetched.delete(rscUrl);
-        }
-      })
-      .catch(() => {
-        // Network error: allow retry on next prefetch() call
-        prefetched.delete(rscUrl);
-      });
+    prefetchRscResponse(
+      rscUrl,
+      fetch(rscUrl, {
+        headers: { Accept: "text/x-component" },
+        credentials: "include",
+        priority: "low" as RequestInit["priority"],
+      }),
+    );
   },
 };
 
@@ -892,45 +1192,37 @@ export function unauthorized(): never {
 
 // Listen for popstate on the client
 if (!isServer) {
-  window.addEventListener("popstate", (event) => {
-    notifyListeners();
-    // Restore scroll position for back/forward navigation
-    if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function") {
-      restoreScrollPosition(event.state);
-    }
-  });
+  const state = getClientNavigationState();
+  if (state && !state.patchInstalled) {
+    state.patchInstalled = true;
 
-  // ---------------------------------------------------------------------------
-  // history.pushState / replaceState interception (shallow routing)
-  //
-  // Next.js intercepts these native methods so that when user code calls
-  // `window.history.pushState(null, '', '/new-path?filter=abc')` directly,
-  // React hooks like usePathname() and useSearchParams() re-render with
-  // the new URL. This is the foundation for shallow routing patterns
-  // (filter UIs, tabs, URL search param state, etc.).
-  //
-  // We wrap the original methods, call through to the native implementation,
-  // then notify our listener system so useSyncExternalStore picks up the
-  // URL change.
-  // ---------------------------------------------------------------------------
-  const originalPushState = window.history.pushState.bind(window.history);
-  const originalReplaceState = window.history.replaceState.bind(window.history);
+    window.addEventListener("popstate", (event) => {
+      if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function") {
+        commitClientNavigationState();
+        restoreScrollPosition(event.state);
+      }
+    });
 
-  window.history.pushState = function patchedPushState(
-    data: unknown,
-    unused: string,
-    url?: string | URL | null,
-  ): void {
-    originalPushState(data, unused, url);
-    notifyListeners();
-  };
+    window.history.pushState = function patchedPushState(
+      data: unknown,
+      unused: string,
+      url?: string | URL | null,
+    ): void {
+      state.originalPushState.call(window.history, data, unused, url);
+      if (state.suppressUrlNotifyCount === 0) {
+        commitClientNavigationState();
+      }
+    };
 
-  window.history.replaceState = function patchedReplaceState(
-    data: unknown,
-    unused: string,
-    url?: string | URL | null,
-  ): void {
-    originalReplaceState(data, unused, url);
-    notifyListeners();
-  };
+    window.history.replaceState = function patchedReplaceState(
+      data: unknown,
+      unused: string,
+      url?: string | URL | null,
+    ): void {
+      state.originalReplaceState.call(window.history, data, unused, url);
+      if (state.suppressUrlNotifyCount === 0) {
+        commitClientNavigationState();
+      }
+    };
+  }
 }

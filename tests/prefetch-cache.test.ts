@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
+type CachedRscResponse = import("../packages/vinext/src/shims/navigation.js").CachedRscResponse;
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
@@ -42,19 +43,30 @@ afterEach(() => {
   delete (globalThis as any).window;
 });
 
+/** Helper: create a CachedRscResponse snapshot from a string body. */
+function createSnapshot(body: string): CachedRscResponse {
+  return {
+    body: new TextEncoder().encode(body).buffer,
+    headers: [],
+    status: 200,
+    statusText: "OK",
+    url: "",
+  };
+}
+
 /** Helper: fill cache with `count` entries at a given timestamp. */
 function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void {
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   for (let i = 0; i < count; i++) {
     const key = `${keyPrefix}${i}.rsc`;
-    cache.set(key, { response: new Response(`body-${i}`), timestamp });
+    cache.set(key, { response: createSnapshot(`body-${i}`), timestamp });
     prefetched.add(key);
   }
 }
 
 describe("prefetch cache eviction", () => {
-  it("sweeps all expired entries before FIFO", () => {
+  it("sweeps all expired entries before FIFO", async () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000; // 31s before `now`
@@ -64,7 +76,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
-    storePrefetchResponse("/new.rsc", new Response("new"));
+    await storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
     expect(cache.size).toBe(1);
@@ -73,7 +85,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(0);
   });
 
-  it("falls back to FIFO when all entries are fresh", () => {
+  it("falls back to FIFO when all entries are fresh", async () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
 
@@ -82,7 +94,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
-    storePrefetchResponse("/new.rsc", new Response("new"));
+    await storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
     // FIFO evicted one, new one added → still at capacity
@@ -97,7 +109,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has("/page-0.rsc")).toBe(false);
   });
 
-  it("sweeps only expired entries when cache has a mix", () => {
+  it("sweeps only expired entries when cache has a mix", async () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
@@ -111,7 +123,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
-    storePrefetchResponse("/new.rsc", new Response("new"));
+    await storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
     // expired swept, fresh kept, 1 new added
@@ -130,7 +142,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(rest);
   });
 
-  it("does not sweep when cache is below capacity", () => {
+  it("does not sweep when cache is below capacity", async () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
@@ -139,7 +151,7 @@ describe("prefetch cache eviction", () => {
     fillCache(belowCapacity, expired);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
-    storePrefetchResponse("/new.rsc", new Response("new"));
+    await storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
     // Below capacity — no eviction, all entries kept + 1 new

@@ -4,7 +4,6 @@ import {
   createElement,
   startTransition,
   use,
-  useEffect,
   useLayoutEffect,
   useState,
   type Dispatch,
@@ -21,14 +20,21 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
 import {
-  PREFETCH_CACHE_TTL,
+  commitClientNavigationState,
+  consumePrefetchResponse,
+  createClientNavigationRenderSnapshot,
+  getClientNavigationRenderContext,
   getPrefetchCache,
   getPrefetchedUrls,
+  pushHistoryStateWithoutNotify,
+  replaceClientParamsWithoutNotify,
+  replaceHistoryStateWithoutNotify,
   restoreRscResponse,
   setClientParams,
   snapshotRscResponse,
   setNavigationContext,
   toRscUrl,
+  type ClientNavigationRenderSnapshot,
 } from "../shims/navigation.js";
 import {
   chunksToReadableStream,
@@ -47,8 +53,13 @@ interface ServerActionResult {
 }
 
 let reactRoot: Root | null = null;
-type BrowserTreeState = { renderId: number; node: ReactNode | Promise<ReactNode> };
+type BrowserTreeState = {
+  renderId: number;
+  node: ReactNode | Promise<ReactNode>;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+};
 type NavigationKind = "navigate" | "traverse" | "refresh";
+type HistoryUpdateMode = "push" | "replace";
 interface VisitedResponseCacheEntry {
   params: Record<string, string | string[]>;
   regularExpiresAt: number;
@@ -60,6 +71,7 @@ const VISITED_RESPONSE_CACHE_TTL = 30_000;
 
 let nextNavigationRenderId = 0;
 const pendingNavigationCommits = new Map<number, () => void>();
+const pendingNavigationPrePaintEffects = new Map<number, () => void>();
 let setBrowserTreeState: Dispatch<SetStateAction<BrowserTreeState>> | null = null;
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
@@ -84,6 +96,11 @@ function applyClientParams(params: Record<string, string | string[]>): void {
   setClientParams(params);
 }
 
+function stageClientParams(params: Record<string, string | string[]>): void {
+  latestClientParams = params;
+  replaceClientParamsWithoutNotify(params);
+}
+
 function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
 }
@@ -96,6 +113,81 @@ function clearPrefetchState(): void {
 function clearClientNavigationCaches(): void {
   clearVisitedResponseCache();
   clearPrefetchState();
+}
+
+function suppressFreshNavigationAnimations(): void {
+  if (typeof document === "undefined" || typeof document.getAnimations !== "function") {
+    return;
+  }
+
+  for (const animation of document.getAnimations()) {
+    if (!(animation.effect instanceof KeyframeEffect)) {
+      continue;
+    }
+
+    const target = animation.effect.target;
+    if (!(target instanceof HTMLElement)) {
+      continue;
+    }
+
+    if (Number(window.getComputedStyle(target).opacity) > 0.01) {
+      continue;
+    }
+
+    animation.cancel();
+  }
+}
+
+function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
+  if (!effect) {
+    return;
+  }
+  pendingNavigationPrePaintEffects.set(renderId, effect);
+}
+
+function runPrePaintNavigationEffect(renderId: number): void {
+  const effect = pendingNavigationPrePaintEffects.get(renderId);
+  if (!effect) {
+    return;
+  }
+
+  pendingNavigationPrePaintEffects.delete(renderId);
+  effect();
+}
+
+function composePrePaintNavigationEffects(
+  ...effects: Array<(() => void) | null | undefined>
+): (() => void) | null {
+  const activeEffects = effects.filter((effect): effect is () => void => effect != null);
+  if (activeEffects.length === 0) {
+    return null;
+  }
+
+  return () => {
+    for (const effect of activeEffects) {
+      effect();
+    }
+  };
+}
+
+function createNavigationCommitEffect(
+  href: string,
+  navigationKind: NavigationKind,
+  historyUpdateMode: HistoryUpdateMode | undefined,
+): (() => void) | null {
+  if (historyUpdateMode == null && navigationKind === "navigate") {
+    return null;
+  }
+
+  return () => {
+    if (historyUpdateMode === "replace") {
+      replaceHistoryStateWithoutNotify(null, "", href);
+    } else if (historyUpdateMode === "push") {
+      pushHistoryStateWithoutNotify(null, "", href);
+    }
+
+    commitClientNavigationState();
+  };
 }
 
 function pruneVisitedResponseCache(now: number): void {
@@ -168,7 +260,9 @@ function resolveCommittedNavigations(renderId: number): void {
 }
 
 function NavigationCommitSignal({ children, renderId }: { children: ReactNode; renderId: number }) {
-  useEffect(() => {
+  useLayoutEffect(() => {
+    runPrePaintNavigationEffect(renderId);
+
     const frame = requestAnimationFrame(() => {
       resolveCommittedNavigations(renderId);
     });
@@ -181,10 +275,17 @@ function NavigationCommitSignal({ children, renderId }: { children: ReactNode; r
   return children;
 }
 
-function BrowserRoot({ initialNode }: { initialNode: ReactNode }) {
+function BrowserRoot({
+  initialNode,
+  initialNavigationSnapshot,
+}: {
+  initialNode: ReactNode;
+  initialNavigationSnapshot: ClientNavigationRenderSnapshot;
+}) {
   const [treeState, setTreeState] = useState<BrowserTreeState>({
     renderId: 0,
     node: initialNode,
+    navigationSnapshot: initialNavigationSnapshot,
   });
 
   useLayoutEffect(() => {
@@ -199,20 +300,32 @@ function BrowserRoot({ initialNode }: { initialNode: ReactNode }) {
 
   const resolvedNode = isThenable(treeState.node) ? use(treeState.node) : treeState.node;
 
-  return createElement(NavigationCommitSignal, {
+  const committedTree = createElement(NavigationCommitSignal, {
     children: resolvedNode,
     renderId: treeState.renderId,
   });
+
+  const ClientNavigationRenderContext = getClientNavigationRenderContext();
+  if (!ClientNavigationRenderContext) {
+    return committedTree;
+  }
+
+  return createElement(
+    ClientNavigationRenderContext.Provider,
+    { value: treeState.navigationSnapshot },
+    committedTree,
+  );
 }
 
 function updateBrowserTree(
   node: ReactNode | Promise<ReactNode>,
+  navigationSnapshot: ClientNavigationRenderSnapshot,
   renderId: number,
   useTransition: boolean,
 ): void {
   const setter = getBrowserTreeStateSetter();
   const applyUpdate = () => {
-    setter({ renderId, node });
+    setter({ renderId, node, navigationSnapshot });
   };
 
   if (useTransition) {
@@ -223,14 +336,19 @@ function updateBrowserTree(
   applyUpdate();
 }
 
-function renderNavigationPayload(payload: Promise<ReactNode>): Promise<void> {
+function renderNavigationPayload(
+  payload: Promise<ReactNode> | ReactNode,
+  navigationSnapshot: ClientNavigationRenderSnapshot,
+  prePaintEffect: (() => void) | null = null,
+): Promise<void> {
   const renderId = ++nextNavigationRenderId;
+  queuePrePaintNavigationEffect(renderId, prePaintEffect);
 
   const committed = new Promise<void>((resolve) => {
     pendingNavigationCommits.set(renderId, resolve);
   });
 
-  updateBrowserTree(payload, renderId, true);
+  updateBrowserTree(payload, navigationSnapshot, renderId, true);
 
   return committed;
 }
@@ -252,10 +370,8 @@ function restorePopstateScrollPosition(state: unknown): void {
     return;
   }
 
-  const { __vinext_scrollX: x, __vinext_scrollY: y } = state as {
-    __vinext_scrollX: number;
-    __vinext_scrollY: number;
-  };
+  const y = Number(state.__vinext_scrollY);
+  const x = "__vinext_scrollX" in state ? Number(state.__vinext_scrollX) : 0;
 
   requestAnimationFrame(() => {
     window.scrollTo(x, y);
@@ -361,12 +477,18 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    const result = await createFromFetch(Promise.resolve(fetchResponse), {
-      temporaryReferences,
-    });
+    const result = await createFromFetch<ServerActionResult | ReactNode>(
+      Promise.resolve(fetchResponse),
+      { temporaryReferences },
+    );
 
     if (isServerActionResult(result)) {
-      updateBrowserTree(result.root, nextNavigationRenderId, false);
+      updateBrowserTree(
+        result.root,
+        createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+        nextNavigationRenderId,
+        false,
+      );
       if (result.returnValue) {
         if (!result.returnValue.ok) throw result.returnValue.data;
         return result.returnValue.data;
@@ -374,7 +496,12 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    updateBrowserTree(result as ReactNode, nextNavigationRenderId, false);
+    updateBrowserTree(
+      result,
+      createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+      nextNavigationRenderId,
+      false,
+    );
     return result;
   });
 }
@@ -383,11 +510,18 @@ async function main(): Promise<void> {
   registerServerActionCallback();
 
   const rscStream = await readInitialRscStream();
-  const root = await createFromReadableStream(rscStream);
+  const root = await createFromReadableStream<ReactNode>(rscStream);
+  const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
+    window.location.href,
+    latestClientParams,
+  );
 
   reactRoot = hydrateRoot(
     document,
-    createElement(BrowserRoot, { initialNode: root as ReactNode }),
+    createElement(BrowserRoot, {
+      initialNode: root,
+      initialNavigationSnapshot,
+    }),
     import.meta.env.DEV ? { onCaughtError() {} } : undefined,
   );
 
@@ -397,6 +531,7 @@ async function main(): Promise<void> {
     href: string,
     redirectDepth = 0,
     navigationKind: NavigationKind = "navigate",
+    historyUpdateMode?: HistoryUpdateMode,
   ): Promise<void> {
     if (redirectDepth > 10) {
       console.error(
@@ -410,30 +545,36 @@ async function main(): Promise<void> {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
+      const navigationCommitEffect = createNavigationCommitEffect(
+        href,
+        navigationKind,
+        historyUpdateMode,
+      );
 
       if (cachedRoute) {
-        applyClientParams(cachedRoute.params);
-        const cachedPayload = createFromFetch(
+        stageClientParams(cachedRoute.params);
+        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
+          href,
+          cachedRoute.params,
+        );
+        const cachedPayload = createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
-        ) as Promise<ReactNode>;
-        await renderNavigationPayload(cachedPayload);
+        );
+        await renderNavigationPayload(
+          cachedPayload,
+          cachedNavigationSnapshot,
+          navigationCommitEffect,
+        );
         return;
       }
 
       let navResponse: Response | undefined;
       let navResponseUrl: string | null = null;
       if (navigationKind !== "refresh") {
-        const prefetchCache = getPrefetchCache();
-        const cached = prefetchCache.get(rscUrl);
-
-        if (cached?.response && Date.now() - cached.timestamp < PREFETCH_CACHE_TTL) {
-          navResponse = restoreRscResponse(cached.response);
-          navResponseUrl = cached.response.url;
-          prefetchCache.delete(rscUrl);
-          getPrefetchedUrls().delete(rscUrl);
-        } else if (cached) {
-          prefetchCache.delete(rscUrl);
-          getPrefetchedUrls().delete(rscUrl);
+        const prefetchedResponse = await consumePrefetchResponse(rscUrl);
+        if (prefetchedResponse) {
+          navResponse = restoreRscResponse(prefetchedResponse);
+          navResponseUrl = prefetchedResponse.url;
         }
       }
 
@@ -448,7 +589,6 @@ async function main(): Promise<void> {
       const requestedUrl = new URL(rscUrl, window.location.origin);
       if (finalUrl.pathname !== requestedUrl.pathname) {
         const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
-        window.history.replaceState(null, "", destinationPath);
 
         const navigate = window.__VINEXT_RSC_NAVIGATE__;
         if (!navigate) {
@@ -456,7 +596,7 @@ async function main(): Promise<void> {
           return;
         }
 
-        return navigate(destinationPath, redirectDepth + 1, navigationKind);
+        return navigate(destinationPath, redirectDepth + 1, navigationKind, historyUpdateMode);
       }
 
       let navParams: Record<string, string | string[]> = {};
@@ -464,19 +604,27 @@ async function main(): Promise<void> {
       if (paramsHeader) {
         try {
           navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
-          applyClientParams(navParams);
+          stageClientParams(navParams);
         } catch {
-          applyClientParams({});
+          stageClientParams({});
         }
       } else {
-        applyClientParams({});
+        stageClientParams({});
       }
+      const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
 
       void cacheVisitedResponse(rscUrl, navResponse.clone(), navParams).catch((error) => {
         console.error("[vinext] Failed to cache visited RSC response:", error);
       });
-      const rscPayload = createFromFetch(Promise.resolve(navResponse)) as Promise<ReactNode>;
-      await renderNavigationPayload(rscPayload);
+      const rscPayload = createFromFetch<ReactNode>(Promise.resolve(navResponse));
+      await renderNavigationPayload(
+        rscPayload,
+        navigationSnapshot,
+        composePrePaintNavigationEffects(
+          navigationCommitEffect,
+          navResponseUrl ? null : suppressFreshNavigationAnimations,
+        ),
+      );
     } catch (error) {
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
@@ -499,10 +647,15 @@ async function main(): Promise<void> {
     import.meta.hot.on("rsc:update", async () => {
       try {
         clearClientNavigationCaches();
-        const rscPayload = await createFromFetch(
+        const rscPayload = await createFromFetch<ReactNode>(
           fetch(toRscUrl(window.location.pathname + window.location.search)),
         );
-        updateBrowserTree(rscPayload as ReactNode, nextNavigationRenderId, false);
+        updateBrowserTree(
+          rscPayload,
+          createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+          nextNavigationRenderId,
+          false,
+        );
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);
       }
