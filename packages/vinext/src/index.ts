@@ -263,6 +263,140 @@ function extractStaticValue(node: any): unknown {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
+
+function resolveTsconfigPathCandidate(candidate: string): string | null {
+  const candidates = candidate.endsWith(".json")
+    ? [candidate]
+    : [candidate, `${candidate}.json`, path.join(candidate, "tsconfig.json")];
+
+  for (const item of candidates) {
+    if (fs.existsSync(item) && fs.statSync(item).isFile()) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
+  const fromDir = path.dirname(configPath);
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
+    return resolveTsconfigPathCandidate(path.resolve(fromDir, specifier));
+  }
+
+  const requireFromConfig = createRequire(configPath);
+  const candidates = [specifier, `${specifier}.json`, path.join(specifier, "tsconfig.json")];
+
+  for (const item of candidates) {
+    try {
+      return requireFromConfig.resolve(item);
+    } catch {}
+  }
+
+  return null;
+}
+
+function materializeTsconfigPathAliases(
+  pathsConfig: Record<string, unknown>,
+  baseUrl: string,
+  projectRoot: string,
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+
+  for (const [find, rawTargets] of Object.entries(pathsConfig)) {
+    const target = Array.isArray(rawTargets)
+      ? rawTargets.find((value): value is string => typeof value === "string")
+      : typeof rawTargets === "string"
+        ? rawTargets
+        : null;
+    if (!target) continue;
+
+    if (find.includes("*") || target.includes("*")) {
+      if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
+      if (find.indexOf("*") !== find.length - 1 || target.indexOf("*") !== target.length - 1) {
+        continue;
+      }
+
+      const aliasKey = find.slice(0, -2);
+      const targetDir = target.slice(0, -2);
+      if (!aliasKey || !targetDir) continue;
+
+      aliases[aliasKey] = toViteAliasReplacement(path.resolve(baseUrl, targetDir), projectRoot);
+      continue;
+    }
+
+    aliases[find] = toViteAliasReplacement(path.resolve(baseUrl, target), projectRoot);
+  }
+
+  return aliases;
+}
+
+function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
+  const normalizedPath = absolutePath.replace(/\\/g, "/");
+  const rootCandidates = new Set<string>([projectRoot]);
+  const realRoot = tryRealpathSync(projectRoot);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const pathCandidates = new Set<string>([absolutePath]);
+  const realPath = tryRealpathSync(absolutePath);
+  if (realPath) pathCandidates.add(realPath);
+
+  for (const rootCandidate of rootCandidates) {
+    for (const pathCandidate of pathCandidates) {
+      if (pathCandidate === rootCandidate) return "/";
+      const relativeId = relativeWithinRoot(rootCandidate, pathCandidate);
+      if (relativeId) return "/" + relativeId;
+    }
+  }
+
+  return normalizedPath;
+}
+
+function loadTsconfigPathAliases(
+  configPath: string,
+  projectRoot: string,
+  seen = new Set<string>(),
+): Record<string, string> {
+  const normalizedPath = tryRealpathSync(configPath) ?? configPath;
+  if (seen.has(normalizedPath)) return {};
+  seen.add(normalizedPath);
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
+  } catch {
+    return {};
+  }
+  if (!parsed) return {};
+
+  let aliases: Record<string, string> = {};
+  if (typeof parsed.extends === "string") {
+    const extendedPath = resolveTsconfigExtends(normalizedPath, parsed.extends);
+    if (extendedPath) {
+      aliases = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
+    }
+  }
+
+  const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
+  const pathsConfig =
+    compilerOptions && isRecord(compilerOptions.paths) ? compilerOptions.paths : null;
+  if (!pathsConfig) return aliases;
+
+  const baseUrl =
+    compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
+  const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
+
+  return {
+    ...aliases,
+    ...materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot),
+  };
+}
+
 /**
  * Detect Vite major version at runtime by resolving from cwd.
  * The plugin may be installed in a workspace root with Vite 7 but used
@@ -330,6 +464,26 @@ const POSTCSS_CONFIG_FILES = [
  * parallel) all await the same in-flight scan rather than each starting their own.
  */
 const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
+// Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
+// transforms can see them via resolve.alias without re-reading config files per env.
+const _tsconfigAliasCache = new Map<string, Record<string, string>>();
+
+function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
+  if (_tsconfigAliasCache.has(projectRoot)) {
+    return _tsconfigAliasCache.get(projectRoot)!;
+  }
+
+  let aliases: Record<string, string> = {};
+  for (const name of TSCONFIG_FILES) {
+    const candidate = path.join(projectRoot, name);
+    if (!fs.existsSync(candidate)) continue;
+    aliases = loadTsconfigPathAliases(candidate, projectRoot);
+    break;
+  }
+
+  _tsconfigAliasCache.set(projectRoot, aliases);
+  return aliases;
+}
 
 /**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
@@ -1452,6 +1606,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
+        const tsconfigPathAliases = resolveTsconfigAliases(root);
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -1854,7 +2009,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 },
               }),
           resolve: {
-            alias: { ...nextConfig.aliases, ...nextShimMap },
+            // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
+            // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
+            alias: { ...tsconfigPathAliases, ...nextConfig.aliases, ...nextShimMap },
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
