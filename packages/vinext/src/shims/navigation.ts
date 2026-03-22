@@ -863,7 +863,7 @@ function restoreScrollPosition(state: unknown): void {
 /**
  * Navigate to a URL, handling external URLs, hash-only changes, and RSC navigation.
  */
-async function navigateImpl(
+export async function navigateClientSide(
   href: string,
   mode: "push" | "replace",
   scroll: boolean,
@@ -909,7 +909,6 @@ async function navigateImpl(
   // Extract hash for post-navigation scrolling
   const hashIdx = fullHref.indexOf("#");
   const hash = hashIdx !== -1 ? fullHref.slice(hashIdx) : "";
-  const previousHref = window.location.pathname + window.location.search + window.location.hash;
 
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
@@ -917,16 +916,6 @@ async function navigateImpl(
   if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
     await window.__VINEXT_RSC_NAVIGATE__(fullHref, 0, "navigate", mode);
   } else {
-    if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
-    } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
-    }
-    commitClientNavigationState();
-  }
-
-  const currentHref = window.location.pathname + window.location.search + window.location.hash;
-  if (currentHref === previousHref) {
     if (mode === "replace") {
       replaceHistoryStateWithoutNotify(null, "", fullHref);
     } else {
@@ -944,18 +933,10 @@ async function navigateImpl(
   }
 }
 
-export async function navigateClientSide(
-  href: string,
-  mode: "push" | "replace",
-  scroll: boolean,
-): Promise<void> {
-  await navigateImpl(href, mode, scroll);
-}
-
 // ---------------------------------------------------------------------------
 // App Router router singleton
 //
-// All methods close over module-level state (navigateImpl, withBasePath, etc.)
+// All methods close over module-level state (navigateClientSide, withBasePath, etc.)
 // and carry no per-render data, so the object can be created once and reused.
 // Next.js returns the same router reference on every call to useRouter(), which
 // matters for components that rely on referential equality (e.g. useMemo /

@@ -452,7 +452,7 @@ function registerServerActionCallback(): void {
       updateBrowserTree(
         result.root,
         createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
-        nextNavigationRenderId,
+        ++nextNavigationRenderId,
         false,
       );
       if (result.returnValue) {
@@ -465,7 +465,7 @@ function registerServerActionCallback(): void {
     updateBrowserTree(
       result,
       createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
-      nextNavigationRenderId,
+      ++nextNavigationRenderId,
       false,
     );
     return result;
@@ -603,6 +603,9 @@ async function main(): Promise<void> {
         isSameRoute,
       );
     } catch (error) {
+      // Deactivate the snapshot counter in case it was incremented before
+      // the error — prevents hooks from permanently returning stale values.
+      commitClientNavigationState();
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
     }

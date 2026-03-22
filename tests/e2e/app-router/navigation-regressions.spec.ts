@@ -398,7 +398,7 @@ test.describe("App Router navigation regressions", () => {
     ).toBe(false);
   });
 
-  test("fresh filter navigation suppresses mount-time row animations on the first visible frame", async ({
+  test("fresh filter navigation renders destination content on the first frame", async ({
     page,
   }) => {
     await page.goto(`${BASE}/nav-flash/query-sync`);
