@@ -3797,15 +3797,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     //
     // The edge build (dist/index.edge.js) uses:
     //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
-    //   - import resvg_wasm from "./resvg.wasm?module"       → static Vite import, emitted by Rollup
+    //   - resvg.wasm via dynamic import (og-font-patch rewrites the static import)
     //
     // The node build (dist/index.node.js) uses:
     //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
     //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
     //
-    // Both builds' font + WASM assets are inlined as base64 by vinext:og-inline-fetch-assets,
-    // so no file copy is strictly needed. This plugin is kept as a safety net for any edge-build
-    // ?module WASM imports that Rollup/Vite might not emit correctly in the RSC environment.
+    // The og-font-patch plugin's resvg fallback uses new URL("./resvg.wasm", import.meta.url)
+    // which the bundler should emit as an asset. This plugin is kept as a safety net to ensure
+    // the resvg.wasm file exists in the output directory for the Node.js disk-read fallback.
     {
       name: "vinext:og-assets",
       apply: "build",
@@ -4124,31 +4124,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     {
-      // @vercel/og patch for workerd (cloudflare-dev + cloudflare-workers)
+      // @vercel/og WASM patch — universal (workerd + Node.js)
       //
-      // @vercel/og/dist/index.edge.js has one remaining workerd issue after the
-      // generic vinext:og-inline-fetch-assets plugin runs (which already handles
-      // the font fetch pattern):
+      // @vercel/og/dist/index.edge.js uses two WASM modules that need special handling:
       //
-      // YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
-      // it via WebAssembly.instantiate(bytes) at runtime.
-      // workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
-      // through the module system as a pre-compiled WebAssembly.Module.
-      // Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
-      // yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
-      // can serve it through the module system, and inject h2.instantiateWasm to
-      // use the pre-compiled module instead of bytes.
+      // 1. YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
+      //    it via WebAssembly.instantiate(bytes). workerd forbids this — WASM must be
+      //    loaded as a pre-compiled WebAssembly.Module via the module system.
+      //
+      // 2. RESVG WASM: imported as `import resvg_wasm from "./resvg.wasm?module"` which
+      //    only works on workerd. Node.js can't import WASM files as ESM modules.
+      //
+      // Fix: replace all static WASM imports with dynamic imports that try the ?module
+      // path (for workerd) and fall back to compiling from bytes (for Node.js). This
+      // produces a single build output that runs on both runtimes.
       name: "vinext:og-font-patch",
       enforce: "pre" as const,
       transform(code: string, id: string) {
         if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
         let result = code;
 
-        // ── Extract yoga WASM and import via ?module ──────────────────────────────────
+        // ── Yoga WASM: dynamic import + inline base64 fallback ──────────────────────
         // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
         // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
-        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch
-        // that we inject to use a pre-compiled WebAssembly.Module loaded via ?module.
+        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
+        //
+        // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
+        // module), fall back to compiling from inline base64 bytes for Node.js.
+        // Yoga WASM is ~70KB so inlining the base64 (~95KB) is acceptable.
         const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
         const yogaMatch = YOGA_DATA_URL_RE.exec(result);
         if (yogaMatch) {
@@ -4156,20 +4159,60 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const distDir = path.dirname(id);
           const yogaWasmPath = path.join(distDir, "yoga.wasm");
           // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+          // so the ?module dynamic import can resolve it on workerd builds.
           if (!fs.existsSync(yogaWasmPath)) {
             fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
           }
           // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
           result = result.replace(yogaMatch[0], `H = "";`);
-          // Patch the loadYoga call site to inject instantiateWasm using the ?module import
+          // Patch the loadYoga call site to inject instantiateWasm with universal handler.
+          // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
+          // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
           const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
-          const YOGA_CALL_PATCHED =
-            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {` +
-            ` WebAssembly.instantiate(yoga_wasm_module, imports).then(function(inst) { callback(inst); });` +
-            ` return {}; } })`;
+          const YOGA_CALL_PATCHED = [
+            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
+            `  __vi_yoga_mod.then(function(mod) {`,
+            `    if (mod) {`,
+            `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
+            `    } else {`,
+            `      var b = typeof Buffer !== "undefined" ? Buffer.from(__vi_yoga_b64, "base64")`,
+            `        : Uint8Array.from(atob(__vi_yoga_b64), function(c) { return c.charCodeAt(0); });`,
+            `      WebAssembly.instantiate(b, imports).then(function(r) { callback(r.instance); });`,
+            `    }`,
+            `  });`,
+            `  return {};`,
+            `} })`,
+          ].join("\n");
           result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
-          // Prepend the yoga wasm ?module import so @cloudflare/vite-plugin handles it
-          result = `import yoga_wasm_module from "./yoga.wasm?module";\n` + result;
+          // Prepend dynamic import with base64 fallback (no static import — Node.js safe)
+          const yogaPreamble = [
+            `var __vi_yoga_b64 = ${JSON.stringify(yogaBase64)};`,
+            `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
+          ].join("\n");
+          result = yogaPreamble + "\n" + result;
+        }
+
+        // ── Resvg WASM: dynamic import + disk fallback ──────────────────────────────
+        // The edge entry has `import resvg_wasm from "./resvg.wasm?module"` which is a
+        // static ESM import that only works on workerd. Node.js fails because the WASM
+        // binary's emscripten imports (module "a") can't be resolved as npm packages.
+        //
+        // Strategy: replace the static import with a dynamic import for workerd, falling
+        // back to reading the .wasm file from disk + WebAssembly.compile for Node.js.
+        // Resvg WASM is ~1.3MB so we read from disk instead of inlining base64.
+        const RESVG_STATIC_IMPORT_RE =
+          /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
+        const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
+        if (resvgMatch) {
+          const resvgLoader = [
+            `var __vi_resvg_url = new URL("./resvg.wasm", import.meta.url);`,
+            `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
+            `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+            `    return WebAssembly.compile(mods[0].readFileSync(mods[1].fileURLToPath(__vi_resvg_url)));`,
+            `  });`,
+            `});`,
+          ].join("\n");
+          result = result.replace(resvgMatch[0], resvgLoader);
         }
 
         if (result === code) return null;
