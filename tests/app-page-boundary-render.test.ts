@@ -160,11 +160,11 @@ describe("app page boundary render helpers", () => {
     });
 
     expect(common.loadSsrHandler).toHaveBeenCalledTimes(1);
-    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
     expect(response?.status).toBe(404);
     expect(response?.headers.get("link")).toContain("/font.woff2");
 
     const html = await response?.text();
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="leaf"');
     expect(html).toContain('data-boundary="not-found"');
@@ -194,9 +194,9 @@ describe("app page boundary render helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(sanitizeErrorForClient).toHaveBeenCalledTimes(1);
-    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
 
     const html = await response?.text();
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");

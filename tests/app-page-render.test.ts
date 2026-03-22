@@ -118,6 +118,86 @@ function createCommonOptions() {
   };
 }
 
+describe("clearRequestContext timing — issue #660", () => {
+  // Regression test: clearRequestContext() must not be called before the HTML
+  // stream is fully consumed. Calling it synchronously after receiving the
+  // stream handle races the lazy RSC/SSR pipeline on warm module-cache loads,
+  // causing headers()/cookies() to see a null context mid-stream.
+  it("does not call clearRequestContext before the HTML stream body is consumed", async () => {
+    const common = createCommonOptions();
+    const contextCleared: string[] = [];
+
+    // Record when the context is cleared relative to stream reads.
+    const clearRequestContext = vi.fn(() => {
+      contextCleared.push("cleared");
+    });
+
+    // The SSR handler produces a stream that records when each chunk is read.
+    const loadSsrHandler = vi.fn(async () => ({
+      async handleSsr() {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+            controller.close();
+          },
+        });
+      },
+    }));
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      clearRequestContext,
+      loadSsrHandler,
+    });
+
+    // Context must NOT be cleared yet — stream hasn't been consumed.
+    expect(contextCleared).toHaveLength(0);
+
+    // Consume the stream (simulates the HTTP response being sent to the client).
+    await response.text();
+
+    // Context must be cleared after the stream is fully consumed.
+    expect(contextCleared).toHaveLength(1);
+  });
+
+  it("does not call clearRequestContext before the ISR-cacheable HTML stream body is consumed", async () => {
+    const common = createCommonOptions();
+    const contextCleared: string[] = [];
+
+    const clearRequestContext = vi.fn(() => {
+      contextCleared.push("cleared");
+    });
+
+    const loadSsrHandler = vi.fn(async () => ({
+      async handleSsr() {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("<html>cached</html>"));
+            controller.close();
+          },
+        });
+      },
+    }));
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      clearRequestContext,
+      isProduction: true,
+      loadSsrHandler,
+      revalidateSeconds: 30,
+    });
+
+    // Context must NOT be cleared yet — stream hasn't been consumed.
+    expect(contextCleared).toHaveLength(0);
+
+    // Consume the stream.
+    await response.text();
+
+    // Context must be cleared after the stream is fully consumed.
+    expect(contextCleared).toHaveLength(1);
+  });
+});
+
 describe("app page render lifecycle", () => {
   it("returns pre-render special responses before starting the render stream", async () => {
     const common = createCommonOptions();

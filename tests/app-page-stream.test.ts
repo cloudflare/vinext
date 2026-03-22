@@ -63,7 +63,44 @@ describe("app page stream helpers", () => {
     await expect(new Response(htmlStream).text()).resolves.toBe("<html>ok</html>");
   });
 
-  it("builds an HTML response, including link headers, after clearing request context", async () => {
+  it("defers clearRequestContext until the HTML stream body is fully consumed", async () => {
+    // Regression test for issue #660: clearRequestContext() must not race the
+    // lazy RSC/SSR stream pipeline. It should be called only after the HTTP
+    // response body has been fully consumed by the downstream consumer.
+    const contextCleared: string[] = [];
+    const clearRequestContext = vi.fn(() => {
+      contextCleared.push("cleared");
+    });
+
+    const response = await renderAppPageHtmlResponse({
+      clearRequestContext,
+      fontData: {
+        links: [],
+        preloads: [],
+        styles: [],
+      },
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: {
+        async handleSsr() {
+          return createStream(["<html>page</html>"]);
+        },
+      },
+      status: 200,
+    });
+
+    // The context must NOT be cleared yet — the response stream hasn't been
+    // consumed by the downstream caller (i.e. the HTTP layer) yet.
+    expect(contextCleared).toHaveLength(0);
+
+    // Consuming the stream simulates the HTTP layer reading the response body.
+    await response.text();
+
+    // Now that the stream is fully consumed, context must have been cleared.
+    expect(contextCleared).toHaveLength(1);
+  });
+
+  it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {
     const clearRequestContext = vi.fn();
 
     const response = await renderAppPageHtmlResponse({
@@ -84,13 +121,17 @@ describe("app page stream helpers", () => {
       status: 203,
     });
 
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    // Context must NOT be cleared before body is consumed (see issue #660).
+    expect(clearRequestContext).toHaveBeenCalledTimes(0);
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     await expect(response.text()).resolves.toBe("<html>page</html>");
+
+    // After body is consumed, context must be cleared exactly once.
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("returns the HTML stream and marks shell render completion when SSR succeeds", async () => {

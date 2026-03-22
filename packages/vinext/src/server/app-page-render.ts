@@ -23,6 +23,7 @@ import {
 import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
+  deferUntilStreamConsumed,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   shouldRerenderAppPageWithGlobalError,
@@ -253,14 +254,23 @@ export async function renderAppPageLifecycle(
     }
   }
 
-  options.clearRequestContext();
+  // Eagerly read values that must be captured before the stream is consumed.
   const draftCookie = options.getDraftModeCookieHeader();
-
   const dynamicUsedDuringRender = options.consumeDynamicUsage();
   const requestCacheLife = options.getRequestCacheLife();
   if (requestCacheLife?.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
   }
+
+  // Defer clearRequestContext() until the HTML stream is fully consumed by the
+  // HTTP layer. The RSC/SSR pipeline is lazy — Server Components execute while
+  // the response body is being pulled, not when the stream handle is returned.
+  // Clearing the context synchronously here would race those executions, causing
+  // headers()/cookies() to see a null context on warm (module-cached) requests.
+  // See: https://github.com/cloudflare/vinext/issues/660
+  const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
+    options.clearRequestContext();
+  });
 
   const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
     dynamicUsedDuringRender,
@@ -279,7 +289,7 @@ export async function renderAppPageLifecycle(
   });
 
   if (htmlResponsePolicy.shouldWriteToCache) {
-    const isrResponse = buildAppPageHtmlResponse(htmlStream, {
+    const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       fontLinkHeader,
       middlewareContext: options.middlewareContext,
@@ -303,7 +313,7 @@ export async function renderAppPageLifecycle(
     });
   }
 
-  return buildAppPageHtmlResponse(htmlStream, {
+  return buildAppPageHtmlResponse(safeHtmlStream, {
     draftCookie,
     fontLinkHeader,
     middlewareContext: options.middlewareContext,
