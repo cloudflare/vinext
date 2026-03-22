@@ -55,6 +55,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
+import { createNextTypegenController } from "./typegen.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -832,6 +833,14 @@ export interface VinextOptions {
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
+  /**
+   * Run `next typegen` automatically in development when Next.js is installed.
+   * This generates route-aware helpers like `PageProps`/`LayoutProps` and
+   * typed route metadata into `.next/types` for editor type-checking.
+   * Set to `false` to disable automatic type generation.
+   * @default true
+   */
+  typegen?: boolean;
   /**
    * Experimental vinext-only feature flags.
    */
@@ -2333,6 +2342,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
+        const typegen = createNextTypegenController({
+          root,
+          enabled: options.typegen !== false,
+        });
+
+        typegen.start();
+        server.httpServer?.once("close", () => typegen.close());
 
         // Build a long-lived ModuleRunner for loading all Pages Router modules
         // (middleware, API routes, SSR page rendering) on every request.
@@ -2384,19 +2400,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
+            typegen.schedule();
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
             invalidateRscEntryModule();
+            typegen.schedule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
+            typegen.schedule();
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
             invalidateRscEntryModule();
+            typegen.schedule();
           }
         });
 
