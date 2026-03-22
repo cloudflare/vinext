@@ -4,7 +4,6 @@ import {
   createElement,
   startTransition,
   use,
-  useEffect,
   useLayoutEffect,
   useState,
   type Dispatch,
@@ -221,9 +220,10 @@ function resolveCommittedNavigations(renderId: number): void {
 function NavigationCommitSignal({ children, renderId }: { children: ReactNode; renderId: number }) {
   useLayoutEffect(() => {
     runPrePaintNavigationEffect(renderId);
-  }, [renderId]);
 
-  useEffect(() => {
+    // Resolve the navigation commit promise after the browser paints.
+    // requestAnimationFrame fires after the next paint regardless of
+    // where it's scheduled from, so this works from useLayoutEffect.
     const frame = requestAnimationFrame(() => {
       resolveCommittedNavigations(renderId);
     });
