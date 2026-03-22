@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -313,16 +313,16 @@ describe("next/headers shim", () => {
     });
 
     const syncHeaders = headers();
-    expect(() => syncHeaders.set).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.append).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.delete).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "set")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "append")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "delete")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.append("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.delete("foo")).toThrow(/Headers cannot be modified/);
     expect(syncHeaders.get("foo")).toBe("original");
 
     const awaitedHeaders = await headers();
-    expect(() => awaitedHeaders.set).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(awaitedHeaders, "set")).toThrow(/Headers cannot be modified/);
     expect(() => awaitedHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(awaitedHeaders.get("foo")).toBe("original");
     expect((await headers()).get("foo")).toBe("original");
@@ -377,10 +377,10 @@ describe("next/headers shim", () => {
     });
 
     const syncCookies = cookies();
-    expect(() => syncCookies.set).toThrow(
+    expect(() => Reflect.get(syncCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
-    expect(() => syncCookies.delete).toThrow(
+    expect(() => Reflect.get(syncCookies, "delete")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => syncCookies.set("session", "mutated")).toThrow(
@@ -392,7 +392,7 @@ describe("next/headers shim", () => {
     expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
 
     const awaitedCookies = await cookies();
-    expect(() => awaitedCookies.set).toThrow(
+    expect(() => Reflect.get(awaitedCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => awaitedCookies.set("session", "mutated")).toThrow(
@@ -892,10 +892,59 @@ describe("next/headers phase-aware cookies", () => {
     const previousPhase = setHeadersAccessPhase("route-handler");
     try {
       const cookieStore = cookies();
-      cookieStore.set("token", "sync-token", { httpOnly: true });
+      void cookieStore.set("token", "sync-token", { httpOnly: true });
 
       expect(cookieStore.get("token")).toEqual({ name: "token", value: "sync-token" });
       expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("token=sync-token")]);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().set() emits Path=/ when no path option is provided", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.set("token", "implicit-path");
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("token=implicit-path");
+      expect(pending[0]).toContain("Path=/");
+      expect(getAndClearPendingCookies()).toHaveLength(0);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().set() preserves an explicit path option", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.set("token", "scoped-path", { path: "/api" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("token=scoped-path");
+      expect(pending[0]).toContain("Path=/api");
+      expect(pending[0]).not.toContain("Path=/;");
+      expect(getAndClearPendingCookies()).toHaveLength(0);
     } finally {
       setHeadersAccessPhase(previousPhase);
       setHeadersContext(null);
@@ -920,7 +969,56 @@ describe("next/headers phase-aware cookies", () => {
       const pending = getAndClearPendingCookies();
       expect(pending.length).toBe(1);
       expect(pending[0]).toContain("session=");
-      expect(pending[0]).toContain("Max-Age=0");
+      expect(pending[0]).toContain("Expires=");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().delete() accepts options with path and domain", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.delete({ name: "session", path: "/account", domain: ".example.com" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("session=");
+      expect(pending[0]).toContain("Path=/account");
+      expect(pending[0]).toContain("Domain=.example.com");
+      expect(pending[0]).toContain("Expires=");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().delete() defaults Path=/ for object syntax without path", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.delete({ name: "session" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("session=");
+      expect(pending[0]).toContain("Path=/");
+      expect(pending[0]).toContain("Expires=");
     } finally {
       setHeadersAccessPhase(previousPhase);
       setHeadersContext(null);
@@ -1105,9 +1203,79 @@ describe("next/server shim", () => {
     after(() => {
       throw new Error("task failed");
     });
-    await new Promise((r) => setTimeout(r, 10));
+    // after() wraps function tasks in Promise.resolve().then(task) — two microtask
+    // ticks are sufficient and more deterministic than a setTimeout.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(consoleError).toHaveBeenCalledWith("[vinext] after() task failed:", expect.any(Error));
     consoleError.mockRestore();
+  });
+
+  it("after() calls waitUntil on the execution context when one exists", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const mockCtx = {
+      waitUntil: (p: Promise<unknown>) => {
+        waitUntilCalls.push(p);
+      },
+    };
+
+    let called = false;
+    await runWithExecutionContext(mockCtx, () => {
+      after(() => {
+        called = true;
+      });
+    });
+
+    // waitUntil is called synchronously — no microtask delay needed
+    expect(waitUntilCalls).toHaveLength(1);
+    // Await the guarded promise to verify the callback ran
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
+  });
+
+  it("after() falls back to fire-and-forget when no execution context exists", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+
+    // Outside any execution context scope — should still run the task
+    let called = false;
+    after(() => {
+      called = true;
+    });
+    // after() wraps function tasks in Promise.resolve().then(task) — two microtask
+    // ticks are sufficient and more deterministic than a setTimeout.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(true);
+  });
+
+  it('after() throws inside "use cache" scope', async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, () => {
+      expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
+    });
+  });
+
+  it("after() throws inside unstable_cache() scope", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const key = Symbol.for("vinext.unstableCache.als");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    // Lazily register an ALS on globalThis if cache.ts hasn't been imported yet.
+    // This test is intentionally isolated from the real cache.ts registration path —
+    // it only validates that server.ts reads from the same Symbol key to detect the
+    // unstable_cache scope. If cache.ts was already imported, the existing instance is
+    // reused; if not, this standalone ALS is sufficient for the guard to work.
+    if (!g[key]) g[key] = new AsyncLocalStorage();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (g[key] as any).run(true, () => {
+      expect(() => after(() => {})).toThrow(/unstable_cache/);
+    });
   });
 
   it("connection() returns a resolved promise", async () => {
@@ -1939,16 +2107,48 @@ describe("replyToCacheKey deterministic hashing", () => {
 describe("middleware runner", () => {
   it("findMiddlewareFile finds middleware.ts at project root", async () => {
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
     // pages-basic fixture has middleware.ts
-    const result = findMiddlewareFile(FIXTURE_DIR);
+    const result = findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
     expect(result).not.toBeNull();
     expect(result).toContain("middleware.ts");
   });
 
   it("findMiddlewareFile returns null when no middleware exists", async () => {
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
-    const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    const result = findMiddlewareFile(
+      "/tmp/nonexistent-dir-" + Date.now(),
+      createValidFileMatcher(),
+    );
     expect(result).toBeNull();
+  });
+
+  it("findMiddlewareFile does not find middleware.ts when ts is not a configured pageExtension", async () => {
+    const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    // FIXTURE_DIR has middleware.ts — restricting to mdx only means it should not match
+    const result = findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher(["mdx"]));
+    expect(result).toBeNull();
+  });
+
+  it("findMiddlewareFile emits a deprecation warning when middleware.ts is found", async () => {
+    const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("middleware.ts is deprecated in Next.js 16"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("findMiddlewareFile prefers proxy.ts over middleware.ts (Next.js 16)", async () => {
@@ -1956,13 +2156,15 @@ describe("middleware runner", () => {
     const path = await import("node:path");
     const os = await import("node:os");
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
 
     // Create a temp directory with both proxy.ts and middleware.ts
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
     try {
       fs.writeFileSync(path.join(tmpDir, "proxy.ts"), "export default function proxy() {}");
       fs.writeFileSync(path.join(tmpDir, "middleware.ts"), "export function middleware() {}");
-      const result = findMiddlewareFile(tmpDir);
+      const result = findMiddlewareFile(tmpDir, createValidFileMatcher());
       expect(result).not.toBeNull();
       expect(result).toContain("proxy.ts");
     } finally {
@@ -1975,11 +2177,13 @@ describe("middleware runner", () => {
     const path = await import("node:path");
     const os = await import("node:os");
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
     try {
       fs.writeFileSync(path.join(tmpDir, "proxy.js"), "module.exports = function proxy() {}");
-      const result = findMiddlewareFile(tmpDir);
+      const result = findMiddlewareFile(tmpDir, createValidFileMatcher());
       expect(result).not.toBeNull();
       expect(result).toContain("proxy.js");
     } finally {
@@ -3031,7 +3235,7 @@ describe("NextFetchEvent passed to middleware", () => {
     let receivedEvent: any;
     const mockRunner = {
       import: async () => ({
-        middleware: (req: any, event: any) => {
+        middleware: (_req: any, event: any) => {
           receivedEvent = event;
           event.waitUntil(Promise.resolve("done"));
           return new Response(null, {
@@ -3459,6 +3663,17 @@ describe("ResponseCookies API", () => {
     expect(all).toContainEqual({ name: "c", value: "3" });
   });
 
+  it("has() checks whether a response cookie exists", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc");
+
+    expect(cookies.has("session")).toBe(true);
+    expect(cookies.has("missing")).toBe(false);
+  });
+
   it("delete() sets Max-Age=0", async () => {
     const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers();
@@ -3814,6 +4029,322 @@ describe("NextRequest API", () => {
         process.env.__VINEXT_BUILD_ID = original;
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextURL basePath and locale properties
+
+describe("NextURL basePath and locale properties", () => {
+  const i18nConfig = {
+    nextConfig: {
+      i18n: {
+        locales: ["en", "fr", "de"],
+        defaultLocale: "en",
+      },
+    },
+  };
+
+  it("basePath defaults to empty string when no config provided", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard");
+    expect(url.basePath).toBe("");
+  });
+
+  it("basePath returns the configured value", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath setter normalizes leading slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard");
+    url.basePath = "app";
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath is preserved through clone()", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/docs",
+    });
+    const cloned = url.clone();
+    expect(cloned.basePath).toBe("/docs");
+  });
+
+  it("locale defaults to empty string when no i18n config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about");
+    expect(url.locale).toBe("");
+    expect(url.defaultLocale).toBeUndefined();
+  });
+
+  it("locale returns the detected locale from pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.defaultLocale).toBe("en");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale falls back to defaultLocale when no locale in pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    expect(url.locale).toBe("en");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale detection is case-insensitive", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/FR/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale setter updates the locale and affects href", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.locale = "de";
+    expect(url.locale).toBe("de");
+    expect(url.href).toContain("/de/about");
+  });
+
+  it("locale setter throws on invalid locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(() => {
+      url.locale = "es";
+    }).toThrow(TypeError);
+  });
+
+  it("locales returns a copy of the configured locales array", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    const locales = url.locales!;
+    expect(locales).toEqual(["en", "fr", "de"]);
+    // Mutating the returned array must not affect internals
+    locales.push("es");
+    expect(url.locales).toEqual(["en", "fr", "de"]);
+  });
+
+  it("locales returns undefined without i18n config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about");
+    expect(url.locales).toBeUndefined();
+  });
+
+  // --- href / toString() reconstruction ---
+
+  it("toString() preserves locale prefix in serialized URL", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.toString()).toBe("http://localhost/fr/about");
+    expect(url.href).toBe("http://localhost/fr/about");
+  });
+
+  it("toString() omits defaultLocale prefix (matches Next.js)", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    expect(url.locale).toBe("en"); // defaultLocale
+    expect(url.toString()).toBe("http://localhost/about");
+  });
+
+  it("setting locale changes the serialized href", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    url.locale = "de";
+    expect(url.href).toBe("http://localhost/de/about");
+  });
+
+  it("href includes basePath prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost/app/dashboard");
+  });
+
+  it("href includes both basePath and locale prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    expect(url.pathname).toBe("/about");
+    expect(url.href).toBe("http://localhost/app/fr/about");
+  });
+
+  it("href preserves port, search, and hash when basePath is active", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost:3000/app/dashboard?q=1#top", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost:3000/app/dashboard?q=1#top");
+  });
+
+  it("root locale path /fr produces pathname /", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/fr");
+  });
+
+  it("href setter re-analyzes locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.href = "http://localhost/de/contact";
+    expect(url.locale).toBe("de");
+    expect(url.pathname).toBe("/contact");
+  });
+
+  it("href setter re-strips basePath before locale analysis", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.href = "http://localhost/app/de/contact";
+    expect(url.locale).toBe("de");
+    expect(url.pathname).toBe("/contact");
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath setter to empty string clears basePath", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("/app");
+    url.basePath = "";
+    expect(url.basePath).toBe("");
+    expect(url.href).toBe("http://localhost/dashboard");
+  });
+
+  it("basePath root path has no trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/app");
+  });
+
+  it("basePath is stripped from input URL (basePath-only, no i18n)", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.basePath).toBe("/app");
+    expect(url.href).toBe("http://localhost/app/dashboard");
+  });
+
+  it("pathname setter does not re-analyze locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    url.pathname = "/contact";
+    expect(url.locale).toBe("fr"); // unchanged
+    expect(url.pathname).toBe("/contact");
+    expect(url.href).toBe("http://localhost/fr/contact");
+  });
+
+  it("basePath root path with default locale has no trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    expect(url.locale).toBe("en"); // default locale, no prefix in output
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/app");
+  });
+
+  it("locale setter resets to defaultLocale when set to undefined with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.locale = undefined;
+    expect(url.locale).toBe("en"); // falls back to defaultLocale
+    expect(url.href).toBe("http://localhost/about"); // default locale omitted from prefix
+  });
+
+  it("locale setter resets to defaultLocale when set to empty string with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/de/contact", undefined, i18nConfig);
+    url.locale = "";
+    expect(url.locale).toBe("en");
+  });
+
+  it("searchParams mutations are reflected in href with basePath and locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.searchParams.set("q", "2");
+    expect(url.href).toBe("http://localhost/app/fr/about?q=2");
+  });
+
+  // --- clone() ---
+
+  it("clone() preserves locale, basePath, and config through constructor", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    const cloned = url.clone();
+    expect(cloned.basePath).toBe("/app");
+    expect(cloned.locale).toBe("fr");
+    expect(cloned.defaultLocale).toBe("en");
+    expect(cloned.pathname).toBe("/about");
+    expect(cloned.href).toBe("http://localhost/app/fr/about");
+    // Mutations on clone don't affect original
+    cloned.locale = "de";
+    expect(url.locale).toBe("fr");
+  });
+
+  // --- NextRequest integration ---
+
+  it("NextRequest passes basePath and i18n config through to nextUrl", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/fr/dashboard", {
+      nextConfig: {
+        basePath: "/app",
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+      },
+    });
+    expect(req.nextUrl.basePath).toBe("/app");
+    expect(req.nextUrl.locale).toBe("fr");
+    expect(req.nextUrl.defaultLocale).toBe("en");
+    expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
+  });
+
+  it("NextRequest passes config when input is a Request object", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const raw = new Request("http://localhost/app/fr/dashboard");
+    const req = new NextRequest(raw, {
+      nextConfig: {
+        basePath: "/app",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      },
+    });
+    expect(req.nextUrl.basePath).toBe("/app");
+    expect(req.nextUrl.locale).toBe("fr");
+    expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
   });
 });
 
@@ -4542,6 +5073,34 @@ describe("matchRedirect locale-static index", () => {
     });
     expect(withHeader).not.toBeNull();
     expect(withHeader!.destination).toBe("/en/gated-dest");
+  });
+
+  it("lets has captures override locale params in locale-static redirects", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: `/:locale(en|fr)?/docs`,
+        destination: `/target/:locale`,
+        permanent: false as const,
+        has: [{ type: "header" as const, key: "x-locale", value: "(?<locale>forced)" }],
+      },
+    ];
+
+    const withLocalePrefix = matchRedirect("/en/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+
+    const withoutLocalePrefix = matchRedirect("/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withoutLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
   });
 
   it("falls back to linear matching for rules that are not locale-static", async () => {
@@ -5304,6 +5863,50 @@ describe("proxyExternalRequest", () => {
     }
   });
 
+  it("strips hop-by-hop request headers before proxying external rewrites", async () => {
+    const { proxyExternalRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const request = new Request("http://localhost:3000/proxy", {
+      method: "DELETE",
+      headers: {
+        connection: "keep-alive, x-custom-hop",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        trailers: "x-trailer",
+        "transfer-encoding": "chunked",
+        upgrade: "websocket",
+        "x-custom-hop": "secret",
+        "proxy-authorization": "Basic cHJveHk=",
+        "x-custom-header": "keep-me",
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: any, init: any) => {
+      capturedHeaders = init.headers;
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/data");
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("connection")).toBeNull();
+      expect(capturedHeaders!.get("keep-alive")).toBeNull();
+      expect(capturedHeaders!.get("te")).toBeNull();
+      expect(capturedHeaders!.get("trailers")).toBeNull();
+      expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
+      expect(capturedHeaders!.get("upgrade")).toBeNull();
+      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Request credentials that are not connection-scoped should still forward.
+      expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
+      expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("forwards redirect responses without following them", async () => {
     const { proxyExternalRequest } =
       await import("../packages/vinext/src/config/config-matchers.js");
@@ -5432,6 +6035,24 @@ describe("matchRewrite with external URLs", () => {
     const result = matchRewrite("/item/123", rewrites, emptyCtx);
     expect(result).toBe("/dest/123-bar");
   });
+
+  it("substitutes named captures from has conditions into rewrite destinations", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Ported from documented Next.js behavior:
+    // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/rewrites.mdx
+    const rewrites = [
+      {
+        source: "/:path*",
+        has: [{ type: "header" as const, key: "x-authorized", value: "(?<authorized>yes|true)" }],
+        destination: "/home?authorized=:authorized&path=:path*",
+      },
+    ];
+    const result = matchRewrite("/docs/intro", rewrites, {
+      ...emptyCtx,
+      headers: new Headers({ "x-authorized": "yes" }),
+    });
+    expect(result).toBe("/home?authorized=yes&path=docs/intro");
+  });
 });
 
 describe("matchRedirect destination param substitution", () => {
@@ -5469,6 +6090,25 @@ describe("matchRedirect destination param substitution", () => {
     ];
     const result = matchRedirect("/en/docs", redirects, emptyCtx);
     expect(result).toEqual({ destination: "/en/en/docs", permanent: false });
+  });
+
+  it("substitutes named captures from has conditions into redirect destinations", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Ported from documented Next.js behavior:
+    // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/redirects.mdx
+    const redirects = [
+      {
+        source: "/",
+        has: [{ type: "header" as const, key: "x-authorized", value: "(?<authorized>yes|true)" }],
+        destination: "/home?authorized=:authorized",
+        permanent: false,
+      },
+    ];
+    const result = matchRedirect("/", redirects, {
+      ...emptyCtx,
+      headers: new Headers({ "x-authorized": "yes" }),
+    });
+    expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
   });
 });
 
@@ -9080,9 +9720,12 @@ describe("next/dist/* internal import shims", () => {
     expect(mod.workUnitAsyncStorage).toBe(mod.requestAsyncStorage);
   });
 
-  it("router-context exports RouterContext", async () => {
+  it("router-context exports RouterContext as a React context", async () => {
     const mod = await import("../packages/vinext/src/shims/internal/router-context.js");
     expect(mod.RouterContext).toBeDefined();
+    // Must be a real React context object (has Provider and Consumer)
+    expect(mod.RouterContext.Provider).toBeDefined();
+    expect(mod.RouterContext.Consumer).toBeDefined();
   });
 });
 
@@ -10149,5 +10792,75 @@ describe("shim alias map .js variants", () => {
 
     const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+// ── next/head attribute name validation ─────────────────────────────────────
+
+describe("isSafeAttrName", () => {
+  let isSafeAttrName: (name: string) => boolean;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/shims/head.js");
+    isSafeAttrName = mod.isSafeAttrName;
+  });
+
+  it("allows standard HTML attribute names", () => {
+    expect(isSafeAttrName("name")).toBe(true);
+    expect(isSafeAttrName("content")).toBe(true);
+    expect(isSafeAttrName("charset")).toBe(true);
+    expect(isSafeAttrName("http-equiv")).toBe(true);
+    expect(isSafeAttrName("data-testid")).toBe(true);
+    expect(isSafeAttrName("property")).toBe(true);
+    expect(isSafeAttrName("rel")).toBe(true);
+    expect(isSafeAttrName("href")).toBe(true);
+    expect(isSafeAttrName("crossOrigin")).toBe(true);
+  });
+
+  it("allows xml-namespaced attributes", () => {
+    expect(isSafeAttrName("xml:lang")).toBe(true);
+    expect(isSafeAttrName("xlink:href")).toBe(true);
+  });
+
+  it("rejects attribute names containing quotes", () => {
+    expect(isSafeAttrName('x"')).toBe(false);
+    expect(isSafeAttrName("x'")).toBe(false);
+  });
+
+  it("rejects attribute names containing angle brackets", () => {
+    expect(isSafeAttrName("x>")).toBe(false);
+    expect(isSafeAttrName("x<script")).toBe(false);
+  });
+
+  it("rejects attribute names containing slashes", () => {
+    expect(isSafeAttrName("x/")).toBe(false);
+    expect(isSafeAttrName('x"/><script>alert(1)</script><meta a="')).toBe(false);
+  });
+
+  it("rejects attribute names containing spaces", () => {
+    expect(isSafeAttrName("x y")).toBe(false);
+    expect(isSafeAttrName("x\ty")).toBe(false);
+  });
+
+  it("rejects attribute names containing equals", () => {
+    expect(isSafeAttrName("x=y")).toBe(false);
+  });
+
+  it("rejects inline event handler attributes", () => {
+    expect(isSafeAttrName("onclick")).toBe(false);
+    expect(isSafeAttrName("onerror")).toBe(false);
+    expect(isSafeAttrName("onload")).toBe(false);
+    expect(isSafeAttrName("onmouseover")).toBe(false);
+  });
+
+  it("allows attributes starting with 'o' that are not event handlers", () => {
+    expect(isSafeAttrName("open")).toBe(true);
+    expect(isSafeAttrName("og:title")).toBe(true);
+  });
+
+  it("rejects empty or non-alpha-starting names", () => {
+    expect(isSafeAttrName("")).toBe(false);
+    expect(isSafeAttrName("123")).toBe(false);
+    expect(isSafeAttrName("-foo")).toBe(false);
   });
 });

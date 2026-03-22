@@ -9,7 +9,7 @@
  * to distinguish between notFound(), redirect(), forbidden(), and
  * genuine application errors.
  */
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
 
 // Mock next/navigation since it's a virtual module provided by the vinext plugin.
 // We only need usePathname for the NotFoundBoundary wrapper, not for the static

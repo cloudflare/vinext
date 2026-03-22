@@ -336,12 +336,42 @@ main();
 exports[`App Router entry templates > generateRscEntry snapshot (minimal routes) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -366,6 +396,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -429,6 +460,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -1428,7 +1471,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -1679,6 +1731,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -1756,6 +1820,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
+
+  
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
 
   
 
@@ -2102,6 +2198,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -3225,12 +3322,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with config) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -3255,6 +3382,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -3318,6 +3446,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -4317,7 +4457,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -4568,6 +4717,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -4649,6 +4810,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   
   // Strip basePath prefix
   pathname = stripBasePath(pathname, __basePath);
+  
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
   
 
   // Trailing slash normalization (redirect to canonical form)
@@ -4994,6 +5187,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -6117,12 +6311,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with global error) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -6147,6 +6371,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -6210,6 +6435,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -7239,7 +7476,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -7490,6 +7736,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -7567,6 +7825,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
+
+  
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
 
   
 
@@ -7913,6 +8203,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -9044,12 +9335,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with instrumentation) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -9074,6 +9395,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -9137,6 +9459,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -9405,6 +9739,7 @@ import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
 let __instrumentationInitialized = false;
 let __instrumentationInitPromise = null;
 async function __ensureInstrumentation() {
+  if (process.env.VINEXT_PRERENDER === "1") return;
   if (__instrumentationInitialized) return;
   if (__instrumentationInitPromise) return __instrumentationInitPromise;
   __instrumentationInitPromise = (async () => {
@@ -10165,7 +10500,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -10416,6 +10760,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   // Ensure instrumentation.register() has run before handling the first request.
   // This is a no-op after the first call (guarded by __instrumentationInitialized).
@@ -10496,6 +10852,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
+
+  
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
 
   
 
@@ -10842,6 +11230,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -11965,12 +12354,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with metadata routes) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -11995,6 +12414,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -12058,6 +12478,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -13064,7 +13496,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -13315,6 +13756,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -13392,6 +13845,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
+
+  
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
 
   
 
@@ -13738,6 +14223,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -14861,12 +15347,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with middleware) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -14891,6 +15407,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -14954,6 +15471,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -16182,7 +16711,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -16433,6 +16971,18 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -16513,6 +17063,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -16547,6 +17129,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  // In hybrid app+pages dev mode the connect handler already ran middleware
+  // and forwarded the results via x-vinext-mw-ctx. Reconstruct _mwCtx from
+  // the forwarded data instead of re-running the middleware function.
+  // Guarded by NODE_ENV because this header only exists in dev (the connect
+  // handler sets it). In production there is no connect handler, so an
+  // attacker-supplied header must not be trusted.
+  let __mwCtxApplied = false;
+  if (process.env.NODE_ENV !== "production") {
+    const __mwCtxHeader = request.headers.get("x-vinext-mw-ctx");
+    if (__mwCtxHeader) {
+      try {
+        const __mwCtxData = JSON.parse(__mwCtxHeader);
+        if (__mwCtxData.h && __mwCtxData.h.length > 0) {
+          // Note: h may include x-middleware-request-* internal headers so
+          // applyMiddlewareRequestHeaders() can unpack them below.
+          // processMiddlewareHeaders() strips them before any response.
+          _mwCtx.headers = new Headers();
+          for (const [key, value] of __mwCtxData.h) {
+            _mwCtx.headers.append(key, value);
+          }
+        }
+        if (__mwCtxData.s != null) {
+          _mwCtx.status = __mwCtxData.s;
+        }
+        // Apply forwarded middleware rewrite so routing uses the rewritten path.
+        // The RSC plugin constructs its Request from the original HTTP request,
+        // not from req.url, so the connect handler's req.url rewrite is invisible.
+        if (__mwCtxData.r) {
+          const __rewriteParsed = new URL(__mwCtxData.r, request.url);
+          cleanPathname = __rewriteParsed.pathname;
+          url.search = __rewriteParsed.search;
+        }
+        // Flag set after full context application — if any step fails (e.g. malformed
+        // rewrite URL), we fall back to re-running middleware as a safety net.
+        __mwCtxApplied = true;
+      } catch (e) {
+        console.error("[vinext] Failed to parse forwarded middleware context:", e);
+      }
+    }
+  }
+  if (!__mwCtxApplied) {
    // Run proxy/middleware if present and path matches.
    // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
@@ -16568,7 +17191,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const mwUrl = new URL(request.url);
       mwUrl.pathname = cleanPathname;
       const mwRequest = new Request(mwUrl, request);
-      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+      const __mwNextConfig = (__basePath || __i18nConfig) ? { basePath: __basePath, i18n: __i18nConfig ?? undefined } : undefined;
+      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
       const mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
       const _mwWaitUntil = mwFetchEvent.drainWaitUntil();
@@ -16624,6 +17248,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       return new Response("Internal Server Error", { status: 500 });
     }
   }
+  } // end of if (!__mwCtxApplied)
 
   // Unpack x-middleware-request-* headers into the request context so that
   // headers() returns the middleware-modified headers instead of the original
@@ -16944,6 +17569,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -18072,6 +18698,9 @@ import { setNavigationContext, ServerInsertedHTMLContext } from "next/navigation
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 import { createElement as _ssrCE } from "react";
+import * as _clientRefs from "virtual:vite-rsc/client-references";
+
+let _clientRefsPreloaded = false;
 
 /**
  * Collect all chunks from a ReadableStream into an array of text strings.
@@ -18127,20 +18756,13 @@ function createRscEmbedTransform(embedStream) {
   let pendingChunks = [];
   let reading = false;
 
-  // Fix invalid preload "as" values in RSC Flight hint lines before
-  // they reach the client. React Flight emits HL hints with
-  // as="stylesheet" for CSS, but the HTML spec requires as="style"
-  // for <link rel="preload">. The fixPreloadAs() below only fixes the
-  // server-rendered HTML stream; this fixes the raw Flight data that
-  // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
-  function fixFlightHints(text) {
-    // Flight hint format: <id>:HL["url","stylesheet"] or with options
-    return text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
-  }
-
   // Start reading RSC chunks in the background, accumulating them as text strings.
   // The RSC flight protocol is text-based, so decoding to strings and embedding
   // as JSON strings is ~3x more compact than the byte-array format.
+  //
+  // Note: Flight HL hint "stylesheet" → "style" rewriting is handled upstream
+  // in the renderToReadableStream wrapper (app-rsc-entry.ts), so the stream
+  // arriving here is already clean.
   async function pumpReader() {
     if (reading) return;
     reading = true;
@@ -18152,7 +18774,7 @@ function createRscEmbedTransform(embedStream) {
           break;
         }
         const text = _decoder.decode(result.value, { stream: true });
-        pendingChunks.push(fixFlightHints(text));
+        pendingChunks.push(text);
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -18210,6 +18832,29 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Eagerly preload all client reference modules before SSR rendering.
+  // On the first request after server start, client component modules are
+  // loaded lazily via async import(). Without this preload, React's
+  // renderToReadableStream rejects because the shell can't resolve client
+  // components synchronously (there is no Suspense boundary wrapping the
+  // root). The memoized require cache ensures this is only async on the
+  // very first call; subsequent requests resolve from cache immediately.
+  // See: https://github.com/cloudflare/vinext/issues/256
+  // _clientRefs.default is the default export from the virtual:vite-rsc/client-references
+  // namespace import — a map of client component IDs to their async import functions.
+  if (!_clientRefsPreloaded && _clientRefs.default && globalThis.__vite_rsc_client_require__) {
+    await Promise.all(
+      Object.keys(_clientRefs.default).map((id) =>
+        globalThis.__vite_rsc_client_require__(id).catch((err) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[vinext] failed to preload client ref:", id, err);
+          }
+        })
+      )
+    );
+    _clientRefsPreloaded = true;
+  }
+
   // Wrap in a navigation ALS scope for per-request isolation in the SSR
   // environment. The SSR environment has separate module instances from RSC,
   // so it needs its own ALS scope.
@@ -18378,9 +19023,8 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // Fix invalid preload "as" values in server-rendered HTML.
     // React Fizz emits <link rel="preload" as="stylesheet"> for CSS,
     // but the HTML spec requires as="style" for <link rel="preload">.
-    // Note: fixFlightHints() in createRscEmbedTransform handles the
-    // complementary case — fixing the raw Flight stream data before
-    // it's embedded as __VINEXT_RSC_CHUNKS__ for client-side processing.
+    // Note: Flight HL hints are fixed upstream in the renderToReadableStream
+    // wrapper (app-rsc-entry.ts); this only handles the Fizz HTML stream.
     // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
     function fixPreloadAs(html) {
       // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order
@@ -18525,6 +19169,9 @@ const pageLoaders = {
   "/before-pop-state-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx"),
   "/cjs/basic": () => import("<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx"),
   "/cjs/random": () => import("<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts"),
+  "/compat-router-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx"),
+  "/concurrent-head": () => import("<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx"),
+  "/concurrent-router": () => import("<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx"),
   "/config-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx"),
   "/counter": () => import("<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx"),
   "/dynamic-page": () => import("<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx"),
@@ -18623,7 +19270,7 @@ import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-import { parseCookies } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { parseCookies, sanitizeDestination as sanitizeDestinationLocal } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
@@ -18747,31 +19394,34 @@ import * as page_4 from "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-stat
 import * as page_5 from "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx";
 import * as page_6 from "<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx";
 import * as page_7 from "<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts";
-import * as page_8 from "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx";
-import * as page_9 from "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx";
-import * as page_10 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx";
-import * as page_11 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx";
-import * as page_12 from "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx";
-import * as page_13 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx";
-import * as page_14 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx";
-import * as page_15 from "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx";
-import * as page_16 from "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx";
-import * as page_17 from "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx";
-import * as page_18 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx";
-import * as page_19 from "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx";
-import * as page_20 from "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx";
-import * as page_21 from "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx";
-import * as page_22 from "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx";
-import * as page_23 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx";
-import * as page_24 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx";
-import * as page_25 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx";
-import * as page_26 from "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx";
-import * as page_27 from "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx";
-import * as page_28 from "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx";
-import * as page_29 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx";
-import * as page_30 from "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx";
-import * as page_31 from "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx";
-import * as page_32 from "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx";
+import * as page_8 from "<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx";
+import * as page_9 from "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx";
+import * as page_10 from "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx";
+import * as page_11 from "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx";
+import * as page_12 from "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx";
+import * as page_13 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx";
+import * as page_14 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx";
+import * as page_15 from "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx";
+import * as page_16 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx";
+import * as page_17 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx";
+import * as page_18 from "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx";
+import * as page_19 from "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx";
+import * as page_20 from "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx";
+import * as page_21 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx";
+import * as page_22 from "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx";
+import * as page_23 from "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx";
+import * as page_24 from "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx";
+import * as page_25 from "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx";
+import * as page_26 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx";
+import * as page_27 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx";
+import * as page_28 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx";
+import * as page_29 from "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx";
+import * as page_30 from "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx";
+import * as page_31 from "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx";
+import * as page_32 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx";
+import * as page_33 from "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx";
+import * as page_34 from "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx";
+import * as page_35 from "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx";
 import * as api_0 from "<ROOT>/tests/fixtures/pages-basic/pages/api/binary.ts";
 import * as api_1 from "<ROOT>/tests/fixtures/pages-basic/pages/api/echo-body.ts";
 import * as api_2 from "<ROOT>/tests/fixtures/pages-basic/pages/api/error-route.ts";
@@ -18786,7 +19436,7 @@ import * as api_9 from "<ROOT>/tests/fixtures/pages-basic/pages/api/users/[id].t
 import { default as AppComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx";
 import { default as DocumentComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_document.tsx";
 
-const pageRoutes = [
+export const pageRoutes = [
   { pattern: "/", patternParts: [], isDynamic: false, params: [], module: page_0, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/index.tsx" },
   { pattern: "/404", patternParts: ["404"], isDynamic: false, params: [], module: page_1, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/404.tsx" },
   { pattern: "/about", patternParts: ["about"], isDynamic: false, params: [], module: page_2, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/about.tsx" },
@@ -18795,31 +19445,34 @@ const pageRoutes = [
   { pattern: "/before-pop-state-test", patternParts: ["before-pop-state-test"], isDynamic: false, params: [], module: page_5, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx" },
   { pattern: "/cjs/basic", patternParts: ["cjs","basic"], isDynamic: false, params: [], module: page_6, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx" },
   { pattern: "/cjs/random", patternParts: ["cjs","random"], isDynamic: false, params: [], module: page_7, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts" },
-  { pattern: "/config-test", patternParts: ["config-test"], isDynamic: false, params: [], module: page_8, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx" },
-  { pattern: "/counter", patternParts: ["counter"], isDynamic: false, params: [], module: page_9, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx" },
-  { pattern: "/dynamic-page", patternParts: ["dynamic-page"], isDynamic: false, params: [], module: page_10, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx" },
-  { pattern: "/dynamic-ssr-false", patternParts: ["dynamic-ssr-false"], isDynamic: false, params: [], module: page_11, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx" },
-  { pattern: "/header-override-delete", patternParts: ["header-override-delete"], isDynamic: false, params: [], module: page_12, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx" },
-  { pattern: "/isr-second-render-state", patternParts: ["isr-second-render-state"], isDynamic: false, params: [], module: page_13, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx" },
-  { pattern: "/isr-test", patternParts: ["isr-test"], isDynamic: false, params: [], module: page_14, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx" },
-  { pattern: "/link-test", patternParts: ["link-test"], isDynamic: false, params: [], module: page_15, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx" },
-  { pattern: "/mw-object-gated", patternParts: ["mw-object-gated"], isDynamic: false, params: [], module: page_16, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx" },
-  { pattern: "/nav-test", patternParts: ["nav-test"], isDynamic: false, params: [], module: page_17, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx" },
-  { pattern: "/posts/missing", patternParts: ["posts","missing"], isDynamic: false, params: [], module: page_18, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx" },
-  { pattern: "/redirect-xss", patternParts: ["redirect-xss"], isDynamic: false, params: [], module: page_19, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx" },
-  { pattern: "/router-events-test", patternParts: ["router-events-test"], isDynamic: false, params: [], module: page_20, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx" },
-  { pattern: "/script-test", patternParts: ["script-test"], isDynamic: false, params: [], module: page_21, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx" },
-  { pattern: "/shallow-test", patternParts: ["shallow-test"], isDynamic: false, params: [], module: page_22, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx" },
-  { pattern: "/ssr", patternParts: ["ssr"], isDynamic: false, params: [], module: page_23, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx" },
-  { pattern: "/ssr-headers", patternParts: ["ssr-headers"], isDynamic: false, params: [], module: page_24, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx" },
-  { pattern: "/ssr-res-end", patternParts: ["ssr-res-end"], isDynamic: false, params: [], module: page_25, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx" },
-  { pattern: "/suspense-test", patternParts: ["suspense-test"], isDynamic: false, params: [], module: page_26, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx" },
-  { pattern: "/articles/:id", patternParts: ["articles",":id"], isDynamic: true, params: ["id"], module: page_27, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx" },
-  { pattern: "/blog/:slug", patternParts: ["blog",":slug"], isDynamic: true, params: ["slug"], module: page_28, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
-  { pattern: "/posts/:id", patternParts: ["posts",":id"], isDynamic: true, params: ["id"], module: page_29, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
-  { pattern: "/products/:pid", patternParts: ["products",":pid"], isDynamic: true, params: ["pid"], module: page_30, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
-  { pattern: "/docs/:slug+", patternParts: ["docs",":slug+"], isDynamic: true, params: ["slug"], module: page_31, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" },
-  { pattern: "/sign-up/:sign-up*", patternParts: ["sign-up",":sign-up*"], isDynamic: true, params: ["sign-up"], module: page_32, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx" }
+  { pattern: "/compat-router-test", patternParts: ["compat-router-test"], isDynamic: false, params: [], module: page_8, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx" },
+  { pattern: "/concurrent-head", patternParts: ["concurrent-head"], isDynamic: false, params: [], module: page_9, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx" },
+  { pattern: "/concurrent-router", patternParts: ["concurrent-router"], isDynamic: false, params: [], module: page_10, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx" },
+  { pattern: "/config-test", patternParts: ["config-test"], isDynamic: false, params: [], module: page_11, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx" },
+  { pattern: "/counter", patternParts: ["counter"], isDynamic: false, params: [], module: page_12, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx" },
+  { pattern: "/dynamic-page", patternParts: ["dynamic-page"], isDynamic: false, params: [], module: page_13, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx" },
+  { pattern: "/dynamic-ssr-false", patternParts: ["dynamic-ssr-false"], isDynamic: false, params: [], module: page_14, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx" },
+  { pattern: "/header-override-delete", patternParts: ["header-override-delete"], isDynamic: false, params: [], module: page_15, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx" },
+  { pattern: "/isr-second-render-state", patternParts: ["isr-second-render-state"], isDynamic: false, params: [], module: page_16, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx" },
+  { pattern: "/isr-test", patternParts: ["isr-test"], isDynamic: false, params: [], module: page_17, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx" },
+  { pattern: "/link-test", patternParts: ["link-test"], isDynamic: false, params: [], module: page_18, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx" },
+  { pattern: "/mw-object-gated", patternParts: ["mw-object-gated"], isDynamic: false, params: [], module: page_19, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx" },
+  { pattern: "/nav-test", patternParts: ["nav-test"], isDynamic: false, params: [], module: page_20, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx" },
+  { pattern: "/posts/missing", patternParts: ["posts","missing"], isDynamic: false, params: [], module: page_21, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx" },
+  { pattern: "/redirect-xss", patternParts: ["redirect-xss"], isDynamic: false, params: [], module: page_22, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx" },
+  { pattern: "/router-events-test", patternParts: ["router-events-test"], isDynamic: false, params: [], module: page_23, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx" },
+  { pattern: "/script-test", patternParts: ["script-test"], isDynamic: false, params: [], module: page_24, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx" },
+  { pattern: "/shallow-test", patternParts: ["shallow-test"], isDynamic: false, params: [], module: page_25, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx" },
+  { pattern: "/ssr", patternParts: ["ssr"], isDynamic: false, params: [], module: page_26, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx" },
+  { pattern: "/ssr-headers", patternParts: ["ssr-headers"], isDynamic: false, params: [], module: page_27, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx" },
+  { pattern: "/ssr-res-end", patternParts: ["ssr-res-end"], isDynamic: false, params: [], module: page_28, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx" },
+  { pattern: "/suspense-test", patternParts: ["suspense-test"], isDynamic: false, params: [], module: page_29, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx" },
+  { pattern: "/articles/:id", patternParts: ["articles",":id"], isDynamic: true, params: ["id"], module: page_30, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx" },
+  { pattern: "/blog/:slug", patternParts: ["blog",":slug"], isDynamic: true, params: ["slug"], module: page_31, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
+  { pattern: "/posts/:id", patternParts: ["posts",":id"], isDynamic: true, params: ["id"], module: page_32, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
+  { pattern: "/products/:pid", patternParts: ["products",":pid"], isDynamic: true, params: ["pid"], module: page_33, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
+  { pattern: "/docs/:slug+", patternParts: ["docs",":slug+"], isDynamic: true, params: ["slug"], module: page_34, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" },
+  { pattern: "/sign-up/:sign-up*", patternParts: ["sign-up",":sign-up*"], isDynamic: true, params: ["sign-up"], module: page_35, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx" }
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 
@@ -20025,7 +20678,8 @@ async function _runMiddleware(request) {
     mwUrl.pathname = normalizedPathname;
     mwRequest = new Request(mwUrl, request);
   }
-  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
   var response;
   try { response = await middlewareFn(nextRequest, fetchEvent); }

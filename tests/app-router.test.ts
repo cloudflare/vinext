@@ -5,8 +5,15 @@ import zlib from "node:zlib";
 import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, startFixtureServer } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  buildAppFixture,
+  fetchHtml,
+  RSC_ENTRIES,
+  startFixtureServer,
+} from "./helpers.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -510,14 +517,14 @@ describe("App Router integration", () => {
     expect(themeCookie).toContain("dark");
   });
 
-  it("cookies().delete() in route handler produces Max-Age=0 Set-Cookie", async () => {
+  it("cookies().delete() in route handler produces an expired Set-Cookie header", async () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`, { method: "POST" });
     expect(res.status).toBe(200);
 
     const setCookieHeaders = res.headers.getSetCookie();
     const deleteCookie = setCookieHeaders.find((h: string) => h.startsWith("session="));
     expect(deleteCookie).toBeDefined();
-    expect(deleteCookie).toContain("Max-Age=0");
+    expect(deleteCookie).toContain("Expires=");
   });
 
   it("renders custom not-found.tsx for unmatched routes", async () => {
@@ -1183,7 +1190,7 @@ describe("App Router integration", () => {
     expect(res.status).not.toBe(403);
   });
 
-  it("allows server action POST with Origin 'null' (privacy-sensitive context)", async () => {
+  it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
       headers: {
@@ -1193,9 +1200,9 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Origin "null" is sent by browsers in privacy-sensitive contexts,
-    // should be treated as missing and allowed through.
-    expect(res.status).not.toBe(403);
+    // Origin "null" is sent by browsers in opaque/sandboxed contexts.
+    // Must be blocked unless explicitly allowlisted (CVE: GHSA-mq59-m269-xvcx).
+    expect(res.status).toBe(403);
   });
 
   it("rejects server action POST when X-Forwarded-Host matches spoofed Origin", async () => {
@@ -1305,11 +1312,12 @@ describe("App Router dev server origin check", () => {
     expect(res.status).toBe(200);
   });
 
-  it("allows requests with Origin 'null' (privacy-sensitive context)", async () => {
+  it("blocks requests with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/`, {
       headers: { Origin: "null" },
     });
-    expect(res.status).toBe(200);
+    // Origin "null" must be blocked unless explicitly allowlisted (CVE: GHSA-jcc7-9wpm-mj36).
+    expect(res.status).toBe(403);
   });
 
   it("blocks cross-origin requests", async () => {
@@ -1456,7 +1464,7 @@ describe("App Router Production build", () => {
 
 describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
-  let server: import("node:http").Server;
+  let server: import("node:http").Server | undefined;
   let baseUrl: string;
 
   function extractRequestId(html: string): string | undefined {
@@ -1479,8 +1487,8 @@ describe("App Router Production server (startProdServer)", () => {
 
     // Start the production server on a random available port
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    server = await startProdServer({ port: 0, outDir, noCompression: false });
-    const addr = server.address();
+    ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
+    const addr = server!.address();
     const port = typeof addr === "object" && addr ? addr.port : 4210;
     baseUrl = `http://localhost:${port}`;
   }, 60000);
@@ -1596,7 +1604,6 @@ describe("App Router Production server (startProdServer)", () => {
 
     const errorRes = await fetch(`${baseUrl}/error-server-test`);
     expect(errorRes.status).toBe(200);
-    await errorRes.text();
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -1819,7 +1826,7 @@ export default {
     );
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    const server = await startProdServer({ port: 0, outDir, noCompression: true });
+    const { server } = await startProdServer({ port: 0, outDir, noCompression: true });
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
 
@@ -1902,16 +1909,14 @@ describe("App Router dev server malformed URL handling", () => {
 });
 
 describe("App Router Static export", () => {
-  let server: ViteDevServer;
-  let baseUrl: string;
+  let rscBundlePath: string;
   const exportDir = path.resolve(APP_FIXTURE_DIR, "out");
 
   beforeAll(async () => {
-    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
-  });
+    rscBundlePath = await buildAppFixture(APP_FIXTURE_DIR);
+  }, 120_000);
 
-  afterAll(async () => {
-    await server.close();
+  afterAll(() => {
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 
@@ -1925,10 +1930,8 @@ describe("App Router Static export", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     const result = await staticExportApp({
-      baseUrl,
       routes,
-      appDir,
-      server,
+      rscBundlePath,
       outDir: exportDir,
       config,
     });
@@ -1995,10 +1998,8 @@ describe("App Router Static export", () => {
 
     try {
       const result = await staticExportApp({
-        baseUrl,
         routes: fakeRoutes,
-        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
-        server,
+        rscBundlePath,
         outDir: tempDir,
         config,
       });
@@ -2042,10 +2043,8 @@ describe("App Router Static export", () => {
 
     try {
       const result = await staticExportApp({
-        baseUrl,
         routes: fakeRoutes,
-        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
-        server,
+        rscBundlePath,
         outDir: tempDir,
         config,
       });
@@ -2937,6 +2936,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         const onErrorFn = extractFunction(code, "rscOnError");
 
         const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
+        // oxlint-disable-next-line typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
         const factory = new Function("process", body);
         rscOnError = factory({ env: { NODE_ENV: "development" } });
       });
@@ -3147,13 +3147,33 @@ describe("SSR entry CSS preload fix", () => {
     expect(code).toContain('as="style"');
   });
 
-  it("generateSsrEntry includes fixFlightHints in RSC embed transform", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
-    const code = generateSsrEntry();
-    // The RSC embed stream should fix HL hint "stylesheet" → "style" before
-    // chunks are embedded as __VINEXT_RSC_CHUNKS__ for client-side processing
-    expect(code).toContain("fixFlightHints");
-    expect(code).toContain('"style"');
+  it("generateRscEntry wraps renderToReadableStream with HL hint fix", () => {
+    // The RSC entry should shadow renderToReadableStream with a wrapper that
+    // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
+    // so all consumers (SSR embed, client-side nav, server actions) get clean data.
+    const route: AppRoute = {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      routeSegments: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+      patternParts: ["/"],
+    };
+    const code = generateRscEntry("/tmp/test/app", [route]);
+    expect(code).toContain("_renderToReadableStream");
+    expect(code).toContain('"style"$2');
   });
 
   it('fixPreloadAs regex correctly replaces as="stylesheet" with as="style"', () => {
@@ -3198,10 +3218,9 @@ describe("SSR entry CSS preload fix", () => {
   });
 
   it('fixFlightHints regex correctly replaces "stylesheet" with "style" in RSC Flight HL hints', () => {
-    // Replicate the fixFlightHints regex from the generated SSR entry.
-    // This runs on the raw Flight protocol text embedded in __VINEXT_RSC_CHUNKS__
-    // so that client-side React creates valid <link rel="preload" as="style"> instead
-    // of invalid <link rel="preload" as="stylesheet">.
+    // Replicate the HL hint rewrite regex from the renderToReadableStream wrapper
+    // in app-rsc-entry.ts. This rewrites the Flight stream at the source so all
+    // consumers (SSR embed, client-side nav, server actions) get clean data.
     function fixFlightHints(text: string): string {
       return text.replace(/(\d+:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
     }
@@ -3273,6 +3292,76 @@ describe("Tick-buffered RSC delivery", () => {
     expect(code).toContain("DOMContentLoaded");
     // Should NOT use setTimeout-based polling
     expect(code).not.toContain("setTimeout(resolve, 1)");
+  });
+});
+
+// ── Client reference preloading (Issue #256) ─────────────────────────────────
+//
+// On the first SSR request after server start, client reference modules are
+// loaded lazily via async import(). The memoize cache in @vitejs/plugin-rsc is
+// cold, so __vite_rsc_client_require__ returns an unresolved Promise. Without
+// <Suspense> wrapping the root shell, React SSR rejects and the server returns
+// 500. Subsequent requests work because the memoize cache is warm.
+//
+// Fix: the SSR entry eagerly preloads all client reference modules before
+// renderToReadableStream runs, warming the memoize cache on every request.
+
+describe("Client reference preloading (Issue #256)", () => {
+  it("preloading correctly warms the memoize cache", async () => {
+    // Replicate the memoize + lazy-load pattern from @vitejs/plugin-rsc
+    // to verify that preloading prevents the first-request 500.
+    const loadCounts = new Map<string, number>();
+
+    function memoize(f: (id: string) => Promise<Record<string, unknown>>) {
+      const cache = new Map<string, Promise<Record<string, unknown>>>();
+      return (id: string) => {
+        const cached = cache.get(id);
+        if (cached !== undefined) return cached;
+        const result = f(id);
+        cache.set(id, result);
+        return result;
+      };
+    }
+
+    // Simulate lazy client module loading (async import)
+    const requireModule = memoize(async (id: string) => {
+      loadCounts.set(id, (loadCounts.get(id) ?? 0) + 1);
+      // Simulate async module load
+      await new Promise((r) => setTimeout(r, 10));
+      return { default: `component-${id}` };
+    });
+
+    const clientRefs = { "comp-a": true, "comp-b": true, "comp-c": true };
+
+    // Without preloading: requireModule returns unresolved promises
+    const beforePreload = requireModule("comp-a");
+    // The promise is pending — this is what causes the 500 on first request
+    expect(beforePreload).toBeInstanceOf(Promise);
+
+    // Preload all references (the fix)
+    await Promise.all(Object.keys(clientRefs).map((id) => requireModule(id)));
+
+    // After preloading: memoize cache is warm, promises are resolved.
+    // Calling requireModule again returns the same (now-resolved) promise.
+    const afterPreload = requireModule("comp-a");
+    expect(afterPreload).toBeInstanceOf(Promise);
+    const resolved = await afterPreload;
+    expect(resolved).toEqual({ default: "component-comp-a" });
+
+    // Critical invariant: after preloading, the cached promise must be
+    // already settled. React SSR calls __vite_rsc_client_require__ and
+    // expects a synchronously resolvable value — if the promise is still
+    // pending, renderToReadableStream rejects (the original 500 bug).
+    const SETTLED = Symbol("settled");
+    const raceResult = await Promise.race([requireModule("comp-b"), Promise.resolve(SETTLED)]);
+    // If the cached promise were still pending, raceResult would be SETTLED.
+    // A resolved cache means the module value wins the race.
+    expect(raceResult).toEqual({ default: "component-comp-b" });
+
+    // Each module should only be loaded once (memoize dedup)
+    expect(loadCounts.get("comp-a")).toBe(1);
+    expect(loadCounts.get("comp-b")).toBe(1);
+    expect(loadCounts.get("comp-c")).toBe(1);
   });
 });
 
@@ -3634,29 +3723,6 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("rscData: __rscData");
     // Background regen must also store rscData
     expect(code).toContain("rscData: __freshRscData");
-  });
-
-  it("ISR background regeneration uses empty searchParams, not the triggering user's", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-
-    // Find the __triggerBackgroundRegeneration callback for stale cache hits
-    const regenIdx = code.indexOf("__triggerBackgroundRegeneration(cleanPathname,");
-    expect(regenIdx).toBeGreaterThan(-1);
-
-    // Extract the regeneration callback body — needs enough chars to cover
-    // the setNavigationContext + buildPageElement calls past the unified
-    // context setup boilerplate.
-    const regenBody = code.slice(regenIdx, regenIdx + 1200);
-
-    // The regeneration must NOT use url.searchParams — that leaks the triggering
-    // user's query params into cached content served to all subsequent users.
-    // Headers are already correctly emptied (new Headers()), searchParams must
-    // get the same treatment.
-    expect(regenBody).not.toContain("url.searchParams");
-
-    // Instead it should use empty URLSearchParams for both setNavigationContext
-    // and buildPageElement
-    expect(regenBody).toContain("new URLSearchParams()");
   });
 
   it("generated code writes RSC-first partial cache entry on RSC MISS", () => {

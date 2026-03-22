@@ -10,7 +10,8 @@
 import http, { type IncomingHttpHeaders } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { createServer, type ViteDevServer } from "vite";
+import { pathToFileURL } from "node:url";
+import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
@@ -133,12 +134,24 @@ export interface NodeHttpResponse {
   body: string;
 }
 
-export async function createIsolatedFixture(fixtureDir: string, prefix: string): Promise<string> {
+export async function createIsolatedFixture(
+  fixtureDir: string,
+  prefix: string,
+  filter?: (src: string) => boolean,
+  nodeModulesDir?: string,
+): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  await fs.cp(fixtureDir, tmpDir, { recursive: true });
+  // Skip node_modules during copy — we'll replace it with a symlink to either
+  // the fixture's own node_modules (when it has one) or the workspace root
+  // node_modules so fixtures don't need their own install.
+  await fs.cp(fixtureDir, tmpDir, {
+    recursive: true,
+    filter: (src) => !src.includes(`${path.sep}node_modules`) && (filter == null || filter(src)),
+  });
 
-  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-  await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+  const resolvedNodeModules =
+    nodeModulesDir ?? path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(resolvedNodeModules, path.join(tmpDir, "node_modules"), "junction");
 
   return tmpDir;
 }
@@ -176,4 +189,118 @@ export async function requestNodeServerWithHost(
     req.on("error", reject);
     req.end();
   });
+}
+
+/**
+ * Build a Pages Router fixture's SSR server bundle into a fresh tmpdir.
+ *
+ * Returns the path to the built bundle (`entry.js`).
+ */
+export async function buildPagesFixture(fixtureDir: string): Promise<string> {
+  const serverOutDir = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-build-")),
+    "server",
+  );
+
+  // Use disableAppRouter: true so the RSC/App Router pipeline is not activated.
+  // This is required when the fixture has both app/ and pages/ directories
+  // (hybrid); we only want the Pages Router SSR bundle here.
+  await build({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: serverOutDir,
+      emptyOutDir: true,
+      ssr: "virtual:vinext-server-entry",
+      rollupOptions: {
+        output: { entryFileNames: "entry.js" },
+      },
+    },
+  });
+
+  return path.join(serverOutDir, "entry.js");
+}
+
+/**
+ * Build an App Router fixture's RSC/SSR/client bundles into a fresh isolated
+ * output directory. The fixture source stays in place — only the output lands
+ * in a per-call tmpdir so sequential test suites never clobber each other.
+ *
+ * Returns the path to the built RSC bundle (`<tmp>/server/index.js`).
+ */
+export async function buildAppFixture(fixtureDir: string): Promise<string> {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-app-build-"));
+
+  const rscOutDir = path.join(outDir, "server");
+  const ssrOutDir = path.join(outDir, "server", "ssr");
+  const clientOutDir = path.join(outDir, "client");
+
+  const { createBuilder } = await import("vite");
+  const builder = await createBuilder({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [vinext({ appDir: fixtureDir, rscOutDir, ssrOutDir, clientOutDir })],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+
+  // The SSR bundle externalizes React packages (react, react-dom) so that
+  // Node loads them natively. When the bundle lives in a temp dir, Node can't
+  // find react-dom via normal node_modules traversal. Symlink the project's
+  // node_modules into the temp dir so the external imports resolve correctly.
+  const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(projectNodeModules, path.join(outDir, "node_modules"));
+
+  return path.join(outDir, "server", "index.js");
+}
+
+/**
+ * Build the `tests/fixtures/cf-app-basic` fixture as a Cloudflare Workers
+ * bundle in-process using `createBuilder` + `@cloudflare/vite-plugin`.
+ *
+ * The CF plugin is loaded via a path-based import resolved from the fixture's
+ * own node_modules (it is not installed at the workspace root).
+ *
+ * Both the App Router and Pages Router are served by the same Workers bundle —
+ * there is no separate plain-Node SSR bundle for Pages Router. All prerendering
+ * for both routers goes through a locally-spawned prod server over HTTP, the
+ * same path used for plain Node builds.
+ *
+ * Returns `{ root, rscBundlePath }`.
+ */
+export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
+  root: string;
+  rscBundlePath: string;
+}> {
+  const tmpDir = await createIsolatedFixture(
+    fixtureDir,
+    "vinext-cf-build-",
+    undefined,
+    path.join(fixtureDir, "node_modules"),
+  );
+  const cfPluginPath = path.join(tmpDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs");
+  const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as unknown as {
+    cloudflare: (opts?: {
+      viteEnvironment?: { name: string; childEnvironments?: string[] };
+    }) => import("vite").Plugin;
+  };
+
+  const { createBuilder } = await import("vite");
+  const builder = await createBuilder({
+    root: tmpDir,
+    configFile: false,
+    plugins: [
+      vinext({ appDir: tmpDir }),
+      cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+    ],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+
+  return {
+    root: tmpDir,
+    rscBundlePath: path.join(tmpDir, "dist", "server", "index.js"),
+  };
 }

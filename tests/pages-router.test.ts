@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createServer, build, type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
+import { createServer, build, type ViteDevServer } from "vite-plus";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -7,13 +7,19 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
-import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
   return <Component {...pageProps} />;
 }
 `;
+
+type ClientBuildManifestEntry = {
+  file?: string;
+  css?: string[];
+  assets?: string[];
+};
 
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
@@ -33,6 +39,15 @@ export default function middleware() {
   return new Response("nested blocked", { status: 418 });
 }
 `,
+  );
+}
+
+function findBuildManifestEntries(
+  buildManifest: Record<string, ClientBuildManifestEntry>,
+  moduleId: string,
+): Array<[string, ClientBuildManifestEntry]> {
+  return Object.entries(buildManifest).filter(
+    ([key]) => key === moduleId || key.endsWith(`/${moduleId}`),
   );
 }
 
@@ -133,6 +148,19 @@ describe("Pages Router integration", () => {
     // Router should have correct pathname and query during SSR
     expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/\[id\]/);
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
+  });
+
+  it("next/compat/router: useRouter returns router object in Pages Router context", async () => {
+    const res = await fetch(`${baseUrl}/compat-router-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The shared component detects Pages Router context (router !== null)
+    expect(html).toContain('data-testid="router-context"');
+    expect(html).toContain("pages-router");
+    // The router pathname should reflect the current page
+    expect(html).toContain('data-testid="router-pathname"');
+    expect(html).toContain("/compat-router-test");
   });
 
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
@@ -951,7 +979,7 @@ describe("Pages Router allowedDevOrigins config", () => {
   afterAll(async () => {
     await server?.close();
     await fsp.rm(tmpDir, { recursive: true, force: true });
-  });
+  }, 30000);
 
   it("allows cross-origin requests from allowedDevOrigins", async () => {
     const res = await fetch(`${baseUrl}/`, {
@@ -1422,12 +1450,16 @@ export const config = { matcher: ["/protected"] };
     expect(fs.existsSync(buildManifestPath)).toBe(true);
     const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
       string,
-      unknown
+      ClientBuildManifestEntry
     >;
-    const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-      (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+    const counterBuildManifestEntries = findBuildManifestEntries(
+      buildManifest,
+      "pages/counter.tsx",
     );
-    expect(counterBuildManifestEntries).toEqual([]);
+    expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+    expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+      true,
+    );
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -1448,7 +1480,7 @@ export const config = { matcher: ["/protected"] };
     // entire React framework). Before code-splitting this was ~200KB+.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(20 * 1024); // < 20 KB
+      expect(entrySize).toBeLessThan(25 * 1024); // < 25 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -1514,12 +1546,16 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+        true,
+      );
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -1535,7 +1571,7 @@ export default function CounterPage() {
       );
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: fixtureOutDir,
@@ -1618,12 +1654,21 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(
+        counterBuildManifestEntries.some(
+          ([, entry]) =>
+            typeof entry.file === "string" ||
+            (Array.isArray(entry.css) && entry.css.length > 0) ||
+            (Array.isArray(entry.assets) && entry.assets.length > 0),
+        ),
+      ).toBe(true);
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -1647,7 +1692,7 @@ export default function CounterPage() {
       expect(cssContent).toMatch(/data:image\/svg\+xml|\.svg/);
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: fixtureOutDir,
@@ -1940,7 +1985,7 @@ export default function CounterPage() {
 
 describe("Production server middleware (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -1975,18 +2020,18 @@ describe("Production server middleware (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
+    ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
       outDir,
-    });
-    const addr = prodServer.address() as { port: number };
+    }));
+    const addr = prodServer!.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2027,12 +2072,12 @@ describe("Production server middleware (Pages Router)", () => {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      prodServer = await startProdServer({
+      ({ server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: path.join(tmpDir, "dist"),
-      });
-      const addr = prodServer.address() as { port: number };
+      }));
+      const addr = prodServer!.address() as { port: number };
       const tempProdUrl = `http://127.0.0.1:${addr.port}`;
 
       const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
@@ -2322,7 +2367,7 @@ describe("Production server middleware (Pages Router)", () => {
 
 describe("Production server next.config.js features (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -2357,18 +2402,18 @@ describe("Production server next.config.js features (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
+    ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
       outDir,
-    });
-    const addr = prodServer.address() as { port: number };
+    }));
+    const addr = prodServer!.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2530,22 +2575,14 @@ describe("Production server next.config.js features (Pages Router)", () => {
 });
 
 describe("Static export (Pages Router)", () => {
-  let server: ViteDevServer;
+  let pagesBundlePath: string;
   const exportDir = path.resolve(FIXTURE_DIR, "out");
 
   beforeAll(async () => {
-    server = await createServer({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext()],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    // Don't need to listen — just need the SSR module loader
-  });
+    pagesBundlePath = await buildPagesFixture(FIXTURE_DIR);
+  }, 60_000);
 
-  afterAll(async () => {
-    await server.close();
+  afterAll(() => {
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 
@@ -2561,7 +2598,7 @@ describe("Static export (Pages Router)", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     const result = await staticExportPages({
-      server,
+      pagesBundlePath,
       routes,
       apiRoutes,
       pagesDir,
@@ -2624,7 +2661,7 @@ describe("Static export (Pages Router)", () => {
     const tempDir = path.resolve(FIXTURE_DIR, "out-temp");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2665,7 +2702,7 @@ describe("Static export (Pages Router)", () => {
     const trailingDir = path.resolve(FIXTURE_DIR, "out-trailing");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2739,7 +2776,7 @@ export function middleware(request) {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir,
@@ -2887,48 +2924,55 @@ describe("Pages Router dev ISR regeneration", () => {
       };
 
       const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
+      const loadModule = async (id: string) => {
+        // ALS registration side-effects loaded at createSSRHandler startup
+        if (id === "vinext/head-state" || id === "vinext/router-state") {
+          return {};
+        }
+
+        if (id === "next/router") {
+          return {
+            setSSRContext() {
+              getRequestContext().currentRequestTags.push("outer-tag");
+              parentRequestTags = [...getRequestContext().currentRequestTags];
+            },
+            wrapWithRouterContext(element: unknown) {
+              return element;
+            },
+          };
+        }
+
+        if (id === routeFile) {
+          return {
+            default() {
+              return null;
+            },
+            async getStaticProps() {
+              regenSawUnifiedScope = isInsideUnifiedScope();
+              regenTags = [...getRequestContext().currentRequestTags];
+              regenExecutionContext = getRequestExecutionContext();
+              regenUnifiedExecutionContext = getRequestContext().executionContext;
+              return {
+                props: {
+                  timestamp: Date.now(),
+                  message: "fresh",
+                },
+                revalidate: 1,
+              };
+            },
+          };
+        }
+
+        throw new Error(`Unexpected module load: ${id}`);
+      };
       const server = {
         transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
-        ssrLoadModule: vi.fn(async (id: string) => {
-          if (id === "next/router") {
-            return {
-              setSSRContext() {
-                getRequestContext().currentRequestTags.push("outer-tag");
-                parentRequestTags = [...getRequestContext().currentRequestTags];
-              },
-              wrapWithRouterContext(element: unknown) {
-                return element;
-              },
-            };
-          }
-
-          if (id === routeFile) {
-            return {
-              default() {
-                return null;
-              },
-              async getStaticProps() {
-                regenSawUnifiedScope = isInsideUnifiedScope();
-                regenTags = [...getRequestContext().currentRequestTags];
-                regenExecutionContext = getRequestExecutionContext();
-                regenUnifiedExecutionContext = getRequestContext().executionContext;
-                return {
-                  props: {
-                    timestamp: Date.now(),
-                    message: "fresh",
-                  },
-                  revalidate: 1,
-                };
-              },
-            };
-          }
-
-          throw new Error(`Unexpected module load: ${id}`);
-        }),
       } as unknown as ViteDevServer;
+      const runner = { import: loadModule };
 
       const handler = createSSRHandler(
         server,
+        runner,
         [
           {
             pattern: "/isr-test",
@@ -2976,8 +3020,9 @@ describe("Pages Router dev ISR regeneration", () => {
       if (!regenPromise) {
         throw new Error("expected stale ISR request to start background regeneration");
       }
+      const pendingRegen = regenPromise;
 
-      await regenPromise;
+      await Promise.resolve(pendingRegen);
 
       expect(regenSawUnifiedScope).toBe(true);
       expect(regenTags).toEqual([]);

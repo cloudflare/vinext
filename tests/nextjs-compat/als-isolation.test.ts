@@ -10,7 +10,7 @@
  * context never leaks into another request.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 
 describe("ALS per-request isolation", () => {
   it("concurrent requests see their own headers context (no cross-request leakage)", async () => {

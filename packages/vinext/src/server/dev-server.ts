@@ -2,6 +2,8 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
+import type { ModuleImporter } from "./instrumentation.js";
+import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import {
   isrGet,
@@ -22,7 +24,6 @@ import { createRequestContext, runWithRequestContext } from "../shims/unified-re
 import "../shims/router-state.js";
 import { runWithHeadState } from "../shims/head-state.js";
 import { runWithServerInsertedHTMLState } from "../shims/navigation-state.js";
-import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
@@ -235,13 +236,14 @@ export function parseCookieLocale(req: IncomingMessage, i18nConfig: NextI18nConf
  *
  * For each request:
  * 1. Match the URL against discovered routes
- * 2. Load the page module via Vite's SSR module loader
+ * 2. Load the page module via the ModuleRunner
  * 3. Call getServerSideProps/getStaticProps if present
  * 4. Render the component to HTML
  * 5. Wrap in _document shell and send response
  */
 export function createSSRHandler(
   server: ViteDevServer,
+  runner: ModuleImporter,
   routes: Route[],
   pagesDir: string,
   i18nConfig?: NextI18nConfig | null,
@@ -250,6 +252,19 @@ export function createSSRHandler(
   trailingSlash = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
+
+  // Register ALS-backed accessors in the SSR module graph so head and
+  // router state are per-request isolated under concurrent load.
+  // runner.import() caches internally.
+  const _alsRegistration = Promise.all([
+    runner.import("vinext/head-state"),
+    runner.import("vinext/router-state"),
+  ]);
+  // Suppress unhandled-rejection if the server closes before the first
+  // request (common in tests). Errors still propagate when the first
+  // request handler awaits _alsRegistration.
+  _alsRegistration.catch(() => {});
+
   return async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -310,7 +325,7 @@ export function createSSRHandler(
 
     if (!match) {
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, req, res, url, pagesDir, 404, undefined, matcher);
+      await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
       return;
     }
 
@@ -321,9 +336,11 @@ export function createSSRHandler(
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
       try {
+        await _alsRegistration;
+
         // Set SSR context for the router shim so useRouter() returns
         // the correct URL and params during server-side rendering.
-        const routerShim = await server.ssrLoadModule("next/router");
+        const routerShim = await importModule(runner, "next/router");
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
@@ -337,14 +354,14 @@ export function createSSRHandler(
         }
 
         // Set per-request i18n context for Link component locale
-        // prop support during SSR.  Use ssrLoadModule to set it on
+        // prop support during SSR.  Use runner.import to set it on
         // the SSR environment's module instance (same pattern as
         // setSSRContext above).
         if (i18nConfig) {
           // Register ALS-backed i18n accessors in the SSR module graph so
           // next/link and other SSR imports read from the unified store.
-          await server.ssrLoadModule("vinext/i18n-state");
-          const i18nCtx = await server.ssrLoadModule("vinext/i18n-context");
+          await runner.import("vinext/i18n-state");
+          const i18nCtx = await importModule(runner, "vinext/i18n-context");
           if (typeof i18nCtx.setI18nContext === "function") {
             i18nCtx.setI18nContext({
               locale: locale ?? currentDefaultLocale,
@@ -358,7 +375,7 @@ export function createSSRHandler(
 
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
-        const pageModule = await server.ssrLoadModule(route.filePath);
+        const pageModule = await importModule(runner, route.filePath);
         // Mark end of compile phase: everything from here is rendering.
         _compileEnd = now();
 
@@ -401,6 +418,7 @@ export function createSSRHandler(
             if (!isValidPath) {
               await renderErrorPage(
                 server,
+                runner,
                 req,
                 res,
                 url,
@@ -471,6 +489,7 @@ export function createSSRHandler(
           if (result && "notFound" in result && result.notFound) {
             await renderErrorPage(
               server,
+              runner,
               req,
               res,
               url,
@@ -505,11 +524,11 @@ export function createSSRHandler(
         let earlyFontLinkHeader = "";
         try {
           const earlyPreloads: Array<{ href: string; type: string }> = [];
-          const fontGoogleEarly = await server.ssrLoadModule("next/font/google");
+          const fontGoogleEarly = await importModule(runner, "next/font/google");
           if (typeof fontGoogleEarly.getSSRFontPreloads === "function") {
             earlyPreloads.push(...fontGoogleEarly.getSSRFontPreloads());
           }
-          const fontLocalEarly = await server.ssrLoadModule("next/font/local");
+          const fontLocalEarly = await importModule(runner, "next/font/local");
           if (typeof fontLocalEarly.getSSRFontPreloads === "function") {
             earlyPreloads.push(...fontLocalEarly.getSSRFontPreloads());
           }
@@ -591,8 +610,8 @@ export function createSSRHandler(
                       });
                     }
                     if (i18nConfig) {
-                      await server.ssrLoadModule("vinext/i18n-state");
-                      const i18nCtx = await server.ssrLoadModule("vinext/i18n-context");
+                      await runner.import("vinext/i18n-state");
+                      const i18nCtx = await importModule(runner, "vinext/i18n-context");
                       if (typeof i18nCtx.setI18nContext === "function") {
                         i18nCtx.setI18nContext({
                           locale: locale ?? currentDefaultLocale,
@@ -610,7 +629,7 @@ export function createSSRHandler(
                     const appPath = path.join(pagesDir, "_app");
                     if (findFileWithExtensions(appPath, matcher)) {
                       try {
-                        const appMod = await server.ssrLoadModule(appPath);
+                        const appMod = (await runner.import(appPath)) as Record<string, any>;
                         RegenApp = appMod.default ?? null;
                       } catch {
                         // _app failed to load
@@ -711,6 +730,7 @@ export function createSSRHandler(
           if (result && "notFound" in result && result.notFound) {
             await renderErrorPage(
               server,
+              runner,
               req,
               res,
               url,
@@ -733,7 +753,7 @@ export function createSSRHandler(
         const appPath = path.join(pagesDir, "_app");
         if (findFileWithExtensions(appPath, matcher)) {
           try {
-            const appModule = await server.ssrLoadModule(appPath);
+            const appModule = await importModule(runner, appPath);
             AppComponent = appModule.default ?? null;
           } catch {
             // _app exists but failed to load
@@ -764,13 +784,13 @@ export function createSSRHandler(
         }
 
         // Reset SSR head collector before rendering so <Head> tags are captured
-        const headShim = await server.ssrLoadModule("next/head");
+        const headShim = await importModule(runner, "next/head");
         if (typeof headShim.resetSSRHead === "function") {
           headShim.resetSSRHead();
         }
 
         // Flush any pending dynamic() preloads so components are ready
-        const dynamicShim = await server.ssrLoadModule("next/dynamic");
+        const dynamicShim = await importModule(runner, "next/dynamic");
         if (typeof dynamicShim.flushPreloads === "function") {
           await dynamicShim.flushPreloads();
         }
@@ -784,7 +804,7 @@ export function createSSRHandler(
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
-          const fontGoogle = await server.ssrLoadModule("next/font/google");
+          const fontGoogle = await importModule(runner, "next/font/google");
           if (typeof fontGoogle.getSSRFontLinks === "function") {
             const fontUrls = fontGoogle.getSSRFontLinks();
             for (const fontUrl of fontUrls) {
@@ -803,7 +823,7 @@ export function createSSRHandler(
           // next/font/google not used — skip
         }
         try {
-          const fontLocal = await server.ssrLoadModule("next/font/local");
+          const fontLocal = await importModule(runner, "next/font/local");
           if (typeof fontLocal.getSSRFontStyles === "function") {
             allFontStyles.push(...fontLocal.getSSRFontStyles());
           }
@@ -889,7 +909,7 @@ hydrate();
         let DocumentComponent: any = null;
         if (findFileWithExtensions(docPath, matcher)) {
           try {
-            const docModule = await server.ssrLoadModule(docPath);
+            const docModule = (await runner.import(docPath)) as Record<string, any>;
             DocumentComponent = docModule.default ?? null;
           } catch {
             // _document exists but failed to load
@@ -967,8 +987,8 @@ hydrate();
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         }
       } catch (e) {
-        // Let Vite fix the stack trace for better dev experience
-        server.ssrFixStacktrace(e as Error);
+        // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
+        // when using ModuleRunner — no stack trace fixup is needed here.
         console.error(e);
         // Report error via instrumentation hook if registered
         reportRequestError(
@@ -993,7 +1013,7 @@ hydrate();
         });
         // Try to render custom 500 error page
         try {
-          await renderErrorPage(server, req, res, url, pagesDir, 500, undefined, matcher);
+          await renderErrorPage(server, runner, req, res, url, pagesDir, 500, undefined, matcher);
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
           // This is a dev-only code path (prod uses prod-server.ts), so
@@ -1018,6 +1038,7 @@ hydrate();
  */
 async function renderErrorPage(
   server: ViteDevServer,
+  runner: ModuleImporter,
   _req: IncomingMessage,
   res: ServerResponse,
   url: string,
@@ -1036,7 +1057,7 @@ async function renderErrorPage(
       const candidatePath = path.join(pagesDir, candidate);
       if (!findFileWithExtensions(candidatePath, matcher)) continue;
 
-      const errorModule = await server.ssrLoadModule(candidatePath);
+      const errorModule = await importModule(runner, candidatePath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1045,7 +1066,7 @@ async function renderErrorPage(
       const appPathErr = path.join(pagesDir, "_app");
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          const appModule = await server.ssrLoadModule(appPathErr);
+          const appModule = await importModule(runner, appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -1056,11 +1077,11 @@ async function renderErrorPage(
       const errorProps = { statusCode };
 
       // If the caller didn't supply wrapWithRouterContext, load it now.
-      // ssrLoadModule caches internally so the cost is negligible.
+      // runner.import() caches internally so the cost is negligible.
       let wrapFn = wrapWithRouterContext;
       if (!wrapFn) {
         try {
-          const errRouterShim = await server.ssrLoadModule("next/router");
+          const errRouterShim = await importModule(runner, "next/router");
           wrapFn = errRouterShim.wrapWithRouterContext;
         } catch {
           // router shim not available — continue without it
@@ -1089,7 +1110,7 @@ async function renderErrorPage(
       const docPathErr = path.join(pagesDir, "_document");
       if (findFileWithExtensions(docPathErr, matcher)) {
         try {
-          const docModule = await server.ssrLoadModule(docPathErr);
+          const docModule = await importModule(runner, docPathErr);
           DocumentComponent = docModule.default ?? null;
         } catch {
           // _document exists but failed to load

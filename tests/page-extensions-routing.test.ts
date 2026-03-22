@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import {
   apiRouter,
@@ -64,6 +64,30 @@ describe("pageExtensions route discovery", () => {
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
+    }
+  });
+
+  it("excludes _ prefixed files from api routes", async () => {
+    // Next.js ignores _-prefixed files in pages/api/ the same way it does in pages/.
+    const tmpRoot = await makeTempDir("vinext-api-underscore-");
+    const pagesDir = path.join(tmpRoot, "pages");
+    try {
+      await fs.mkdir(path.join(pagesDir, "api"), { recursive: true });
+      await fs.writeFile(
+        path.join(pagesDir, "api", "hello.ts"),
+        "export async function GET() { return Response.json({}); }",
+      );
+      await fs.writeFile(path.join(pagesDir, "api", "_helpers.ts"), "// internal helper");
+
+      invalidateRouteCache(pagesDir);
+      const apiRoutes = await apiRouter(pagesDir);
+      const patterns = apiRoutes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/api/hello");
+      expect(patterns).not.toContain("/api/_helpers");
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateRouteCache(pagesDir);
     }
   });
 

@@ -641,6 +641,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
               const freshBody = await freshResp.text();
               const freshHeaders: Record<string, string> = {};
               freshResp.headers.forEach((v, k) => {
+                if (k.toLowerCase() === "set-cookie") return;
                 freshHeaders[k] = v;
               });
 
@@ -723,6 +724,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const body = await cloned.text();
       const headers: Record<string, string> = {};
       cloned.headers.forEach((v, k) => {
+        // Never cache Set-Cookie headers — they are per-user and must not
+        // be replayed to subsequent requests from different users.
+        if (k.toLowerCase() === "set-cookie") return;
         headers[k] = v;
       });
 

@@ -7,11 +7,10 @@
  * The req/res objects are Node.js IncomingMessage/ServerResponse with
  * Next.js extensions: req.query, req.body, res.json(), res.status(), etc.
  */
-import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError } from "./instrumentation.js";
+import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
 
 /**
@@ -192,7 +191,7 @@ function enhanceApiObjects(
  * Returns true if the request was handled, false if no API route matched.
  */
 export async function handleApiRoute(
-  server: ViteDevServer,
+  runner: ModuleImporter,
   req: IncomingMessage,
   res: ServerResponse,
   url: string,
@@ -204,8 +203,8 @@ export async function handleApiRoute(
   const { route, params } = match;
 
   try {
-    // Load the API route module through Vite
-    const apiModule = await server.ssrLoadModule(route.filePath);
+    // Load the API route module through the ModuleRunner
+    const apiModule = await importModule(runner, route.filePath);
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
@@ -242,9 +241,10 @@ export async function handleApiRoute(
       return true;
     }
 
-    server.ssrFixStacktrace(e as Error);
+    // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
+    // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
-    reportRequestError(
+    void reportRequestError(
       e instanceof Error ? e : new Error(String(e)),
       {
         path: url,

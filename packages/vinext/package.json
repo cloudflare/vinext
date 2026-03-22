@@ -51,9 +51,9 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "prepack": "cp ../../README.md README.md && pnpm run build",
-    "dev": "tsc --watch"
+    "build": "vp pack",
+    "prepack": "cp ../../README.md README.md && vp run build",
+    "dev": "vp pack --watch"
   },
   "dependencies": {
     "@unpic/react": "catalog:",
@@ -70,7 +70,8 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "react-server-dom-webpack": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",

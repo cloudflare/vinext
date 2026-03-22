@@ -140,6 +140,31 @@ export interface CacheHandler {
 }
 
 // ---------------------------------------------------------------------------
+// No-op cache handler — used during prerender to skip wasteful isrSet writes.
+// All prerender requests are cold-start renders whose results are written to
+// static files on disk, not to a cache. Using a no-op handler avoids the
+// overhead of MemoryCacheHandler.set() calls that are discarded at process exit.
+// ---------------------------------------------------------------------------
+
+export class NoOpCacheHandler implements CacheHandler {
+  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    return null;
+  }
+
+  async set(
+    _key: string,
+    _data: IncrementalCacheValue | null,
+    _ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    // intentionally empty
+  }
+
+  async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+    // intentionally empty
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Default in-memory adapter — works everywhere, suitable for dev and
 // single-process production. Not shared across workers/instances.
 // ---------------------------------------------------------------------------
@@ -151,6 +176,19 @@ interface MemoryEntry {
   revalidateAt: number | null;
 }
 
+/**
+ * Shape of the optional `ctx` argument passed to `CacheHandler.set()`.
+ * Covers both the older `{ revalidate: number }` shape and the newer
+ * `{ cacheControl: { revalidate: number } }` shape (Next.js 16).
+ */
+interface SetCtx {
+  tags?: string[];
+  fetchCache?: boolean;
+  revalidate?: number;
+  cacheControl?: { revalidate?: number };
+  [key: string]: unknown;
+}
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -159,7 +197,9 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = this.store.get(key);
     if (!entry) return null;
 
-    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss
+    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss.
+    // Note: the stale entry is deleted here as a side effect of the read, not on write.
+    // This keeps memory bounded without a separate eviction pass.
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
@@ -189,19 +229,21 @@ export class MemoryCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    const tags: string[] = [];
+    const typedCtx = ctx as SetCtx | undefined;
+    const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
-      tags.push(...data.tags);
+      for (const t of data.tags) tagSet.add(t);
     }
-    if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
-      tags.push(...(ctx.tags as string[]));
+    if (typedCtx && Array.isArray(typedCtx.tags)) {
+      for (const t of typedCtx.tags) tagSet.add(t);
     }
+    const tags = [...tagSet];
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
-    if (ctx) {
-      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+    if (typedCtx) {
+      const revalidate = typedCtx.cacheControl?.revalidate ?? typedCtx.revalidate;
       if (typeof revalidate === "number") {
         effectiveRevalidate = revalidate;
       }
@@ -295,11 +337,8 @@ export function getCacheHandler(): CacheHandler {
  *
  * Works with both `fetch(..., { next: { tags: ['myTag'] } })` and
  * `unstable_cache(fn, keys, { tags: ['myTag'] })`.
- */
-/**
- * Revalidate cached data associated with a specific cache tag.
  *
- * Next.js 16 updated signature: requires a cacheLife profile as second argument
+ * Next.js 16 updated signature: accepts a cacheLife profile as second argument
  * for stale-while-revalidate (SWR) behavior. The single-argument form is
  * deprecated but still supported for backward compatibility.
  *
@@ -326,49 +365,45 @@ export async function revalidateTag(
 /**
  * Revalidate cached data associated with a specific path.
  *
- * Under the hood, Next.js converts paths to internal tags.
- * We use a `_N_T_/path` prefix convention for path-based tags.
+ * Invalidation works through implicit tags generated at render time by
+ * `__pageCacheTags` (in app-rsc-entry.ts), matching Next.js's getDerivedTags:
+ *
+ * - `type: "layout"` → invalidates `_N_T_<path>/layout`, cascading to all
+ *   descendant pages (they carry ancestor layout tags from render time).
+ * - `type: "page"` → invalidates `_N_T_<path>/page`, targeting only the
+ *   exact route's page component.
+ * - No type → invalidates `_N_T_<path>` (broader, exact path).
+ *
+ * The `type` parameter is App Router only — Pages Router does not generate
+ * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
-export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
-  // Next.js internally converts paths to tags with a prefix
-  const pathTag = `_N_T_${path}`;
-  await _getActiveHandler().revalidateTag([path, pathTag]);
-}
-
-/**
- * Expire and immediately refresh cached data for a tag (Next.js 16).
- *
- * Server Actions-only API that provides read-your-writes semantics:
- * the cache entry is expired and fresh data is read within the same request,
- * so the user immediately sees their changes.
- *
- * Use this for interactive features (forms, user settings) where users
- * expect to see their updates instantly.
- *
- * @param tag - Cache tag to expire and refresh
- */
-export async function updateTag(tag: string): Promise<void> {
-  // Expire the tag immediately (same as revalidateTag without SWR)
+export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
+  // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
+  const stem = path.endsWith("/") ? path.slice(0, -1) : path;
+  const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
   await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
- * Refresh uncached data on the page (Next.js 16).
+ * No-op shim for API compatibility.
  *
- * Server Actions-only API that signals the client to re-fetch dynamic
- * (uncached) data without touching the cache. Complementary to the
- * client-side router.refresh().
- *
- * Use this when you need to refresh data like notification counts,
- * live metrics, or status indicators after performing a server action.
+ * In Next.js, calling `refresh()` inside a Server Action triggers a
+ * client-side router refresh so the user immediately sees updated data.
+ * vinext does not yet implement the Server Actions refresh protocol,
+ * so this function has no effect.
  */
-export function refresh(): void {
-  // In our implementation, this is a signal that the client should
-  // refresh dynamic data. The actual refresh happens on the client side
-  // via the RSC protocol — the server action response triggers a
-  // client-side navigation refresh.
-  // For now, this is a no-op on the server; the Server Action response
-  // mechanism already handles re-rendering the affected RSC tree.
+export function refresh(): void {}
+
+/**
+ * Expire a cache tag immediately (Next.js 16).
+ *
+ * Server Actions-only API that expires a tag so the next request
+ * fetches fresh data. Unlike `revalidateTag`, which uses stale-while-revalidate,
+ * `updateTag` invalidates synchronously within the same request context.
+ */
+export async function updateTag(tag: string): Promise<void> {
+  // Expire the tag immediately (same as revalidateTag without SWR)
+  await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
@@ -604,18 +639,22 @@ export function cacheTag(...tags: string[]): void {
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
   new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>;
-const UNSTABLE_CACHE_UNDEFINED_SENTINEL = "__vinext_unstable_cache_undefined__";
+
+/**
+ * Wrapper used to serialize `unstable_cache` results so that `undefined` can
+ * round-trip through JSON without confusion.  Using a structural wrapper
+ * avoids any sentinel-string collision risk.
+ */
+type CacheResultWrapper = { v: unknown } | { undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
-  return value === undefined ? UNSTABLE_CACHE_UNDEFINED_SENTINEL : JSON.stringify(value);
+  const wrapper: CacheResultWrapper = value === undefined ? { undef: true } : { v: value };
+  return JSON.stringify(wrapper);
 }
 
 function deserializeUnstableCacheResult(body: string): unknown {
-  if (body === UNSTABLE_CACHE_UNDEFINED_SENTINEL) {
-    return undefined;
-  }
-
-  return JSON.parse(body);
+  const wrapper = JSON.parse(body) as CacheResultWrapper;
+  return "undef" in wrapper ? undefined : wrapper.v;
 }
 
 /**
@@ -644,10 +683,15 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   options?: UnstableCacheOptions,
 ): T {
   const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
+  // Warning: fn.toString() as a cache key is minification-sensitive. In
+  // production builds where the function body is mangled, two logically
+  // different functions may hash to the same key, or the same function may
+  // hash differently across builds. Always pass explicit keyParts in
+  // production to get a stable, collision-free cache key.
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 
-  const cachedFn = async (...args: any[]): Promise<any> => {
+  const cachedFn = async (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>> => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
 
@@ -659,7 +703,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
-        return deserializeUnstableCacheResult(existing.value.data.body);
+        return deserializeUnstableCacheResult(existing.value.data.body) as Awaited<ReturnType<T>>;
       } catch {
         // Corrupted entry, fall through to re-fetch
       }

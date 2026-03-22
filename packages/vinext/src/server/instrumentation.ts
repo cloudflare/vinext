@@ -39,6 +39,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getRequestExecutionContext } from "../shims/request-context.js";
+import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -48,26 +49,36 @@ export interface ModuleImporter {
   import(id: string): Promise<unknown>;
 }
 
-/** Possible instrumentation file names. */
-const INSTRUMENTATION_FILES = [
-  "instrumentation.ts",
-  "instrumentation.tsx",
-  "instrumentation.js",
-  "instrumentation.mjs",
-  "src/instrumentation.ts",
-  "src/instrumentation.tsx",
-  "src/instrumentation.js",
-  "src/instrumentation.mjs",
-];
+/**
+ * Import a module via the runner and cast the result to `Record<string, any>`.
+ *
+ * Centralises the `as Record<string, any>` cast so callers don't need
+ * per-call eslint-disable comments.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function importModule(
+  runner: ModuleImporter,
+  id: string,
+): Promise<Record<string, any>> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (await runner.import(id)) as Record<string, any>;
+}
+
+const INSTRUMENTATION_LOCATIONS = ["", "src/"];
 
 /**
  * Find the instrumentation file in the project root.
  */
-export function findInstrumentationFile(root: string): string | null {
-  for (const file of INSTRUMENTATION_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
+export function findInstrumentationFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  for (const dir of INSTRUMENTATION_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `instrumentation${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
     }
   }
   return null;

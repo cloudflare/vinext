@@ -179,6 +179,36 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 /**
+ * Request hop-by-hop headers to strip before proxying with fetch().
+ * Intentionally narrower than HOP_BY_HOP_HEADERS: external rewrite proxying
+ * still forwards proxy auth credentials, while response sanitization strips
+ * them before returning data to the client.
+ */
+const REQUEST_HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+function stripHopByHopRequestHeaders(headers: Headers): void {
+  const connectionTokens = (headers.get("connection") || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const header of REQUEST_HOP_BY_HOP_HEADERS) {
+    headers.delete(header);
+  }
+
+  for (const token of connectionTokens) {
+    headers.delete(token);
+  }
+}
+
+/**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
  * Uses a lightweight heuristic: scans the pattern string for nested quantifiers
@@ -475,52 +505,63 @@ export function applyMiddlewareRequestHeaders(
   return { request, postMwReqCtx: requestContextFromRequest(request) };
 }
 
+function _emptyParams(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
+}
+
+function _matchConditionValue(
+  actualValue: string,
+  expectedValue: string | undefined,
+): Record<string, string> | null {
+  if (expectedValue === undefined) return _emptyParams();
+
+  const re = _cachedConditionRegex(expectedValue);
+  if (re) {
+    const match = re.exec(actualValue);
+    if (!match) return null;
+
+    const params = _emptyParams();
+    if (match.groups) {
+      for (const [key, value] of Object.entries(match.groups)) {
+        if (value !== undefined) params[key] = value;
+      }
+    }
+    return params;
+  }
+
+  return actualValue === expectedValue ? _emptyParams() : null;
+}
+
 /**
  * Check a single has/missing condition against request context.
- * Returns true if the condition is satisfied.
+ * Returns captured params when the condition is satisfied, or null otherwise.
  */
-function checkSingleCondition(condition: HasCondition, ctx: RequestContext): boolean {
+function matchSingleCondition(
+  condition: HasCondition,
+  ctx: RequestContext,
+): Record<string, string> | null {
   switch (condition.type) {
     case "header": {
       const headerValue = ctx.headers.get(condition.key);
-      if (headerValue === null) return false;
-      if (condition.value !== undefined) {
-        const re = _cachedConditionRegex(condition.value);
-        if (re) return re.test(headerValue);
-        return headerValue === condition.value;
-      }
-      return true; // Key exists, no value constraint
+      if (headerValue === null) return null;
+      return _matchConditionValue(headerValue, condition.value);
     }
     case "cookie": {
       const cookieValue = ctx.cookies[condition.key];
-      if (cookieValue === undefined) return false;
-      if (condition.value !== undefined) {
-        const re = _cachedConditionRegex(condition.value);
-        if (re) return re.test(cookieValue);
-        return cookieValue === condition.value;
-      }
-      return true;
+      if (cookieValue === undefined) return null;
+      return _matchConditionValue(cookieValue, condition.value);
     }
     case "query": {
       const queryValue = ctx.query.get(condition.key);
-      if (queryValue === null) return false;
-      if (condition.value !== undefined) {
-        const re = _cachedConditionRegex(condition.value);
-        if (re) return re.test(queryValue);
-        return queryValue === condition.value;
-      }
-      return true;
+      if (queryValue === null) return null;
+      return _matchConditionValue(queryValue, condition.value);
     }
     case "host": {
-      if (condition.value !== undefined) {
-        const re = _cachedConditionRegex(condition.value);
-        if (re) return re.test(ctx.host);
-        return ctx.host === condition.value;
-      }
-      return ctx.host === condition.key;
+      if (condition.value !== undefined) return _matchConditionValue(ctx.host, condition.value);
+      return ctx.host === condition.key ? _emptyParams() : null;
     }
     default:
-      return false;
+      return null;
   }
 }
 
@@ -545,22 +586,36 @@ function _cachedConditionRegex(value: string): RegExp | null {
  * - has: every condition must match (the request must have it)
  * - missing: every condition must NOT match (the request must not have it)
  */
+function collectConditionParams(
+  has: HasCondition[] | undefined,
+  missing: HasCondition[] | undefined,
+  ctx: RequestContext,
+): Record<string, string> | null {
+  const params = _emptyParams();
+
+  if (has) {
+    for (const condition of has) {
+      const conditionParams = matchSingleCondition(condition, ctx);
+      if (!conditionParams) return null;
+      Object.assign(params, conditionParams);
+    }
+  }
+
+  if (missing) {
+    for (const condition of missing) {
+      if (matchSingleCondition(condition, ctx)) return null;
+    }
+  }
+
+  return params;
+}
+
 export function checkHasConditions(
   has: HasCondition[] | undefined,
   missing: HasCondition[] | undefined,
   ctx: RequestContext,
 ): boolean {
-  if (has) {
-    for (const condition of has) {
-      if (!checkSingleCondition(condition, ctx)) return false;
-    }
-  }
-  if (missing) {
-    for (const condition of missing) {
-      if (checkSingleCondition(condition, ctx)) return false;
-    }
-  }
-  return true;
+  return collectConditionParams(has, missing, ctx) !== null;
 }
 
 /**
@@ -778,12 +833,15 @@ export function matchRedirect(
       for (const entry of noLocaleBucket) {
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
-        if (redirect.has || redirect.missing) {
-          if (!checkHasConditions(redirect.has, redirect.missing, ctx)) continue;
-        }
+        const conditionParams =
+          redirect.has || redirect.missing
+            ? collectConditionParams(redirect.has, redirect.missing, ctx)
+            : _emptyParams();
+        if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
         let dest = substituteDestinationParams(redirect.destination, {
           [entry.paramName]: "",
+          ...conditionParams,
         });
         dest = sanitizeDestination(dest);
         localeMatch = { destination: dest, permanent: redirect.permanent };
@@ -806,11 +864,14 @@ export function matchRedirect(
           // Validate that `localePart` is one of the allowed alternation values.
           if (!entry.altRe.test(localePart)) continue;
           const redirect = entry.redirect;
-          if (redirect.has || redirect.missing) {
-            if (!checkHasConditions(redirect.has, redirect.missing, ctx)) continue;
-          }
+          const conditionParams =
+            redirect.has || redirect.missing
+              ? collectConditionParams(redirect.has, redirect.missing, ctx)
+              : _emptyParams();
+          if (!conditionParams) continue;
           let dest = substituteDestinationParams(redirect.destination, {
             [entry.paramName]: localePart,
+            ...conditionParams,
           });
           dest = sanitizeDestination(dest);
           localeMatch = { destination: dest, permanent: redirect.permanent };
@@ -833,12 +894,15 @@ export function matchRedirect(
     }
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
-      if (redirect.has || redirect.missing) {
-        if (!checkHasConditions(redirect.has, redirect.missing, ctx)) {
-          continue;
-        }
-      }
-      let dest = substituteDestinationParams(redirect.destination, params);
+      const conditionParams =
+        redirect.has || redirect.missing
+          ? collectConditionParams(redirect.has, redirect.missing, ctx)
+          : _emptyParams();
+      if (!conditionParams) continue;
+      let dest = substituteDestinationParams(redirect.destination, {
+        ...params,
+        ...conditionParams,
+      });
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
       dest = sanitizeDestination(dest);
       return { destination: dest, permanent: redirect.permanent };
@@ -865,12 +929,15 @@ export function matchRewrite(
   for (const rewrite of rewrites) {
     const params = matchConfigPattern(pathname, rewrite.source);
     if (params) {
-      if (rewrite.has || rewrite.missing) {
-        if (!checkHasConditions(rewrite.has, rewrite.missing, ctx)) {
-          continue;
-        }
-      }
-      let dest = substituteDestinationParams(rewrite.destination, params);
+      const conditionParams =
+        rewrite.has || rewrite.missing
+          ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
+          : _emptyParams();
+      if (!conditionParams) continue;
+      let dest = substituteDestinationParams(rewrite.destination, {
+        ...params,
+        ...conditionParams,
+      });
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
       dest = sanitizeDestination(dest);
       return dest;
@@ -972,8 +1039,13 @@ export async function proxyExternalRequest(
   const headers = new Headers(request.headers);
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
-  // Remove headers that should not be forwarded to external services
-  headers.delete("connection");
+  // Remove headers that should not be forwarded to external services.
+  // fetch() handles framing independently, so hop-by-hop transport headers
+  // from the client must not be forwarded upstream. In particular,
+  // transfer-encoding could cause request boundary disagreement between the
+  // proxy and backend (defense-in-depth against request smuggling,
+  // ref: CVE GHSA-ggv3-7p47-pfv8).
+  stripHopByHopRequestHeaders(headers);
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
     if (key.startsWith("x-middleware-")) {

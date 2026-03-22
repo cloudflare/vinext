@@ -49,6 +49,7 @@ import { computeLazyChunks } from "../index.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
+import { readPrerenderSecret } from "../build/server-manifest.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -241,6 +242,7 @@ const CONTENT_TYPES: Record<string, string> = {
   ".webp": "image/webp",
   ".avif": "image/avif",
   ".map": "application/json",
+  ".rsc": "text/x-component",
 };
 
 /**
@@ -253,7 +255,7 @@ function tryServeStatic(
   clientDir: string,
   pathname: string,
   compress: boolean,
-  extraHeaders?: Record<string, string>,
+  extraHeaders?: Record<string, string | string[]>,
 ): boolean {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
@@ -275,11 +277,34 @@ function tryServeStatic(
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
   }
-  if (pathname === "/" || !fs.existsSync(staticFile) || !fs.statSync(staticFile).isFile()) {
+
+  // Resolve the actual file to serve. For extension-less paths (prerendered
+  // pages like /about → about.html, /blog/post → blog/post.html), try:
+  //   1. The exact path (e.g. /about.css, /assets/foo.js)
+  //   2. <path>.html (e.g. /about → about.html)
+  //   3. <path>/index.html (e.g. /about/ → about/index.html)
+  // Pathname "/" is always skipped — the index.html is served by SSR/RSC.
+  let resolvedStaticFile = staticFile;
+  if (pathname === "/") {
     return false;
   }
+  if (!fs.existsSync(resolvedStaticFile) || !fs.statSync(resolvedStaticFile).isFile()) {
+    // Try .html extension fallback for prerendered pages
+    const htmlFallback = staticFile + ".html";
+    if (fs.existsSync(htmlFallback) && fs.statSync(htmlFallback).isFile()) {
+      resolvedStaticFile = htmlFallback;
+    } else {
+      // Try index.html inside directory (trailing-slash variant)
+      const indexFallback = path.join(staticFile, "index.html");
+      if (fs.existsSync(indexFallback) && fs.statSync(indexFallback).isFile()) {
+        resolvedStaticFile = indexFallback;
+      } else {
+        return false;
+      }
+    }
+  }
 
-  const ext = path.extname(staticFile);
+  const ext = path.extname(resolvedStaticFile);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
@@ -294,7 +319,7 @@ function tryServeStatic(
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
-      const fileStream = fs.createReadStream(staticFile);
+      const fileStream = fs.createReadStream(resolvedStaticFile);
       const compressor = createCompressor(encoding);
       res.writeHead(200, {
         ...baseHeaders,
@@ -309,7 +334,7 @@ function tryServeStatic(
   }
 
   res.writeHead(200, baseHeaders);
-  fs.createReadStream(staticFile).pipe(res);
+  fs.createReadStream(resolvedStaticFile).pipe(res);
   return true;
 }
 
@@ -603,8 +628,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
   }
 
-  // Import the RSC handler (use file:// URL for reliable dynamic import)
-  const rscModule = await import(pathToFileURL(rscEntryPath).href);
+  // Load prerender secret written at build time by vinext:server-manifest plugin.
+  // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
+  const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
+
+  // Import the RSC handler (use file:// URL for reliable dynamic import).
+  // Cache-bust with mtime so that if this function is called multiple times
+  // (e.g. across test describe blocks that rebuild to the same path) Node's
+  // module cache does not return the stale module from a previous build.
+  const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
+  const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
 
   const server = createServer(async (req, res) => {
@@ -629,8 +662,35 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       return;
     }
 
-    // Serve static assets from client build
-    if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
+    // Internal prerender endpoint — only reachable with the correct build-time secret.
+    // Used by the prerender phase to fetch generateStaticParams results via HTTP.
+    // We authenticate the request here and then forward to the RSC handler so that
+    // the handler's in-process generateStaticParamsMap (not a named module export)
+    // is used. This is required for Cloudflare Workers builds where the named export
+    // is not preserved in the bundle output format.
+    if (
+      pathname === "/__vinext/prerender/static-params" ||
+      pathname === "/__vinext/prerender/pages-static-paths"
+    ) {
+      const secret = req.headers["x-vinext-prerender-secret"];
+      if (!prerenderSecret || secret !== prerenderSecret) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+      // Forward to RSC handler — the endpoint is implemented there and has
+      // access to the in-process map. VINEXT_PRERENDER=1 must be set (it is,
+      // since this server is only started during the prerender phase).
+      // Fall through to the RSC handler below.
+    }
+
+    // Serve hashed build assets (Vite output in /assets/) directly.
+    // Public directory files fall through to the RSC handler, which runs
+    // middleware before serving them.
+    if (
+      pathname.startsWith("/assets/") &&
+      tryServeStatic(req, res, clientDir, pathname, compress)
+    ) {
       return;
     }
 
@@ -701,7 +761,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     });
   });
 
-  return server;
+  const addr = server.address();
+  const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  return { server, port: actualPort };
 }
 
 // ─── Pages Router Production Server ───────────────────────────────────────────
@@ -726,9 +788,16 @@ interface PagesRouterServerOptions {
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const { port, host, clientDir, serverEntryPath, compress } = options;
 
-  // Import the server entry module (use file:// URL for reliable dynamic import)
-  const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+  // Import the server entry module (use file:// URL for reliable dynamic import).
+  // Cache-bust with mtime so that rebuilds to the same output path always load
+  // the freshly built module rather than a stale cached copy.
+  const serverMtime = fs.statSync(serverEntryPath).mtimeMs;
+  const serverEntry = await import(`${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`);
   const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
+
+  // Load prerender secret written at build time by vinext:server-manifest plugin.
+  // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
+  const prerenderSecret = readPrerenderSecret(path.dirname(serverEntryPath));
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
@@ -807,14 +876,57 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // ── 1. Static assets ──────────────────────────────────────────
-    // Serve static files from client build. When basePath is configured,
-    // Vite's `base` config ensures assets are under basePath/assets/.
-    // We check both with and without basePath.
+    // Internal prerender endpoint — only reachable with the correct build-time secret.
+    // Used by the prerender phase to fetch getStaticPaths results via HTTP.
+    if (pathname === "/__vinext/prerender/pages-static-paths") {
+      const secret = req.headers["x-vinext-prerender-secret"];
+      if (!prerenderSecret || secret !== prerenderSecret) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+      const parsedUrl = new URL(rawUrl, "http://localhost");
+      const pattern = parsedUrl.searchParams.get("pattern") ?? "";
+      const localesRaw = parsedUrl.searchParams.get("locales");
+      const locales: string[] = localesRaw ? JSON.parse(localesRaw) : [];
+      const defaultLocale = parsedUrl.searchParams.get("defaultLocale") ?? "";
+      const pageRoutes = serverEntry.pageRoutes as
+        | Array<{
+            pattern: string;
+            module?: {
+              getStaticPaths?: (opts: {
+                locales: string[];
+                defaultLocale: string;
+              }) => Promise<unknown>;
+            };
+          }>
+        | undefined;
+      const route = pageRoutes?.find((r) => r.pattern === pattern);
+      const fn = route?.module?.getStaticPaths;
+      if (typeof fn !== "function") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("null");
+        return;
+      }
+      try {
+        const result = await fn({ locales, defaultLocale });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500);
+        res.end((e as Error).message);
+      }
+      return;
+    }
+
+    // ── 1. Hashed build assets ─────────────────────────────────────
+    // Serve Vite build output (hashed JS/CSS bundles in /assets/) before
+    // middleware. These are always public and don't need protection.
+    // Public directory files (e.g. /favicon.ico, /robots.txt) are served
+    // after middleware (step 5b) so middleware can intercept them.
     const staticLookupPath = stripBasePath(pathname, basePath);
     if (
-      staticLookupPath !== "/" &&
-      !staticLookupPath.startsWith("/api/") &&
+      staticLookupPath.startsWith("/assets/") &&
       tryServeStatic(req, res, clientDir, staticLookupPath, compress)
     ) {
       return;
@@ -1027,6 +1139,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // are stored as arrays (RFC 6265 forbids comma-joining cookies).
       // Middleware headers take precedence: skip config keys already set
       // by middleware so middleware always wins for the same key.
+      // This runs before step 5b so config headers are included in static
+      // public directory file responses (matching Next.js behavior).
       if (configHeaders.length) {
         const matched = matchHeaders(pathname, configHeaders, reqCtx);
         for (const h of matched) {
@@ -1048,6 +1162,22 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             middlewareHeaders[lk] = h.value;
           }
         }
+      }
+
+      // ── 5b. Serve public directory static files ────────────────────
+      // Public directory files (non-build-asset static files) are served
+      // after middleware so middleware can intercept or redirect them.
+      // Build assets (/assets/*) are already served in step 1.
+      // Middleware response headers (including config headers applied above)
+      // are passed through so Set-Cookie, security headers, etc. from
+      // middleware and next.config.js are included in the response.
+      if (
+        staticLookupPath !== "/" &&
+        !staticLookupPath.startsWith("/api/") &&
+        !staticLookupPath.startsWith("/assets/") &&
+        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
+      ) {
+        return;
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
@@ -1176,7 +1306,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     });
   });
 
-  return server;
+  const addr = server.address();
+  const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  return { server, port: actualPort };
 }
 
 // Export helpers for testing

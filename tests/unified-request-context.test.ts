@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -18,7 +18,7 @@ describe("unified-request-context", () => {
 
     it("returns true inside a runWithRequestContext scope", () => {
       const ctx = createRequestContext();
-      runWithRequestContext(ctx, () => {
+      void runWithRequestContext(ctx, () => {
         expect(isInsideUnifiedScope()).toBe(true);
       });
     });
@@ -60,7 +60,7 @@ describe("unified-request-context", () => {
         waitUntil() {},
       };
 
-      runWithExecutionContext(outerCtx, () => {
+      void runWithExecutionContext(outerCtx, () => {
         expect(isInsideUnifiedScope()).toBe(false);
         expect(getRequestContext().executionContext).toBe(outerCtx);
       });
@@ -78,7 +78,7 @@ describe("unified-request-context", () => {
         executionContext: fakeCtx,
       });
 
-      runWithRequestContext(reqCtx, () => {
+      void runWithRequestContext(reqCtx, () => {
         const ctx = getRequestContext();
         expect((ctx.headersContext as any).headers.get("x-test")).toBe("1");
         expect((ctx.headersContext as any).cookies.get("session")).toBe("abc");
@@ -194,7 +194,7 @@ describe("unified-request-context", () => {
 
     it("stays null until explicitly set", () => {
       const ctx = createRequestContext();
-      runWithRequestContext(ctx, () => {
+      void runWithRequestContext(ctx, () => {
         expect(getRequestContext()._privateCache).toBeNull();
       });
     });
@@ -215,10 +215,10 @@ describe("unified-request-context", () => {
         },
       });
 
-      runWithRequestContext(outerCtx, () => {
+      void runWithRequestContext(outerCtx, () => {
         expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("outer");
 
-        runWithRequestContext(innerCtx, () => {
+        void runWithRequestContext(innerCtx, () => {
           expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("inner");
         });
 
@@ -231,7 +231,7 @@ describe("unified-request-context", () => {
   describe("executionContext", () => {
     it("is null by default", () => {
       const ctx = createRequestContext();
-      runWithRequestContext(ctx, () => {
+      void runWithRequestContext(ctx, () => {
         expect(getRequestContext().executionContext).toBeNull();
       });
     });
@@ -244,7 +244,7 @@ describe("unified-request-context", () => {
         },
       };
       const ctx = createRequestContext({ executionContext: fakeCtx });
-      runWithRequestContext(ctx, () => {
+      void runWithRequestContext(ctx, () => {
         const ec = getRequestContext().executionContext as any;
         expect(ec).toBe(fakeCtx);
         ec.waitUntil(Promise.resolve("done"));
@@ -257,8 +257,8 @@ describe("unified-request-context", () => {
         waitUntil() {},
       };
 
-      runWithExecutionContext(outerCtx, () => {
-        runWithRequestContext(createRequestContext(), () => {
+      void runWithExecutionContext(outerCtx, () => {
+        void runWithRequestContext(createRequestContext(), () => {
           expect(getRequestContext().executionContext).toBe(outerCtx);
           expect(getRequestExecutionContext()).toBe(outerCtx);
         });
@@ -282,7 +282,7 @@ describe("unified-request-context", () => {
         executionContext: { waitUntil: () => {} },
       });
 
-      runWithRequestContext(reqCtx, () => {
+      void runWithRequestContext(reqCtx, () => {
         const ctx = getRequestContext();
         expect(ctx.dynamicUsageDetected).toBe(true);
         expect(ctx.pendingSetCookies).toEqual(["a=b"]);
@@ -316,7 +316,7 @@ describe("unified-request-context", () => {
         cookies: new Map([["inner", "1"]]),
       };
 
-      runWithRequestContext(
+      void runWithRequestContext(
         createRequestContext({
           headersContext: outerHeaders,
           dynamicUsageDetected: true,
@@ -325,7 +325,7 @@ describe("unified-request-context", () => {
           phase: "action",
         }),
         () => {
-          runWithHeadersContext(innerHeaders as any, () => {
+          void runWithHeadersContext(innerHeaders as any, () => {
             const ctx = getRequestContext();
             expect((ctx.headersContext as any).headers.get("x-id")).toBe("inner");
             expect(ctx.dynamicUsageDetected).toBe(false);
@@ -366,7 +366,7 @@ describe("unified-request-context", () => {
           },
         }),
         async () => {
-          runWithHeadersContext(
+          void runWithHeadersContext(
             {
               headers: new Headers({ "x-id": "inner" }),
               cookies: new Map(),
@@ -394,13 +394,13 @@ describe("unified-request-context", () => {
 
       const outerCallback = () => "outer";
 
-      runWithRequestContext(
+      void runWithRequestContext(
         createRequestContext({
           serverContext: { pathname: "/outer", searchParams: new URLSearchParams(), params: {} },
           serverInsertedHTMLCallbacks: [outerCallback],
         }),
         () => {
-          runWithNavigationContext(() => {
+          void runWithNavigationContext(() => {
             expect(getNavigationContext()).toBeNull();
             expect(getRequestContext().serverInsertedHTMLCallbacks).toEqual([]);
 
@@ -429,12 +429,12 @@ describe("unified-request-context", () => {
         defaultLocale: "en",
       };
 
-      runWithRequestContext(
+      void runWithRequestContext(
         createRequestContext({
           i18nContext: outerI18n,
         }),
         () => {
-          runWithI18nState(() => {
+          void runWithI18nState(() => {
             expect(getI18nContext()).toBeNull();
 
             setI18nContext({
@@ -465,7 +465,7 @@ describe("unified-request-context", () => {
       const { setSSRContext } = await import("../packages/vinext/src/shims/router.js");
       const { runWithHeadState } = await import("../packages/vinext/src/shims/head-state.js");
 
-      runWithRequestContext(
+      await runWithRequestContext(
         createRequestContext({
           requestScopedCacheLife: { revalidate: 60 },
           _privateCache: new Map([["outer", 1]]),
@@ -474,13 +474,13 @@ describe("unified-request-context", () => {
           ssrHeadChildren: ["<meta data-outer />"],
         }),
         async () => {
-          _runWithCacheState(() => {
+          void _runWithCacheState(() => {
             expect(getRequestContext().requestScopedCacheLife).toBeNull();
             getRequestContext().requestScopedCacheLife = { revalidate: 1 } as any;
           });
           expect(getRequestContext().requestScopedCacheLife).toEqual({ revalidate: 60 });
 
-          runWithPrivateCache(() => {
+          void runWithPrivateCache(() => {
             expect(getRequestContext()._privateCache).toBeInstanceOf(Map);
             expect(getRequestContext()._privateCache?.size).toBe(0);
             getRequestContext()._privateCache?.set("inner", 2);
@@ -493,13 +493,13 @@ describe("unified-request-context", () => {
           });
           expect(getCollectedFetchTags()).toEqual(["outer-tag"]);
 
-          runWithRouterState(() => {
+          void runWithRouterState(() => {
             expect(getRequestContext().ssrContext).toBeNull();
             setSSRContext({ pathname: "/inner", query: {}, asPath: "/inner" } as any);
           });
           expect((getRequestContext().ssrContext as any).pathname).toBe("/outer");
 
-          runWithHeadState(() => {
+          void runWithHeadState(() => {
             expect(getRequestContext().ssrHeadChildren).toEqual([]);
             getRequestContext().ssrHeadChildren.push("<meta data-inner />");
           });

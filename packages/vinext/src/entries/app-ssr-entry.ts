@@ -3,8 +3,13 @@
  *
  * This runs in the `ssr` Vite environment. It receives an RSC stream,
  * deserializes it to a React tree, and renders to HTML.
+ *
+ * When `hasPagesDir` is true (hybrid App + Pages Router project), the SSR
+ * entry also re-exports `pageRoutes` from `virtual:vinext-server-entry` so
+ * that the Cloudflare Workers RSC bundle can access Pages Router route
+ * metadata (including `getStaticPaths`) via `import("./ssr/index.js")`.
  */
-export function generateSsrEntry(): string {
+export function generateSsrEntry(hasPagesDir = false): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
@@ -12,6 +17,9 @@ import { setNavigationContext, ServerInsertedHTMLContext } from "next/navigation
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 import { createElement as _ssrCE } from "react";
+import * as _clientRefs from "virtual:vite-rsc/client-references";
+
+let _clientRefsPreloaded = false;
 
 /**
  * Collect all chunks from a ReadableStream into an array of text strings.
@@ -67,20 +75,13 @@ function createRscEmbedTransform(embedStream) {
   let pendingChunks = [];
   let reading = false;
 
-  // Fix invalid preload "as" values in RSC Flight hint lines before
-  // they reach the client. React Flight emits HL hints with
-  // as="stylesheet" for CSS, but the HTML spec requires as="style"
-  // for <link rel="preload">. The fixPreloadAs() below only fixes the
-  // server-rendered HTML stream; this fixes the raw Flight data that
-  // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
-  function fixFlightHints(text) {
-    // Flight hint format: <id>:HL["url","stylesheet"] or with options
-    return text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
-  }
-
   // Start reading RSC chunks in the background, accumulating them as text strings.
   // The RSC flight protocol is text-based, so decoding to strings and embedding
   // as JSON strings is ~3x more compact than the byte-array format.
+  //
+  // Note: Flight HL hint "stylesheet" → "style" rewriting is handled upstream
+  // in the renderToReadableStream wrapper (app-rsc-entry.ts), so the stream
+  // arriving here is already clean.
   async function pumpReader() {
     if (reading) return;
     reading = true;
@@ -92,7 +93,7 @@ function createRscEmbedTransform(embedStream) {
           break;
         }
         const text = _decoder.decode(result.value, { stream: true });
-        pendingChunks.push(fixFlightHints(text));
+        pendingChunks.push(text);
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -150,6 +151,29 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Eagerly preload all client reference modules before SSR rendering.
+  // On the first request after server start, client component modules are
+  // loaded lazily via async import(). Without this preload, React's
+  // renderToReadableStream rejects because the shell can't resolve client
+  // components synchronously (there is no Suspense boundary wrapping the
+  // root). The memoized require cache ensures this is only async on the
+  // very first call; subsequent requests resolve from cache immediately.
+  // See: https://github.com/cloudflare/vinext/issues/256
+  // _clientRefs.default is the default export from the virtual:vite-rsc/client-references
+  // namespace import — a map of client component IDs to their async import functions.
+  if (!_clientRefsPreloaded && _clientRefs.default && globalThis.__vite_rsc_client_require__) {
+    await Promise.all(
+      Object.keys(_clientRefs.default).map((id) =>
+        globalThis.__vite_rsc_client_require__(id).catch((err) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[vinext] failed to preload client ref:", id, err);
+          }
+        })
+      )
+    );
+    _clientRefsPreloaded = true;
+  }
+
   // Wrap in a navigation ALS scope for per-request isolation in the SSR
   // environment. The SSR environment has separate module instances from RSC,
   // so it needs its own ALS scope.
@@ -318,9 +342,8 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // Fix invalid preload "as" values in server-rendered HTML.
     // React Fizz emits <link rel="preload" as="stylesheet"> for CSS,
     // but the HTML spec requires as="style" for <link rel="preload">.
-    // Note: fixFlightHints() in createRscEmbedTransform handles the
-    // complementary case — fixing the raw Flight stream data before
-    // it's embedded as __VINEXT_RSC_CHUNKS__ for client-side processing.
+    // Note: Flight HL hints are fixed upstream in the renderToReadableStream
+    // wrapper (app-rsc-entry.ts); this only handles the Fizz HTML stream.
     // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
     function fixPreloadAs(html) {
       // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order
@@ -444,5 +467,15 @@ export default {
     return new Response(String(result), { status: 200 });
   },
 };
-`;
+${
+  hasPagesDir
+    ? `
+// Re-export pageRoutes and renderPage from the Pages Router server entry so
+// that the Cloudflare Workers RSC bundle can access Pages Router route metadata
+// (including getStaticPaths) via import("./ssr/index.js").pageRoutes, and can
+// delegate unmatched App Router requests to renderPage for hybrid builds.
+export { pageRoutes, renderPage } from "virtual:vinext-server-entry";
+`
+    : ""
+}`;
 }

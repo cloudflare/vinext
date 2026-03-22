@@ -1,7 +1,32 @@
+import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
-import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  staged: {
+    "*": "vp check --fix",
+  },
+  fmt: {
+    printWidth: 100,
+    tabWidth: 2,
+    useTabs: false,
+    semi: true,
+    singleQuote: false,
+    trailingComma: "all",
+    ignorePatterns: ["tests/fixtures/ecosystem/**", "examples/**"],
+  },
+  lint: {
+    ignorePatterns: [
+      "fixtures/ecosystem/**",
+      "tests/fixtures/**",
+      "tests/fixtures/ecosystem/**",
+      "examples/**",
+    ],
+    options: {
+      typeAware: true,
+      typeCheck: true,
+      denyWarnings: true,
+    },
+  },
   test: {
     include: ["tests/**/*.test.ts"],
     testTimeout: 30000,

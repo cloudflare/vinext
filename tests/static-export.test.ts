@@ -8,12 +8,11 @@
  * 3. Make HTTP requests to verify correct responses
  * 4. Check Content-Type, status codes, and asset references
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { createServer, type Server } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { startFixtureServer } from "./helpers.js";
+import { buildPagesFixture, buildAppFixture } from "./helpers.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -76,17 +75,14 @@ function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl:
 // ─── Pages Router Static Export E2E ─────────────────────────────────────────
 
 describe("Static export — Pages Router (served via HTTP)", () => {
-  let viteServer: ViteDevServer;
   let staticServer: Server;
   let baseUrl: string;
   const exportDir = path.resolve(PAGES_FIXTURE, "out-e2e");
 
   beforeAll(async () => {
-    // 1. Start Vite dev server for the fixture
-    const vite = await startFixtureServer(PAGES_FIXTURE);
-    viteServer = vite.server;
+    // 1. Build the fixture and run static export
+    const pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
 
-    // 2. Run static export
     const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
     const { pagesRouter } = await import("../packages/vinext/src/routing/pages-router.js");
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
@@ -98,7 +94,7 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     await staticExportPages({
-      server: viteServer,
+      pagesBundlePath,
       routes: pageRoutes,
       apiRoutes,
       pagesDir,
@@ -106,15 +102,14 @@ describe("Static export — Pages Router (served via HTTP)", () => {
       config,
     });
 
-    // 3. Start a static file server on the exported directory
+    // 2. Start a static file server on the exported directory
     const srv = await createStaticServer(exportDir);
     staticServer = srv.server;
     baseUrl = srv.baseUrl;
-  }, 30_000);
+  }, 60_000);
 
-  afterAll(async () => {
+  afterAll(() => {
     staticServer?.close();
-    await viteServer?.close();
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 
@@ -185,21 +180,14 @@ describe("Static export — Pages Router (served via HTTP)", () => {
 // ─── App Router Static Export E2E ───────────────────────────────────────────
 
 describe("Static export — App Router (served via HTTP)", () => {
-  let viteServer: ViteDevServer;
-  let viteBaseUrl: string;
   let staticServer: Server;
   let baseUrl: string;
   const exportDir = path.resolve(APP_FIXTURE, "out-e2e");
 
   beforeAll(async () => {
-    // 1. Start Vite dev server for the fixture (use shared helper which
-    //    passes configFile: false + explicit plugins — avoids RSC timing
-    //    issues when loading via configFile in non-browser test clients)
-    const vite = await startFixtureServer(APP_FIXTURE, { appRouter: true });
-    viteServer = vite.server;
-    viteBaseUrl = vite.baseUrl;
+    // 1. Build the fixture and run static export
+    const rscBundlePath = await buildAppFixture(APP_FIXTURE);
 
-    // 2. Run static export
     const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
     const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
@@ -209,23 +197,20 @@ describe("Static export — App Router (served via HTTP)", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     await staticExportApp({
-      baseUrl: viteBaseUrl,
+      rscBundlePath,
       routes,
-      appDir,
-      server: viteServer,
       outDir: exportDir,
       config,
     });
 
-    // 3. Start a static file server on the exported directory
+    // 2. Start a static file server on the exported directory
     const srv = await createStaticServer(exportDir);
     staticServer = srv.server;
     baseUrl = srv.baseUrl;
-  }, 30_000);
+  }, 120_000);
 
-  afterAll(async () => {
+  afterAll(() => {
     staticServer?.close();
-    await viteServer?.close();
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 

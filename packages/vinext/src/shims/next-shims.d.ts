@@ -252,13 +252,13 @@ declare module "next/constants" {
     MIDDLEWARE = "MIDDLEWARE",
   }
 
-  export const PHASE_PRODUCTION_BUILD: string;
-  export const PHASE_DEVELOPMENT_SERVER: string;
-  export const PHASE_PRODUCTION_SERVER: string;
-  export const PHASE_EXPORT: string;
-  export const PHASE_INFO: string;
-  export const PHASE_TEST: string;
-  export const PHASE_ANALYZE: string;
+  export const PHASE_PRODUCTION_BUILD: "phase-production-build";
+  export const PHASE_DEVELOPMENT_SERVER: "phase-development-server";
+  export const PHASE_PRODUCTION_SERVER: "phase-production-server";
+  export const PHASE_EXPORT: "phase-export";
+  export const PHASE_INFO: "phase-info";
+  export const PHASE_TEST: "phase-test";
+  export const PHASE_ANALYZE: "phase-analyze";
 
   export type PHASE_TYPE =
     | typeof PHASE_INFO
@@ -336,6 +336,12 @@ declare module "next/constants" {
   };
   export const EDGE_UNSUPPORTED_NODE_APIS: string[];
   export const SYSTEM_ENTRYPOINTS: Set<string>;
+}
+
+declare module "next/compat/router" {
+  import type { NextRouter } from "./router.js";
+  // oxlint-disable-next-line no-redundant-type-constituents -- NextRouter is a proper interface, not an error type
+  export function useRouter(): NextRouter | null;
 }
 
 declare module "next/server" {

@@ -40,7 +40,15 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
   "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/legacy/image": {
+    status: "supported",
+    detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",
+  },
   "next/router": { status: "supported" },
+  "next/compat/router": {
+    status: "supported",
+    detail: "useRouter() returns null in App Router, router object in Pages Router",
+  },
   "next/navigation": { status: "supported" },
   "next/headers": { status: "supported" },
   "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
@@ -65,12 +73,68 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
+  "next/form": { status: "supported", detail: "Form component with client-side navigation" },
+  "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
+  "next/constants": { status: "supported", detail: "PHASE_* constants" },
   "next/third-parties/google": {
     status: "unsupported",
     detail: "third-party script optimization not implemented",
   },
   "server-only": { status: "supported" },
   "client-only": { status: "supported" },
+  // Internal next/dist/* paths used by libraries (testing utilities, older libs, etc.)
+  "next/dist/shared/lib/router-context.shared-runtime": {
+    status: "supported",
+    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
+  },
+  "next/dist/shared/lib/app-router-context.shared-runtime": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/app-router-context": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/utils": {
+    status: "supported",
+    detail: "execOnce, getLocationOrigin and other shared utilities",
+  },
+  "next/dist/server/api-utils": {
+    status: "supported",
+    detail: "NextApiRequestCookies and Pages Router API route utilities",
+  },
+  "next/dist/server/web/spec-extension/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/compiled/@edge-runtime/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/server/app-render/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/request-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/request-async-storage": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/navigation": {
+    status: "supported",
+    detail: "internal navigation module; re-exports next/navigation",
+  },
+  "next/dist/server/config-shared": {
+    status: "supported",
+    detail: "shared config utilities; re-exports next/dist/shared/lib/utils",
+  },
 };
 
 // ── Config support map ─────────────────────────────────────────────────────
@@ -505,16 +569,41 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  // Scan for ViewTransition import from react
+  // Scan all source files once for per-file checks:
+  //   - ViewTransition import from react
+  //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
+  //
+  // For __dirname/__filename we use a single-pass alternation regex that skips over
+  // string literals, template literals, and comments before testing for the identifier,
+  // so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  // Single-pass regex: skip tokens that can contain identifier-like text, expose everything else
+  // to the identifier capture branch. Template literals are skipped segment-by-segment between
+  // `${` boundaries — the `${...}` body itself is NOT consumed, so `__dirname` inside template
+  // expressions (e.g. `${__dirname}/views`) is correctly exposed to the identifier branch.
+  const cjsGlobalScanRegex =
+    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
   const viewTransitionFiles: string[] = [];
+  const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
+    const rel = path.relative(root, file);
+
     if (viewTransitionRegex.test(content)) {
-      viewTransitionFiles.push(path.relative(root, file));
+      viewTransitionFiles.push(rel);
+    }
+
+    cjsGlobalScanRegex.lastIndex = 0;
+    let m;
+    while ((m = cjsGlobalScanRegex.exec(content)) !== null) {
+      if (m[1]) {
+        cjsGlobalFiles.push(rel);
+        break;
+      }
     }
   }
+  // Emit items for the combined scan results
   if (viewTransitionFiles.length > 0) {
     items.push({
       name: "ViewTransition (React canary API)",
@@ -548,6 +637,16 @@ export function checkConventions(root: string): CheckItem[] {
       }
       break; // Only check the first config file found
     }
+  }
+
+  if (cjsGlobalFiles.length > 0) {
+    items.push({
+      name: "__dirname / __filename (CommonJS globals)",
+      status: "unsupported",
+      detail:
+        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+      files: cjsGlobalFiles,
+    });
   }
 
   return items;
@@ -669,6 +768,11 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     for (const item of allItems) {
       if (item.status === "unsupported") {
         lines.push(`    \x1b[31m✗\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        if (item.files && item.files.length > 0) {
+          for (const f of item.files) {
+            lines.push(`       \x1b[90m${f}\x1b[0m`);
+          }
+        }
       }
     }
   }

@@ -217,7 +217,12 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   let files: string[];
   try {
     files = [];
-    for await (const file of scanWithExtensions("**/*", apiDir, matcher.extensions)) {
+    for await (const file of scanWithExtensions(
+      "**/*",
+      apiDir,
+      matcher.extensions,
+      (name: string) => name.startsWith("_"),
+    )) {
       files.push(file);
     }
   } catch {

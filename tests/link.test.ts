@@ -9,7 +9,7 @@
  * These tests verify SSR output matches Next.js expectations and that
  * pure helper functions work correctly.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 

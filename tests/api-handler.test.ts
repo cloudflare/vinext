@@ -10,16 +10,21 @@
  * all behavior is tested indirectly through handleApiRoute with a mocked
  * ViteDevServer.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PassThrough } from "node:stream";
 import http from "node:http";
 vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
   reportRequestError: vi.fn(() => Promise.resolve()),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  importModule: (runner: { import(id: string): Promise<unknown> }, id: string) =>
+    runner.import(id) as Promise<Record<string, any>>,
 }));
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
-import { reportRequestError } from "../packages/vinext/src/server/instrumentation.js";
+import {
+  reportRequestError,
+  type ModuleImporter,
+} from "../packages/vinext/src/server/instrumentation.js";
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
-import type { ViteDevServer } from "vite";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -127,13 +132,12 @@ function route(pattern: string, filePath = "/fake/api/handler.ts"): Route {
 }
 
 /**
- * Build a minimal mock ViteDevServer with configurable ssrLoadModule behavior.
+ * Build a minimal mock ModuleImporter with configurable import behavior.
  */
-function mockServer(moduleExport: Record<string, unknown>): ViteDevServer {
+function mockServer(moduleExport: Record<string, unknown>): ModuleImporter {
   return {
-    ssrLoadModule: vi.fn().mockResolvedValue(moduleExport),
-    ssrFixStacktrace: vi.fn(),
-  } as unknown as ViteDevServer;
+    import: vi.fn().mockResolvedValue(moduleExport),
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -206,7 +210,6 @@ describe("handleApiRoute", () => {
       expect(res._statusCode).toBe(400);
       expect(res.statusMessage).toBe("Invalid JSON");
       expect(res._body).toBe("Invalid JSON");
-      expect(server.ssrFixStacktrace).not.toHaveBeenCalled();
       expect(errorSpy).not.toHaveBeenCalled();
       expect(reportRequestError).not.toHaveBeenCalled();
       errorSpy.mockRestore();
@@ -743,9 +746,9 @@ describe("handleApiRoute", () => {
         route("/api/users"),
       ]);
 
-      expect(capturedQuery.toString).toBe("a");
-      expect(capturedQuery.constructor).toBe("b");
-      expect(capturedQuery.__proto__).toBe("c");
+      expect(capturedQuery["toString"]).toBe("a");
+      expect(capturedQuery["constructor"]).toBe("b");
+      expect(capturedQuery["__proto__"]).toBe("c");
       expect(Object.getPrototypeOf(capturedQuery)).toBe(Object.prototype);
     });
 
@@ -806,7 +809,7 @@ describe("handleApiRoute", () => {
       expect(res._body).toBe("Internal Server Error");
     });
 
-    it("calls ssrFixStacktrace on handler errors", async () => {
+    it("still returns 500 on handler errors (no ssrFixStacktrace needed with Module Runner)", async () => {
       const error = new Error("test error");
       const handler = vi.fn(() => {
         throw error;
@@ -817,7 +820,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(server.ssrFixStacktrace).toHaveBeenCalledWith(error);
+      expect(res._statusCode).toBe(500);
     });
   });
 });

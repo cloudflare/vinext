@@ -19,7 +19,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
-import { createBuilder, build } from "vite";
+import { pathToFileURL } from "node:url";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
@@ -28,7 +28,9 @@ import {
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
+import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +47,8 @@ export interface DeployOptions {
   skipBuild?: boolean;
   /** Dry run — generate config files but don't build or deploy */
   dryRun?: boolean;
+  /** Pre-render all discovered routes into the dist output after building */
+  prerenderAll?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -65,6 +69,7 @@ const deployArgOptions = {
   name: { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
+  "prerender-all": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -73,6 +78,17 @@ const deployArgOptions = {
 
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+
+  function parseIntArg(name: string, raw: string | undefined): number | undefined {
+    if (!raw) return undefined;
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+      console.error(`  --${name} must be a number (got: ${raw})`);
+      process.exit(1);
+    }
+    return n;
+  }
+
   return {
     help: values.help,
     preview: values.preview,
@@ -80,10 +96,11 @@ export function parseDeployArgs(args: string[]) {
     name: values.name?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
+    prerenderAll: values["prerender-all"],
     experimentalTPR: values["experimental-tpr"],
-    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
-    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
-    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+    tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
+    tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
+    tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
   };
 }
 
@@ -179,54 +196,44 @@ export function detectProject(root: string): ProjectInfo {
   const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
-  // Derive project name from package.json or directory name
-  let projectName = path.basename(root);
+  // Parse package.json once for all fields that need it
   const pkgPath = path.join(root, "package.json");
+  let pkg: Record<string, unknown> | null = null;
   if (fs.existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      if (pkg.name) {
-        // Sanitize: Workers names must be lowercase alphanumeric + hyphens
-        projectName = pkg.name
-          .replace(/^@[^/]+\//, "") // strip npm scope
-          .toLowerCase() // lowercase BEFORE stripping invalid chars
-          .replace(/[^a-z0-9-]/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "");
-      }
+      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
     } catch {
       // ignore parse errors
     }
+  }
+
+  // Derive project name from package.json or directory name
+  let projectName = path.basename(root);
+  if (pkg?.name && typeof pkg.name === "string") {
+    // Sanitize: Workers names must be lowercase alphanumeric + hyphens
+    projectName = pkg.name
+      .replace(/^@[^/]+\//, "") // strip npm scope
+      .toLowerCase() // lowercase BEFORE stripping invalid chars
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
   }
 
   // Detect ISR usage (rough heuristic: search for `revalidate` exports)
   const hasISR = detectISR(root, isAppRouter);
 
   // Detect "type": "module" in package.json
-  let hasTypeModule = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      hasTypeModule = pkg.type === "module";
-    } catch {
-      // ignore
-    }
-  }
+  const hasTypeModule = pkg?.type === "module";
 
   // Detect MDX usage
   const hasMDX = detectMDX(root, isAppRouter, hasPages);
 
   // Detect CodeHike dependency
-  let hasCodeHike = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-      hasCodeHike = "codehike" in allDeps;
-    } catch {
-      // ignore
-    }
-  }
+  const allDeps = {
+    ...(pkg?.dependencies as Record<string, unknown> | undefined),
+    ...(pkg?.devDependencies as Record<string, unknown> | undefined),
+  };
+  const hasCodeHike = "codehike" in allDeps;
 
   // Detect native Node modules that need stubbing for Workers
   const nativeModulesToStub = detectNativeModules(root);
@@ -251,6 +258,10 @@ export function detectProject(root: string): ProjectInfo {
 }
 
 function detectISR(root: string, isAppRouter: boolean): boolean {
+  // ISR detection is only implemented for App Router (scans for `export const revalidate`).
+  // Pages Router ISR (getStaticProps + revalidate) is not detected here — wrangler.jsonc
+  // will not include the KV namespace binding for Pages Router projects even if they use ISR.
+  // This is a known gap; KV must be configured manually for Pages Router ISR.
   if (!isAppRouter) return false;
   try {
     // Check root-level app/ first, then fall back to src/app/
@@ -387,6 +398,9 @@ export function generateWranglerConfig(info: ProjectInfo): string {
     compatibility_flags: ["nodejs_compat"],
     main: "./worker/index.ts",
     assets: {
+      // Wrangler 4.69+ requires `directory` when `assets` is an object.
+      // The @cloudflare/vite-plugin always writes static assets to dist/client/.
+      directory: "dist/client",
       not_found_handling: "none",
       // Expose static assets to the Worker via env.ASSETS so the image
       // optimization handler can fetch source images programmatically.
@@ -1084,6 +1098,22 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 async function runBuild(info: ProjectInfo): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
+  // Resolve Vite from the project root so that symlinked vinext installs
+  // (bun link / npm link) use the project's Vite, not the monorepo copy.
+  // This mirrors the loadVite() pattern in cli.ts.
+  let vitePath: string;
+  try {
+    const req = createRequire(path.join(info.root, "package.json"));
+    vitePath = req.resolve("vite");
+  } catch {
+    vitePath = "vite";
+  }
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const { createBuilder, build } = (await import(/* @vite-ignore */ viteUrl)) as {
+    createBuilder: typeof import("vite").createBuilder;
+    build: typeof import("vite").build;
+  };
+
   // Use Vite's JS API for the build. The user's vite.config.ts (or our
   // generated one) has the cloudflare() plugin which handles the Worker
   // output format. We just need to trigger the build.
@@ -1200,10 +1230,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (missingDeps.length > 0) {
     console.log();
     installDeps(root, missingDeps);
-    // Re-detect after install
-    info.hasCloudflarePlugin = true;
-    info.hasWrangler = true;
-    if (info.isAppRouter) info.hasRscPlugin = true;
+    // Re-detect so all fields reflect the freshly installed packages.
+    // Preserve any CLI name override applied above.
+    const nameOverride = options.name ? info.projectName : undefined;
+    Object.assign(info, detectProject(root));
+    if (nameOverride) info.projectName = nameOverride;
   }
 
   // Step 3: Ensure ESM + rename CJS configs
@@ -1244,7 +1275,25 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 6: TPR — pre-render hot pages into KV cache (experimental, opt-in)
+  // Step 6a: prerender — render every discovered route into dist.
+  // Triggered by --prerender-all, or automatically when next.config.js
+  // sets `output: 'export'` (every route must be statically exportable).
+  {
+    const rawNextConfig = await loadNextConfig(info.root);
+    const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
+    const isStaticExport = nextConfig.output === "export";
+
+    if (options.prerenderAll || isStaticExport) {
+      const label =
+        isStaticExport && !options.prerenderAll
+          ? "Pre-rendering all routes (output: 'export')..."
+          : "Pre-rendering all routes...";
+      console.log(`\n  ${label}`);
+      await runPrerender({ root: info.root });
+    }
+  }
+
+  // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
   if (options.experimentalTPR) {
     console.log();
     const tprResult = await runTPR({

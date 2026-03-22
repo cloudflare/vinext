@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -302,7 +302,11 @@ describe("generateWranglerConfig", () => {
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
     expect(parsed.main).toBe("./worker/index.ts");
-    expect(parsed.assets).toEqual({ not_found_handling: "none", binding: "ASSETS" });
+    expect(parsed.assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+    });
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
 
@@ -339,6 +343,17 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeUndefined();
+  });
+
+  it("includes assets.directory pointing to dist/client (required by wrangler 4.69+)", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    // Wrangler 4.69+ rejects assets blocks that lack `directory`.
+    // The @cloudflare/vite-plugin always writes static assets to dist/client/.
+    expect(parsed.assets.directory).toBe("dist/client");
   });
 
   it("includes Cloudflare Images binding for image optimization", () => {

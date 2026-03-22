@@ -11,6 +11,45 @@
 
 import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { getRequestExecutionContext } from "./request-context.js";
+
+// ---------------------------------------------------------------------------
+// Inlined cache-scope guard for after()
+//
+// We cannot statically import throwIfInsideCacheScope from headers.ts here
+// because headers.ts contains the "use cache" directive string in its error
+// message, which causes Vite's use-cache transform to include it in the module
+// graph. If headers.ts is pulled in via static import from server.ts, the
+// transform fires on it in Pages Router fixtures that lack @vitejs/plugin-rsc.
+//
+// The connection() function in this file avoids the same problem by using
+// `await import("./headers.js")` (dynamic import, async function). after()
+// must remain synchronous, so we inline the check using the same Symbol.for
+// keys that cache-runtime.ts and cache.ts register their ALS instances with.
+// ---------------------------------------------------------------------------
+
+const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
+const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function _throwIfInsideCacheScope(apiName: string): void {
+  const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (cacheAls?.getStore() != null) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside "use cache". ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+  const unstableAls = _g[_UNSTABLE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (unstableAls?.getStore() === true) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // NextRequest
@@ -20,7 +59,18 @@ export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _cookies: RequestCookies;
 
-  constructor(input: URL | RequestInfo, init?: RequestInit) {
+  constructor(
+    input: URL | RequestInfo,
+    init?: RequestInit & {
+      nextConfig?: {
+        basePath?: string;
+        i18n?: { locales: string[]; defaultLocale: string };
+      };
+    },
+  ) {
+    // Strip nextConfig before passing to super() — it's vinext-internal,
+    // not a valid RequestInit property.
+    const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
@@ -31,10 +81,10 @@ export class NextRequest extends Request {
         body: req.body,
         // @ts-expect-error - duplex is not in RequestInit type but needed for streams
         duplex: req.body ? "half" : undefined,
-        ...init,
+        ...requestInit,
       });
     } else {
-      super(input, init);
+      super(input, requestInit);
     }
     const url =
       typeof input === "string"
@@ -42,7 +92,10 @@ export class NextRequest extends Request {
         : input instanceof URL
           ? input
           : new URL(input.url, "http://localhost");
-    this._nextUrl = new NextURL(url);
+    const urlConfig: NextURLConfig | undefined = _nextConfig
+      ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
+      : undefined;
+    this._nextUrl = new NextURL(url, undefined, urlConfig);
     this._cookies = new RequestCookies(this.headers);
   }
 
@@ -177,18 +230,86 @@ export class NextResponse<_Body = unknown> extends Response {
 // NextURL — lightweight URL wrapper with pathname helpers
 // ---------------------------------------------------------------------------
 
-export class NextURL {
-  private _url: URL;
+export interface NextURLConfig {
+  basePath?: string;
+  nextConfig?: {
+    i18n?: {
+      locales: string[];
+      defaultLocale: string;
+    };
+  };
+}
 
-  constructor(input: string | URL, base?: string | URL) {
+export class NextURL {
+  /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
+  private _url: URL;
+  private _basePath: string;
+  private _locale: string | undefined;
+  private _defaultLocale: string | undefined;
+  private _locales: string[] | undefined;
+
+  constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
+    this._basePath = config?.basePath ?? "";
+    this._stripBasePath();
+    const i18n = config?.nextConfig?.i18n;
+    if (i18n) {
+      this._locales = [...i18n.locales];
+      this._defaultLocale = i18n.defaultLocale;
+      this._analyzeLocale(this._locales);
+    }
+  }
+
+  /** Strip basePath prefix from the internal pathname. */
+  private _stripBasePath(): void {
+    if (!this._basePath) return;
+    const { pathname } = this._url;
+    if (pathname === this._basePath || pathname.startsWith(this._basePath + "/")) {
+      this._url.pathname = pathname.slice(this._basePath.length) || "/";
+    }
+  }
+
+  /** Extract locale from pathname, stripping it from the internal URL. */
+  private _analyzeLocale(locales: string[]): void {
+    const segments = this._url.pathname.split("/");
+    const candidate = segments[1]?.toLowerCase();
+    const match = locales.find((l) => l.toLowerCase() === candidate);
+    if (match) {
+      this._locale = match;
+      this._url.pathname = "/" + segments.slice(2).join("/");
+    } else {
+      this._locale = this._defaultLocale;
+    }
+  }
+
+  /**
+   * Reconstruct the full pathname with basePath + locale prefix.
+   * Mirrors Next.js's internal formatPathname().
+   */
+  private _formatPathname(): string {
+    // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
+    let prefix = this._basePath;
+    if (this._locale && this._locale !== this._defaultLocale) {
+      prefix += "/" + this._locale;
+    }
+    if (!prefix) return this._url.pathname;
+    const inner = this._url.pathname;
+    return inner === "/" ? prefix : prefix + inner;
   }
 
   get href(): string {
-    return this._url.href;
+    const formatted = this._formatPathname();
+    if (formatted === this._url.pathname) return this._url.href;
+    // Replace pathname in href via string slicing — avoids URL allocation.
+    // URL.href is always <origin+auth><pathname><search><hash>.
+    const { href, pathname, search, hash } = this._url;
+    const baseEnd = href.length - pathname.length - search.length - hash.length;
+    return href.slice(0, baseEnd) + formatted + search + hash;
   }
   set href(value: string) {
     this._url.href = value;
+    this._stripBasePath();
+    if (this._locales) this._analyzeLocale(this._locales);
   }
 
   get origin(): string {
@@ -237,6 +358,7 @@ export class NextURL {
     this._url.port = value;
   }
 
+  /** Returns the pathname WITHOUT basePath or locale prefix. */
   get pathname(): string {
     return this._url.pathname;
   }
@@ -262,12 +384,53 @@ export class NextURL {
     this._url.hash = value;
   }
 
+  get basePath(): string {
+    return this._basePath;
+  }
+  set basePath(value: string) {
+    this._basePath = value === "" ? "" : value.startsWith("/") ? value : "/" + value;
+  }
+
+  get locale(): string {
+    return this._locale ?? "";
+  }
+  set locale(value: string | undefined) {
+    if (this._locales) {
+      if (!value) {
+        this._locale = this._defaultLocale;
+        return;
+      }
+      if (!this._locales.includes(value)) {
+        throw new TypeError(
+          `The locale "${value}" is not in the configured locales: ${this._locales.join(", ")}`,
+        );
+      }
+    }
+    this._locale = this._locales ? value : this._locale;
+  }
+
+  get defaultLocale(): string | undefined {
+    return this._defaultLocale;
+  }
+
+  get locales(): string[] | undefined {
+    return this._locales ? [...this._locales] : undefined;
+  }
+
   clone(): NextURL {
-    return new NextURL(this._url.href);
+    const config: NextURLConfig = {
+      basePath: this._basePath,
+      nextConfig: this._locales
+        ? { i18n: { locales: [...this._locales], defaultLocale: this._defaultLocale! } }
+        : undefined,
+    };
+    // Pass the full href (with locale/basePath re-added) so the constructor
+    // can re-analyze and extract locale correctly.
+    return new NextURL(this.href, undefined, config);
   }
 
   toString(): string {
-    return this._url.toString();
+    return this.href;
   }
 
   /**
@@ -442,6 +605,10 @@ export class ResponseCookies {
     return undefined;
   }
 
+  has(name: string): boolean {
+    return this.get(name) !== undefined;
+  }
+
   getAll(): CookieEntry[] {
     const entries: CookieEntry[] = [];
     for (const header of this._headers.getSetCookie()) {
@@ -572,14 +739,41 @@ export interface UserAgent {
 
 /**
  * after() — schedule work after the response is sent.
- * In a real server, this would use the platform's waitUntil.
- * Here we simply run it as a microtask (best-effort).
+ *
+ * Uses the platform's `waitUntil` (via the per-request ExecutionContext) when
+ * available so the task survives past the response on Cloudflare Workers.
+ * Falls back to a fire-and-forget microtask on runtimes without an execution
+ * context (e.g. Node.js dev server).
+ *
+ * Throws when called inside a cached scope — request-specific
+ * side-effects must not leak into cached results.
  */
 export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
+  _throwIfInsideCacheScope("after()");
+
   const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
-  promise.catch((err) => {
+  // NOTE: vinext runs function tasks concurrently with response streaming (next microtask),
+  // whereas Next.js queues them to run strictly after the response is sent via onClose.
+  // This is a known simplification — function tasks here are not guaranteed to run
+  // after the response completes, only after the current synchronous execution.
+  //
+  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
+  // there is no window where a pre-rejected `task` promise could trigger an
+  // `unhandledrejection` event before the handler is in place.
+  const guarded = promise.catch((err) => {
     console.error("[vinext] after() task failed:", err);
   });
+
+  // TODO: Next.js throws when after() is called outside a request context or when
+  // waitUntil is unavailable, preventing silent task loss. vinext falls back to
+  // fire-and-forget here, which is correct for the Node.js dev server (where
+  // getRequestExecutionContext() always returns null). On Workers, a misconfigured
+  // entry that omits runWithExecutionContext would silently drop tasks — consider
+  // a one-time console.warn on the fallback path, gated to production only (e.g.
+  // `process.env.NODE_ENV === 'production'` or `typeof caches !== 'undefined'` for
+  // a Workers runtime check) with a module-level `let _warned = false` guard so it
+  // fires at most once and doesn't spam the dev-server console.
+  getRequestExecutionContext()?.waitUntil(guarded);
 }
 
 /**
