@@ -4,6 +4,7 @@ import {
   createElement,
   startTransition,
   use,
+  useEffect,
   useLayoutEffect,
   useState,
   type Dispatch,
@@ -116,25 +117,21 @@ function clearClientNavigationCaches(): void {
 }
 
 function suppressFreshNavigationAnimations(): void {
-  if (typeof document === "undefined" || typeof document.getAnimations !== "function") {
+  if (typeof document === "undefined") {
     return;
   }
 
-  for (const animation of document.getAnimations()) {
-    if (!(animation.effect instanceof KeyframeEffect)) {
+  for (const element of document.body.querySelectorAll<HTMLElement>("*")) {
+    const style = window.getComputedStyle(element);
+    if (style.animationName === "none") {
       continue;
     }
 
-    const target = animation.effect.target;
-    if (!(target instanceof HTMLElement)) {
+    if (Number(style.opacity) > 0.01) {
       continue;
     }
 
-    if (Number(window.getComputedStyle(target).opacity) > 0.01) {
-      continue;
-    }
-
-    animation.cancel();
+    element.style.animation = "none";
   }
 }
 
@@ -262,7 +259,9 @@ function resolveCommittedNavigations(renderId: number): void {
 function NavigationCommitSignal({ children, renderId }: { children: ReactNode; renderId: number }) {
   useLayoutEffect(() => {
     runPrePaintNavigationEffect(renderId);
+  }, [renderId]);
 
+  useEffect(() => {
     const frame = requestAnimationFrame(() => {
       resolveCommittedNavigations(renderId);
     });
