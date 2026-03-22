@@ -301,6 +301,7 @@ function renderNavigationPayload(
   payload: Promise<ReactNode> | ReactNode,
   navigationSnapshot: ClientNavigationRenderSnapshot,
   prePaintEffect: (() => void) | null = null,
+  useTransition = true,
 ): Promise<void> {
   const renderId = ++nextNavigationRenderId;
   queuePrePaintNavigationEffect(renderId, prePaintEffect);
@@ -313,7 +314,7 @@ function renderNavigationPayload(
   // transition render. Deactivated by commitClientNavigationState() in
   // the pre-paint effect after the transition commits.
   activateNavigationSnapshot();
-  updateBrowserTree(payload, navigationSnapshot, renderId, true);
+  updateBrowserTree(payload, navigationSnapshot, renderId, useTransition);
 
   return committed;
 }
@@ -509,6 +510,11 @@ async function main(): Promise<void> {
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
+      // Use startTransition for same-route navigations (searchParam changes)
+      // so React keeps the old UI visible during the transition. For cross-route
+      // navigations (different pathname), use synchronous updates — React's
+      // startTransition hangs in Firefox when replacing the entire tree.
+      const isSameRoute = url.pathname === window.location.pathname;
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
@@ -525,6 +531,7 @@ async function main(): Promise<void> {
           cachedPayload,
           cachedNavigationSnapshot,
           navigationCommitEffect,
+          isSameRoute,
         );
         return;
       }
@@ -548,6 +555,7 @@ async function main(): Promise<void> {
 
       const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
       const requestedUrl = new URL(rscUrl, window.location.origin);
+
       if (finalUrl.pathname !== requestedUrl.pathname) {
         const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
 
@@ -580,17 +588,20 @@ async function main(): Promise<void> {
       // (e.g. list content updates before heading hooks catch up). Buffering
       // ensures processBinaryChunk handles all flight rows in one synchronous
       // pass, matching how cached/prefetched responses already work.
+
       const responseSnapshot = await snapshotRscResponse(navResponse);
+
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
-      // Fully resolve the RSC tree before rendering. Even with a buffered
-      // response, the flight parser uses internal Promises that schedule
-      // microtasks between row processing. Awaiting the resolved tree ensures
-      // React receives a complete ReactNode with no pending lazy references,
-      // preventing intermediate Suspense fallback reveals during the transition.
-      const rscPayload = await createFromFetch<ReactNode>(
+      const rscPayload = createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
       );
-      await renderNavigationPayload(rscPayload, navigationSnapshot, navigationCommitEffect);
+
+      await renderNavigationPayload(
+        rscPayload,
+        navigationSnapshot,
+        navigationCommitEffect,
+        isSameRoute,
+      );
     } catch (error) {
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
