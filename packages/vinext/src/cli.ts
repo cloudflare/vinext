@@ -16,6 +16,7 @@
 import vinext from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
+import { precompressAssets } from "./build/precompress.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -507,6 +508,19 @@ async function buildApp() {
     process.stdout.write("\x1b[0m");
     console.log(`  ${label}`);
     prerenderResult = await runPrerender({ root: process.cwd() });
+  }
+
+  // Precompress hashed assets (brotli q11 + gzip l9). These .br/.gz files
+  // are served directly by the production server — zero per-request
+  // compression overhead for immutable build output.
+  const clientDir = path.resolve("dist", "client");
+  const precompressResult = await precompressAssets(clientDir);
+  if (precompressResult.filesCompressed > 0) {
+    const ratio = (
+      (1 - precompressResult.totalCompressedBytes / precompressResult.totalOriginalBytes) *
+      100
+    ).toFixed(1);
+    console.log(`  Precompressed ${precompressResult.filesCompressed} assets (${ratio}% smaller)`);
   }
 
   process.stdout.write("\x1b[0m");

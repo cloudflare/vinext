@@ -21,8 +21,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
+import { StaticFileCache, CONTENT_TYPES } from "./static-file-cache.js";
 import {
   matchRedirect,
   matchRewrite,
@@ -97,12 +99,17 @@ const COMPRESS_THRESHOLD = 1024;
 
 /**
  * Parse the Accept-Encoding header and return the best supported encoding.
- * Preference order: br > gzip > deflate > identity.
+ * Preference order: zstd > br > gzip > deflate > identity.
+ *
+ * zstd decompresses ~3-5x faster than brotli at similar compression ratios.
+ * Supported in Chrome 123+, Firefox 126+. Safari can decompress but doesn't
+ * send zstd in Accept-Encoding, so it transparently falls back to br/gzip.
  */
-function negotiateEncoding(req: IncomingMessage): "br" | "gzip" | "deflate" | null {
+function negotiateEncoding(req: IncomingMessage): "zstd" | "br" | "gzip" | "deflate" | null {
   const accept = req.headers["accept-encoding"];
   if (!accept || typeof accept !== "string") return null;
   const lower = accept.toLowerCase();
+  if (lower.includes("zstd")) return "zstd";
   if (lower.includes("br")) return "br";
   if (lower.includes("gzip")) return "gzip";
   if (lower.includes("deflate")) return "deflate";
@@ -113,10 +120,14 @@ function negotiateEncoding(req: IncomingMessage): "br" | "gzip" | "deflate" | nu
  * Create a compression stream for the given encoding.
  */
 function createCompressor(
-  encoding: "br" | "gzip" | "deflate",
+  encoding: "zstd" | "br" | "gzip" | "deflate",
   mode: "default" | "streaming" = "default",
-): zlib.BrotliCompress | zlib.Gzip | zlib.Deflate {
+): zlib.ZstdCompress | zlib.BrotliCompress | zlib.Gzip | zlib.Deflate {
   switch (encoding) {
+    case "zstd":
+      return zlib.createZstdCompress({
+        params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 }, // Fast for on-the-fly
+      });
     case "br":
       return zlib.createBrotliCompress({
         ...(mode === "streaming" ? { flush: zlib.constants.BROTLI_OPERATION_FLUSH } : {}),
@@ -349,42 +360,96 @@ function sendCompressed(
   }
 }
 
-/** Content-type lookup for static assets. */
-const CONTENT_TYPES: Record<string, string> = {
-  ".js": "application/javascript",
-  ".mjs": "application/javascript",
-  ".css": "text/css",
-  ".html": "text/html",
-  ".json": "application/json",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".eot": "application/vnd.ms-fontobject",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".map": "application/json",
-  ".rsc": "text/x-component",
-};
-
 /**
  * Try to serve a static file from the client build directory.
- * Returns true if the file was served, false otherwise.
+ *
+ * When a `StaticFileCache` is provided, lookups are pure in-memory Map.get()
+ * with zero filesystem calls. Precompressed .br/.gz variants (generated at
+ * build time) are served directly — no per-request compression needed for
+ * hashed assets.
+ *
+ * Without a cache, falls back to async filesystem probing (still non-blocking,
+ * unlike the old sync existsSync/statSync approach).
  */
-function tryServeStatic(
+async function tryServeStatic(
   req: IncomingMessage,
   res: ServerResponse,
   clientDir: string,
   pathname: string,
   compress: boolean,
+  cache?: StaticFileCache,
   extraHeaders?: Record<string, string | string[]>,
-): boolean {
-  // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
+): Promise<boolean> {
+  if (pathname === "/") return false;
+
+  // ── Fast path: pre-computed headers, minimal per-request work ──
+  // When a cache is provided, all path validation happened at startup.
+  // The only per-request work: Map.get(), string compare, pipe.
+  if (cache) {
+    // Decode only when needed (hashed /assets/ URLs never have %)
+    let lookupPath: string;
+    if (pathname.includes("%")) {
+      try {
+        lookupPath = decodeURIComponent(pathname);
+      } catch {
+        return false;
+      }
+      // Block encoded .vite/ access (e.g. /%2Evite/manifest.json)
+      if (lookupPath.startsWith("/.vite/") || lookupPath === "/.vite") return false;
+    } else {
+      // Fast: skip decode entirely for clean URLs
+      if (pathname.startsWith("/.vite/") || pathname === "/.vite") return false;
+      lookupPath = pathname;
+    }
+
+    const entry = cache.lookup(lookupPath);
+    if (!entry) return false;
+
+    // 304 Not Modified: string compare against pre-computed ETag
+    if (req.headers["if-none-match"] === entry.etag) {
+      if (extraHeaders) {
+        res.writeHead(304, { ...entry.notModifiedHeaders, ...extraHeaders });
+      } else {
+        res.writeHead(304, entry.notModifiedHeaders);
+      }
+      res.end();
+      return true;
+    }
+
+    // Pick the best precompressed variant: zstd → br → gzip → original.
+    // Each variant has pre-computed headers — zero string building.
+    // Accept-Encoding is already lowercase in Node.js IncomingMessage.
+    const ae = compress ? req.headers["accept-encoding"] : undefined;
+    const variant =
+      typeof ae === "string"
+        ? (ae.includes("zstd") && entry.zst) ||
+          (ae.includes("br") && entry.br) ||
+          (ae.includes("gzip") && entry.gz) ||
+          entry.original
+        : entry.original;
+
+    if (extraHeaders) {
+      res.writeHead(200, { ...variant.headers, ...extraHeaders });
+    } else {
+      res.writeHead(200, variant.headers);
+    }
+
+    if (req.method === "HEAD") {
+      res.end();
+      return true;
+    }
+
+    // Small files: serve from in-memory buffer (no fd open/close overhead).
+    // Large files: stream from disk to avoid holding them in the heap.
+    if (variant.buffer) {
+      res.end(variant.buffer);
+    } else {
+      fs.createReadStream(variant.path).pipe(res);
+    }
+    return true;
+  }
+
+  // ── Slow path: async filesystem probe (no cache) ───────────────
   const resolvedClient = path.resolve(clientDir);
   let decodedPathname: string;
   try {
@@ -392,51 +457,21 @@ function tryServeStatic(
   } catch {
     return false;
   }
-
-  // Block access to internal build metadata directories. The .vite/
-  // directory contains manifests and other build artifacts that should
-  // not be publicly served. Check after decoding to catch encoded
-  // variants like /%2Evite/manifest.json.
-  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") {
-    return false;
-  }
+  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") return false;
   const staticFile = path.resolve(clientDir, "." + decodedPathname);
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
   }
 
-  // Resolve the actual file to serve. For extension-less paths (prerendered
-  // pages like /about → about.html, /blog/post → blog/post.html), try:
-  //   1. The exact path (e.g. /about.css, /assets/foo.js)
-  //   2. <path>.html (e.g. /about → about.html)
-  //   3. <path>/index.html (e.g. /about/ → about/index.html)
-  // Pathname "/" is always skipped — the index.html is served by SSR/RSC.
-  let resolvedStaticFile = staticFile;
-  if (pathname === "/") {
-    return false;
-  }
-  if (!fs.existsSync(resolvedStaticFile) || !fs.statSync(resolvedStaticFile).isFile()) {
-    // Try .html extension fallback for prerendered pages
-    const htmlFallback = staticFile + ".html";
-    if (fs.existsSync(htmlFallback) && fs.statSync(htmlFallback).isFile()) {
-      resolvedStaticFile = htmlFallback;
-    } else {
-      // Try index.html inside directory (trailing-slash variant)
-      const indexFallback = path.join(staticFile, "index.html");
-      if (fs.existsSync(indexFallback) && fs.statSync(indexFallback).isFile()) {
-        resolvedStaticFile = indexFallback;
-      } else {
-        return false;
-      }
-    }
-  }
+  const resolved = await resolveStaticFile(staticFile);
+  if (!resolved) return false;
 
-  const ext = path.extname(resolvedStaticFile);
+  const ext = path.extname(resolved.path);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
 
-  const baseHeaders = {
+  const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
     "Cache-Control": cacheControl,
     ...extraHeaders,
@@ -446,23 +481,56 @@ function tryServeStatic(
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
-      const fileStream = fs.createReadStream(resolvedStaticFile);
       const compressor = createCompressor(encoding);
       res.writeHead(200, {
         ...baseHeaders,
         "Content-Encoding": encoding,
         Vary: "Accept-Encoding",
       });
-      pipeline(fileStream, compressor, res, () => {
-        /* ignore */
-      });
+      pipeline(fs.createReadStream(resolved.path), compressor, res, () => {});
       return true;
     }
   }
 
-  res.writeHead(200, baseHeaders);
-  fs.createReadStream(resolvedStaticFile).pipe(res);
+  res.writeHead(200, {
+    ...baseHeaders,
+    "Content-Length": String(resolved.size),
+  });
+  pipeline(fs.createReadStream(resolved.path), res, () => {});
   return true;
+}
+
+interface ResolvedFile {
+  path: string;
+  size: number;
+}
+
+/**
+ * Resolve the actual file to serve, trying extension-less HTML fallbacks.
+ * Returns the resolved path + size, or null if not found.
+ */
+async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | null> {
+  const stat = await statIfFile(staticFile);
+  if (stat) return { path: staticFile, size: stat.size };
+
+  const htmlFallback = staticFile + ".html";
+  const htmlStat = await statIfFile(htmlFallback);
+  if (htmlStat) return { path: htmlFallback, size: htmlStat.size };
+
+  const indexFallback = path.join(staticFile, "index.html");
+  const indexStat = await statIfFile(indexFallback);
+  if (indexStat) return { path: indexFallback, size: indexStat.size };
+
+  return null;
+}
+
+async function statIfFile(filePath: string): Promise<{ size: number } | null> {
+  try {
+    const stat = await fsp.stat(filePath);
+    return stat.isFile() ? { size: stat.size } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -779,6 +847,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     );
   }
 
+  // Build the static file metadata cache at startup. Eliminates per-request
+  // stat() calls — all lookups are pure in-memory Map.get(). Precompressed
+  // .br/.gz variants (generated at build time) are detected automatically.
+  const staticCache = await StaticFileCache.create(clientDir);
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -828,7 +901,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // middleware before serving them.
     if (
       pathname.startsWith("/assets/") &&
-      tryServeStatic(req, res, clientDir, pathname, compress)
+      (await tryServeStatic(req, res, clientDir, pathname, compress, staticCache))
     ) {
       return;
     }
@@ -861,7 +934,17 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "Content-Disposition":
           imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (
+        await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          params.imageUrl,
+          false,
+          staticCache,
+          imageSecurityHeaders,
+        )
+      ) {
         return;
       }
       res.writeHead(404);
@@ -988,6 +1071,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
   }
 
+  // Build the static file metadata cache at startup (same as App Router).
+  const staticCache = await StaticFileCache.create(clientDir);
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -1066,7 +1152,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     const staticLookupPath = stripBasePath(pathname, basePath);
     if (
       staticLookupPath.startsWith("/assets/") &&
-      tryServeStatic(req, res, clientDir, staticLookupPath, compress)
+      (await tryServeStatic(req, res, clientDir, staticLookupPath, compress, staticCache))
     ) {
       return;
     }
@@ -1096,7 +1182,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "Content-Disposition":
           pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (
+        await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          params.imageUrl,
+          false,
+          staticCache,
+          imageSecurityHeaders,
+        )
+      ) {
         return;
       }
       res.writeHead(404);
@@ -1321,7 +1417,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         staticLookupPath !== "/" &&
         !staticLookupPath.startsWith("/api/") &&
         !staticLookupPath.startsWith("/assets/") &&
-        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
+        (await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          staticLookupPath,
+          compress,
+          staticCache,
+          middlewareHeaders,
+        ))
       ) {
         return;
       }
@@ -1484,4 +1588,5 @@ export {
   nodeToWebRequest,
   mergeResponseHeaders,
   mergeWebResponse,
+  tryServeStatic,
 };
