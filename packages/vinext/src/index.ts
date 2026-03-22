@@ -822,6 +822,27 @@ export interface VinextOptions {
   react?: VitePluginReactOptions | boolean;
 }
 
+/**
+ * Helper to suppress "Module level directives cause errors when bundled"
+ * warnings for "use client" / "use server" directives.
+ */
+function createDirectiveOnwarn(userOnwarn?: (warning: any, handler: (w: any) => void) => void) {
+  return (warning: any, defaultHandler: (warning: any) => void) => {
+    if (
+      warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+      (warning.message?.includes('"use client"') ||
+        warning.message?.includes('"use server"'))
+    ) {
+      return;
+    }
+    if (userOnwarn) {
+      userOnwarn(warning, defaultHandler);
+    } else {
+      defaultHandler(warning);
+    }
+  };
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
@@ -1332,23 +1353,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // they are handled by the RSC plugin and are harmless in the
                       // final bundle. We preserve any user-supplied onwarn so custom
                       // warning handling is not lost.
-                      onwarn: (() => {
-                        const userOnwarn = config.build?.rollupOptions?.onwarn;
-                        return (warning: any, defaultHandler: (warning: any) => void) => {
-                          if (
-                            warning.code === "MODULE_LEVEL_DIRECTIVE" &&
-                            (warning.message?.includes('"use client"') ||
-                              warning.message?.includes('"use server"'))
-                          ) {
-                            return;
-                          }
-                          if (userOnwarn) {
-                            userOnwarn(warning, defaultHandler);
-                          } else {
-                            defaultHandler(warning);
-                          }
-                        };
-                      })(),
+                      onwarn: createDirectiveOnwarn(config.build?.rolldownOptions?.onwarn ?? config.build?.rollupOptions?.onwarn),
                     },
                   } as any,
                 }
@@ -1362,23 +1367,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // they are handled by the RSC plugin and are harmless in the
                       // final bundle. We preserve any user-supplied onwarn so custom
                       // warning handling is not lost.
-                      onwarn: (() => {
-                        const userOnwarn = config.build?.rollupOptions?.onwarn;
-                        return (warning: any, defaultHandler: (warning: any) => void) => {
-                          if (
-                            warning.code === "MODULE_LEVEL_DIRECTIVE" &&
-                            (warning.message?.includes('"use client"') ||
-                              warning.message?.includes('"use server"'))
-                          ) {
-                            return;
-                          }
-                          if (userOnwarn) {
-                            userOnwarn(warning, defaultHandler);
-                          } else {
-                            defaultHandler(warning);
-                          }
-                        };
-                      })(),
+                      onwarn: createDirectiveOnwarn(config.build?.rolldownOptions?.onwarn ?? config.build?.rollupOptions?.onwarn),
                     },
                   },
                 }),
