@@ -21,6 +21,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
 import {
+  activateNavigationSnapshot,
   commitClientNavigationState,
   consumePrefetchResponse,
   createClientNavigationRenderSnapshot,
@@ -35,6 +36,7 @@ import {
   snapshotRscResponse,
   setNavigationContext,
   toRscUrl,
+  type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
 } from "../shims/navigation.js";
 import {
@@ -169,13 +171,8 @@ function composePrePaintNavigationEffects(
 
 function createNavigationCommitEffect(
   href: string,
-  navigationKind: NavigationKind,
   historyUpdateMode: HistoryUpdateMode | undefined,
-): (() => void) | null {
-  if (historyUpdateMode == null && navigationKind === "navigate") {
-    return null;
-  }
-
+): () => void {
   return () => {
     if (historyUpdateMode === "replace") {
       replaceHistoryStateWithoutNotify(null, "", href);
@@ -230,13 +227,12 @@ function getVisitedResponse(
   return null;
 }
 
-async function cacheVisitedResponse(
+function storeVisitedResponseSnapshot(
   rscUrl: string,
-  response: Response,
+  snapshot: CachedRscResponse,
   params: Record<string, string | string[]> = latestClientParams,
-): Promise<void> {
+): void {
   const now = Date.now();
-  const snapshot = await snapshotRscResponse(response);
   pruneVisitedResponseCache(now);
   visitedResponseCache.delete(rscUrl);
   evictVisitedResponseCacheIfNeeded();
@@ -347,6 +343,10 @@ function renderNavigationPayload(
     pendingNavigationCommits.set(renderId, resolve);
   });
 
+  // Activate the snapshot so hooks prefer the context value during the
+  // transition render. Deactivated by commitClientNavigationState() in
+  // the pre-paint effect after the transition commits.
+  activateNavigationSnapshot();
   updateBrowserTree(payload, navigationSnapshot, renderId, true);
 
   return committed;
@@ -544,11 +544,7 @@ async function main(): Promise<void> {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
-      const navigationCommitEffect = createNavigationCommitEffect(
-        href,
-        navigationKind,
-        historyUpdateMode,
-      );
+      const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
         stageClientParams(cachedRoute.params);
@@ -570,7 +566,7 @@ async function main(): Promise<void> {
       let navResponse: Response | undefined;
       let navResponseUrl: string | null = null;
       if (navigationKind !== "refresh") {
-        const prefetchedResponse = await consumePrefetchResponse(rscUrl);
+        const prefetchedResponse = consumePrefetchResponse(rscUrl);
         if (prefetchedResponse) {
           navResponse = restoreRscResponse(prefetchedResponse);
           navResponseUrl = prefetchedResponse.url;
@@ -612,17 +608,26 @@ async function main(): Promise<void> {
       }
       const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
 
-      void cacheVisitedResponse(rscUrl, navResponse.clone(), navParams).catch((error) => {
-        console.error("[vinext] Failed to cache visited RSC response:", error);
-      });
-      const rscPayload = createFromFetch<ReactNode>(Promise.resolve(navResponse));
+      // Buffer the full RSC response before rendering. Without this, the flight
+      // parser processes the stream progressively — chunks interleave across
+      // microtask boundaries, causing React to commit a partially-resolved tree
+      // (e.g. list content updates before heading hooks catch up). Buffering
+      // ensures processBinaryChunk handles all flight rows in one synchronous
+      // pass, matching how cached/prefetched responses already work.
+      const responseSnapshot = await snapshotRscResponse(navResponse);
+      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
+      // Fully resolve the RSC tree before rendering. Even with a buffered
+      // response, the flight parser uses internal Promises that schedule
+      // microtasks between row processing. Awaiting the resolved tree ensures
+      // React receives a complete ReactNode with no pending lazy references,
+      // preventing intermediate Suspense fallback reveals during the transition.
+      const rscPayload = await createFromFetch<ReactNode>(
+        Promise.resolve(restoreRscResponse(responseSnapshot)),
+      );
       await renderNavigationPayload(
         rscPayload,
         navigationSnapshot,
-        composePrePaintNavigationEffects(
-          navigationCommitEffect,
-          navResponseUrl ? null : suppressFreshNavigationAnimations,
-        ),
+        composePrePaintNavigationEffects(navigationCommitEffect, suppressFreshNavigationAnimations),
       );
     } catch (error) {
       console.error("[vinext] RSC navigation error:", error);

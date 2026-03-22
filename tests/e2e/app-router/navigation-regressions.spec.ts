@@ -602,30 +602,23 @@ test.describe("App Router navigation regressions", () => {
     expect(firstDestinationFrame?.firstRowAnimation).toBe("none");
   });
 
-  test("hover prefetch reuses the in-flight RSC request on immediate Link click", async ({
+  test("hover prefetch followed by immediate click navigates without blocking on the prefetch", async ({
     page,
   }) => {
+    // Next.js's segment cache does not block navigation on pending prefetches.
+    // If the prefetch hasn't settled by click time, a fresh dynamic request
+    // fires. This prevents navigation from hanging when prefetch is slow
+    // (e.g. Firefox with non-standard fetch options on Cloudflare Workers).
     await page.goto(`${BASE}/nav-flash/link-sync`);
     await waitForHydration(page);
 
-    const betaRscRequests: string[] = [];
-    page.on("request", (request) => {
-      if (request.url().includes("/nav-flash/link-sync.rsc?filter=beta")) {
-        betaRscRequests.push(request.url());
-      }
-    });
-
     await page.locator("#link-filter-beta").hover();
     await page.waitForTimeout(50);
-
-    expect(betaRscRequests.length).toBeGreaterThan(0);
 
     await page.locator("#link-filter-beta").click();
     await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: beta");
     await expect(page.locator("#link-filter-title")).toHaveText("Server filter: beta");
     await expect(page.locator("#link-filter-first-row")).toHaveText("Beta 1");
-
-    expect(betaRscRequests).toHaveLength(1);
   });
 
   test("returning to the providers list via Link does not flash the loading fallback", async ({

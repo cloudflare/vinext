@@ -382,29 +382,20 @@ export function prefetchRscResponse(rscUrl: string, responsePromise: Promise<Res
   cache.set(rscUrl, { pendingResponse, timestamp: now });
 }
 
-export async function consumePrefetchResponse(rscUrl: string): Promise<CachedRscResponse | null> {
+export function consumePrefetchResponse(rscUrl: string): CachedRscResponse | null {
   const cache = getPrefetchCache();
   const entry = cache.get(rscUrl);
   if (!entry) {
     return null;
   }
 
-  if (entry.pendingResponse) {
-    const snapshot = await entry.pendingResponse;
-    const settledEntry = cache.get(rscUrl);
-    if (settledEntry?.response) {
-      deletePrefetchEntry(rscUrl);
-      return settledEntry.response;
-    }
-    if (snapshot) {
-      deletePrefetchEntry(rscUrl);
-      return snapshot;
-    }
-    return null;
-  }
-
+  // Only consume settled (fully cached) responses — never block on pending
+  // ones. Next.js's segment cache does the same: if no settled prefetch
+  // exists, it fires a fresh dynamic request immediately rather than waiting
+  // for an in-flight prefetch that may hang or be slow (e.g. Firefox with
+  // non-standard fetch options). The pending prefetch will still complete in
+  // the background and cache itself for future navigations.
   if (!entry.response) {
-    deletePrefetchEntry(rscUrl);
     return null;
   }
 
@@ -530,6 +521,29 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   return _cachedEmptyServerSearchParams;
 }
 
+// ---------------------------------------------------------------------------
+// Navigation snapshot activation flag
+//
+// The render snapshot context provides pending URL values during transitions.
+// After the transition commits, the snapshot becomes stale and must NOT shadow
+// subsequent external URL changes (user pushState/replaceState). This flag
+// tracks whether a navigation transition is in progress — hooks only prefer
+// the snapshot while it's active.
+// ---------------------------------------------------------------------------
+
+let _navigationSnapshotActiveCount = 0;
+
+/**
+ * Mark a navigation snapshot as active. Called before startTransition
+ * in renderNavigationPayload. While active, hooks prefer the snapshot
+ * context value over useSyncExternalStore. Uses a counter (not boolean)
+ * to handle overlapping navigations — rapid clicks can interleave
+ * activate/deactivate if multiple transitions are in flight.
+ */
+export function activateNavigationSnapshot(): void {
+  _navigationSnapshotActiveCount++;
+}
+
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
@@ -630,7 +644,13 @@ export function usePathname(): string {
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
-  return renderSnapshot?.pathname ?? pathname;
+  // Only use the render snapshot during an active navigation transition.
+  // After commit, fall through to useSyncExternalStore so user
+  // pushState/replaceState calls are immediately reflected.
+  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+    return renderSnapshot.pathname;
+  }
+  return pathname;
 }
 
 /**
@@ -648,7 +668,10 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
-  return renderSnapshot?.searchParams ?? searchParams;
+  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+    return renderSnapshot.searchParams;
+  }
+  return searchParams;
 }
 
 /**
@@ -667,7 +690,10 @@ export function useParams<
     getClientParamsSnapshot as () => T,
     getServerParamsSnapshot as () => T,
   );
-  return (renderSnapshot?.params as T | undefined) ?? params;
+  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+    return (renderSnapshot.params ?? params) as T;
+  }
+  return params;
 }
 
 /**
@@ -731,6 +757,12 @@ export function commitClientNavigationState(): void {
   if (isServer) return;
   const state = getClientNavigationState();
   if (!state) return;
+
+  // Deactivate the navigation snapshot so hooks fall through to the
+  // reactive useSyncExternalStore values. The committed URL/params are
+  // now up-to-date, and any subsequent pushState/replaceState calls
+  // must be immediately reflected in hooks.
+  _navigationSnapshotActiveCount = Math.max(0, _navigationSnapshotActiveCount - 1);
 
   const urlChanged = syncCommittedUrlStateFromLocation();
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
