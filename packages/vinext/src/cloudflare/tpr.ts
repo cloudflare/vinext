@@ -24,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import { buildRouteEntries, uploadBulkToKV, type KVBulkPair } from "./populate-kv.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -662,9 +663,10 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
 // ─── KV Upload ───────────────────────────────────────────────────────────────
 
 /**
- * Upload pre-rendered pages to KV using the Cloudflare REST API.
- * Writes in the same KVCacheEntry format that KVCacheHandler reads
- * at runtime, so ISR serves these entries without any code changes.
+ * Upload pre-rendered pages to KV using shared populate-kv helpers.
+ *
+ * Uses the same key format, tag construction, and TTL as the deploy-time
+ * KV population step and the runtime KVCacheHandler.
  */
 async function uploadToKV(
   entries: Map<string, PrerenderResult>,
@@ -672,76 +674,23 @@ async function uploadToKV(
   accountId: string,
   apiToken: string,
   defaultRevalidateSeconds: number,
+  buildId?: string,
 ): Promise<void> {
-  const now = Date.now();
-
-  // Build the bulk write payload
-  const pairs: Array<{
-    key: string;
-    value: string;
-    expiration_ttl?: number;
-  }> = [];
+  const allPairs: KVBulkPair[] = [];
 
   for (const [routePath, result] of entries) {
-    // Determine revalidation window — use the page's revalidate header
-    // if present, otherwise fall back to the default
     const revalidateHeader = result.headers["x-vinext-revalidate"];
     const revalidateSeconds =
       revalidateHeader && !isNaN(Number(revalidateHeader))
         ? Number(revalidateHeader)
         : defaultRevalidateSeconds;
 
-    const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
-
-    // KV TTL: 10x the revalidation period, clamped to [60s, 30d]
-    // (matches the logic in KVCacheHandler.set)
-    const kvTtl =
-      revalidateSeconds > 0
-        ? Math.max(Math.min(revalidateSeconds * 10, 30 * 24 * 3600), 60)
-        : 24 * 3600; // 24h fallback if no revalidation
-
-    const entry = {
-      value: {
-        kind: "APP_PAGE" as const,
-        html: result.html,
-        headers: result.headers,
-        status: result.status,
-      },
-      tags: [] as string[],
-      lastModified: now,
-      revalidateAt,
-    };
-
-    pairs.push({
-      key: `cache:${routePath}`,
-      value: JSON.stringify(entry),
-      expiration_ttl: kvTtl,
-    });
+    // TPR only captures HTML (no RSC data from HTTP fetch)
+    const pairs = buildRouteEntries(routePath, result.html, null, revalidateSeconds, buildId ?? "");
+    allPairs.push(...pairs);
   }
 
-  // Upload in batches (KV bulk API accepts up to 10,000 per request)
-  const BATCH_SIZE = 10_000;
-  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
-    const batch = pairs.slice(i, i + BATCH_SIZE);
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/bulk`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(batch),
-      },
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `KV bulk upload failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${response.status} — ${text}`,
-      );
-    }
-  }
+  await uploadBulkToKV(allPairs, namespaceId, accountId, apiToken);
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
@@ -856,6 +805,18 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 10. Upload to KV ──────────────────────────────────────────
+  // Resolve buildId from prerender manifest (written during build)
+  let buildId: string | undefined;
+  try {
+    const manifestPath = path.join(root, "dist", "server", "vinext-prerender.json");
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      buildId = manifest.buildId;
+    }
+  } catch {
+    // Best-effort — proceed without buildId
+  }
+
   try {
     await uploadToKV(
       rendered,
@@ -863,6 +824,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
       accountId,
       apiToken,
       DEFAULT_REVALIDATE_SECONDS,
+      buildId,
     );
   } catch (err) {
     return skip(`KV upload failed: ${err instanceof Error ? err.message : String(err)}`);
