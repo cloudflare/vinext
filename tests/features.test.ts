@@ -10,6 +10,9 @@ import {
 } from "vite-plus/test";
 import { createServer, type ViteDevServer } from "vite-plus";
 import path from "node:path";
+import { PassThrough, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
+import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import {
   APP_FIXTURE_DIR,
@@ -23,6 +26,137 @@ import {
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+
+class CapturingNodeResponse extends PassThrough {
+  statusCode = 0;
+  headers: Record<string, string | string[]> = {};
+
+  writeHead(
+    statusCode: number,
+    headersOrStatusText: string | Record<string, string | string[]>,
+    maybeHeaders?: Record<string, string | string[]>,
+  ): this {
+    this.statusCode = statusCode;
+    this.headers =
+      typeof headersOrStatusText === "string" ? (maybeHeaders ?? {}) : headersOrStatusText;
+    return this;
+  }
+}
+
+class DisconnectingNodeResponse extends Writable {
+  statusCode = 0;
+  headers: Record<string, string | string[]> = {};
+  writeCount = 0;
+
+  writeHead(
+    statusCode: number,
+    headersOrStatusText: string | Record<string, string | string[]>,
+    maybeHeaders?: Record<string, string | string[]>,
+  ): this {
+    this.statusCode = statusCode;
+    this.headers =
+      typeof headersOrStatusText === "string" ? (maybeHeaders ?? {}) : headersOrStatusText;
+    return this;
+  }
+
+  override _write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error) => void) {
+    this.writeCount += 1;
+    const error = new Error("client disconnected");
+    callback(error);
+    this.destroy(error);
+  }
+}
+
+function createStreamingBody(
+  chunks: Array<{ text: string; delayMs?: number }>,
+  onCancel?: () => void,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let canceled = false;
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const { text, delayMs } of chunks) {
+        if (delayMs) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        if (canceled) return;
+        controller.enqueue(encoder.encode(text));
+      }
+      controller.close();
+    },
+    cancel() {
+      canceled = true;
+      onCancel?.();
+    },
+  });
+}
+
+async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
+  body: string;
+  rawBody: Buffer;
+  headers: Record<string, string | string[]>;
+  statusCode: number;
+  firstDecodedMs: number;
+  endMs: number;
+}> {
+  const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+  // ReadableStream.start() begins running during construction, so start timing
+  // before creating the Response to include the full delayed chunk interval.
+  const startedAt = performance.now();
+
+  const response = new Response(
+    createStreamingBody([
+      { text: "<h1>Streaming SSR Test</h1><p>Loading delayed chunk...</p>" },
+      { text: "<p>Delayed stream content loaded</p>", delayMs: 250 },
+    ]),
+    {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    },
+  );
+
+  const req = {
+    method: "GET",
+    headers: { "accept-encoding": encoding },
+  };
+  const res = new CapturingNodeResponse();
+  const decoder = encoding === "br" ? zlib.createBrotliDecompress() : zlib.createGunzip();
+  const rawChunks: Buffer[] = [];
+  const decodedChunks: Buffer[] = [];
+  let firstDecodedMs = -1;
+
+  res.on("data", (chunk: Buffer) => {
+    rawChunks.push(Buffer.from(chunk));
+  });
+  res.on("error", () => {
+    /* ignore closed test stream noise */
+  });
+  decoder.on("data", (chunk: Buffer) => {
+    decodedChunks.push(Buffer.from(chunk));
+    if (firstDecodedMs === -1) {
+      firstDecodedMs = performance.now() - startedAt;
+    }
+  });
+  decoder.on("error", () => {
+    /* surfaced through finished(decoder) */
+  });
+  res.pipe(decoder);
+
+  await sendWebResponse(response, req as any, res as any, true);
+  await Promise.all([finished(res), finished(decoder)]);
+
+  return {
+    body: Buffer.concat(decodedChunks).toString("utf8"),
+    rawBody: Buffer.concat(rawChunks),
+    headers: res.headers,
+    statusCode: res.statusCode,
+    firstDecodedMs,
+    endMs: performance.now() - startedAt,
+  };
+}
 
 describe("parameterized redirects and rewrites", () => {
   let prServer: ViteDevServer;
@@ -3180,6 +3314,244 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(merged["x-custom"]).toBe("from-response");
   });
 
+  it("mergeWebResponse preserves the original body stream while applying header overrides", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello"));
+        controller.close();
+      },
+    });
+    const response = new Response(stream, {
+      status: 200,
+      headers: {
+        "content-type": "text/plain",
+        "x-custom": "from-response",
+      },
+    });
+
+    const merged = mergeWebResponse({ "x-custom": "from-middleware" }, response, 201);
+
+    expect(merged.status).toBe(201);
+    expect(merged.headers.get("x-custom")).toBe("from-response");
+    expect(merged.headers.get("content-type")).toBe("text/plain");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeWebResponse cancels discarded body streams for no-body statuses", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let started = false;
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          started = true;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (canceled) return;
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "5",
+        },
+      },
+    );
+
+    const merged = mergeWebResponse({}, response, 204);
+
+    expect(merged.status).toBe(204);
+    expect(merged.headers.get("content-type")).toBeNull();
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(await merged.text()).toBe("");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(started).toBe(true);
+    expect(canceled).toBe(true);
+  });
+
+  it("mergeWebResponse strips stale content-length only for tagged streamed Pages HTML", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": "1",
+        },
+      },
+    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    response.__vinextStreamedHtmlResponse = true;
+
+    const merged = mergeWebResponse({}, response);
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeWebResponse preserves content-length for untagged custom responses", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeWebResponse({ "x-custom-middleware": "active" }, response);
+
+    expect(merged.headers.get("content-length")).toBe("3");
+    expect(merged.headers.get("content-type")).toBe("application/octet-stream");
+    expect(merged.headers.get("x-custom-middleware")).toBe("active");
+
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  it("mergeWebResponse ignores middleware-only content-length overrides", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeWebResponse({ "content-length": "1" }, response);
+
+    expect(merged).toBe(response);
+    expect(merged.headers.get("content-length")).toBe("3");
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  for (const encoding of ["gzip", "br"] as const) {
+    it(`sendWebResponse streams ${encoding}-compressed HTML progressively`, async () => {
+      const result = await captureCompressedWebResponse(encoding);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.headers["Content-Encoding"]).toBe(encoding);
+      expect(String(result.headers["Vary"])).toContain("Accept-Encoding");
+      expect(result.headers["content-length"]).toBeUndefined();
+      expect(result.firstDecodedMs).toBeGreaterThanOrEqual(0);
+      expect(result.firstDecodedMs).toBeLessThan(250);
+      // The delayed chunk uses setTimeout(250ms); allow 50ms slack for JS timer imprecision in CI.
+      expect(result.endMs).toBeGreaterThanOrEqual(200);
+      expect(result.rawBody.byteLength).toBeGreaterThan(0);
+      expect(result.body).toContain("Streaming SSR Test");
+      expect(result.body).toContain("Loading delayed chunk...");
+      expect(result.body).toContain("Delayed stream content loaded");
+    });
+  }
+
+  it("sendWebResponse cancels streamed bodies for HEAD requests", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+        },
+      },
+    );
+
+    let status = 0;
+    let writtenHeaders: Record<string, string | string[]> = {};
+    let ended = false;
+    const req = {
+      method: "HEAD",
+      headers: { "accept-encoding": "br" },
+    };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk));
+    });
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+    status = res.statusCode;
+    writtenHeaders = res.headers;
+    ended = res.writableEnded;
+
+    expect(status).toBe(200);
+    expect(writtenHeaders["content-type"]).toBe("text/html; charset=utf-8");
+    expect(writtenHeaders["Content-Encoding"]).toBe("br");
+    expect(writtenHeaders["Vary"]).toContain("Accept-Encoding");
+    expect(ended).toBe(true);
+    expect(chunks).toEqual([]);
+    expect(canceled).toBe(true);
+  });
+
+  it("sendWebResponse cancels compressed streams on client disconnect", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let canceled = false;
+    const response = new Response(
+      createStreamingBody(
+        [
+          { text: "<h1>Streaming SSR Test</h1>" },
+          { text: "<p>Delayed stream content loaded</p>", delayMs: 150 },
+        ],
+        () => {
+          canceled = true;
+        },
+      ),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+        },
+      },
+    );
+
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "br" },
+    };
+    const res = new DisconnectingNodeResponse();
+    res.on("error", () => {
+      /* expected client disconnect */
+    });
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Content-Encoding"]).toBe("br");
+    expect(res.writeCount).toBeGreaterThan(0);
+    expect(canceled).toBe(true);
+  });
+
   it("sendCompressed passes array-valued Set-Cookie to writeHead", async () => {
     const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
 
@@ -3198,6 +3570,39 @@ describe("Set-Cookie header preservation in prod-server", () => {
 
     sendCompressed(req as any, res as any, "small body", "text/html", 200, extraHeaders, false);
     expect(writtenHeaders["set-cookie"]).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
+  it("sendCompressed replaces any existing content-type and content-length headers", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let writtenHeaders: Record<string, string | string[]> = {};
+    const req = { headers: {} };
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string | string[]>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(
+      req as any,
+      res as any,
+      "hello",
+      "application/json",
+      200,
+      {
+        "content-type": "text/plain",
+        "content-length": "999",
+        "x-custom": "active",
+      },
+      false,
+    );
+
+    expect(writtenHeaders["Content-Type"]).toBe("application/json");
+    expect(writtenHeaders["Content-Length"]).toBe("5");
+    expect(writtenHeaders["content-type"]).toBeUndefined();
+    expect(writtenHeaders["content-length"]).toBeUndefined();
+    expect(writtenHeaders["x-custom"]).toBe("active");
   });
 });
 

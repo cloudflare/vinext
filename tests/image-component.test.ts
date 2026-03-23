@@ -555,3 +555,97 @@ describe("onLoadingComplete prop", () => {
     expect(html).toContain('alt="remote"');
   });
 });
+
+// ─── Reproduction: priority prop on remote URL paths ────────────────────
+// Regression tests for:
+//   "Received `true` for a non-boolean attribute `priority`."
+// The bug: UnpicImage was receiving priority={true} and leaking it to the
+// DOM <img> element. priority is a Next.js concept; it must be translated to
+// loading="eager" and fetchPriority="high" before reaching the DOM.
+// Affected paths: remote URL with fill=true, and remote URL with width+height.
+
+describe("priority prop — no DOM leak on remote URL paths", () => {
+  it("does not render priority attribute on DOM img (remote URL + width/height)", () => {
+    // Reproduction: this used to emit `priority="true"` on the DOM element,
+    // triggering the React warning about non-boolean attribute.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority",
+        src: "https://images.unsplash.com/photo-1",
+        width: 800,
+        height: 600,
+        priority: true,
+      }),
+    );
+    expect(html).not.toContain("priority=");
+    expect(html).not.toContain('"priority"');
+  });
+
+  it("does not render priority attribute on DOM img (remote URL + fill)", () => {
+    // Reproduction: fill layout path also forwarded priority={true} to UnpicImage.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill priority",
+        src: "https://images.unsplash.com/photo-2",
+        fill: true,
+        priority: true,
+      }),
+    );
+    expect(html).not.toContain("priority=");
+    expect(html).not.toContain('"priority"');
+  });
+
+  it("renders loading=eager for remote URL + width/height when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority eager",
+        src: "https://images.unsplash.com/photo-3",
+        width: 400,
+        height: 300,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).not.toContain('loading="lazy"');
+  });
+
+  it("renders loading=eager for remote URL + fill when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill priority eager",
+        src: "https://images.unsplash.com/photo-4",
+        fill: true,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).not.toContain('loading="lazy"');
+  });
+
+  it("renders fetchPriority=high for remote URL + width/height when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority fetchpriority",
+        src: "https://images.unsplash.com/photo-5",
+        width: 400,
+        height: 300,
+        priority: true,
+      }),
+    );
+    expect(html).toContain("fetchPriority");
+    expect(html).toContain("high");
+  });
+
+  it("defaults to loading=lazy for remote URL when priority is unset", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote lazy",
+        src: "https://images.unsplash.com/photo-6",
+        width: 400,
+        height: 300,
+      }),
+    );
+    expect(html).toContain('loading="lazy"');
+    expect(html).not.toContain("priority=");
+  });
+});

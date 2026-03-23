@@ -656,6 +656,134 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(merged.headers.get("x-custom")).toBe("from-middleware");
   });
 
+  it("mergeHeaders drops the body for no-body middleware rewrite statuses", async () => {
+    for (const status of [204, 205, 304]) {
+      const response = new Response("body", {
+        status: 200,
+        headers: { "content-type": "text/plain", "content-length": "4" },
+      });
+
+      const merged = mergeHeaders(response, { "x-custom": "from-middleware" }, status);
+
+      expect(merged.status).toBe(status);
+      expect(merged.headers.get("x-custom")).toBe("from-middleware");
+      expect(merged.headers.get("content-type")).toBeNull();
+      expect(merged.headers.get("content-length")).toBeNull();
+      expect(await merged.text()).toBe("");
+    }
+  });
+
+  it("mergeHeaders cancels discarded body streams for no-body statuses", async () => {
+    let started = false;
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          started = true;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (canceled) return;
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "5",
+        },
+      },
+    );
+
+    const merged = mergeHeaders(response, { "x-custom": "from-middleware" }, 204);
+
+    expect(merged.status).toBe(204);
+    expect(merged.headers.get("content-type")).toBeNull();
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(await merged.text()).toBe("");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(started).toBe(true);
+    expect(canceled).toBe(true);
+  });
+
+  it("mergeHeaders strips stale content-length only for tagged streamed Pages HTML", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": "1",
+        },
+      },
+    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    response.__vinextStreamedHtmlResponse = true;
+
+    const merged = mergeHeaders(response, { "x-custom": "from-middleware" });
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeHeaders strips middleware-provided content-length for untagged responses", async () => {
+    const response = new Response("body", {
+      status: 200,
+      headers: {
+        "content-type": "text/plain",
+      },
+    });
+
+    const merged = mergeHeaders(response, {
+      "content-length": "1",
+      "x-custom": "from-middleware",
+    });
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/plain");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    expect(await merged.text()).toBe("body");
+  });
+
+  it("mergeHeaders preserves response content-length over middleware content-length for untagged custom responses", async () => {
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeHeaders(response, {
+      "content-length": "1",
+      "x-custom": "from-middleware",
+    });
+
+    expect(merged.headers.get("content-length")).toBe("3");
+    expect(merged.headers.get("content-type")).toBe("application/octet-stream");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("NO_BODY_RESPONSE_STATUSES");
+    expect(content).toContain("__vinextStreamedHtmlResponse");
+    expect(content).toContain('merged.delete("content-length")');
+    expect(content).toContain("if (isContentLengthHeader(k)) continue;");
+    expect(content).toContain("cancelResponseBody(response)");
+  });
+
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = generatePagesRouterWorkerEntry();
     // Worker entry must import applyMiddlewareRequestHeaders from config-matchers

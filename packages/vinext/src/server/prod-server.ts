@@ -50,6 +50,7 @@ import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
+import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -113,18 +114,26 @@ function negotiateEncoding(req: IncomingMessage): "br" | "gzip" | "deflate" | nu
  */
 function createCompressor(
   encoding: "br" | "gzip" | "deflate",
+  mode: "default" | "streaming" = "default",
 ): zlib.BrotliCompress | zlib.Gzip | zlib.Deflate {
   switch (encoding) {
     case "br":
       return zlib.createBrotliCompress({
+        ...(mode === "streaming" ? { flush: zlib.constants.BROTLI_OPERATION_FLUSH } : {}),
         params: {
           [zlib.constants.BROTLI_PARAM_QUALITY]: 4, // Fast compression (1-11, 4 is a good balance)
         },
       });
     case "gzip":
-      return zlib.createGzip({ level: 6 }); // Default level, good balance
+      return zlib.createGzip({
+        level: 6,
+        ...(mode === "streaming" ? { flush: zlib.constants.Z_SYNC_FLUSH } : {}),
+      }); // Default level, good balance
     case "deflate":
-      return zlib.createDeflate({ level: 6 });
+      return zlib.createDeflate({
+        level: 6,
+        ...(mode === "streaming" ? { flush: zlib.constants.Z_SYNC_FLUSH } : {}),
+      });
   }
 }
 
@@ -157,6 +166,123 @@ function mergeResponseHeaders(
   return merged;
 }
 
+function toWebHeaders(headersRecord: Record<string, string | string[]>): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(headersRecord)) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(key, item);
+    } else {
+      headers.set(key, value);
+    }
+  }
+  return headers;
+}
+
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
+
+function hasHeader(headersRecord: Record<string, string | string[]>, name: string): boolean {
+  const target = name.toLowerCase();
+  return Object.keys(headersRecord).some((key) => key.toLowerCase() === target);
+}
+
+function omitHeadersCaseInsensitive(
+  headersRecord: Record<string, string | string[]>,
+  names: readonly string[],
+): Record<string, string | string[]> {
+  const targets = new Set(names.map((name) => name.toLowerCase()));
+  const filtered: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(headersRecord)) {
+    if (targets.has(key.toLowerCase())) continue;
+    filtered[key] = value;
+  }
+  return filtered;
+}
+
+function stripHeaders(
+  headersRecord: Record<string, string | string[]>,
+  names: readonly string[],
+): void {
+  const targets = new Set(names.map((name) => name.toLowerCase()));
+  for (const key of Object.keys(headersRecord)) {
+    if (targets.has(key.toLowerCase())) delete headersRecord[key];
+  }
+}
+
+function isNoBodyResponseStatus(status: number): boolean {
+  return NO_BODY_RESPONSE_STATUSES.has(status);
+}
+
+function cancelResponseBody(response: Response): void {
+  const body = response.body;
+  if (!body || body.locked) return;
+  void body.cancel().catch(() => {
+    /* ignore cancellation failures on discarded bodies */
+  });
+}
+
+type ResponseWithVinextStreamingMetadata = Response & {
+  __vinextStreamedHtmlResponse?: boolean;
+};
+
+function isVinextStreamedHtmlResponse(response: Response): boolean {
+  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
+}
+
+/**
+ * Merge middleware/config headers and an optional status override into a new
+ * Web Response while preserving the original body stream when allowed.
+ * Keep this in sync with server/worker-utils.ts and the generated copy in
+ * deploy.ts.
+ */
+function mergeWebResponse(
+  middlewareHeaders: Record<string, string | string[]>,
+  response: Response,
+  statusOverride?: number,
+): Response {
+  const filteredMiddlewareHeaders = omitHeadersCaseInsensitive(middlewareHeaders, [
+    "content-length",
+  ]);
+  const status = statusOverride ?? response.status;
+  const mergedHeaders = mergeResponseHeaders(filteredMiddlewareHeaders, response);
+  const shouldDropBody = isNoBodyResponseStatus(status);
+  const shouldStripStreamLength =
+    isVinextStreamedHtmlResponse(response) && hasHeader(mergedHeaders, "content-length");
+
+  if (
+    !Object.keys(filteredMiddlewareHeaders).length &&
+    statusOverride === undefined &&
+    !shouldDropBody &&
+    !shouldStripStreamLength
+  ) {
+    return response;
+  }
+
+  if (shouldDropBody) {
+    cancelResponseBody(response);
+    stripHeaders(mergedHeaders, [
+      "content-encoding",
+      "content-length",
+      "content-type",
+      "transfer-encoding",
+    ]);
+    return new Response(null, {
+      status,
+      statusText: status === response.status ? response.statusText : undefined,
+      headers: toWebHeaders(mergedHeaders),
+    });
+  }
+
+  if (shouldStripStreamLength) {
+    stripHeaders(mergedHeaders, ["content-length"]);
+  }
+
+  return new Response(response.body, {
+    status,
+    statusText: status === response.status ? response.statusText : undefined,
+    headers: toWebHeaders(mergedHeaders),
+  });
+}
+
 /**
  * Send a compressed response if the content type is compressible and the
  * client supports compression. Otherwise send uncompressed.
@@ -174,6 +300,10 @@ function sendCompressed(
   const buf = typeof body === "string" ? Buffer.from(body) : body;
   const baseType = contentType.split(";")[0].trim();
   const encoding = compress ? negotiateEncoding(req) : null;
+  const headersWithoutBodyHeaders = omitHeadersCaseInsensitive(extraHeaders, [
+    "content-length",
+    "content-type",
+  ]);
 
   const writeHead = (headers: Record<string, string | string[]>) => {
     if (statusText) {
@@ -200,7 +330,7 @@ function sendCompressed(
       varyValue = "Accept-Encoding";
     }
     writeHead({
-      ...extraHeaders,
+      ...headersWithoutBodyHeaders,
       "Content-Type": contentType,
       "Content-Encoding": encoding,
       Vary: varyValue,
@@ -210,11 +340,8 @@ function sendCompressed(
       /* ignore pipeline errors on closed connections */
     });
   } else {
-    // Strip any pre-existing content-length (from the Web Response constructor)
-    // before setting our own — avoids duplicate Content-Length headers.
-    const { "content-length": _cl, "Content-Length": _CL, ...headersWithoutLength } = extraHeaders;
     writeHead({
-      ...headersWithoutLength,
+      ...headersWithoutBodyHeaders,
       "Content-Type": contentType,
       "Content-Length": String(buf.length),
     });
@@ -494,6 +621,7 @@ async function sendWebResponse(
 
   // HEAD requests: send headers only, skip the body
   if (req.method === "HEAD") {
+    cancelResponseBody(webResponse);
     res.end();
     return;
   }
@@ -503,7 +631,9 @@ async function sendWebResponse(
   const nodeStream = Readable.fromWeb(webResponse.body as import("stream/web").ReadableStream);
 
   if (shouldCompress) {
-    const compressor = createCompressor(encoding!);
+    // Use streaming flush modes so progressive HTML remains decodable before the
+    // full response completes.
+    const compressor = createCompressor(encoding!, "streaming");
     pipeline(nodeStream, compressor, res, () => {
       /* ignore pipeline errors on closed connections */
     });
@@ -639,6 +769,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
   const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
+
+  // Seed the memory cache with pre-rendered routes so the first request to
+  // any pre-rendered page is a cache HIT instead of a full re-render.
+  const seededRoutes = await seedMemoryCacheFromPrerender(path.dirname(rscEntryPath));
+  if (seededRoutes > 0) {
+    console.log(
+      `[vinext] Seeded ${seededRoutes} pre-rendered route${seededRoutes !== 1 ? "s" : ""} into memory cache`,
+    );
+  }
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
@@ -1203,23 +1342,31 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           response = new Response("404 - API route not found", { status: 404 });
         }
 
-        // Merge middleware + config headers into the response
-        const responseBody = Buffer.from(await response.arrayBuffer());
+        const mergedResponse = mergeWebResponse(
+          middlewareHeaders,
+          response,
+          middlewareRewriteStatus,
+        );
+
+        if (!mergedResponse.body) {
+          await sendWebResponse(mergedResponse, req, res, compress);
+          return;
+        }
+
+        const responseBody = Buffer.from(await mergedResponse.arrayBuffer());
         // API routes may return arbitrary data (JSON, binary, etc.), so
         // default to application/octet-stream rather than text/html when
         // the handler doesn't set an explicit Content-Type.
-        const ct = response.headers.get("content-type") ?? "application/octet-stream";
-        const responseHeaders = mergeResponseHeaders(middlewareHeaders, response);
-        const finalStatus = middlewareRewriteStatus ?? response.status;
-        const finalStatusText =
-          finalStatus === response.status ? response.statusText || undefined : undefined;
+        const ct = mergedResponse.headers.get("content-type") ?? "application/octet-stream";
+        const responseHeaders = mergeResponseHeaders({}, mergedResponse);
+        const finalStatusText = mergedResponse.statusText || undefined;
 
         sendCompressed(
           req,
           res,
           responseBody,
           ct,
-          finalStatus,
+          mergedResponse.status,
           responseHeaders,
           compress,
           finalStatusText,
@@ -1270,20 +1417,26 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         return;
       }
 
-      // Merge middleware + config headers into the response
-      const responseBody = Buffer.from(await response.arrayBuffer());
-      const ct = response.headers.get("content-type") ?? "text/html";
-      const responseHeaders = mergeResponseHeaders(middlewareHeaders, response);
-      const finalStatus = middlewareRewriteStatus ?? response.status;
-      const finalStatusText =
-        finalStatus === response.status ? response.statusText || undefined : undefined;
+      // Capture the streaming marker before mergeWebResponse rebuilds the Response.
+      const shouldStreamPagesResponse = isVinextStreamedHtmlResponse(response);
+      const mergedResponse = mergeWebResponse(middlewareHeaders, response, middlewareRewriteStatus);
+
+      if (shouldStreamPagesResponse || !mergedResponse.body) {
+        await sendWebResponse(mergedResponse, req, res, compress);
+        return;
+      }
+
+      const responseBody = Buffer.from(await mergedResponse.arrayBuffer());
+      const ct = mergedResponse.headers.get("content-type") ?? "text/html";
+      const responseHeaders = mergeResponseHeaders({}, mergedResponse);
+      const finalStatusText = mergedResponse.statusText || undefined;
 
       sendCompressed(
         req,
         res,
         responseBody,
         ct,
-        finalStatus,
+        mergedResponse.status,
         responseHeaders,
         compress,
         finalStatusText,
@@ -1314,6 +1467,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 // Export helpers for testing
 export {
   sendCompressed,
+  sendWebResponse,
   negotiateEncoding,
   COMPRESSIBLE_TYPES,
   COMPRESS_THRESHOLD,
@@ -1322,4 +1476,5 @@ export {
   trustProxy,
   nodeToWebRequest,
   mergeResponseHeaders,
+  mergeWebResponse,
 };

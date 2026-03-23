@@ -4,5 +4,5 @@ export {
   getSSRFontLinks,
   getSSRFontStyles,
   getSSRFontPreloads,
+  createFontLoader,
 } from "./font-google-base";
-export * from "./font-google.generated";

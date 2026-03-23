@@ -16,7 +16,7 @@ jobs:
     outputs:
       repos: ${{ steps.read.outputs.repos }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: read
         run: echo "repos=$(jq -c . .github/repos.json)" >> "$GITHUB_OUTPUT"
 
@@ -41,7 +41,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1

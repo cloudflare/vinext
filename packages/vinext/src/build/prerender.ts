@@ -51,6 +51,8 @@ export type PrerenderRouteResult =
        * Omitted for non-dynamic routes where pattern === path.
        */
       path?: string;
+      /** Which router produced this route. Used by cache seeding. */
+      router: "app" | "pages";
     }
   | {
       route: string;
@@ -586,6 +588,7 @@ export async function prerenderPages({
             status: "rendered",
             outputFiles,
             revalidate,
+            router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
         } catch (e) {
@@ -619,6 +622,7 @@ export async function prerenderPages({
             status: "rendered",
             outputFiles: ["404.html"],
             revalidate: false,
+            router: "pages",
           });
         }
       } catch {
@@ -627,7 +631,11 @@ export async function prerenderPages({
     }
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
-    if (!skipManifest) writePrerenderIndex(results, manifestDir);
+    if (!skipManifest)
+      writePrerenderIndex(results, manifestDir, {
+        buildId: config.buildId,
+        trailingSlash: config.trailingSlash,
+      });
 
     return { routes: results };
   } finally {
@@ -1045,6 +1053,7 @@ export async function prerenderApp({
           status: "rendered",
           outputFiles,
           revalidate,
+          router: "app",
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
         };
       } catch (e) {
@@ -1090,6 +1099,7 @@ export async function prerenderApp({
           status: "rendered",
           outputFiles: ["404.html"],
           revalidate: false,
+          router: "app",
         });
       }
     } catch {
@@ -1097,7 +1107,11 @@ export async function prerenderApp({
     }
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
-    if (!skipManifest) writePrerenderIndex(results, manifestDir);
+    if (!skipManifest)
+      writePrerenderIndex(results, manifestDir, {
+        buildId: config.buildId,
+        trailingSlash: config.trailingSlash,
+      });
 
     return { routes: results };
   } finally {
@@ -1124,10 +1138,16 @@ export function getRscOutputPath(urlPath: string): string {
 /**
  * Write `vinext-prerender.json` to `outDir`.
  *
- * This is a minimal flat list of route results used during testing and as a
- * seed for future ISR cache population. Not consumed by the production server.
+ * Contains a flat list of route results used during testing and as a seed for
+ * ISR cache population at production startup. The `buildId` is included so
+ * the seeding function can construct matching cache keys.
  */
-export function writePrerenderIndex(routes: PrerenderRouteResult[], outDir: string): void {
+export function writePrerenderIndex(
+  routes: PrerenderRouteResult[],
+  outDir: string,
+  options?: { buildId?: string; trailingSlash?: boolean },
+): void {
+  const { buildId, trailingSlash } = options ?? {};
   // Produce a stripped-down version for the index (omit outputFiles detail)
   const indexRoutes = routes.map((r) => {
     if (r.status === "rendered") {
@@ -1135,6 +1155,7 @@ export function writePrerenderIndex(routes: PrerenderRouteResult[], outDir: stri
         route: r.route,
         status: r.status,
         revalidate: r.revalidate,
+        router: r.router,
         ...(r.path ? { path: r.path } : {}),
       };
     }
@@ -1144,7 +1165,11 @@ export function writePrerenderIndex(routes: PrerenderRouteResult[], outDir: stri
     return { route: r.route, status: r.status, error: r.error };
   });
 
-  const index = { routes: indexRoutes };
+  const index = {
+    ...(buildId ? { buildId } : {}),
+    ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
+    routes: indexRoutes,
+  };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),
     JSON.stringify(index, null, 2),

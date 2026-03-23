@@ -26,6 +26,13 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  if (url.pathname === "/middleware-bad-content-length") {
+    const res = NextResponse.rewrite(new URL("/streaming-ssr", request.url));
+    res.headers.set("content-length", "1");
+    res.headers.set("x-custom-middleware", "active");
+    return res;
+  }
+
   if (url.pathname === "/headers-before-middleware-rewrite") {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }

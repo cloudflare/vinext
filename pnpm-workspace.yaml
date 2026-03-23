@@ -83,3 +83,15 @@ peerDependencyRules:
   allowedVersions:
     vite: "*"
     vitest: "*"
+  ignoreMissing:
+    - next
+    - webpack
+    - rollup
+
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - sharp
+  - workerd
+  - "@parcel/watcher"
+  - "@swc/core"

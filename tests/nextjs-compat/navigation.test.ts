@@ -23,6 +23,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
+const NOINDEX_META_TAG_RE =
+  /<meta[^>]*(?:name="robots"[^>]*content="noindex"|content="noindex"[^>]*name="robots")[^>]*>/;
+
 describe("Next.js compat: navigation", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -66,7 +69,7 @@ describe("Next.js compat: navigation", () => {
   it("404 page contains noindex meta tag", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/nav-notfound-server`);
     const html = await res.text();
-    expect(html).toMatch(/meta\s+name="robots"\s+content="noindex"/);
+    expect(html).toMatch(NOINDEX_META_TAG_RE);
   });
 
   // ── SEO: noindex for non-existent routes ─────────────────────
@@ -77,7 +80,7 @@ describe("Next.js compat: navigation", () => {
     const res = await fetch(`${baseUrl}/this-route-definitely-does-not-exist`);
     expect(res.status).toBe(404);
     const html = await res.text();
-    expect(html).toMatch(/meta\s+name="robots"\s+content="noindex"/);
+    expect(html).toMatch(NOINDEX_META_TAG_RE);
   });
 
   // ── Browser-only tests (documented, not ported) ──────────────

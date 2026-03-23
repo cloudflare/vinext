@@ -490,7 +490,7 @@ describe("validator", () => {
   let fetchPage: (pathname: string) => Promise<{ html: string; status: number }>;
 
   beforeAll(async () => {
-    const fixture = await startFixture("validator", 4405);
+    const fixture = await startFixture("validator", 4406);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
   }, STARTUP_TIMEOUT_MS);

@@ -19,21 +19,60 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin (needed for benchmark workspace type resolution)
         run: vp run build
       - run: vp run check
 
-  test:
-    name: Vitest
+  test-unit:
+    name: Vitest (unit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
-      - name: Build plugin (needed by ecosystem fixtures)
+      - run: vp test run --project unit
+
+  test-integration:
+    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3]
+        shardTotal: [3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
         run: vp run build
-      - run: vp run test
+      - run: vp test run --project integration --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+        env:
+          CI: true
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: .vitest-reports/*
+          include-hidden-files: true
+          retention-days: 1
+
+  test-integration-merge:
+    name: Vitest (integration report)
+    if: ${{ !cancelled() }}
+    needs: [test-integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/download-artifact@v7
+        with:
+          path: .vitest-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      - run: vp test run --merge-reports
+        env:
+          CI: true
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
@@ -43,7 +82,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
         run: vp run build
@@ -100,13 +139,13 @@ jobs:
           - cloudflare-dev
           - cloudflare-pages-router-dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
         run: vp run build
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
@@ -118,9 +157,22 @@ jobs:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}
           path: playwright-report/
           retention-days: 7
+
+  ci:
+    name: CI
+    if: ${{ always() }}
+    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: echo "All checks passed"
+      - name: Some checks failed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

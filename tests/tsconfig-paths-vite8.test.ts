@@ -77,6 +77,101 @@ describe("Vite tsconfig paths support", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("materializes simple tsconfig path aliases into resolve.alias on Vite 8", async () => {
+    const root = setupProject({ name: "vite", version: "8.0.0" });
+    process.chdir(root);
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            baseUrl: ".",
+            paths: {
+              "@/*": ["./*"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const plugins = vinext({ appDir: root });
+    const configPlugin = findNamedPlugin(plugins, "vinext:config") as {
+      config?: (
+        config: { root: string },
+        env: { command: "serve"; mode: string },
+      ) => Promise<{
+        resolve?: Record<string, unknown>;
+      }>;
+    };
+    const resolvedConfig = await configPlugin.config?.(
+      { root },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(resolvedConfig?.resolve?.alias).toEqual(
+      expect.objectContaining({
+        "@": "/",
+      }),
+    );
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("materializes path aliases inherited via tsconfig extends on Vite 8", async () => {
+    const root = setupProject({ name: "vite", version: "8.0.0" });
+    process.chdir(root);
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "tsconfig.base.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            baseUrl: ".",
+            paths: {
+              "@/*": ["src/*"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify(
+        {
+          extends: "./tsconfig.base.json",
+        },
+        null,
+        2,
+      ),
+    );
+
+    const plugins = vinext({ appDir: root });
+    const configPlugin = findNamedPlugin(plugins, "vinext:config") as {
+      config?: (
+        config: { root: string },
+        env: { command: "serve"; mode: string },
+      ) => Promise<{
+        resolve?: Record<string, unknown>;
+      }>;
+    };
+    const resolvedConfig = await configPlugin.config?.(
+      { root },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(resolvedConfig?.resolve?.alias).toEqual(
+      expect.objectContaining({
+        "@": "/src",
+      }),
+    );
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("does not override user-defined resolve.tsconfigPaths on Vite 8", async () => {
     const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);

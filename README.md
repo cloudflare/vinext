@@ -480,12 +480,14 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 
 ### Configuration
 
-| Feature                                          |     | Notes                                                               |
-| ------------------------------------------------ | --- | ------------------------------------------------------------------- |
-| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                    |
-| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation                                     |
-| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined |
-| `images` config                                  | 🟡  | Parsed but not used for optimization                                |
+| Feature                                          |     | Notes                                                                                                                                                                                                                  |
+| ------------------------------------------------ | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                                                                                                                                                                       |
+| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation                                                                                                                                                                                        |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined                                                                                                                                                    |
+| `images` config                                  | 🟡  | Parsed but not used for optimization                                                                                                                                                                                   |
+| `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list. |
+| `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                      |
 
 ### Environment variable loading (`.env*`)
 

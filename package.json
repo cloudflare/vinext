@@ -35,24 +35,5 @@
     "vite-plus": "catalog:",
     "vitest": "catalog:"
   },
-  "packageManager": "pnpm@10.30.0",
-  "pnpm": {
-    "overrides": {
-      "rollup": "^4.59.0"
-    },
-    "peerDependencyRules": {
-      "ignoreMissing": [
-        "next",
-        "webpack"
-      ]
-    },
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "sharp",
-      "workerd",
-      "@parcel/watcher",
-      "@swc/core"
-    ]
-  }
+  "packageManager": "pnpm@10.32.1"
 }

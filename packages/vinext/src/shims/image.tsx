@@ -279,7 +279,12 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           src={src}
           alt={alt}
           layout="fullWidth"
-          priority={priority}
+          // `priority` is a Next.js concept — translate it to HTML attributes so
+          // it is never forwarded to the DOM as a non-boolean attribute, which
+          // would trigger React's "Received `true` for a non-boolean attribute"
+          // warning.
+          loading={priority ? "eager" : (loading ?? "lazy")}
+          fetchPriority={priority ? "high" : undefined}
           sizes={sizes}
           className={className}
           background={bg}
@@ -296,7 +301,9 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           width={imgWidth}
           height={imgHeight}
           layout="constrained"
-          priority={priority}
+          // Same translation as above — never pass `priority` to the DOM.
+          loading={priority ? "eager" : (loading ?? "lazy")}
+          fetchPriority={priority ? "high" : undefined}
           sizes={sizes}
           className={className}
           background={bg}
