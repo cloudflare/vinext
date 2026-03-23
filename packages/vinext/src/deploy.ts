@@ -60,8 +60,6 @@ export interface DeployOptions {
   tprWindow?: number;
   /** Disable automatic KV population with pre-rendered pages */
   noPopulateKv?: boolean;
-  /** KVCacheHandler appPrefix for KV key construction */
-  appPrefix?: string;
 }
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
@@ -80,7 +78,6 @@ const deployArgOptions = {
   "tpr-limit": { type: "string" },
   "tpr-window": { type: "string" },
   "no-populate-kv": { type: "boolean", default: false },
-  "app-prefix": { type: "string" },
 } as const;
 
 export function parseDeployArgs(args: string[]) {
@@ -109,7 +106,6 @@ export function parseDeployArgs(args: string[]) {
     tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
     tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
     noPopulateKv: values["no-populate-kv"],
-    appPrefix: values["app-prefix"]?.trim() || undefined,
   };
 }
 

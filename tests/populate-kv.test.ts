@@ -392,7 +392,7 @@ describe("populateKV", () => {
     writeManifest({
       buildId: "b1",
       trailingSlash: false,
-      routes: [{ route: "/about", status: "rendered", revalidate: 60 }],
+      routes: [{ route: "/about", status: "rendered", router: "app", revalidate: 60 }],
     });
     writeHtml("about.html", "<h1>About</h1>");
     writeRsc("about.rsc", "rsc-about-data");
@@ -432,7 +432,7 @@ describe("populateKV", () => {
       trailingSlash: false,
       routes: [
         { route: "/dynamic/[id]", status: "skipped", reason: "dynamic" },
-        { route: "/about", status: "rendered", revalidate: 60 },
+        { route: "/about", status: "rendered", router: "app", revalidate: 60 },
       ],
     });
     writeHtml("about.html", "<h1>About</h1>");
@@ -453,11 +453,66 @@ describe("populateKV", () => {
     expect(result.entriesUploaded).toBe(1);
   });
 
+  it("skips Pages Router routes", async () => {
+    writeManifest({
+      buildId: "b1",
+      trailingSlash: false,
+      routes: [
+        { route: "/pages-about", status: "rendered", router: "pages", revalidate: 60 },
+        { route: "/app-about", status: "rendered", router: "app", revalidate: 60 },
+      ],
+    });
+    writeHtml("pages-about.html", "<p>pages</p>");
+    writeHtml("app-about.html", "<p>app</p>");
+
+    const uploadedPairs: KVBulkPair[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = parseFetchBody(init);
+      uploadedPairs.push(...body);
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    });
+
+    const result = await populateKV({
+      root: tmpDir,
+      accountId: "acc",
+      namespaceId: "ns",
+      apiToken: "tok",
+    });
+
+    // Only the app route should be processed
+    expect(result.routesProcessed).toBe(1);
+    expect(result.entriesUploaded).toBe(1);
+    expect(uploadedPairs[0].key).toBe("cache:app:b1:/app-about:html");
+  });
+
+  it("skips routes without router field", async () => {
+    writeManifest({
+      buildId: "b1",
+      trailingSlash: false,
+      routes: [{ route: "/legacy", status: "rendered", revalidate: 60 }],
+    });
+    writeHtml("legacy.html", "<p>legacy</p>");
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const result = await populateKV({
+      root: tmpDir,
+      accountId: "acc",
+      namespaceId: "ns",
+      apiToken: "tok",
+    });
+
+    expect(result.routesProcessed).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("skips routes with missing HTML file", async () => {
     writeManifest({
       buildId: "b1",
       trailingSlash: false,
-      routes: [{ route: "/ghost", status: "rendered", revalidate: 60 }],
+      routes: [{ route: "/ghost", status: "rendered", router: "app", revalidate: 60 }],
     });
     // No HTML or RSC files written
 
@@ -483,8 +538,8 @@ describe("populateKV", () => {
       buildId: "b1",
       trailingSlash: false,
       routes: [
-        { route: "/with-rsc", status: "rendered", revalidate: 30 },
-        { route: "/no-rsc", status: "rendered", revalidate: 30 },
+        { route: "/with-rsc", status: "rendered", router: "app", revalidate: 30 },
+        { route: "/no-rsc", status: "rendered", router: "app", revalidate: 30 },
       ],
     });
     writeHtml("with-rsc.html", "<p>with rsc</p>");
@@ -514,7 +569,15 @@ describe("populateKV", () => {
     writeManifest({
       buildId: "b1",
       trailingSlash: false,
-      routes: [{ route: "/blog/[slug]", status: "rendered", revalidate: 60, path: "/blog/hello" }],
+      routes: [
+        {
+          route: "/blog/[slug]",
+          status: "rendered",
+          router: "app",
+          revalidate: 60,
+          path: "/blog/hello",
+        },
+      ],
     });
     writeHtml("blog/hello.html", "<p>Hello post</p>");
     writeRsc("blog/hello.rsc", "rsc-hello");
@@ -554,7 +617,7 @@ describe("populateKV", () => {
 
   it("returns skipped when manifest has no buildId", async () => {
     writeManifest({
-      routes: [{ route: "/about", status: "rendered", revalidate: 60 }],
+      routes: [{ route: "/about", status: "rendered", router: "app", revalidate: 60 }],
     });
 
     const result = await populateKV({
@@ -571,7 +634,7 @@ describe("populateKV", () => {
     writeManifest({
       buildId: "b1",
       trailingSlash: true,
-      routes: [{ route: "/about", status: "rendered", revalidate: 60 }],
+      routes: [{ route: "/about", status: "rendered", router: "app", revalidate: 60 }],
     });
     // With trailingSlash, getOutputPath produces about/index.html
     writeHtml("about/index.html", "<h1>About</h1>");

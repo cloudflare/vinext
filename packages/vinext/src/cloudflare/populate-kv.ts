@@ -228,6 +228,8 @@ interface PrerenderManifestRoute {
   status: string;
   revalidate?: number | false;
   path?: string;
+  /** Router type — only "app" routes are seeded (Pages Router has a different key/value schema). */
+  router?: "app" | "pages";
 }
 
 interface PrerenderManifest {
@@ -289,6 +291,10 @@ export async function populateKV(options: PopulateKVOptions): Promise<PopulateKV
 
   for (const route of manifest.routes) {
     if (route.status !== "rendered") continue;
+    // Only seed App Router routes — Pages Router uses different keys (pages:...)
+    // and a different value shape (kind: "PAGES"). The router field is set by
+    // PR #653's enriched manifest; routes without it are skipped defensively.
+    if (route.router !== "app") continue;
 
     const pathname = route.path ?? route.route;
     const htmlFile = path.join(prerenderDir, getOutputPath(pathname, trailingSlash));
