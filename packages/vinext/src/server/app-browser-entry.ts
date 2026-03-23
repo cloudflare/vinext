@@ -64,14 +64,17 @@ type NavigationKind = "navigate" | "traverse" | "refresh";
 type HistoryUpdateMode = "push" | "replace";
 interface VisitedResponseCacheEntry {
   params: Record<string, string | string[]>;
+  createdAt: number;
   regularExpiresAt: number;
   response: Awaited<ReturnType<typeof snapshotRscResponse>>;
 }
 
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
+const TRAVERSE_MAX_STALENESS = 5 * 60_000; // 5 minutes for back/forward
 const VISITED_RESPONSE_CACHE_TTL = 30_000;
 
 let nextNavigationRenderId = 0;
+let activeNavigationId = 0;
 const pendingNavigationCommits = new Map<number, () => void>();
 const pendingNavigationPrePaintEffects = new Map<number, () => void>();
 let setBrowserTreeState: Dispatch<SetStateAction<BrowserTreeState>> | null = null;
@@ -185,6 +188,12 @@ function getVisitedResponse(
   }
 
   if (navigationKind === "traverse") {
+    // Back/forward bypasses the regular TTL for instant navigation,
+    // but still enforces a max staleness to avoid serving very old data.
+    if (Date.now() - cached.createdAt > TRAVERSE_MAX_STALENESS) {
+      visitedResponseCache.delete(rscUrl);
+      return null;
+    }
     return cached;
   }
 
@@ -207,6 +216,7 @@ function storeVisitedResponseSnapshot(
   evictVisitedResponseCacheIfNeeded();
   visitedResponseCache.set(rscUrl, {
     params,
+    createdAt: now,
     regularExpiresAt: now + VISITED_RESPONSE_CACHE_TTL,
     response: snapshot,
   });
@@ -333,6 +343,11 @@ function restoreHydrationNavigationContext(
   });
 }
 
+// Simplified scroll restoration for App Router popstate. The full version
+// in navigation.ts waits for __VINEXT_RSC_PENDING__ (needed for Pages Router
+// where the popstate listener runs before the RSC handler). Here, the
+// popstate handler awaits __VINEXT_RSC_NAVIGATE__ first, so scroll
+// restoration runs after the new content is rendered.
 function restorePopstateScrollPosition(state: unknown): void {
   if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
     return;
@@ -408,8 +423,6 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
 
 function registerServerActionCallback(): void {
   setServerCallback(async (id, args) => {
-    clearClientNavigationCaches();
-
     const temporaryReferences = createTemporaryReferenceSet();
     const body = await encodeReply(args, { temporaryReferences });
 
@@ -449,6 +462,12 @@ function registerServerActionCallback(): void {
       Promise.resolve(fetchResponse),
       { temporaryReferences },
     );
+
+    // Clear navigation caches after the action succeeds — server actions
+    // may have mutated data, making cached responses stale. We clear here
+    // (not before the fetch) so failed actions don't unnecessarily
+    // invalidate valid caches.
+    clearClientNavigationCaches();
 
     if (isServerActionResult(result)) {
       updateBrowserTree(
@@ -512,6 +531,10 @@ async function main(): Promise<void> {
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
+      // Assign a unique ID for this navigation. If a newer navigation starts
+      // before this one finishes (rapid clicks), we bail out after await
+      // points to avoid pushing stale URLs to history.
+      const navId = ++activeNavigationId;
       // Use startTransition for same-route navigations (searchParam changes)
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
@@ -554,6 +577,9 @@ async function main(): Promise<void> {
           credentials: "include",
         });
       }
+
+      // Bail out if a newer navigation started while we were fetching.
+      if (navId !== activeNavigationId) return;
 
       const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
       const requestedUrl = new URL(rscUrl, window.location.origin);
