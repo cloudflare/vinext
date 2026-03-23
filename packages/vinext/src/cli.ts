@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { getClientBuildOptionsWithInput, getViteMajorVersion } from "./index.js";
+import vinext, { getClientBuildOptions, getViteMajorVersion } from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
@@ -466,7 +466,7 @@ async function buildApp() {
             outDir: "dist/client",
             manifest: true,
             ssrManifest: true,
-            ...getClientBuildOptionsWithInput(viteMajorVersion, {
+            ...getClientBuildOptions(viteMajorVersion, {
               index: "virtual:vinext-client-entry",
             }),
           },

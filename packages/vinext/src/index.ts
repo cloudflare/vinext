@@ -648,50 +648,15 @@ function getClientTreeshakeConfig(viteVersion: number): {
 /**
  * Get build options config for client builds, version-gated for Vite 8/Rolldown.
  * Vite 7 uses build.rollupOptions, Vite 8+ uses build.rolldownOptions.
+ * @param viteVersion - Vite major version
+ * @param input - Optional input config for custom entry points
  */
-function getClientBuildOptions(viteVersion: number): {
-  rollupOptions?: {
-    input?: Record<string, string>;
-    output: {
-      manualChunks: typeof clientManualChunks;
-      experimentalMinChunkSize?: number;
-    };
-    treeshake: { preset?: "recommended"; moduleSideEffects: "no-external" };
-  };
-  rolldownOptions?: {
-    input?: Record<string, string>;
-    output: { manualChunks: typeof clientManualChunks };
-    treeshake: { moduleSideEffects: "no-external" };
-  };
-} {
-  if (viteVersion >= 8) {
-    // Vite 8+ uses Rolldown - config goes under rolldownOptions
-    return {
-      rolldownOptions: {
-        output: getClientOutputConfig(viteVersion),
-        treeshake: getClientTreeshakeConfig(viteVersion),
-      },
-    };
-  }
-  // Vite 7 uses Rollup - config goes under rollupOptions
-  return {
-    rollupOptions: {
-      output: getClientOutputConfig(viteVersion),
-      treeshake: getClientTreeshakeConfig(viteVersion),
-    },
-  };
-}
-
-/**
- * Get build options config for client builds with custom input, version-gated for Vite 8/Rolldown.
- * Vite 7 uses build.rollupOptions, Vite 8+ uses build.rolldownOptions.
- */
-function getClientBuildOptionsWithInput(
+function getClientBuildOptions(
   viteVersion: number,
-  input: Record<string, string>,
+  input?: Record<string, string>,
 ): {
   rollupOptions?: {
-    input: Record<string, string>;
+    input?: Record<string, string>;
     output: {
       manualChunks: typeof clientManualChunks;
       experimentalMinChunkSize?: number;
@@ -699,25 +664,15 @@ function getClientBuildOptionsWithInput(
     treeshake: { preset?: "recommended"; moduleSideEffects: "no-external" };
   };
   rolldownOptions?: {
-    input: Record<string, string>;
+    input?: Record<string, string>;
     output: { manualChunks: typeof clientManualChunks };
     treeshake: { moduleSideEffects: "no-external" };
   };
 } {
-  if (viteVersion >= 8) {
-    // Vite 8+ uses Rolldown - config goes under rolldownOptions
-    return {
-      rolldownOptions: {
-        input,
-        output: getClientOutputConfig(viteVersion),
-        treeshake: getClientTreeshakeConfig(viteVersion),
-      },
-    };
-  }
-  // Vite 7 uses Rollup - config goes under rollupOptions
+  const optionsKey = viteVersion >= 8 ? "rolldownOptions" : "rollupOptions";
   return {
-    rollupOptions: {
-      input,
+    [optionsKey]: {
+      ...(input ? { input } : {}),
       output: getClientOutputConfig(viteVersion),
       treeshake: getClientTreeshakeConfig(viteVersion),
     },
@@ -2055,7 +2010,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : viteMajorVersion >= 8
               ? {
                   build: {
-                    rolldownOptions: {
+                    ["rolldownOptions" as keyof import("vite").BuildOptions]: {
                       ...getClientBuildOptions(viteMajorVersion)
                         .rolldownOptions,
                       onwarn: createDirectiveOnwarn(
@@ -2063,7 +2018,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           config.build?.rollupOptions?.onwarn,
                       ),
                     },
-                  } as any,
+                  },
                 }
               : {
                   build: {
@@ -2319,7 +2274,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // on every page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
                 ...(hasCloudflarePlugin ? { manifest: true } : {}),
-                ...getClientBuildOptionsWithInput(viteMajorVersion, {
+                ...getClientBuildOptions(viteMajorVersion, {
                   index: VIRTUAL_APP_BROWSER_ENTRY,
                 }),
               },
@@ -2336,7 +2291,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 manifest: true,
                 ssrManifest: true,
-                ...getClientBuildOptionsWithInput(viteMajorVersion, {
+                ...getClientBuildOptions(viteMajorVersion, {
                   index: VIRTUAL_CLIENT_ENTRY,
                 }),
               },
@@ -5020,7 +4975,6 @@ export {
   clientTreeshakeConfig,
   computeLazyChunks,
   getClientBuildOptions,
-  getClientBuildOptionsWithInput,
   getClientOutputConfig,
   getClientTreeshakeConfig,
 };
