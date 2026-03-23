@@ -60,6 +60,7 @@
     "@vercel/og": "catalog:",
     "magic-string": "catalog:",
     "rsc-html-stream": "catalog:",
+    "typescript": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"
   },

@@ -810,6 +810,9 @@ importers:
       rsc-html-stream:
         specifier: 'catalog:'
         version: 0.0.7
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
       vite-plugin-commonjs:
         specifier: 'catalog:'
         version: 0.10.4

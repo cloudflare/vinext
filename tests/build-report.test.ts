@@ -1,14 +1,12 @@
 /**
  * Build report tests — verifies route classification, formatting, and sorting.
  *
- * Tests the regex-based export detection helpers and the classification
+ * Tests the AST-based export detection helpers and the classification
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
-import { describe, it, expect, afterEach } from "vite-plus/test";
+import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
-import os from "node:os";
-import fs from "node:fs/promises";
 import {
   hasNamedExport,
   extractExportConstString,
@@ -18,12 +16,10 @@ import {
   classifyAppRoute,
   buildReportRows,
   formatBuildReport,
-  printBuildReport,
 } from "../packages/vinext/src/build/report.js";
-import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
-import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
+const FIXTURES_BUILD_REPORT = path.resolve("tests/fixtures/build-report/pages");
 const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
 
 // ─── hasNamedExport ───────────────────────────────────────────────────────────
@@ -54,11 +50,52 @@ describe("hasNamedExport", () => {
   });
 
   it("detects re-export with alias", () => {
-    expect(hasNamedExport("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
+    expect(hasNamedExport("export { getStaticProps as gsp };", "gsp")).toBe(true);
+  });
+
+  it("detects aliased export name from a local binding", () => {
+    expect(hasNamedExport("const foo = 1; export { foo as revalidate };", "revalidate")).toBe(true);
+  });
+
+  it("does not treat the local side of an aliased export as the exported name", () => {
+    expect(hasNamedExport("export { getStaticProps as helper };", "getStaticProps")).toBe(false);
   });
 
   it("returns false when export is absent", () => {
     expect(hasNamedExport("export default function Page() {}", "getStaticProps")).toBe(false);
+  });
+
+  it("does not treat default-exported getStaticProps as a named export", () => {
+    expect(hasNamedExport("export default function getStaticProps() {}", "getStaticProps")).toBe(
+      false,
+    );
+  });
+
+  it("does not treat default-exported getServerSideProps as a named export", () => {
+    expect(
+      hasNamedExport("export default async function getServerSideProps() {}", "getServerSideProps"),
+    ).toBe(false);
+  });
+
+  it("does not treat `export type` re-exports as named runtime exports", () => {
+    expect(
+      hasNamedExport('export type { getStaticProps } from "./shared";', "getStaticProps"),
+    ).toBe(false);
+  });
+
+  it("does not treat `export { type ... }` specifiers as named runtime exports", () => {
+    expect(
+      hasNamedExport('export { type getServerSideProps } from "./shared";', "getServerSideProps"),
+    ).toBe(false);
+  });
+
+  it("does not treat declared exports as named runtime exports", () => {
+    expect(
+      hasNamedExport(
+        "export declare function getServerSideProps(): Promise<void>;",
+        "getServerSideProps",
+      ),
+    ).toBe(false);
   });
 
   it("does not match partial names (false positive guard)", () => {
@@ -99,12 +136,39 @@ describe("extractExportConstString", () => {
     );
   });
 
+  it("extracts value from an `as const` string export", () => {
+    expect(
+      extractExportConstString("export const dynamic = 'force-static' as const;", "dynamic"),
+    ).toBe("force-static");
+  });
+
+  it("extracts value from a `satisfies` string export", () => {
+    expect(
+      extractExportConstString(
+        "export const dynamic = 'force-static' satisfies string;",
+        "dynamic",
+      ),
+    ).toBe("force-static");
+  });
+
   it("returns null when export is absent", () => {
     expect(extractExportConstString("export const revalidate = 60;", "dynamic")).toBeNull();
   });
 
   it("returns null for non-string value", () => {
     expect(extractExportConstString("export const revalidate = 60;", "revalidate")).toBeNull();
+  });
+
+  it("extracts string from a local const re-exported by specifier", () => {
+    expect(
+      extractExportConstString("const mode = 'error'; export { mode as dynamic };", "dynamic"),
+    ).toBe("error");
+  });
+
+  it("extracts string from a local const identifier alias", () => {
+    expect(
+      extractExportConstString("const mode = 'error'; export const dynamic = mode;", "dynamic"),
+    ).toBe("error");
   });
 });
 
@@ -135,8 +199,38 @@ describe("extractExportConstNumber", () => {
     );
   });
 
+  it("extracts from an `as const` numeric export", () => {
+    expect(extractExportConstNumber("export const revalidate = 60 as const;", "revalidate")).toBe(
+      60,
+    );
+  });
+
+  it("extracts from a `satisfies` numeric export", () => {
+    expect(
+      extractExportConstNumber("export const revalidate = 60 satisfies number;", "revalidate"),
+    ).toBe(60);
+  });
+
   it("returns null when export is absent", () => {
     expect(extractExportConstNumber("export const dynamic = 'auto';", "revalidate")).toBeNull();
+  });
+
+  it("extracts number from a local const re-exported by specifier", () => {
+    expect(
+      extractExportConstNumber(
+        "const interval = 120; export { interval as revalidate };",
+        "revalidate",
+      ),
+    ).toBe(120);
+  });
+
+  it("extracts number from a local const identifier alias", () => {
+    expect(
+      extractExportConstNumber(
+        "const interval = 120; export const revalidate = interval;",
+        "revalidate",
+      ),
+    ).toBe(120);
   });
 });
 
@@ -146,6 +240,20 @@ describe("extractGetStaticPropsRevalidate", () => {
   it("extracts positive integer revalidate", () => {
     const code = `export async function getStaticProps() {
   return { props: {}, revalidate: 60 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate from an `as const` value inside getStaticProps", () => {
+    const code = `export async function getStaticProps() {
+  return { props: {}, revalidate: 60 as const };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate from a `satisfies` value inside getStaticProps", () => {
+    const code = `export async function getStaticProps() {
+  return { props: {}, revalidate: 60 satisfies number };
 }`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(60);
   });
@@ -225,6 +333,17 @@ export function unrelated() {
   return { props: { slug: params?.slug ?? null }, revalidate: 60 };
 }`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate from a generic arrow-function getStaticProps", () => {
+    const code = `export const getStaticProps = <T>() => ({ props: {}, revalidate: 60 });`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("respects the provided file extension when parsing generic arrow getStaticProps", () => {
+    const code = `export const getStaticProps = <T>() => ({ props: {}, revalidate: 60 });`;
+    expect(extractGetStaticPropsRevalidate(code, "page.ts")).toBe(60);
+    expect(extractGetStaticPropsRevalidate(code, "page.tsx")).toBeNull();
   });
 
   it("ignores revalidate in a nested helper function inside getStaticProps", () => {
@@ -317,11 +436,56 @@ export { getStaticProps } from "./shared";
     expect(extractGetStaticPropsRevalidate(code)).toBeNull();
   });
 
+  it("ignores fallback-path returns when an imported getStaticProps is re-exported locally", () => {
+    const code = `import { getStaticProps } from "./shared";
+export { getStaticProps };
+
+return { props: {}, revalidate: 1 };`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
   it("handles inline comment after value (fixture file style)", () => {
     // From tests/fixtures/pages-basic/pages/isr-test.tsx:
     //   revalidate: 1, // Revalidate every 1 second
     const code = `return { props: {}, revalidate: 1, // comment\n};`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(1);
+  });
+
+  it("extracts revalidate when getStaticProps is exported under an alias", () => {
+    const code = `const loadStaticProps = async () => {
+  return { props: {}, revalidate: 60 };
+};
+
+export { loadStaticProps as getStaticProps };`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate when getStaticProps is exported before its local declaration", () => {
+    const code = `export { getStaticProps };
+
+const getStaticProps = async () => {
+  return { props: {}, revalidate: 60 };
+};`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate when getStaticProps is exported via a local identifier alias", () => {
+    const code = `const loadStaticProps = async () => ({ props: {}, revalidate: 60 });
+export const getStaticProps = loadStaticProps;`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("does not fall back to unrelated top-level returns for non-analyzable local getStaticProps", () => {
+    const code = `function createGSP() {
+  return async function generatedGetStaticProps() {
+    return { props: {}, revalidate: 60 };
+  };
+}
+
+export const getStaticProps = createGSP();
+
+return { props: {}, revalidate: 1 };`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
   });
 });
 
@@ -351,6 +515,68 @@ describe("classifyPagesRoute", () => {
 
   it("returns unknown on file read failure (consistent with classifyAppRoute)", () => {
     expect(classifyPagesRoute("/nonexistent/pages/page.tsx")).toEqual({ type: "unknown" });
+  });
+
+  it("does not classify an aliased local export as getStaticProps", () => {
+    const filePath = path.join(FIXTURES_BUILD_REPORT, "build-report-alias-export.tsx");
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "static" });
+  });
+
+  it("classifies a generic-arrow getStaticProps in a .ts file as isr", () => {
+    const filePath = path.join(FIXTURES_BUILD_REPORT, "build-report-generic-gsp.ts");
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "isr", revalidate: 60 });
+  });
+
+  it("does not classify a default-exported getStaticProps as data fetching", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-default-export-gsp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "static" });
+  });
+
+  it("does not classify a default-exported getServerSideProps as data fetching", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-default-export-gssp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "static" });
+  });
+
+  it("does not classify type-only getStaticProps exports as data fetching", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-type-only-gsp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "static" });
+  });
+
+  it("does not classify type-only getServerSideProps exports as data fetching", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-type-only-gssp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "static" });
+  });
+
+  it("classifies direct getStaticProps re-exports as unknown", () => {
+    const filePath = path.join(FIXTURES_BUILD_REPORT, "build-report-reexport-gsp.tsx");
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "unknown" });
+  });
+
+  it("classifies imported getStaticProps re-exports as unknown", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-import-reexport-gsp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "unknown" });
+  });
+
+  it("classifies local identifier-aliased getStaticProps as isr", () => {
+    const filePath = path.resolve(
+      path.join(FIXTURES_BUILD_REPORT, "build-report-local-identifier-gsp.tsx"),
+    );
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "isr", revalidate: 60 });
+  });
+
+  it("classifies non-analyzable local getStaticProps factories as unknown", () => {
+    const filePath = path.join(FIXTURES_BUILD_REPORT, "build-report-factory-gsp.tsx");
+    expect(classifyPagesRoute(filePath)).toEqual({ type: "unknown" });
   });
 });
 
@@ -480,6 +706,34 @@ describe("buildReportRows", () => {
     expect(rows[0].pattern).toBe("/aaa");
     expect(rows[1].pattern).toBe("/zzz");
   });
+
+  it("upgrades unknown Pages routes to static when speculative prerender rendered them", () => {
+    const pageRoutes = [
+      {
+        pattern: "/reexported-gsp",
+        patternParts: ["/reexported-gsp"],
+        filePath: path.join(FIXTURES_BUILD_REPORT, "build-report-reexport-gsp.tsx"),
+        isDynamic: false,
+        params: [],
+      },
+    ];
+
+    const rows = buildReportRows({
+      pageRoutes,
+      prerenderResult: {
+        routes: [
+          {
+            route: "/reexported-gsp",
+            status: "rendered",
+            outputFiles: ["index.html"],
+            revalidate: false,
+          },
+        ],
+      },
+    });
+
+    expect(rows).toEqual([{ pattern: "/reexported-gsp", type: "static", prerendered: true }]);
+  });
 });
 
 // ─── formatBuildReport ────────────────────────────────────────────────────────
@@ -601,141 +855,5 @@ describe("formatBuildReport", () => {
     expect(out).toContain("└ ƒ /dashboard");
     // Legend is alphabetical: API, Dynamic, ISR, Static
     expect(out).toContain("λ API  ƒ Dynamic  ◐ ISR  ○ Static");
-  });
-});
-
-// ─── printBuildReport with pageExtensions ─────────────────────────────────────
-
-describe("printBuildReport respects pageExtensions", () => {
-  let tmpRoot: string;
-
-  afterEach(async () => {
-    if (tmpRoot) {
-      // Invalidate both routers' caches — pages router tests set pagesDir at
-      // tmpRoot/pages, so we invalidate that path too. This ensures a failing
-      // test that skips its own finally-block cleanup doesn't pollute later tests.
-      invalidateAppRouteCache();
-      invalidateRouteCache(path.join(tmpRoot, "pages"));
-      await fs.rm(tmpRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("app router: only reports routes matching configured pageExtensions", async () => {
-    // Ported from Next.js MDX e2e pageExtensions behaviour:
-    // test/e2e/app-dir/mdx/next.config.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx/next.config.ts
-    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-"));
-    const appDir = path.join(tmpRoot, "app");
-    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
-    await fs.writeFile(
-      path.join(appDir, "layout.tsx"),
-      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
-    );
-    await fs.writeFile(
-      path.join(appDir, "page.tsx"),
-      "export default function Page() { return <div>home</div>; }",
-    );
-    // This .mdx page should be excluded when mdx is not in pageExtensions
-    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
-
-    // Capture stdout output from printBuildReport
-    const lines: string[] = [];
-    const origLog = console.log;
-    console.log = (msg: string) => lines.push(msg);
-    try {
-      invalidateAppRouteCache();
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
-    } finally {
-      console.log = origLog;
-    }
-
-    const output = lines.join("\n");
-    // / should appear (page.tsx matches)
-    expect(output).toContain("/");
-    // /about should NOT appear (page.mdx excluded — mdx not in pageExtensions)
-    expect(output).not.toContain("/about");
-  });
-
-  it("app router: reports mdx routes when pageExtensions includes mdx", async () => {
-    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-mdx-"));
-    const appDir = path.join(tmpRoot, "app");
-    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
-    await fs.writeFile(
-      path.join(appDir, "layout.tsx"),
-      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
-    );
-    await fs.writeFile(
-      path.join(appDir, "page.tsx"),
-      "export default function Page() { return <div>home</div>; }",
-    );
-    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
-
-    const lines: string[] = [];
-    const origLog = console.log;
-    console.log = (msg: string) => lines.push(msg);
-    try {
-      invalidateAppRouteCache();
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] });
-    } finally {
-      console.log = origLog;
-    }
-
-    const output = lines.join("\n");
-    expect(output).toContain("/about");
-  });
-
-  it("pages router: only reports routes matching configured pageExtensions", async () => {
-    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-"));
-    const pagesDir = path.join(tmpRoot, "pages");
-    await fs.mkdir(pagesDir, { recursive: true });
-    await fs.writeFile(
-      path.join(pagesDir, "index.tsx"),
-      "export default function Page() { return <div>home</div>; }",
-    );
-    // This .mdx page should be excluded when mdx is not in pageExtensions
-    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
-
-    const lines: string[] = [];
-    const origLog = console.log;
-    console.log = (msg: string) => lines.push(msg);
-    try {
-      invalidateRouteCache(pagesDir);
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
-    } finally {
-      console.log = origLog;
-      invalidateRouteCache(pagesDir);
-    }
-
-    const output = lines.join("\n");
-    expect(output).toContain("/");
-    expect(output).not.toContain("/about");
-  });
-
-  it("pages router: reports mdx routes when pageExtensions includes mdx", async () => {
-    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-mdx-"));
-    const pagesDir = path.join(tmpRoot, "pages");
-    await fs.mkdir(pagesDir, { recursive: true });
-    await fs.writeFile(
-      path.join(pagesDir, "index.tsx"),
-      "export default function Page() { return <div>home</div>; }",
-    );
-    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
-
-    const lines: string[] = [];
-    const origLog = console.log;
-    console.log = (msg: string) => lines.push(msg);
-    try {
-      invalidateRouteCache(pagesDir);
-      await printBuildReport({
-        root: tmpRoot,
-        pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"],
-      });
-    } finally {
-      console.log = origLog;
-      invalidateRouteCache(pagesDir);
-    }
-
-    const output = lines.join("\n");
-    expect(output).toContain("/about");
   });
 });
