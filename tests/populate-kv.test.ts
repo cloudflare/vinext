@@ -8,11 +8,11 @@
  * identical to the runtime functions in entries/app-rsc-entry.ts.
  */
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import {
   appPageCacheKey,
   buildPageTags,
@@ -24,6 +24,12 @@ import {
   KV_TTL_SECONDS,
   type KVBulkPair,
 } from "../packages/vinext/src/cloudflare/populate-kv.js";
+
+/** Extract and parse the JSON body from a mocked fetch RequestInit. */
+function parseFetchBody(init: RequestInit | undefined): KVBulkPair[] {
+  if (typeof init?.body !== "string") throw new Error("expected string body in fetch mock");
+  return JSON.parse(init.body);
+}
 
 // ─── appPageCacheKey ────────────────────────────────────────────────────
 
@@ -314,7 +320,7 @@ describe("uploadBulkToKV", () => {
     });
 
     // Body should be the pairs array
-    const body = JSON.parse(init?.body as string);
+    const body = parseFetchBody(init);
     expect(body).toHaveLength(2);
     expect(body[0].key).toBe("cache:app:b1:/:html");
   });
@@ -334,8 +340,8 @@ describe("uploadBulkToKV", () => {
     // 15,000 entries → 2 batches (10,000 + 5,000)
     expect(fetchSpy).toHaveBeenCalledTimes(2);
 
-    const batch1 = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
-    const batch2 = JSON.parse(fetchSpy.mock.calls[1][1]?.body as string);
+    const batch1 = parseFetchBody(fetchSpy.mock.calls[0][1]);
+    const batch2 = parseFetchBody(fetchSpy.mock.calls[1][1]);
     expect(batch1).toHaveLength(10_000);
     expect(batch2).toHaveLength(5_000);
   });
@@ -393,7 +399,7 @@ describe("populateKV", () => {
 
     const uploadedPairs: KVBulkPair[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      const body = JSON.parse(init?.body as string);
+      const body = parseFetchBody(init);
       uploadedPairs.push(...body);
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
@@ -488,7 +494,7 @@ describe("populateKV", () => {
 
     const uploadedPairs: KVBulkPair[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      const body = JSON.parse(init?.body as string);
+      const body = parseFetchBody(init);
       uploadedPairs.push(...body);
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
@@ -515,7 +521,7 @@ describe("populateKV", () => {
 
     const uploadedPairs: KVBulkPair[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      const body = JSON.parse(init?.body as string);
+      const body = parseFetchBody(init);
       uploadedPairs.push(...body);
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
@@ -573,7 +579,7 @@ describe("populateKV", () => {
 
     const uploadedPairs: KVBulkPair[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      const body = JSON.parse(init?.body as string);
+      const body = parseFetchBody(init);
       uploadedPairs.push(...body);
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     });
