@@ -120,7 +120,7 @@ describe("next typegen controller", () => {
 });
 
 describe("vinext dev typegen integration", () => {
-  it("invokes the project-local Next.js typegen command on dev server startup by default", async () => {
+  it("runs the project-local `next typegen` command on dev server startup by default", async () => {
     const root = createTempProject("vinext-typegen-start-");
     let server: ViteDevServer | null = null;
     try {
@@ -154,7 +154,7 @@ describe("vinext dev typegen integration", () => {
     }
   });
 
-  it("reruns the project-local Next.js typegen command when a route file is added", async () => {
+  it("reruns the project-local `next typegen` command when a route file is added", async () => {
     const root = createTempProject("vinext-typegen-watch-");
     let server: ViteDevServer | null = null;
     try {
