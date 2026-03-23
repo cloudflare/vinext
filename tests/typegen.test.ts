@@ -50,6 +50,7 @@ function setupPagesProject(root: string): void {
   writeFile(root, "pages/index.tsx", "export default function Page() { return <div>hi</div>; }\n");
 }
 
+/** Install a fake `next` binary that increments a counter file instead of running real typegen. */
 function installFakeNext(root: string): void {
   writeFile(
     root,
@@ -119,7 +120,7 @@ describe("next typegen controller", () => {
 });
 
 describe("vinext dev typegen integration", () => {
-  it("runs `next typegen` on dev server startup by default", async () => {
+  it("invokes the project-local Next.js typegen command on dev server startup by default", async () => {
     const root = createTempProject("vinext-typegen-start-");
     let server: ViteDevServer | null = null;
     try {
@@ -153,7 +154,7 @@ describe("vinext dev typegen integration", () => {
     }
   });
 
-  it("reruns typegen when a route file is added", async () => {
+  it("reruns the project-local Next.js typegen command when a route file is added", async () => {
     const root = createTempProject("vinext-typegen-watch-");
     let server: ViteDevServer | null = null;
     try {
