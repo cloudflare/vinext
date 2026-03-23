@@ -199,18 +199,18 @@ export async function uploadBulkToKV(
     batches.push(currentBatch);
   }
 
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/bulk`;
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    "Content-Type": "application/json",
+  };
+
   for (let i = 0; i < batches.length; i++) {
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/bulk`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(batches[i]),
-      },
-    );
+    const response = await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(batches[i]),
+    });
 
     if (!response.ok) {
       const text = await response.text();
