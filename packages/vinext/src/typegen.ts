@@ -116,6 +116,8 @@ export function createNextTypegenController(
 
   return {
     start() {
+      // Defer the first run so configureServer can finish without waiting for
+      // `next typegen` to complete synchronously.
       scheduleWithDelay(0);
     },
     schedule() {
