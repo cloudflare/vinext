@@ -4437,7 +4437,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           for (const [route, rule] of Object.entries(routeRules)) {
             nitroJson.routeRules[route] = {
-              ...(nitroJson.routeRules[route] ?? {}),
+              ...nitroJson.routeRules[route],
               ...rule,
             };
           }
