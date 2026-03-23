@@ -836,6 +836,8 @@ export interface VinextOptions {
   /**
    * Run `next typegen` automatically in development when Next.js is installed.
    * This generates route-aware helpers like `PageProps`/`LayoutProps`.
+   * Temporary stopgap until Vinext ships native type generation:
+   * https://github.com/cloudflare/vinext/issues/664
    * Set to `false` to disable automatic type generation.
    * @default true
    */

@@ -2,6 +2,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+/**
+ * Temporary bridge for route-aware type generation.
+ *
+ * Vinext should eventually generate these types from its own route tree
+ * instead of delegating to `next typegen`, but this improves dev-time DX in
+ * the meantime without making Next.js a hard requirement for startup.
+ *
+ * Tracking issue: https://github.com/cloudflare/vinext/issues/664
+ */
 export interface NextTypegenControllerOptions {
   root: string;
   enabled?: boolean;

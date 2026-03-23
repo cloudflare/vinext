@@ -168,7 +168,9 @@ We track the public Next.js API surface and add support for new stable features.
 
 ## Type Safety
 
-vinext uses Next.js's own type generation for route-aware helpers like `PageProps`, `LayoutProps`. During development, the Vite plugin runs [`next typegen`](https://nextjs.org/docs/app/api-reference/cli/next#next-typegen-options) automatically when `next` is installed.
+As a short-term bridge for route-aware helpers like `PageProps` and `LayoutProps`, vinext can reuse Next.js's own type generation when `next` is already installed in the project. During development, the Vite plugin runs [`next typegen`](https://nextjs.org/docs/app/api-reference/cli/next#next-typegen-options) automatically on a best-effort basis.
+
+This is intended to improve developer experience in the near term, not as the long-term design. Native Vinext type generation is tracked in [#664](https://github.com/cloudflare/vinext/issues/664).
 
 If you want to turn this off, disable it in your Vite config:
 
@@ -181,7 +183,7 @@ export default defineConfig({
 });
 ```
 
-For CI, `tsc --noEmit`, or production builds that rely on these helpers, run `next typegen` before your type-check step. vinext only auto-runs type generation in dev mode.
+If your project already has `next` installed and you rely on these helpers in CI or a separate type-check step, you can run `next typegen` before `tsc --noEmit`. vinext only auto-runs this bridge in dev mode.
 
 ## Deployment
 
