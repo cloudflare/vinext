@@ -359,7 +359,7 @@ async function resolveZoneId(domain: string, apiToken: string): Promise<string |
 }
 
 /** Resolve the account ID associated with the API token. */
-async function resolveAccountId(apiToken: string): Promise<string | null> {
+export async function resolveAccountId(apiToken: string): Promise<string | null> {
   const response = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=1", {
     headers: {
       Authorization: `Bearer ${apiToken}`,

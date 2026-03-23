@@ -27,7 +27,8 @@ import {
   findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
-import { runTPR } from "./cloudflare/tpr.js";
+import { parseWranglerConfig, resolveAccountId, runTPR } from "./cloudflare/tpr.js";
+import { populateKV } from "./cloudflare/populate-kv.js";
 import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
@@ -57,6 +58,10 @@ export interface DeployOptions {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
+  /** Disable automatic KV population with pre-rendered pages */
+  noPopulateKv?: boolean;
+  /** KVCacheHandler appPrefix for KV key construction */
+  appPrefix?: string;
 }
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
@@ -74,6 +79,8 @@ const deployArgOptions = {
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
   "tpr-window": { type: "string" },
+  "no-populate-kv": { type: "boolean", default: false },
+  "app-prefix": { type: "string" },
 } as const;
 
 export function parseDeployArgs(args: string[]) {
@@ -101,6 +108,8 @@ export function parseDeployArgs(args: string[]) {
     tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
     tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
     tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
+    noPopulateKv: values["no-populate-kv"],
+    appPrefix: values["app-prefix"]?.trim() || undefined,
   };
 }
 
@@ -1353,6 +1362,34 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
     if (tprResult.skipped) {
       console.log(`  TPR: Skipped (${tprResult.skipped})`);
+    }
+  }
+
+  // Step 6c: Populate KV with pre-rendered pages
+  if (!options.noPopulateKv) {
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    const wranglerConfig = parseWranglerConfig(root);
+    const kvNamespaceId = wranglerConfig?.kvNamespaceId;
+
+    if (apiToken && kvNamespaceId) {
+      const accountId = wranglerConfig?.accountId ?? (await resolveAccountId(apiToken));
+
+      if (accountId) {
+        const kvResult = await populateKV({
+          root,
+          accountId,
+          namespaceId: kvNamespaceId,
+          apiToken,
+        });
+
+        if (kvResult.skipped) {
+          console.log(`\n  KV populate: Skipped (${kvResult.skipped})`);
+        } else if (kvResult.entriesUploaded > 0) {
+          console.log(
+            `\n  KV populate: ${kvResult.routesProcessed} routes → ${kvResult.entriesUploaded} entries (${(kvResult.durationMs / 1000).toFixed(1)}s)`,
+          );
+        }
+      }
     }
   }
 
