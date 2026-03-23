@@ -4380,7 +4380,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       writeBundle: {
         sequential: true,
         order: "post",
-        async handler(options) {
+        async handler(_options) {
           if (!hasNitroPlugin) return;
 
           const envName = this.environment?.name;
