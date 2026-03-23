@@ -1167,7 +1167,7 @@ export function writePrerenderIndex(
 
   const index = {
     ...(buildId ? { buildId } : {}),
-    ...(trailingSlash ? { trailingSlash } : {}),
+    ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
   };
   fs.writeFileSync(

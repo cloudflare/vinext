@@ -772,7 +772,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
-  await seedMemoryCacheFromPrerender(path.dirname(rscEntryPath));
+  const seededRoutes = await seedMemoryCacheFromPrerender(path.dirname(rscEntryPath));
+  if (seededRoutes > 0) {
+    console.log(
+      `[vinext] Seeded ${seededRoutes} pre-rendered route${seededRoutes !== 1 ? "s" : ""} into memory cache`,
+    );
+  }
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";

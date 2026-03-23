@@ -14,7 +14,7 @@ import {
   setCacheHandler,
   getCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
-import { isrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { isrCacheKey, getRevalidateDuration } from "../packages/vinext/src/server/isr-cache.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -32,14 +32,12 @@ function setupPrerenderFixture(
   manifest: { buildId: string; trailingSlash?: boolean; routes: unknown[] },
   files: Record<string, string>,
 ): void {
-  // Write manifest to serverDir (dist/server/)
   fs.writeFileSync(
     path.join(serverDir, "vinext-prerender.json"),
     JSON.stringify(manifest, null, 2),
     "utf-8",
   );
 
-  // Write pre-rendered files to prerendered-routes/
   const prerenderDir = path.join(serverDir, "prerendered-routes");
   for (const [filePath, content] of Object.entries(files)) {
     const fullPath = path.join(prerenderDir, filePath);
@@ -48,16 +46,21 @@ function setupPrerenderFixture(
   }
 }
 
+/**
+ * Write raw content to vinext-prerender.json (for corrupt manifest tests).
+ */
+function writeRawManifest(serverDir: string, content: string): void {
+  fs.writeFileSync(path.join(serverDir, "vinext-prerender.json"), content, "utf-8");
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("seedMemoryCacheFromPrerender", () => {
   let serverDir: string;
-  let handler: MemoryCacheHandler;
 
   beforeEach(() => {
     serverDir = createTempServerDir();
-    handler = new MemoryCacheHandler();
-    setCacheHandler(handler);
+    setCacheHandler(new MemoryCacheHandler());
   });
 
   afterEach(() => {
@@ -82,7 +85,6 @@ describe("seedMemoryCacheFromPrerender", () => {
 
     await seedMemoryCacheFromPrerender(serverDir);
 
-    // HTML entry should be cached
     const htmlKey = isrCacheKey("app", "/about", buildId) + ":html";
     const htmlEntry = await getCacheHandler().get(htmlKey);
     expect(htmlEntry).not.toBeNull();
@@ -93,7 +95,6 @@ describe("seedMemoryCacheFromPrerender", () => {
       expect(htmlValue.html).toBe("<html><body>About page</body></html>");
     }
 
-    // RSC entry should be cached
     const rscKey = isrCacheKey("app", "/about", buildId) + ":rsc";
     const rscEntry = await getCacheHandler().get(rscKey);
     expect(rscEntry).not.toBeNull();
@@ -126,7 +127,7 @@ describe("seedMemoryCacheFromPrerender", () => {
     const htmlKey = isrCacheKey("app", "/", buildId) + ":html";
     const htmlEntry = await getCacheHandler().get(htmlKey);
     expect(htmlEntry).not.toBeNull();
-    expect(htmlEntry!.value!.kind).toBe("APP_PAGE");
+    expect(htmlEntry?.value?.kind).toBe("APP_PAGE");
   });
 
   it("seeds dynamic routes using their concrete path", async () => {
@@ -153,11 +154,84 @@ describe("seedMemoryCacheFromPrerender", () => {
 
     await seedMemoryCacheFromPrerender(serverDir);
 
-    // Should use the concrete path, not the pattern
     const htmlKey = isrCacheKey("app", "/blog/hello-world", buildId) + ":html";
     const htmlEntry = await getCacheHandler().get(htmlKey);
     expect(htmlEntry).not.toBeNull();
-    expect(htmlEntry!.value!.kind).toBe("APP_PAGE");
+    expect(htmlEntry?.value?.kind).toBe("APP_PAGE");
+  });
+
+  // ── Return value ──────────────────────────────────────────────────────────
+
+  it("returns the number of seeded routes", async () => {
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "count-test",
+        routes: [
+          { route: "/a", status: "rendered", revalidate: 60, router: "app" },
+          { route: "/b", status: "rendered", revalidate: 60, router: "app" },
+          { route: "/c", status: "skipped", reason: "ssr" },
+        ],
+      },
+      {
+        "a.html": "<html>A</html>",
+        "a.rsc": "RSC a",
+        "b.html": "<html>B</html>",
+        "b.rsc": "RSC b",
+      },
+    );
+
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(2);
+  });
+
+  it("returns 0 when no manifest exists", async () => {
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
+  });
+
+  // ── Revalidate duration tracking ──────────────────────────────────────────
+
+  it("populates revalidate duration map for ISR routes", async () => {
+    const buildId = "reval-duration-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [{ route: "/isr", status: "rendered", revalidate: 45, router: "app" }],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/isr", buildId);
+    expect(getRevalidateDuration(baseKey + ":html")).toBe(45);
+    expect(getRevalidateDuration(baseKey + ":rsc")).toBe(45);
+  });
+
+  it("does not set revalidate duration for static routes", async () => {
+    const buildId = "static-duration-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [{ route: "/static", status: "rendered", revalidate: false, router: "app" }],
+      },
+      {
+        "static.html": "<html>Static</html>",
+        "static.rsc": "RSC static",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/static", buildId);
+    expect(getRevalidateDuration(baseKey + ":html")).toBeUndefined();
+    expect(getRevalidateDuration(baseKey + ":rsc")).toBeUndefined();
   });
 
   // ── Static routes (revalidate: false) ─────────────────────────────────────
@@ -181,8 +255,7 @@ describe("seedMemoryCacheFromPrerender", () => {
     const htmlKey = isrCacheKey("app", "/static", buildId) + ":html";
     const htmlEntry = await getCacheHandler().get(htmlKey);
     expect(htmlEntry).not.toBeNull();
-    // No cacheState means fresh — should never expire
-    expect(htmlEntry!.cacheState).toBeUndefined();
+    expect(htmlEntry?.cacheState).toBeUndefined();
   });
 
   // ── Skipped and errored routes ────────────────────────────────────────────
@@ -206,15 +279,11 @@ describe("seedMemoryCacheFromPrerender", () => {
 
     await seedMemoryCacheFromPrerender(serverDir);
 
-    // Skipped route should not be in cache
     const skippedKey = isrCacheKey("app", "/ssr-page", buildId) + ":html";
-    const skippedEntry = await getCacheHandler().get(skippedKey);
-    expect(skippedEntry).toBeNull();
+    expect(await getCacheHandler().get(skippedKey)).toBeNull();
 
-    // Rendered route should be cached
     const aboutKey = isrCacheKey("app", "/about", buildId) + ":html";
-    const aboutEntry = await getCacheHandler().get(aboutKey);
-    expect(aboutEntry).not.toBeNull();
+    expect(await getCacheHandler().get(aboutKey)).not.toBeNull();
   });
 
   it("does not seed errored routes", async () => {
@@ -228,11 +297,8 @@ describe("seedMemoryCacheFromPrerender", () => {
       {},
     );
 
-    await seedMemoryCacheFromPrerender(serverDir);
-
-    const brokenKey = isrCacheKey("app", "/broken", buildId) + ":html";
-    const entry = await getCacheHandler().get(brokenKey);
-    expect(entry).toBeNull();
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
   });
 
   // ── Multiple routes ───────────────────────────────────────────────────────
@@ -265,21 +331,23 @@ describe("seedMemoryCacheFromPrerender", () => {
       },
     );
 
-    await seedMemoryCacheFromPrerender(serverDir);
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(3);
 
     for (const pathname of ["/", "/about", "/blog/post-1"]) {
       const htmlKey = isrCacheKey("app", pathname, buildId) + ":html";
-      const entry = await getCacheHandler().get(htmlKey);
-      expect(entry, `expected cache entry for ${pathname}`).not.toBeNull();
+      expect(
+        await getCacheHandler().get(htmlKey),
+        `expected cache entry for ${pathname}`,
+      ).not.toBeNull();
     }
   });
 
   // ── Graceful degradation ──────────────────────────────────────────────────
 
   it("is a no-op when vinext-prerender.json does not exist", async () => {
-    // serverDir has no manifest file
-    await seedMemoryCacheFromPrerender(serverDir);
-    // Should not throw — just silently skip
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
   });
 
   it("skips routes whose HTML files are missing from disk", async () => {
@@ -290,16 +358,25 @@ describe("seedMemoryCacheFromPrerender", () => {
         buildId,
         routes: [{ route: "/missing", status: "rendered", revalidate: 60, router: "app" }],
       },
-      {
-        // Deliberately not writing any files for /missing
-      },
+      {},
     );
 
-    await seedMemoryCacheFromPrerender(serverDir);
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
+  });
 
-    const htmlKey = isrCacheKey("app", "/missing", buildId) + ":html";
-    const entry = await getCacheHandler().get(htmlKey);
-    expect(entry).toBeNull();
+  it("returns 0 and warns on corrupt manifest JSON", async () => {
+    writeRawManifest(serverDir, "{ this is not valid json !!!");
+
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
+  });
+
+  it("returns 0 when manifest has no buildId", async () => {
+    writeRawManifest(serverDir, JSON.stringify({ routes: [] }));
+
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(0);
   });
 
   // ── trailingSlash ──────────────────────────────────────────────────────────
@@ -314,7 +391,6 @@ describe("seedMemoryCacheFromPrerender", () => {
         routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
       },
       {
-        // trailingSlash: true writes to about/index.html, not about.html
         "about/index.html": "<html><body>About (trailing slash)</body></html>",
         "about.rsc": "RSC about",
       },
@@ -342,20 +418,51 @@ describe("seedMemoryCacheFromPrerender", () => {
       },
       {
         "html-only.html": "<html><body>HTML only</body></html>",
-        // No .rsc file
       },
     );
 
-    await seedMemoryCacheFromPrerender(serverDir);
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(1);
 
-    // HTML should be cached
     const htmlKey = isrCacheKey("app", "/html-only", buildId) + ":html";
-    const htmlEntry = await getCacheHandler().get(htmlKey);
-    expect(htmlEntry).not.toBeNull();
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
 
-    // RSC should not be cached (no file to read)
     const rscKey = isrCacheKey("app", "/html-only", buildId) + ":rsc";
-    const rscEntry = await getCacheHandler().get(rscKey);
-    expect(rscEntry).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
+  // ── Long pathnames (FNV hash path) ────────────────────────────────────────
+
+  it("seeds routes with very long pathnames that hit the hash path", async () => {
+    const buildId = "hash-test";
+    const longSlug = "a".repeat(200);
+    const longPath = `/blog/${longSlug}`;
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/blog/:slug",
+            status: "rendered",
+            revalidate: 60,
+            path: longPath,
+            router: "app",
+          },
+        ],
+      },
+      {
+        [`blog/${longSlug}.html`]: "<html>Long path</html>",
+        [`blog/${longSlug}.rsc`]: "RSC long",
+      },
+    );
+
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+    expect(count).toBe(1);
+
+    // Verify the hashed key matches what isrCacheKey produces
+    const htmlKey = isrCacheKey("app", longPath, buildId) + ":html";
+    expect(htmlKey).toContain("__hash:");
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
   });
 });
