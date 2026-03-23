@@ -128,6 +128,7 @@ export function createNextTypegenController(
         timer = null;
       }
       if (child) {
+        child.removeAllListeners();
         child.kill();
         child = null;
       }
