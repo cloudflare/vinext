@@ -183,7 +183,9 @@ export default defineConfig({
 });
 ```
 
-If your project already has `next` installed and you rely on these helpers in CI or a separate type-check step, you can run `next typegen` before `tsc --noEmit`. vinext only auto-runs this bridge in dev mode.
+If you rely on these helpers in CI or a separate type-check step, your project must also have `next` installed (typically as a `devDependency`) so `next typegen` is available. That is a temporary tradeoff of this bridge while Vinext-native type generation is still in progress.
+
+vinext only auto-runs this bridge in dev mode, and only when `next` is installed in the project.
 
 ## Deployment
 
