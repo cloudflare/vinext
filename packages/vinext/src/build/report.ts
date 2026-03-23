@@ -843,6 +843,9 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 
 export type NitroRouteRules = Record<string, { swr: number }>;
 
+// Note: Nitro uses rou3 (URLPattern-compatible) which natively supports vinext's
+// :param syntax. URLPattern test confirms /blog/:slug matches /blog/my-post correctly.
+// Patterns like /blog/:slug work directly in Nitro routeRules without conversion.
 export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
   const rules: NitroRouteRules = {};
   for (const row of rows) {

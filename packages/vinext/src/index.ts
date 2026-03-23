@@ -5,10 +5,11 @@ import {
   apiRouter,
   invalidateRouteCache,
   matchRoute,
+  type Route,
 } from "./routing/pages-router.js";
 import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
-import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
+import { appRouter, invalidateAppRouteCache, type AppRoute } from "./routing/app-router.js";
 import { buildReportRows, generateNitroRouteRules, findDir } from "./build/report.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -4385,6 +4386,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           const envName = this.environment?.name;
           if (envName !== "rsc" && envName !== "ssr") return;
+          // Avoid running twice in multi-environment App Router builds. Pages Router
+          // only has ssr, so we let it run there. App Router has both rsc and ssr.
+          if (envName === "ssr" && hasAppDir) return;
 
           const buildRoot = this.environment?.config?.root ?? process.cwd();
           const nitroOutputPath = path.join(buildRoot, ".output", "nitro.json");
@@ -4394,9 +4398,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           if (!appDir && !pagesDir) return;
 
-          let appRoutes: any[] = [];
-          let pageRoutes: any[] = [];
-          let apiRoutes: any[] = [];
+          let appRoutes: AppRoute[] = [];
+          let pageRoutes: Route[] = [];
+          let apiRoutes: Route[] = [];
 
           if (appDir) {
             appRoutes = await appRouter(appDir, nextConfig?.pageExtensions);
@@ -4442,6 +4446,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             };
           }
 
+          fs.mkdirSync(path.dirname(nitroOutputPath), { recursive: true });
           fs.writeFileSync(nitroOutputPath, JSON.stringify(nitroJson, null, 2));
         },
       },

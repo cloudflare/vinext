@@ -5,10 +5,11 @@
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
-import { describe, it, expect, afterEach } from "vite-plus/test";
+import { describe, it, expect, afterEach, beforeEach } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import {
   hasNamedExport,
   extractExportConstString,
@@ -20,6 +21,7 @@ import {
   formatBuildReport,
   printBuildReport,
   generateNitroRouteRules,
+  type NitroRouteRules,
 } from "../packages/vinext/src/build/report.js";
 import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
@@ -818,9 +820,151 @@ describe("generateNitroRouteRules", () => {
   it("does not generate swr rules for ISR routes with Infinity revalidate", () => {
     const rows = [
       { pattern: "/static", type: "static" as const },
+      // In practice, buildReportRows never produces an ISR row with Infinity
+      // (classifyAppRoute maps Infinity to "static"), but generateNitroRouteRules
+      // should handle it defensively since Infinity serializes to null in JSON.
       { pattern: "/isr", type: "isr" as const, revalidate: Infinity },
     ];
     const result = generateNitroRouteRules(rows);
     expect(result).toEqual({});
+  });
+});
+
+// ─── Nitro routeRules file I/O integration ────────────────────────────────────
+
+describe("generateNitroRouteRules file output", () => {
+  let tmpDir: string;
+
+  function nitroOutputPath() {
+    return path.join(tmpDir, ".output", "nitro.json");
+  }
+
+  beforeEach(() => {
+    tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "vinext-nitro-test-"));
+  });
+
+  afterEach(() => {
+    fsSync.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeNitroJson(content: object): void {
+    const outputPath = nitroOutputPath();
+    fsSync.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fsSync.writeFileSync(outputPath, JSON.stringify(content, null, 2), "utf-8");
+  }
+
+  function readNitroJson(): object {
+    const outputPath = nitroOutputPath();
+    if (!fsSync.existsSync(outputPath)) return {};
+    return JSON.parse(fsSync.readFileSync(outputPath, "utf-8"));
+  }
+
+  function mergeNitroRouteRules(routeRules: NitroRouteRules): void {
+    if (Object.keys(routeRules).length === 0) return;
+
+    const outputPath = nitroOutputPath();
+    const nitroOutputDir = path.dirname(outputPath);
+    fsSync.mkdirSync(nitroOutputDir, { recursive: true });
+
+    let nitroJson: Record<string, any> = {};
+    if (fsSync.existsSync(outputPath)) {
+      try {
+        nitroJson = JSON.parse(fsSync.readFileSync(outputPath, "utf-8"));
+      } catch {
+        // ignore parse errors
+      }
+    }
+
+    if (!nitroJson.routeRules) {
+      nitroJson.routeRules = {};
+    }
+
+    for (const [route, rule] of Object.entries(routeRules)) {
+      nitroJson.routeRules[route] = {
+        ...nitroJson.routeRules[route],
+        ...rule,
+      };
+    }
+
+    fsSync.writeFileSync(outputPath, JSON.stringify(nitroJson, null, 2), "utf-8");
+  }
+
+  it("creates .output directory if it does not exist", () => {
+    const outputPath = nitroOutputPath();
+    expect(fsSync.existsSync(path.dirname(outputPath))).toBe(false);
+
+    const rows = [{ pattern: "/isr", type: "isr" as const, revalidate: 60 }];
+    const routeRules = generateNitroRouteRules(rows);
+    mergeNitroRouteRules(routeRules);
+
+    expect(fsSync.existsSync(path.dirname(outputPath))).toBe(true);
+    expect(fsSync.existsSync(outputPath)).toBe(true);
+  });
+
+  it("writes correct nitro.json content for ISR routes", () => {
+    const rows = [
+      { pattern: "/blog", type: "isr" as const, revalidate: 60 },
+      { pattern: "/products", type: "isr" as const, revalidate: 30 },
+    ];
+    const routeRules = generateNitroRouteRules(rows);
+    mergeNitroRouteRules(routeRules);
+
+    const result = readNitroJson();
+    expect(result).toEqual({
+      routeRules: {
+        "/blog": { swr: 60 },
+        "/products": { swr: 30 },
+      },
+    });
+  });
+
+  it("merges with existing routeRules in nitro.json", () => {
+    writeNitroJson({
+      routeRules: {
+        "/existing": { swr: 120 },
+      },
+    });
+
+    const rows = [{ pattern: "/blog", type: "isr" as const, revalidate: 60 }];
+    const routeRules = generateNitroRouteRules(rows);
+    mergeNitroRouteRules(routeRules);
+
+    const result = readNitroJson();
+    expect(result).toEqual({
+      routeRules: {
+        "/existing": { swr: 120 },
+        "/blog": { swr: 60 },
+      },
+    });
+  });
+
+  it("overwrites existing swr values for the same route", () => {
+    writeNitroJson({
+      routeRules: {
+        "/blog": { swr: 120 },
+      },
+    });
+
+    const rows = [{ pattern: "/blog", type: "isr" as const, revalidate: 60 }];
+    const routeRules = generateNitroRouteRules(rows);
+    mergeNitroRouteRules(routeRules);
+
+    const result = readNitroJson();
+    expect(result).toEqual({
+      routeRules: {
+        "/blog": { swr: 60 },
+      },
+    });
+  });
+
+  it("does not write when no ISR routes exist", () => {
+    const rows = [
+      { pattern: "/about", type: "static" as const },
+      { pattern: "/ssr", type: "ssr" as const },
+    ];
+    const routeRules = generateNitroRouteRules(rows);
+    mergeNitroRouteRules(routeRules);
+
+    expect(fsSync.existsSync(nitroOutputPath())).toBe(false);
   });
 });
