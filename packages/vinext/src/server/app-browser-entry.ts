@@ -83,7 +83,11 @@ function isServerActionResult(value: unknown): value is ServerActionResult {
 }
 
 function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
-  return typeof value === "object" && value !== null && "then" in value;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).then === "function"
+  );
 }
 
 function getBrowserTreeStateSetter(): Dispatch<SetStateAction<BrowserTreeState>> {
@@ -221,9 +225,9 @@ function NavigationCommitSignal({ children, renderId }: { children: ReactNode; r
   useLayoutEffect(() => {
     runPrePaintNavigationEffect(renderId);
 
-    // Resolve the navigation commit promise after the browser paints.
-    // requestAnimationFrame fires after the next paint regardless of
-    // where it's scheduled from, so this works from useLayoutEffect.
+    // Resolve the navigation commit promise after the browser commits
+    // the next frame. requestAnimationFrame callbacks scheduled from
+    // useLayoutEffect fire before the following frame's paint.
     const frame = requestAnimationFrame(() => {
       resolveCommittedNavigations(renderId);
     });
@@ -250,13 +254,11 @@ function BrowserRoot({
   });
 
   useLayoutEffect(() => {
+    // setTreeState is stable (React guarantee), and BrowserRoot is a
+    // singleton that never unmounts. No cleanup needed — omitting it
+    // avoids a Strict Mode double-invocation window where the setter
+    // would briefly be null between cleanup and re-mount.
     setBrowserTreeState = setTreeState;
-
-    return () => {
-      if (setBrowserTreeState === setTreeState) {
-        setBrowserTreeState = null;
-      }
-    };
   }, []);
 
   const resolvedNode = isThenable(treeState.node) ? use(treeState.node) : treeState.node;
@@ -633,7 +635,7 @@ async function main(): Promise<void> {
         updateBrowserTree(
           rscPayload,
           createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
-          nextNavigationRenderId,
+          ++nextNavigationRenderId,
           false,
         );
       } catch (error) {

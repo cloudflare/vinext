@@ -244,7 +244,16 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
 }
 
 export function restoreRscResponse(snapshot: CachedRscResponse): Response {
-  return new Response(snapshot.body.slice(0), {
+  // Zero-copy: Uint8Array creates a view over the ArrayBuffer without
+  // allocating. The Response consumes the stream but the underlying
+  // ArrayBuffer in the cache remains intact for future restores.
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(snapshot.body));
+      controller.close();
+    },
+  });
+  return new Response(body, {
     headers: snapshot.headers,
     status: snapshot.status,
     statusText: snapshot.statusText,
@@ -426,6 +435,7 @@ type ClientNavigationState = {
   patchInstalled: boolean;
   hasPendingNavigationUpdate: boolean;
   suppressUrlNotifyCount: number;
+  navigationSnapshotActiveCount: number;
 };
 
 type ClientNavigationGlobal = typeof globalThis & {
@@ -451,6 +461,7 @@ function getClientNavigationState(): ClientNavigationState | null {
       patchInstalled: false,
       hasPendingNavigationUpdate: false,
       suppressUrlNotifyCount: 0,
+      navigationSnapshotActiveCount: 0,
     };
   }
 
@@ -531,17 +542,20 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // the snapshot while it's active.
 // ---------------------------------------------------------------------------
 
-let _navigationSnapshotActiveCount = 0;
-
 /**
  * Mark a navigation snapshot as active. Called before startTransition
  * in renderNavigationPayload. While active, hooks prefer the snapshot
  * context value over useSyncExternalStore. Uses a counter (not boolean)
  * to handle overlapping navigations — rapid clicks can interleave
  * activate/deactivate if multiple transitions are in flight.
+ *
+ * Stored on ClientNavigationState (Symbol.for global) to survive
+ * multiple Vite module instances loading this file through different
+ * resolved IDs.
  */
 export function activateNavigationSnapshot(): void {
-  _navigationSnapshotActiveCount++;
+  const state = getClientNavigationState();
+  if (state) state.navigationSnapshotActiveCount++;
 }
 
 // Track client-side params (set during RSC hydration/navigation)
@@ -593,7 +607,7 @@ export function replaceClientParamsWithoutNotify(params: Record<string, string |
   if (!state) return;
 
   const json = JSON.stringify(params);
-  if (json !== state.clientParamsJson || json !== state.pendingClientParamsJson) {
+  if (json !== state.clientParamsJson && json !== state.pendingClientParamsJson) {
     state.pendingClientParams = params;
     state.pendingClientParamsJson = json;
     state.hasPendingNavigationUpdate = true;
@@ -647,7 +661,7 @@ export function usePathname(): string {
   // Only use the render snapshot during an active navigation transition.
   // After commit, fall through to useSyncExternalStore so user
   // pushState/replaceState calls are immediately reflected.
-  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.pathname;
   }
   return pathname;
@@ -668,7 +682,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
-  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.searchParams;
   }
   return searchParams;
@@ -690,7 +704,7 @@ export function useParams<
     getClientParamsSnapshot as () => T,
     getServerParamsSnapshot as () => T,
   );
-  if (renderSnapshot && _navigationSnapshotActiveCount > 0) {
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return (renderSnapshot.params ?? params) as T;
   }
   return params;
@@ -762,7 +776,9 @@ export function commitClientNavigationState(): void {
   // reactive useSyncExternalStore values. The committed URL/params are
   // now up-to-date, and any subsequent pushState/replaceState calls
   // must be immediately reflected in hooks.
-  _navigationSnapshotActiveCount = Math.max(0, _navigationSnapshotActiveCount - 1);
+  if (state) {
+    state.navigationSnapshotActiveCount = Math.max(0, state.navigationSnapshotActiveCount - 1);
+  }
 
   const urlChanged = syncCommittedUrlStateFromLocation();
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
