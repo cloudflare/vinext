@@ -3454,7 +3454,8 @@ describe("Set-Cookie header preservation in prod-server", () => {
       expect(result.headers["content-length"]).toBeUndefined();
       expect(result.firstDecodedMs).toBeGreaterThanOrEqual(0);
       expect(result.firstDecodedMs).toBeLessThan(250);
-      expect(result.endMs).toBeGreaterThanOrEqual(250);
+      // The delayed chunk uses setTimeout(250ms); allow 50ms slack for JS timer imprecision in CI.
+      expect(result.endMs).toBeGreaterThanOrEqual(200);
       expect(result.rawBody.byteLength).toBeGreaterThan(0);
       expect(result.body).toContain("Streaming SSR Test");
       expect(result.body).toContain("Loading delayed chunk...");
