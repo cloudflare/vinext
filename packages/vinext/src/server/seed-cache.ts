@@ -31,25 +31,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getCacheHandler, type CachedAppPageValue } from "../shims/cache.js";
+import { getCacheHandler } from "../shims/cache.js";
 import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
 import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
-
-// ─── Manifest types ───────────────────────────────────────────────────────────
-
-interface PrerenderManifest {
-  buildId: string;
-  trailingSlash?: boolean;
-  routes: PrerenderManifestRoute[];
-}
-
-interface PrerenderManifestRoute {
-  route: string;
-  status: string;
-  revalidate?: number | false;
-  path?: string;
-  router?: "app" | "pages";
-}
+import {
+  type PrerenderManifest,
+  revalidateCtx,
+  makeHtmlCacheValue,
+  makeRscCacheValue,
+} from "./seed-cache-shared.js";
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -104,14 +94,6 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
 // ─── Internals ────────────────────────────────────────────────────────────────
 
 /**
- * Build the CacheHandler context object from a revalidate value.
- * `revalidate: undefined` (static routes) → empty context → no expiry.
- */
-function revalidateCtx(seconds: number | undefined): Record<string, unknown> {
-  return seconds !== undefined ? { revalidate: seconds } : {};
-}
-
-/**
  * Seed the HTML cache entry for a single route.
  * Returns true if the file existed and was seeded.
  */
@@ -127,17 +109,12 @@ async function seedHtml(
   const fullPath = path.join(prerenderDir, relPath);
   if (!fs.existsSync(fullPath)) return false;
 
-  const htmlValue: CachedAppPageValue = {
-    kind: "APP_PAGE",
-    html: fs.readFileSync(fullPath, "utf-8"),
-    rscData: undefined,
-    headers: undefined,
-    postponed: undefined,
-    status: undefined,
-  };
-
   const key = baseKey + ":html";
-  await handler.set(key, htmlValue, revalidateCtx(revalidateSeconds));
+  await handler.set(
+    key,
+    makeHtmlCacheValue(fs.readFileSync(fullPath, "utf-8")),
+    revalidateCtx(revalidateSeconds),
+  );
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);
@@ -162,20 +139,12 @@ async function seedRsc(
   if (!fs.existsSync(fullPath)) return;
 
   const rscBuffer = fs.readFileSync(fullPath);
-  const rscValue: CachedAppPageValue = {
-    kind: "APP_PAGE",
-    html: "",
-    rscData: rscBuffer.buffer.slice(
-      rscBuffer.byteOffset,
-      rscBuffer.byteOffset + rscBuffer.byteLength,
-    ),
-    headers: undefined,
-    postponed: undefined,
-    status: undefined,
-  };
-
+  const rscData = rscBuffer.buffer.slice(
+    rscBuffer.byteOffset,
+    rscBuffer.byteOffset + rscBuffer.byteLength,
+  );
   const key = baseKey + ":rsc";
-  await handler.set(key, rscValue, revalidateCtx(revalidateSeconds));
+  await handler.set(key, makeRscCacheValue(rscData), revalidateCtx(revalidateSeconds));
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);

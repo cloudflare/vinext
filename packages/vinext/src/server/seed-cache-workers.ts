@@ -24,9 +24,9 @@
  *
  * Concurrency model:
  * - A single Workers isolate can process concurrent requests. The manifest
- *   load is deduplicated via a cached promise (manifestPromise). Two
+ *   load is deduplicated via a cached promise (loadedPromise). Two
  *   concurrent calls to loadManifest both await the same promise — no
- *   double-fetch is possible because the assignment to manifestPromise
+ *   double-fetch is possible because the assignment to loadedPromise
  *   happens synchronously before the first await.
  * - Per-route seeding is deduplicated via seedInFlight. Between the
  *   getCacheHandler().get() check (async, yields) and the seedInFlight.get()
@@ -35,25 +35,16 @@
  *   promise and the second joins it.
  */
 
-import { getCacheHandler, type CachedAppPageValue } from "../shims/cache.js";
+import { getCacheHandler } from "../shims/cache.js";
 import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
 import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
-
-// ─── Manifest types (mirrors seed-cache.ts) ──────────────────────────────────
-
-interface PrerenderManifest {
-  buildId: string;
-  trailingSlash?: boolean;
-  routes: PrerenderManifestRoute[];
-}
-
-interface PrerenderManifestRoute {
-  route: string;
-  status: string;
-  revalidate?: number | false;
-  path?: string;
-  router?: "app" | "pages";
-}
+import {
+  type PrerenderManifest,
+  type PrerenderManifestRoute,
+  revalidateCtx,
+  makeHtmlCacheValue,
+  makeRscCacheValue,
+} from "./seed-cache-shared.js";
 
 /** Loaded manifest + pre-built route lookup. Returned as a unit so they can't desync. */
 interface LoadedManifest {
@@ -157,14 +148,6 @@ async function loadManifest(fetchAsset: AssetFetcher): Promise<LoadedManifest | 
   return loadedPromise;
 }
 
-/**
- * Build the CacheHandler context object from a revalidate value.
- * `revalidate: undefined` (static routes) → empty context → no expiry.
- */
-function revalidateCtx(seconds: number | undefined): Record<string, unknown> {
-  return seconds !== undefined ? { revalidate: seconds } : {};
-}
-
 async function doSeedRoute(
   manifest: PrerenderManifest,
   pathname: string,
@@ -181,17 +164,8 @@ async function doSeedRoute(
   const htmlRes = await fetchAsset(`/__prerender/${htmlRelPath}`);
   if (!htmlRes.ok) return;
 
-  const html = await htmlRes.text();
-  const htmlValue: CachedAppPageValue = {
-    kind: "APP_PAGE",
-    html,
-    rscData: undefined,
-    headers: undefined,
-    postponed: undefined,
-    status: undefined,
-  };
   const htmlKey = baseKey + ":html";
-  await handler.set(htmlKey, htmlValue, ctx);
+  await handler.set(htmlKey, makeHtmlCacheValue(await htmlRes.text()), ctx);
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(htmlKey, revalidateSeconds);
   }
@@ -201,17 +175,8 @@ async function doSeedRoute(
   const rscRes = await fetchAsset(`/__prerender/${rscRelPath}`);
   if (!rscRes.ok) return;
 
-  const rscData = await rscRes.arrayBuffer();
-  const rscValue: CachedAppPageValue = {
-    kind: "APP_PAGE",
-    html: "",
-    rscData,
-    headers: undefined,
-    postponed: undefined,
-    status: undefined,
-  };
   const rscKey = baseKey + ":rsc";
-  await handler.set(rscKey, rscValue, ctx);
+  await handler.set(rscKey, makeRscCacheValue(await rscRes.arrayBuffer()), ctx);
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(rscKey, revalidateSeconds);
   }
