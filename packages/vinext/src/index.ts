@@ -69,6 +69,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import tsconfigPaths from "vite-tsconfig-paths";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");

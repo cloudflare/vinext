@@ -19,6 +19,7 @@ import {
   _asyncHooksStubPlugin,
   getClientOutputConfig,
   getClientTreeshakeConfig,
+  getViteMajorVersion,
 } from "../packages/vinext/src/index.js";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
@@ -424,11 +425,20 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // treeshake should be set on rollupOptions for non-SSR builds
-      expect(result.build.rollupOptions.treeshake).toEqual({
-        preset: "recommended",
-        moduleSideEffects: "no-external",
-      });
+      // treeshake should be set for non-SSR builds (version-gated for Vite 8+)
+      const viteVersion = getViteMajorVersion();
+      if (viteVersion >= 8) {
+        // Vite 8+ uses rolldownOptions
+        expect(result.build.rolldownOptions?.treeshake).toEqual({
+          moduleSideEffects: "no-external",
+        });
+      } else {
+        // Vite 7 uses rollupOptions
+        expect(result.build.rollupOptions.treeshake).toEqual({
+          preset: "recommended",
+          moduleSideEffects: "no-external",
+        });
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -513,18 +523,31 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // Global rollupOptions should NOT have treeshake (would leak into RSC/SSR)
-      expect(result.build.rollupOptions?.treeshake).toBeUndefined();
-
-      // Client environment should have treeshake
-      expect(result.environments.client.build.rollupOptions.treeshake).toEqual({
-        preset: "recommended",
-        moduleSideEffects: "no-external",
-      });
+      // Global build should NOT have treeshake (would leak into RSC/SSR)
+      const viteVersion = getViteMajorVersion();
+      if (viteVersion >= 8) {
+        expect(result.build.rolldownOptions?.treeshake).toBeUndefined();
+        // Client environment should have treeshake (Vite 8+)
+        expect(result.environments.client.build.rolldownOptions?.treeshake).toEqual({
+          moduleSideEffects: "no-external",
+        });
+      } else {
+        expect(result.build.rollupOptions?.treeshake).toBeUndefined();
+        // Client environment should have treeshake (Vite 7)
+        expect(result.environments.client.build.rollupOptions.treeshake).toEqual({
+          preset: "recommended",
+          moduleSideEffects: "no-external",
+        });
+      }
 
       // RSC and SSR environments should NOT have treeshake
-      expect(result.environments.rsc.build?.rollupOptions?.treeshake).toBeUndefined();
-      expect(result.environments.ssr.build?.rollupOptions?.treeshake).toBeUndefined();
+      if (viteVersion >= 8) {
+        expect(result.environments.rsc.build?.rolldownOptions?.treeshake).toBeUndefined();
+        expect(result.environments.ssr.build?.rolldownOptions?.treeshake).toBeUndefined();
+      } else {
+        expect(result.environments.rsc.build?.rollupOptions?.treeshake).toBeUndefined();
+        expect(result.environments.ssr.build?.rollupOptions?.treeshake).toBeUndefined();
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -563,10 +586,19 @@ describe("treeshake config integration", () => {
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       // For standalone client builds (non-SSR, non-multi-env),
-      // output config should include experimentalMinChunkSize
-      const output = result.build.rollupOptions.output;
-      expect(output).toBeDefined();
-      expect(output.experimentalMinChunkSize).toBe(10_000);
+      // output config should include experimentalMinChunkSize (Vite 7 only)
+      const viteVersion = getViteMajorVersion();
+      if (viteVersion >= 8) {
+        // Vite 8+ doesn't support experimentalMinChunkSize
+        const output = result.build.rolldownOptions?.output;
+        expect(output).toBeDefined();
+        expect((output as any).experimentalMinChunkSize).toBeUndefined();
+      } else {
+        // Vite 7 includes experimentalMinChunkSize
+        const output = result.build.rollupOptions.output;
+        expect(output).toBeDefined();
+        expect(output.experimentalMinChunkSize).toBe(10_000);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
