@@ -125,11 +125,17 @@ export function createTickBufferedTransform(
       if (timeoutId !== null) return;
 
       timeoutId = setTimeout(() => {
-        flushBuffered(controller);
+        try {
+          flushBuffered(controller);
 
-        const rscScripts = rscEmbed.flush();
-        if (rscScripts) {
-          controller.enqueue(encoder.encode(rscScripts));
+          const rscScripts = rscEmbed.flush();
+          if (rscScripts) {
+            controller.enqueue(encoder.encode(rscScripts));
+          }
+        } catch {
+          // Stream was cancelled between when the timeout was registered and
+          // when it fired (e.g. client disconnected, health-check cancelled
+          // the response body). Ignore — the stream is already closed.
         }
 
         timeoutId = null;

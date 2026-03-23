@@ -85,12 +85,42 @@ export function deferUntilStreamConsumed(
   stream: ReadableStream<Uint8Array>,
   onFlush: () => void,
 ): ReadableStream<Uint8Array> {
+  let called = false;
+  const once = () => {
+    if (!called) {
+      called = true;
+      onFlush();
+    }
+  };
+
   const cleanup = new TransformStream<Uint8Array, Uint8Array>({
     flush() {
-      onFlush();
+      once();
     },
   });
-  return stream.pipeThrough(cleanup);
+
+  const piped = stream.pipeThrough(cleanup);
+
+  // Wrap with a ReadableStream so we can intercept cancel() — the TransformStream
+  // Transformer interface does not expose a cancel hook in the Web Streams spec.
+  const reader = piped.getReader();
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      return reader.read().then(({ done, value }) => {
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      });
+    },
+    cancel(reason) {
+      // Stream cancelled before fully consumed (e.g. client disconnected).
+      // Still clear per-request context to avoid leaks.
+      once();
+      return reader.cancel(reason);
+    },
+  });
 }
 
 export async function renderAppPageHtmlResponse(
