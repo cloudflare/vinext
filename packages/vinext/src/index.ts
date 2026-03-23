@@ -2347,9 +2347,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           root,
           enabled: options.typegen !== false,
         });
+        const closeServer = server.close.bind(server);
 
         typegen.start();
-        server.httpServer?.once("close", () => typegen.close());
+        server.close = async () => {
+          typegen.close();
+          await closeServer();
+        };
 
         // Build a long-lived ModuleRunner for loading all Pages Router modules
         // (middleware, API routes, SSR page rendering) on every request.
