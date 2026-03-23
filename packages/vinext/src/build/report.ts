@@ -846,7 +846,12 @@ export type NitroRouteRules = Record<string, { swr: number }>;
 export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
   const rules: NitroRouteRules = {};
   for (const row of rows) {
-    if (row.type === "isr" && row.revalidate !== undefined && row.revalidate > 0) {
+    if (
+      row.type === "isr" &&
+      typeof row.revalidate === "number" &&
+      Number.isFinite(row.revalidate) &&
+      row.revalidate > 0
+    ) {
       rules[row.pattern] = { swr: row.revalidate };
     }
   }

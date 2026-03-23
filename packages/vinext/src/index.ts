@@ -4420,19 +4420,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (Object.keys(routeRules).length === 0) return;
 
           let nitroJson: Record<string, any> = {};
+          let nitroJsonParseError = false;
           if (fs.existsSync(nitroOutputPath)) {
             try {
               nitroJson = JSON.parse(fs.readFileSync(nitroOutputPath, "utf-8"));
-            } catch {
-              // ignore parse errors
+            } catch (error) {
+              nitroJsonParseError = true;
+              console.warn(
+                `[vinext] Failed to parse existing nitro.json at ${nitroOutputPath}:`,
+                error instanceof Error ? error.message : String(error),
+              );
             }
           }
+
+          if (nitroJsonParseError) return;
 
           if (!nitroJson.routeRules) {
             nitroJson.routeRules = {};
           }
 
-          Object.assign(nitroJson.routeRules, routeRules);
+          for (const [route, rule] of Object.entries(routeRules)) {
+            nitroJson.routeRules[route] = {
+              ...(nitroJson.routeRules[route] ?? {}),
+              ...rule,
+            };
+          }
 
           fs.writeFileSync(nitroOutputPath, JSON.stringify(nitroJson, null, 2));
         },

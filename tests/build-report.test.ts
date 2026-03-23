@@ -787,11 +787,11 @@ describe("generateNitroRouteRules", () => {
   it("handles nested ISR routes", () => {
     const rows = [
       { pattern: "/blog/posts", type: "isr" as const, revalidate: 10 },
-      { pattern: "/blog/posts/[slug]", type: "isr" as const, revalidate: 20 },
+      { pattern: "/blog/posts/:slug", type: "isr" as const, revalidate: 20 },
     ];
     expect(generateNitroRouteRules(rows)).toEqual({
       "/blog/posts": { swr: 10 },
-      "/blog/posts/[slug]": { swr: 20 },
+      "/blog/posts/:slug": { swr: 20 },
     });
   });
 
@@ -815,14 +815,12 @@ describe("generateNitroRouteRules", () => {
     expect(typeof result["/cache"].swr).toBe("number");
   });
 
-  it("handles ISR routes with Infinity revalidate (treated as static)", () => {
+  it("does not generate swr rules for ISR routes with Infinity revalidate", () => {
     const rows = [
       { pattern: "/static", type: "static" as const },
       { pattern: "/isr", type: "isr" as const, revalidate: Infinity },
     ];
     const result = generateNitroRouteRules(rows);
-    expect(result).toEqual({
-      "/isr": { swr: Infinity },
-    });
+    expect(result).toEqual({});
   });
 });
