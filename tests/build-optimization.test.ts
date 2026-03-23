@@ -1700,3 +1700,69 @@ export const getStaticPaths = () => [
     expect(result).not.toContain("a;b");
   });
 });
+
+// Vite 8 multi-env tests
+describe("multi-env client build config (Vite 8)", () => {
+  it("places output and treeshake under rolldownOptions, not rollupOptions", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-vite8-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    // Create an app/ directory to trigger App Router multi-env mode
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+      };
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+
+      const viteVersion = getViteMajorVersion();
+      if (viteVersion >= 8) {
+        // Vite 8 shape - config under rolldownOptions
+        const clientBuild = result.environments.client.build;
+        expect(clientBuild.rolldownOptions?.output?.manualChunks).toBeDefined();
+        expect(clientBuild.rolldownOptions?.treeshake).toEqual({
+          moduleSideEffects: "no-external",
+        });
+
+        // These must NOT be present on Vite 8
+        expect(clientBuild.rollupOptions?.treeshake).toBeUndefined();
+        expect(clientBuild.rolldownOptions?.output?.experimentalMinChunkSize).toBeUndefined();
+      } else {
+        // Vite 7 shape - config under rollupOptions
+        const clientBuild = result.environments.client.build;
+        expect(clientBuild.rollupOptions?.output?.manualChunks).toBeDefined();
+        expect(clientBuild.rollupOptions?.treeshake).toEqual({
+          preset: "recommended",
+          moduleSideEffects: "no-external",
+        });
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
