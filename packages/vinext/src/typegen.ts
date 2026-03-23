@@ -52,6 +52,7 @@ export function createNextTypegenController(
   let pending = false;
   let nextBin: string | null | undefined;
   let missingNextLogged = false;
+  let firstSuccessLogged = false;
   let closed = false;
 
   function getNextBin(): string | null {
@@ -92,6 +93,9 @@ export function createNextTypegenController(
       if (code !== 0) {
         const detail = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
         logger.warn(`[vinext] \`next typegen\` exited with ${detail}.`);
+      } else if (!firstSuccessLogged) {
+        firstSuccessLogged = true;
+        logger.info("[vinext] `next typegen` completed.");
       }
 
       if (pending) {
