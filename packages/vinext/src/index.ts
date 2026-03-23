@@ -9,11 +9,7 @@ import {
 import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
-import {
-  buildReportRows,
-  generateNitroRouteRules,
-  findDir,
-} from "./build/report.js";
+import { buildReportRows, generateNitroRouteRules, findDir } from "./build/report.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
