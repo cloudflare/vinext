@@ -85,7 +85,7 @@ function buildPagesFontHeadHtml(
   return html;
 }
 
-function buildPagesNextDataScript(
+export function buildPagesNextDataScript(
   options: Pick<
     RenderPagesPageResponseOptions,
     "buildId" | "i18n" | "pageProps" | "params" | "routePattern" | "safeJsonStringify"
