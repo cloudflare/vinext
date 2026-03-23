@@ -73,9 +73,9 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/assets/index-abc123.js");
 
     expect(entry).toBeDefined();
-    expect(entry!.contentType).toBe("application/javascript");
-    expect(entry!.size).toBe(12); // "const x = 1;"
-    expect(entry!.resolvedPath).toBe(path.join(clientDir, "assets/index-abc123.js"));
+    expect(entry!.original.headers["Content-Type"]).toBe("application/javascript");
+    expect(entry!.original.headers["Content-Length"]).toBe("12"); // "const x = 1;"
+    expect(entry!.original.path).toBe(path.join(clientDir, "assets/index-abc123.js"));
   });
 
   it("returns undefined for non-existent files", async () => {
@@ -92,7 +92,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/bundle-abc123.js");
 
-    expect(entry!.cacheControl).toBe("public, max-age=31536000, immutable");
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
   it("sets short cache-control for non-hashed files", async () => {
@@ -101,7 +101,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/favicon.ico");
 
-    expect(entry!.cacheControl).toBe("public, max-age=3600");
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=3600");
   });
 
   it("generates weak etag from size and mtime", async () => {
@@ -126,8 +126,8 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/app-abc123.js");
 
-    expect(entry!.brPath).toBe(path.join(clientDir, "assets/app-abc123.js.br"));
-    expect(entry!.brSize).toBe(brContent.length);
+    expect(entry!.br?.path).toBe(path.join(clientDir, "assets/app-abc123.js.br"));
+    expect(entry!.br?.headers["Content-Length"]).toBe(String(brContent.length));
   });
 
   it("detects gzip precompressed variant", async () => {
@@ -139,8 +139,8 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/styles-def456.css");
 
-    expect(entry!.gzPath).toBe(path.join(clientDir, "assets/styles-def456.css.gz"));
-    expect(entry!.gzSize).toBe(gzContent.length);
+    expect(entry!.gz?.path).toBe(path.join(clientDir, "assets/styles-def456.css.gz"));
+    expect(entry!.gz?.headers["Content-Length"]).toBe(String(gzContent.length));
   });
 
   it("detects zstandard precompressed variant", async () => {
@@ -152,8 +152,32 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/app-zstd.js");
 
-    expect(entry!.zstPath).toBe(path.join(clientDir, "assets/app-zstd.js.zst"));
-    expect(entry!.zstSize).toBe(zstdContent.length);
+    expect(entry!.zst?.path).toBe(path.join(clientDir, "assets/app-zstd.js.zst"));
+    expect(entry!.zst?.headers["Content-Length"]).toBe(String(zstdContent.length));
+  });
+
+  it("sets Vary: Accept-Encoding on original variant when compressed siblings exist", async () => {
+    const content = "const x = 1;\n".repeat(200);
+    await writeFile(clientDir, "assets/app-abc123.js", content);
+    await writeFile(
+      clientDir,
+      "assets/app-abc123.js.br",
+      zlib.brotliCompressSync(Buffer.from(content)),
+    );
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/assets/app-abc123.js");
+
+    expect(entry!.original.headers["Vary"]).toBe("Accept-Encoding");
+  });
+
+  it("omits Vary on original variant when no compressed siblings exist", async () => {
+    await writeFile(clientDir, "favicon.ico", "icon-data");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/favicon.ico");
+
+    expect(entry!.original.headers["Vary"]).toBeUndefined();
   });
 
   it("does not expose .br/.gz/.zst files as standalone entries", async () => {
@@ -188,8 +212,8 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/about");
 
     expect(entry).toBeDefined();
-    expect(entry!.resolvedPath).toBe(path.join(clientDir, "about.html"));
-    expect(entry!.contentType).toBe("text/html");
+    expect(entry!.original.path).toBe(path.join(clientDir, "about.html"));
+    expect(entry!.original.headers["Content-Type"]).toBe("text/html");
   });
 
   it("resolves /index.html fallback for directory paths", async () => {
@@ -199,7 +223,7 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/blog");
 
     expect(entry).toBeDefined();
-    expect(entry!.resolvedPath).toBe(path.join(clientDir, "blog/index.html"));
+    expect(entry!.original.path).toBe(path.join(clientDir, "blog/index.html"));
   });
 
   // ── Directory traversal protection ─────────────────────────────
@@ -231,10 +255,14 @@ describe("StaticFileCache", () => {
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/style-aaa.css")!.contentType).toBe("text/css");
-    expect(cache.lookup("/assets/data-bbb.json")!.contentType).toBe("application/json");
-    expect(cache.lookup("/logo.svg")!.contentType).toBe("image/svg+xml");
-    expect(cache.lookup("/photo.webp")!.contentType).toBe("image/webp");
+    expect(cache.lookup("/assets/style-aaa.css")!.original.headers["Content-Type"]).toBe(
+      "text/css",
+    );
+    expect(cache.lookup("/assets/data-bbb.json")!.original.headers["Content-Type"]).toBe(
+      "application/json",
+    );
+    expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe("image/svg+xml");
+    expect(cache.lookup("/photo.webp")!.original.headers["Content-Type"]).toBe("image/webp");
   });
 
   it("falls back to application/octet-stream for unknown extensions", async () => {
@@ -242,7 +270,9 @@ describe("StaticFileCache", () => {
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/data-ccc.xyz")!.contentType).toBe("application/octet-stream");
+    expect(cache.lookup("/assets/data-ccc.xyz")!.original.headers["Content-Type"]).toBe(
+      "application/octet-stream",
+    );
   });
 
   // ── Nested directory scanning ──────────────────────────────────

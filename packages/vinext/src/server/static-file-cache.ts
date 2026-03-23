@@ -41,7 +41,7 @@ export const CONTENT_TYPES: Record<string, string> = {
  * Files below this size are buffered in memory at startup for zero-syscall
  * serving via res.end(buffer). Above this, files stream via createReadStream.
  * 64KB covers virtually all precompressed assets (a 200KB JS bundle compresses
- * to ~40KB with brotli q11).
+ * to ~50KB with brotli q5).
  */
 const BUFFER_THRESHOLD = 64 * 1024;
 
@@ -68,18 +68,6 @@ export interface StaticFileEntry {
   gz?: FileVariant;
   /** Zstandard precompressed variant, if .zst file exists. */
   zst?: FileVariant;
-
-  // Legacy accessors for backwards compatibility with tests
-  resolvedPath: string;
-  size: number;
-  contentType: string;
-  cacheControl: string;
-  brPath?: string;
-  brSize?: number;
-  gzPath?: string;
-  gzSize?: number;
-  zstPath?: string;
-  zstSize?: number;
 }
 
 /**
@@ -148,35 +136,31 @@ export class StaticFileCache {
 
       const entry: StaticFileEntry = {
         etag,
-        notModifiedHeaders: { ...baseHeaders },
+        notModifiedHeaders: { ETag: etag, "Cache-Control": cacheControl },
         original,
-        // Legacy accessors
-        resolvedPath: fileInfo.fullPath,
-        size: fileInfo.size,
-        contentType,
-        cacheControl,
       };
 
       // Pre-compute compressed variant headers (with Content-Encoding, Vary, correct Content-Length)
       const brInfo = allFiles.get(relativePath + ".br");
       if (brInfo) {
         entry.br = buildVariant(brInfo, baseHeaders, "br");
-        entry.brPath = brInfo.fullPath;
-        entry.brSize = brInfo.size;
       }
 
       const gzInfo = allFiles.get(relativePath + ".gz");
       if (gzInfo) {
         entry.gz = buildVariant(gzInfo, baseHeaders, "gzip");
-        entry.gzPath = gzInfo.fullPath;
-        entry.gzSize = gzInfo.size;
       }
 
       const zstInfo = allFiles.get(relativePath + ".zst");
       if (zstInfo) {
         entry.zst = buildVariant(zstInfo, baseHeaders, "zstd");
-        entry.zstPath = zstInfo.fullPath;
-        entry.zstSize = zstInfo.size;
+      }
+
+      // When compressed variants exist, the original needs Vary too so
+      // shared caches don't serve uncompressed to compression-capable clients.
+      if (entry.br || entry.gz || entry.zst) {
+        original.headers["Vary"] = "Accept-Encoding";
+        entry.notModifiedHeaders["Vary"] = "Accept-Encoding";
       }
 
       // Register under the URL pathname (leading /)
@@ -254,8 +238,14 @@ function buildVariant(
   };
 }
 
+/** Batch size for concurrent stat() calls during directory walk. */
+const STAT_BATCH_SIZE = 64;
+
 /**
  * Walk a directory recursively, yielding file paths and stats.
+ *
+ * Batches stat() calls per directory to avoid sequential syscall overhead
+ * for large dist/client/ directories.
  */
 async function* walkFilesWithStats(
   dir: string,
@@ -271,16 +261,27 @@ async function* walkFilesWithStats(
   } catch {
     return; // directory doesn't exist or unreadable
   }
+
+  // Recurse into subdirectories first (they yield their own batched stats)
+  const files: string[] = [];
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       yield* walkFilesWithStats(fullPath, base);
     } else if (entry.isFile()) {
-      const stat = await fsp.stat(fullPath);
+      files.push(fullPath);
+    }
+  }
+
+  // Batch stat() calls for files in this directory
+  for (let i = 0; i < files.length; i += STAT_BATCH_SIZE) {
+    const batch = files.slice(i, i + STAT_BATCH_SIZE);
+    const stats = await Promise.all(batch.map((f) => fsp.stat(f)));
+    for (let j = 0; j < batch.length; j++) {
       yield {
-        relativePath: path.relative(base, fullPath),
-        fullPath,
-        stat: { size: stat.size, mtimeMs: stat.mtimeMs },
+        relativePath: path.relative(base, batch[j]),
+        fullPath: batch[j],
+        stat: { size: stats[j].size, mtimeMs: stats[j].mtimeMs },
       };
     }
   }

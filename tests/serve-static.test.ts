@@ -344,6 +344,22 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.status).toBe(200);
   });
 
+  it("304 response excludes Content-Type per RFC 9110", async () => {
+    await writeFile(clientDir, "assets/rfc-aaa111.js", "rfc content");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/assets/rfc-aaa111.js");
+
+    const req = mockReq(undefined, { "if-none-match": entry!.etag });
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/assets/rfc-aaa111.js", true, cache);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers["Content-Type"]).toBeUndefined();
+  });
+
   it("304 response includes ETag and Cache-Control but no Content-Length", async () => {
     await writeFile(clientDir, "assets/headers-ddd444.js", "header test content");
 

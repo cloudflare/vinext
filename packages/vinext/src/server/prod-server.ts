@@ -418,7 +418,7 @@ async function tryServeStatic(
 
     // Pick the best precompressed variant: zstd → br → gzip → original.
     // Each variant has pre-computed headers — zero string building.
-    // Accept-Encoding is already lowercase in Node.js IncomingMessage.
+    // Accept-Encoding header values from browsers use lowercase tokens.
     const ae = compress ? req.headers["accept-encoding"] : undefined;
     const variant =
       typeof ae === "string"
@@ -444,7 +444,7 @@ async function tryServeStatic(
     if (variant.buffer) {
       res.end(variant.buffer);
     } else {
-      fs.createReadStream(variant.path).pipe(res);
+      pipeline(fs.createReadStream(variant.path), res, () => {});
     }
     return true;
   }

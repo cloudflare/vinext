@@ -1,7 +1,7 @@
 /**
  * Build-time precompression for hashed static assets.
  *
- * Generates .br (brotli q11), .gz (gzip l9), and .zst (zstd l19) files
+ * Generates .br (brotli q5), .gz (gzip l9), and .zst (zstd l22) files
  * alongside compressible assets in dist/client/assets/. Served directly by
  * the production server — no per-request compression needed for immutable
  * build output.
@@ -10,13 +10,14 @@
  * on-the-fly compression since they may change between deploys.
  */
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { promisify } from "node:util";
 
 const brotliCompress = promisify(zlib.brotliCompress);
 const gzip = promisify(zlib.gzip);
-const zstdCompress = promisify(zlib.zstdCompress);
+const zstdCompress = typeof zlib.zstdCompress === "function" ? promisify(zlib.zstdCompress) : null;
 
 /** File extensions worth compressing (text-based, not already compressed). */
 const COMPRESSIBLE_EXTENSIONS = new Set([
@@ -35,10 +36,13 @@ const COMPRESSIBLE_EXTENSIONS = new Set([
 /** Below this size, compression overhead exceeds savings. */
 const MIN_SIZE = 1024;
 
+/** Max files to compress concurrently (avoids memory spikes). */
+const CONCURRENCY = Math.min(os.availableParallelism(), 16);
+
 export interface PrecompressResult {
   filesCompressed: number;
   totalOriginalBytes: number;
-  /** Smallest compressed variant per file (brotli, since it always wins). */
+  /** Sum of brotli-compressed sizes (used for compression ratio reporting). */
   totalCompressedBytes: number;
 }
 
@@ -77,7 +81,8 @@ export async function precompressAssets(clientDir: string): Promise<PrecompressR
     totalCompressedBytes: 0,
   };
 
-  const compressionWork: Promise<void>[] = [];
+  // Collect compressible files first, then process in bounded chunks
+  const files: { fullPath: string; content: Buffer }[] = [];
 
   for await (const relativePath of walkFiles(assetsDir)) {
     const ext = path.extname(relativePath).toLowerCase();
@@ -96,38 +101,47 @@ export async function precompressAssets(clientDir: string): Promise<PrecompressR
 
     if (content.length < MIN_SIZE) continue;
 
+    files.push({ fullPath, content });
     result.filesCompressed++;
     result.totalOriginalBytes += content.length;
+  }
 
-    // Compress all three variants concurrently
-    compressionWork.push(
-      (async () => {
-        const [brContent, gzContent, zstdContent] = await Promise.all([
+  // Process in chunks to bound concurrent CPU-heavy compressions
+  for (let i = 0; i < files.length; i += CONCURRENCY) {
+    const chunk = files.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      chunk.map(async ({ fullPath, content }) => {
+        // Compress all variants concurrently within each file
+        const compressions: Promise<Buffer>[] = [
           brotliCompress(content, {
-            params: {
-              [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
-            },
+            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
           }),
           gzip(content, { level: zlib.constants.Z_BEST_COMPRESSION }),
-          zstdCompress(content, {
-            params: {
-              [zlib.constants.ZSTD_c_compressionLevel]: 19, // High compression (1-22, 19 is a good max)
-            },
-          }),
-        ]);
+        ];
+        if (zstdCompress) {
+          compressions.push(
+            zstdCompress(content, {
+              params: { [zlib.constants.ZSTD_c_compressionLevel]: 22 },
+            }),
+          );
+        }
 
-        await Promise.all([
+        const results = await Promise.all(compressions);
+        const [brContent, gzContent, zstdContent] = results;
+
+        const writes = [
           fsp.writeFile(fullPath + ".br", brContent),
           fsp.writeFile(fullPath + ".gz", gzContent),
-          fsp.writeFile(fullPath + ".zst", zstdContent),
-        ]);
+        ];
+        if (zstdContent) {
+          writes.push(fsp.writeFile(fullPath + ".zst", zstdContent));
+        }
+        await Promise.all(writes);
 
-        // Track brotli size (typically the smallest variant)
         result.totalCompressedBytes += brContent.length;
-      })(),
+      }),
     );
   }
 
-  await Promise.all(compressionWork);
   return result;
 }
