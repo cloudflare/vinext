@@ -114,7 +114,7 @@ describe("next typegen controller", () => {
     controller.start();
     controller.schedule();
 
-    await waitFor(() => info.mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(info).toHaveBeenCalledTimes(1);
   });
 });
