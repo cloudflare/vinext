@@ -78,7 +78,6 @@ export function createNextTypegenController(
     child = spawnImpl(process.execPath, [resolvedNextBin, "typegen"], {
       cwd: root,
       stdio: "ignore",
-      env: process.env,
     });
 
     child.once("error", (error) => {
