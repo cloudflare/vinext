@@ -9,6 +9,11 @@ import {
 import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
+import {
+  buildReportRows,
+  generateNitroRouteRules,
+  findDir,
+} from "./build/report.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
@@ -4369,6 +4374,70 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       };
     })(),
+    // Nitro routeRules integration:
+    // When Nitro plugin is present, extract ISR route configs (export const revalidate = N)
+    // from app/ and pages/ directories and generate Nitro routeRules in the output.
+    {
+      name: "vinext:nitro-route-rules",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        async handler(options) {
+          if (!hasNitroPlugin) return;
+
+          const envName = this.environment?.name;
+          if (envName !== "rsc" && envName !== "ssr") return;
+
+          const buildRoot = this.environment?.config?.root ?? process.cwd();
+          const nitroOutputPath = path.join(buildRoot, ".output", "nitro.json");
+
+          const appDir = findDir(buildRoot, "app", "src/app");
+          const pagesDir = findDir(buildRoot, "pages", "src/pages");
+
+          if (!appDir && !pagesDir) return;
+
+          let appRoutes: any[] = [];
+          let pageRoutes: any[] = [];
+          let apiRoutes: any[] = [];
+
+          if (appDir) {
+            appRoutes = await appRouter(appDir, nextConfig?.pageExtensions);
+          }
+          if (pagesDir) {
+            const [pages, apis] = await Promise.all([
+              pagesRouter(pagesDir, nextConfig?.pageExtensions),
+              apiRouter(pagesDir, nextConfig?.pageExtensions),
+            ]);
+            pageRoutes = pages;
+            apiRoutes = apis;
+          }
+
+          const rows = buildReportRows({ appRoutes, pageRoutes, apiRoutes });
+          const routeRules = generateNitroRouteRules(rows);
+
+          if (Object.keys(routeRules).length === 0) return;
+
+          let nitroJson: Record<string, any> = {};
+          if (fs.existsSync(nitroOutputPath)) {
+            try {
+              nitroJson = JSON.parse(fs.readFileSync(nitroOutputPath, "utf-8"));
+            } catch {
+              // ignore parse errors
+            }
+          }
+
+          if (!nitroJson.routeRules) {
+            nitroJson.routeRules = {};
+          }
+
+          Object.assign(nitroJson.routeRules, routeRules);
+
+          fs.writeFileSync(nitroOutputPath, JSON.stringify(nitroJson, null, 2));
+        },
+      },
+    },
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
     // runtime, so rebuild those mappings from the emitted client bundle.

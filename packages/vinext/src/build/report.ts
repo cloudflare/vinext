@@ -839,6 +839,20 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   return lines.join("\n");
 }
 
+// ─── Nitro routeRules generation ────────────────────────────────────────────────
+
+export type NitroRouteRules = Record<string, { swr: number }>;
+
+export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
+  const rules: NitroRouteRules = {};
+  for (const row of rows) {
+    if (row.type === "isr" && row.revalidate !== undefined && row.revalidate > 0) {
+      rules[row.pattern] = { swr: row.revalidate };
+    }
+  }
+  return rules;
+}
+
 // ─── Directory detection ──────────────────────────────────────────────────────
 
 export function findDir(root: string, ...candidates: string[]): string | null {

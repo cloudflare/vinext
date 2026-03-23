@@ -19,6 +19,7 @@ import {
   buildReportRows,
   formatBuildReport,
   printBuildReport,
+  generateNitroRouteRules,
 } from "../packages/vinext/src/build/report.js";
 import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
@@ -737,5 +738,91 @@ describe("printBuildReport respects pageExtensions", () => {
 
     const output = lines.join("\n");
     expect(output).toContain("/about");
+  });
+});
+
+// ─── generateNitroRouteRules ───────────────────────────────────────────────────
+
+describe("generateNitroRouteRules", () => {
+  it("returns empty object when no ISR routes", () => {
+    const rows = [
+      { pattern: "/", type: "static" as const },
+      { pattern: "/about", type: "ssr" as const },
+      { pattern: "/api/data", type: "api" as const },
+    ];
+    expect(generateNitroRouteRules(rows)).toEqual({});
+  });
+
+  it("returns empty object for empty rows", () => {
+    expect(generateNitroRouteRules([])).toEqual({});
+  });
+
+  it("maps ISR route to swr rule", () => {
+    const rows = [{ pattern: "/blog", type: "isr" as const, revalidate: 60 }];
+    expect(generateNitroRouteRules(rows)).toEqual({
+      "/blog": { swr: 60 },
+    });
+  });
+
+  it("maps multiple ISR routes to swr rules", () => {
+    const rows = [
+      { pattern: "/blog", type: "isr" as const, revalidate: 60 },
+      { pattern: "/about", type: "static" as const },
+      { pattern: "/products", type: "isr" as const, revalidate: 30 },
+      { pattern: "/api/data", type: "api" as const },
+    ];
+    expect(generateNitroRouteRules(rows)).toEqual({
+      "/blog": { swr: 60 },
+      "/products": { swr: 30 },
+    });
+  });
+
+  it("preserves root / pattern", () => {
+    const rows = [{ pattern: "/", type: "isr" as const, revalidate: 120 }];
+    expect(generateNitroRouteRules(rows)).toEqual({
+      "/": { swr: 120 },
+    });
+  });
+
+  it("handles nested ISR routes", () => {
+    const rows = [
+      { pattern: "/blog/posts", type: "isr" as const, revalidate: 10 },
+      { pattern: "/blog/posts/[slug]", type: "isr" as const, revalidate: 20 },
+    ];
+    expect(generateNitroRouteRules(rows)).toEqual({
+      "/blog/posts": { swr: 10 },
+      "/blog/posts/[slug]": { swr: 20 },
+    });
+  });
+
+  it("filters out non-ISR routes even if they have revalidate metadata", () => {
+    const rows = [
+      { pattern: "/", type: "static" as const },
+      { pattern: "/ssr", type: "ssr" as const },
+      { pattern: "/unknown", type: "unknown" as const },
+      { pattern: "/api", type: "api" as const },
+      { pattern: "/isr", type: "isr" as const, revalidate: 5 },
+    ];
+    expect(generateNitroRouteRules(rows)).toEqual({
+      "/isr": { swr: 5 },
+    });
+  });
+
+  it("uses revalidate value as swr number", () => {
+    const rows = [{ pattern: "/cache", type: "isr" as const, revalidate: 10 }];
+    const result = generateNitroRouteRules(rows);
+    expect(result["/cache"].swr).toBe(10);
+    expect(typeof result["/cache"].swr).toBe("number");
+  });
+
+  it("handles ISR routes with Infinity revalidate (treated as static)", () => {
+    const rows = [
+      { pattern: "/static", type: "static" as const },
+      { pattern: "/isr", type: "isr" as const, revalidate: Infinity },
+    ];
+    const result = generateNitroRouteRules(rows);
+    expect(result).toEqual({
+      "/isr": { swr: Infinity },
+    });
   });
 });
