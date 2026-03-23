@@ -2601,6 +2601,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return fn.call(this, code, id, options);
       },
     },
+    // Guard plugin: during RSC scan-build, skip MDX files to prevent
+    // rsc:scan-strip from trying to parse MDX frontmatter/JSX as JavaScript.
+    // rsc:scan-strip runs on all files during scan-build, and if it encounters
+    // raw MDX (frontmatter ---, JSX <span>), es-module-lexer's parse() fails.
+    // This plugin runs with enforce:"pre" before rsc:scan-strip (which is
+    // enforce:"post") to ensure MDX files are handled first. Even though
+    // vinext:mdx also has enforce:"pre", it may not be invoked on every MDX
+    // file during scan-build, so this guard provides an extra layer.
+    {
+      name: "vinext:rsc-scan-mdx-guard",
+      enforce: "pre",
+      transform(code, id) {
+        const queryIndex = id.indexOf("?");
+        const baseId = queryIndex === -1 ? id : id.slice(0, queryIndex);
+        if (!baseId.endsWith(".mdx")) return null;
+        return { code, map: null };
+      },
+    },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
     // that exist in Next.js's bundled React canary but not in stable React 19.
     // Provides graceful no-op fallbacks so projects using these APIs degrade

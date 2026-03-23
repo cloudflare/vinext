@@ -235,4 +235,169 @@ export default handler;
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
     expect(buildOutput).not.toContain("@/content/posts/");
   }, 60_000);
+
+  it("import.meta.glob with MDX files containing frontmatter does not cause parse errors (issue #659)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mdx-frontmatter-build-"));
+    tmpDirs.push(root);
+    const workerEntryPath = path
+      .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
+      .replace(/\\/g, "/");
+    const cfPluginPath = path.resolve(
+      import.meta.dirname,
+      "./fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+    );
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: (opts?: {
+        viteEnvironment?: { name: string; childEnvironments?: string[] };
+      }) => import("vite").Plugin;
+    };
+
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+
+    writeFixtureFile(
+      root,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "vinext-mdx-frontmatter-test",
+          private: true,
+          type: "module",
+        },
+        null,
+        2,
+      ),
+    );
+    writeFixtureFile(
+      root,
+      "wrangler.jsonc",
+      `{
+  "name": "vinext-mdx-frontmatter-test",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  }
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "tsconfig.json",
+      JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "bundler",
+            jsx: "react-jsx",
+            strict: true,
+            skipLibCheck: true,
+            types: ["vite/client", "@vitejs/plugin-rsc/types"],
+            paths: {
+              "@/*": ["./*"],
+            },
+          },
+          include: ["app", "lib", "content", "*.ts", "*.tsx"],
+        },
+        null,
+        2,
+      ),
+    );
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import { getGlobPostCount } from "../lib/mdx-loader";
+
+export default function HomePage() {
+  return <main>home {getGlobPostCount()}</main>;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "app/mdx-probe/page.mdx",
+      `# Probe
+
+This file exists only to trigger vinext's MDX auto-detection.
+`,
+    );
+    writeFixtureFile(
+      root,
+      "lib/mdx-loader.ts",
+      `type MdxModule = {
+  default: React.ComponentType;
+  frontmatter?: {
+    title: string;
+    date: string;
+  };
+};
+
+export const mdxModules = import.meta.glob("@/content/posts/**/*.mdx", {
+  eager: true,
+}) as Record<string, MdxModule>;
+
+export function getGlobPostCount(): number {
+  return Object.keys(mdxModules).length;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "content/posts/2025/08/20/second-post/index.mdx",
+      `---
+title: "Second Post"
+date: "2025-08-20"
+---
+
+<span className="text-red-500">This is a post with frontmatter and JSX.</span>
+`,
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      `import handler from ${JSON.stringify(workerEntryPath)};
+
+export default handler;
+`,
+    );
+
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
+    expect(buildOutput).not.toContain("@/content/posts/");
+    expect(buildOutput).not.toContain("---");
+    expect(buildOutput).not.toContain("text-red-500");
+  }, 60_000);
 });
