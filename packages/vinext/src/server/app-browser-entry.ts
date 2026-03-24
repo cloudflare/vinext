@@ -615,7 +615,10 @@ async function main(): Promise<void> {
       const paramsHeader = navResponse.headers.get("X-Vinext-Params");
       if (paramsHeader) {
         try {
-          navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
+          navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
+            string,
+            string | string[]
+          >;
           stageClientParams(navParams);
         } catch {
           stageClientParams({});
