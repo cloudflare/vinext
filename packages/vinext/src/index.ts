@@ -40,6 +40,7 @@ import {
   runInstrumentation,
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "./shims/constants.js";
+import { precompressAssets } from "./build/precompress.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
   isExternalUrl,
@@ -817,6 +818,19 @@ export type VinextOptions = {
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
+  /**
+   * Control build-time precompression of static assets (.br, .gz, .zst).
+   *
+   * - `'auto'` (default): enabled for Node.js production server targets,
+   *   disabled when deploying to edge platforms (Cloudflare Workers, Nitro)
+   *   that handle compression at the CDN layer.
+   * - `true`: always precompress, regardless of deployment target.
+   * - `false`: never precompress.
+   *
+   * Can also be disabled via `--no-precompress` CLI flag or
+   * `VINEXT_NO_PRECOMPRESS=1` environment variable.
+   */
+  precompress?: "auto" | boolean;
   /**
    * Experimental vinext-only feature flags.
    */
@@ -3321,6 +3335,50 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } catch (err) {
             // Leave Vite's manifest untouched if parsing fails.
             console.warn("[vinext] Failed to augment SSR manifest:", err);
+          }
+        },
+      },
+    },
+    // Build-time precompression: generate .br, .gz, .zst for hashed assets.
+    // Runs after the client bundle is written so compressed variants are
+    // available for the production server's static file cache.
+    //
+    // Auto-skipped when targeting edge platforms (Cloudflare Workers, Nitro)
+    // that handle compression at the CDN layer — precompressing would waste
+    // build time and upload bandwidth for files the CDN compresses itself.
+    {
+      name: "vinext:precompress",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        async handler(outputOptions) {
+          if (this.environment?.name !== "client") return;
+
+          // Resolve the precompress option: 'auto' (default) defers to
+          // deployment target detection; explicit true/false overrides.
+          const opt = options.precompress ?? "auto";
+          if (opt === false) return;
+          if (process.env.VINEXT_NO_PRECOMPRESS === "1") return;
+
+          if (opt === "auto" && (hasCloudflarePlugin || hasNitroPlugin)) return;
+
+          const outDir = outputOptions.dir;
+          if (!outDir) return;
+
+          // Only precompress hashed assets — public directory files use
+          // on-the-fly compression since they may change between deploys.
+          const assetsDir = path.join(outDir, "assets");
+          if (!fs.existsSync(assetsDir)) return;
+
+          const result = await precompressAssets(outDir);
+          if (result.filesCompressed > 0) {
+            const ratio = (
+              (1 - result.totalCompressedBytes / result.totalOriginalBytes) *
+              100
+            ).toFixed(1);
+            console.log(`  Precompressed ${result.filesCompressed} assets (${ratio}% smaller)`);
           }
         },
       },
