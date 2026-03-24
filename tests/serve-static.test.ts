@@ -483,4 +483,89 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(captured.headers["Content-Encoding"]).toBe("br");
   });
+
+  // ── Slow path (no cache) ───────────────────────────────────────
+
+  it("slow path serves static file without cache", async () => {
+    await writeFile(clientDir, "assets/nocache-aaa111.js", "slow path content");
+
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/assets/nocache-aaa111.js", false);
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Type"]).toBe("application/javascript");
+    expect(captured.body.toString()).toBe("slow path content");
+  });
+
+  it("slow path returns false for non-existent files", async () => {
+    const req = mockReq();
+    const { res } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/nope.js", false);
+
+    expect(served).toBe(false);
+  });
+
+  it("slow path serves HEAD without body", async () => {
+    await writeFile(clientDir, "assets/head-slow-bbb222.js", "head content");
+
+    const req = mockReq(undefined, undefined, "HEAD");
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/assets/head-slow-bbb222.js", false);
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Length"]).toBe(String("head content".length));
+    expect(captured.body.length).toBe(0);
+  });
+
+  it("slow path serves HEAD without body for compressed response", async () => {
+    await writeFile(clientDir, "assets/head-slow-comp-ccc333.js", "compress me");
+
+    const req = mockReq("br", undefined, "HEAD");
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/head-slow-comp-ccc333.js",
+      true,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Encoding"]).toBe("br");
+    expect(captured.body.length).toBe(0);
+  });
+
+  // ── Malformed pathname handling ─────────────────────────────────
+
+  it("returns false for malformed percent-encoded pathname", async () => {
+    await writeFile(clientDir, "assets/safe-ddd444.js", "safe");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq();
+    const { res } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/%E0%A4%A", true, cache);
+
+    expect(served).toBe(false);
+  });
+
+  it("slow path returns false for malformed percent-encoded pathname", async () => {
+    const req = mockReq();
+    const { res } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/%E0%A4%A", false);
+
+    expect(served).toBe(false);
+  });
 });

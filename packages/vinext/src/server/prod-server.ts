@@ -5,7 +5,7 @@
  * - Static asset serving from client build output
  * - Pages Router: SSR rendering + API route handling
  * - App Router: RSC/SSR rendering, route handlers, server actions
- * - Gzip/Brotli compression for text-based responses
+ * - Zstd/Brotli/Gzip compression for text-based responses
  * - Streaming SSR for App Router
  *
  * Build output for Pages Router:
@@ -105,11 +105,13 @@ const COMPRESS_THRESHOLD = 1024;
  * Supported in Chrome 123+, Firefox 126+. Safari can decompress but doesn't
  * send zstd in Accept-Encoding, so it transparently falls back to br/gzip.
  */
+const HAS_ZSTD = typeof zlib.createZstdCompress === "function";
+
 function negotiateEncoding(req: IncomingMessage): "zstd" | "br" | "gzip" | "deflate" | null {
   const accept = req.headers["accept-encoding"];
   if (!accept || typeof accept !== "string") return null;
   const lower = accept.toLowerCase();
-  if (lower.includes("zstd")) return "zstd";
+  if (HAS_ZSTD && lower.includes("zstd")) return "zstd";
   if (lower.includes("br")) return "br";
   if (lower.includes("gzip")) return "gzip";
   if (lower.includes("deflate")) return "deflate";
@@ -126,6 +128,7 @@ function createCompressor(
   switch (encoding) {
     case "zstd":
       return zlib.createZstdCompress({
+        ...(mode === "streaming" ? { flush: zlib.constants.ZSTD_e_flush } : {}),
         params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 }, // Fast for on-the-fly
       });
     case "br":
@@ -418,15 +421,15 @@ async function tryServeStatic(
 
     // Pick the best precompressed variant: zstd → br → gzip → original.
     // Each variant has pre-computed headers — zero string building.
-    // Accept-Encoding header values from browsers use lowercase tokens.
-    const ae = compress ? req.headers["accept-encoding"] : undefined;
-    const variant =
-      typeof ae === "string"
-        ? (ae.includes("zstd") && entry.zst) ||
-          (ae.includes("br") && entry.br) ||
-          (ae.includes("gzip") && entry.gz) ||
-          entry.original
-        : entry.original;
+    // Encoding tokens are case-insensitive per RFC 9110; lowercase once.
+    const rawAe = compress ? req.headers["accept-encoding"] : undefined;
+    const ae = typeof rawAe === "string" ? rawAe.toLowerCase() : undefined;
+    const variant = ae
+      ? (ae.includes("zstd") && entry.zst) ||
+        (ae.includes("br") && entry.br) ||
+        (ae.includes("gzip") && entry.gz) ||
+        entry.original
+      : entry.original;
 
     if (extraHeaders) {
       res.writeHead(200, { ...variant.headers, ...extraHeaders });
@@ -444,7 +447,12 @@ async function tryServeStatic(
     if (variant.buffer) {
       res.end(variant.buffer);
     } else {
-      pipeline(fs.createReadStream(variant.path), res, () => {});
+      pipeline(fs.createReadStream(variant.path), res, (err) => {
+        if (err && !res.headersSent) {
+          res.writeHead(500);
+          res.end();
+        }
+      });
     }
     return true;
   }
@@ -487,7 +495,16 @@ async function tryServeStatic(
         "Content-Encoding": encoding,
         Vary: "Accept-Encoding",
       });
-      pipeline(fs.createReadStream(resolved.path), compressor, res, () => {});
+      if (req.method === "HEAD") {
+        res.end();
+        return true;
+      }
+      pipeline(fs.createReadStream(resolved.path), compressor, res, (err) => {
+        if (err && !res.headersSent) {
+          res.writeHead(500);
+          res.end();
+        }
+      });
       return true;
     }
   }
@@ -496,7 +513,16 @@ async function tryServeStatic(
     ...baseHeaders,
     "Content-Length": String(resolved.size),
   });
-  pipeline(fs.createReadStream(resolved.path), res, () => {});
+  if (req.method === "HEAD") {
+    res.end();
+    return true;
+  }
+  pipeline(fs.createReadStream(resolved.path), res, (err) => {
+    if (err && !res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  });
   return true;
 }
 
@@ -849,7 +875,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   // Build the static file metadata cache at startup. Eliminates per-request
   // stat() calls — all lookups are pure in-memory Map.get(). Precompressed
-  // .br/.gz variants (generated at build time) are detected automatically.
+  // .br/.gz/.zst variants (generated at build time) are detected automatically.
   const staticCache = await StaticFileCache.create(clientDir);
 
   const server = createServer(async (req, res) => {
