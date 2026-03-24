@@ -244,9 +244,11 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
 }
 
 export function restoreRscResponse(snapshot: CachedRscResponse): Response {
-  // Zero-copy: Uint8Array creates a view over the ArrayBuffer without
-  // allocating. The Response consumes the stream but the underlying
-  // ArrayBuffer in the cache remains intact for future restores.
+  // Uint8Array creates a view over the cached ArrayBuffer without copying.
+  // ReadableStream consumption does not detach the underlying buffer, so
+  // repeated restores from the same snapshot are safe. If a future consumer
+  // ever transfers or detaches the buffer, this assumption breaks — add a
+  // defensive .slice(0) in that case.
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new Uint8Array(snapshot.body));
@@ -776,9 +778,7 @@ export function commitClientNavigationState(): void {
   // reactive useSyncExternalStore values. The committed URL/params are
   // now up-to-date, and any subsequent pushState/replaceState calls
   // must be immediately reflected in hooks.
-  if (state) {
-    state.navigationSnapshotActiveCount = Math.max(0, state.navigationSnapshotActiveCount - 1);
-  }
+  state.navigationSnapshotActiveCount = Math.max(0, state.navigationSnapshotActiveCount - 1);
 
   const urlChanged = syncCommittedUrlStateFromLocation();
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
@@ -821,8 +821,8 @@ export function replaceHistoryStateWithoutNotify(
  * Save the current scroll position into the current history state.
  * Called before every navigation to enable scroll restoration on back/forward.
  *
- * Uses _nativeReplaceState to avoid triggering the history.replaceState
- * interception (which would cause spurious re-renders from notifyListeners).
+ * Uses replaceHistoryStateWithoutNotify to avoid triggering the patched
+ * history.replaceState interception (which would cause spurious re-renders).
  */
 function saveScrollPosition(): void {
   const state = window.history.state ?? {};

@@ -10,7 +10,6 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import type { Root } from "react-dom/client";
 import {
   createFromFetch,
   createFromReadableStream,
@@ -54,7 +53,6 @@ interface ServerActionResult {
   };
 }
 
-let reactRoot: Root | null = null;
 type BrowserTreeState = {
   renderId: number;
   node: ReactNode | Promise<ReactNode>;
@@ -89,7 +87,8 @@ function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return (
     typeof value === "object" &&
     value !== null &&
-    typeof (value as Record<string, unknown>).then === "function"
+    "then" in value &&
+    typeof value.then === "function"
   );
 }
 
@@ -131,14 +130,30 @@ function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | 
   pendingNavigationPrePaintEffects.set(renderId, effect);
 }
 
-function runPrePaintNavigationEffect(renderId: number): void {
-  const effect = pendingNavigationPrePaintEffects.get(renderId);
-  if (!effect) {
-    return;
+/**
+ * Run all queued pre-paint effects for renderIds up to and including the
+ * given renderId. When React supersedes a startTransition update (rapid
+ * clicks on same-route links), the superseded NavigationCommitSignal never
+ * mounts, so its pre-paint effect — which calls commitClientNavigationState
+ * to decrement navigationSnapshotActiveCount — never fires. By draining all
+ * effects ≤ the committed renderId here, the winning transition cleans up
+ * after any superseded ones, keeping the counter balanced.
+ */
+function drainPrePaintEffects(upToRenderId: number): void {
+  for (const [id, effect] of pendingNavigationPrePaintEffects) {
+    if (id <= upToRenderId) {
+      pendingNavigationPrePaintEffects.delete(id);
+      if (id === upToRenderId) {
+        // Only the winning navigation should mutate history — run its
+        // full effect (history push/replace + counter decrement).
+        effect();
+      } else {
+        // Superseded navigations were never rendered. Just balance the
+        // snapshot counter without pushing phantom history entries.
+        commitClientNavigationState();
+      }
+    }
   }
-
-  pendingNavigationPrePaintEffects.delete(renderId);
-  effect();
 }
 
 function createNavigationCommitEffect(
@@ -233,7 +248,9 @@ function resolveCommittedNavigations(renderId: number): void {
 
 function NavigationCommitSignal({ children, renderId }: { children: ReactNode; renderId: number }) {
   useLayoutEffect(() => {
-    runPrePaintNavigationEffect(renderId);
+    // Drain pre-paint effects for this renderId AND any superseded ones
+    // whose NavigationCommitSignal never mounted (see drainPrePaintEffects).
+    drainPrePaintEffects(renderId);
 
     // Resolve the navigation commit promise after the browser commits
     // the next frame. requestAnimationFrame callbacks scheduled from
@@ -503,7 +520,7 @@ async function main(): Promise<void> {
     latestClientParams,
   );
 
-  reactRoot = hydrateRoot(
+  window.__VINEXT_RSC_ROOT__ = hydrateRoot(
     document,
     createElement(BrowserRoot, {
       initialNode: root,
@@ -511,8 +528,6 @@ async function main(): Promise<void> {
     }),
     import.meta.env.DEV ? { onCaughtError() {} } : undefined,
   );
-
-  window.__VINEXT_RSC_ROOT__ = reactRoot;
 
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
@@ -619,6 +634,9 @@ async function main(): Promise<void> {
 
       const responseSnapshot = await snapshotRscResponse(navResponse);
 
+      // Bail out if a newer navigation started while buffering the response.
+      if (navId !== activeNavigationId) return;
+
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       const rscPayload = createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
@@ -638,6 +656,14 @@ async function main(): Promise<void> {
       window.location.href = href;
     }
   };
+
+  // Disable the browser's native scroll restoration so it doesn't fight
+  // with our manual save/restore via __vinext_scrollY in history.state.
+  // Without this, back/forward causes a visible scroll jump (browser
+  // restores instantly) followed by a correction (our rAF-deferred restore).
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
 
   window.addEventListener("popstate", (event) => {
     const pendingNavigation =
