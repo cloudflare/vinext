@@ -167,7 +167,9 @@ export function buildAppPageRscResponse(
   });
 
   if (options.params && Object.keys(options.params).length > 0) {
-    headers.set("X-Vinext-Params", JSON.stringify(options.params));
+    // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
+    // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
+    headers.set("X-Vinext-Params", encodeURIComponent(JSON.stringify(options.params)));
   }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);

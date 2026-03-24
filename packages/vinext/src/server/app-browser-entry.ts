@@ -104,7 +104,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
   if (paramsHeader) {
     try {
-      params = JSON.parse(paramsHeader) as Record<string, string | string[]>;
+      params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
       setClientParams(params);
     } catch {
       // Ignore malformed param headers and continue with hydration.
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
       const paramsHeader = navResponse.headers.get("X-Vinext-Params");
       if (paramsHeader) {
         try {
-          setClientParams(JSON.parse(paramsHeader));
+          setClientParams(JSON.parse(decodeURIComponent(paramsHeader)));
         } catch {
           setClientParams({});
         }

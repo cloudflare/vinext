@@ -220,12 +220,32 @@ describe("app page response helpers", () => {
 
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(response.headers.get("x-vinext-params")).toBe('{"slug":"test"}');
+    expect(response.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"slug":"test"}'));
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
     expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
     await expect(response.text()).resolves.toBe("flight");
+  });
+
+  it("percent-encodes X-Vinext-Params so non-ASCII characters survive the ByteString header constraint (issue #676)", () => {
+    // HTTP headers are ByteStrings: each character value must be <= 255.
+    // JSON.stringify preserves non-ASCII characters verbatim (e.g. Korean 완 = U+C644 = 50756),
+    // which causes Headers.set() to throw a TypeError in compliant runtimes.
+    // The fix: encodeURIComponent the JSON before setting the header.
+    const koreanSlug = "useState-완전정복";
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: new Headers(), status: 200 },
+      params: { slug: [koreanSlug] },
+      policy: {},
+      timing: { handlerStart: 0, responseKind: "rsc" },
+    });
+
+    const rawHeader = response.headers.get("x-vinext-params")!;
+    // Header value must be ASCII-safe (all byte values <= 127 after encoding)
+    expect(Array.from(rawHeader).every((c) => c.charCodeAt(0) <= 127)).toBe(true);
+    // Decoding must round-trip back to the original params
+    expect(JSON.parse(decodeURIComponent(rawHeader))).toEqual({ slug: [koreanSlug] });
   });
 
   it("builds HTML responses with draft cookies, preload links, middleware, and timing", async () => {
