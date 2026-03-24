@@ -21,6 +21,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./cache": {
+      "types": "./dist/cache.d.ts",
+      "import": "./dist/cache.js"
+    },
     "./shims/*": {
       "types": "./dist/shims/*.d.ts",
       "import": "./dist/shims/*.js"

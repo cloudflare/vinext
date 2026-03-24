@@ -1661,6 +1661,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
           }).flatMap(([k, v]) =>
