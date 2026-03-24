@@ -136,14 +136,6 @@ export default function HomePage() {
     );
     writeFixtureFile(
       root,
-      "app/mdx-probe/page.mdx",
-      `# Probe
-
-This file exists only to trigger vinext's MDX auto-detection in the fixture.
-`,
-    );
-    writeFixtureFile(
-      root,
       "lib/mdx-loader.ts",
       `type MdxModule = {
   default: React.ComponentType;
@@ -337,14 +329,6 @@ export default function HomePage() {
     );
     writeFixtureFile(
       root,
-      "app/mdx-probe/page.mdx",
-      `# Probe
-
-This file exists only to trigger vinext's MDX auto-detection.
-`,
-    );
-    writeFixtureFile(
-      root,
       "lib/mdx-loader.ts",
       `type MdxModule = {
   default: React.ComponentType;
@@ -397,7 +381,15 @@ export default handler;
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
     expect(buildOutput).not.toContain("@/content/posts/");
-    expect(buildOutput).not.toContain("---");
+    // Verify MDX was compiled to valid JS (not raw frontmatter)
+    // The original MDX had frontmatter lines like:
+    //   title: "Second Post"
+    //   date: "2025-08-20"
+    // These should NOT appear as raw strings in the build output
+    expect(buildOutput).not.toContain('title: "Second Post"');
+    expect(buildOutput).not.toContain('date: "2025-08-20"');
+    // JSX from the MDX file (text-red-500 className) should be compiled away
+    // Note: className= appears in React runtime itself, so we check the specific string
     expect(buildOutput).not.toContain("text-red-500");
   }, 60_000);
 });

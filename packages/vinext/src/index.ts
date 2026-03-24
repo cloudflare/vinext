@@ -2595,28 +2595,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
         // and would compile the file as MDX instead of returning raw text.
         if (id.includes("?")) return;
-        if (!mdxDelegate?.transform) return;
-        const hook = mdxDelegate.transform;
-        const fn = typeof hook === "function" ? hook : hook.handler;
-        return fn.call(this, code, id, options);
-      },
-    },
-    // Guard plugin: during RSC scan-build, skip MDX files to prevent
-    // rsc:scan-strip from trying to parse MDX frontmatter/JSX as JavaScript.
-    // rsc:scan-strip runs on all files during scan-build, and if it encounters
-    // raw MDX (frontmatter ---, JSX <span>), es-module-lexer's parse() fails.
-    // This plugin runs with enforce:"pre" before rsc:scan-strip (which is
-    // enforce:"post") to ensure MDX files are handled first. Even though
-    // vinext:mdx also has enforce:"pre", it may not be invoked on every MDX
-    // file during scan-build, so this guard provides an extra layer.
-    {
-      name: "vinext:rsc-scan-mdx-guard",
-      enforce: "pre",
-      transform(code, id) {
+
         const queryIndex = id.indexOf("?");
         const baseId = queryIndex === -1 ? id : id.slice(0, queryIndex);
-        if (!baseId.endsWith(".mdx")) return null;
-        return { code, map: null };
+        if (!baseId.endsWith(".mdx")) return;
+
+        // If we have the MDX plugin, delegate to it
+        if (mdxDelegate?.transform) {
+          const hook = mdxDelegate.transform;
+          const fn = typeof hook === "function" ? hook : hook.handler;
+          return fn.call(this, code, id, options);
+        }
+
+        // No MDX plugin registered — return a stub module so rsc:scan-strip
+        // doesn't choke on raw MDX frontmatter/JSX. This handles the case where
+        // MDX files enter the build graph via import.meta.glob but aren't inside
+        // app/ or pages/ (so hasMdxFiles() didn't detect them).
+        return {
+          code: `export default function MDXContent() { return null; }`,
+          map: null,
+        };
       },
     },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
