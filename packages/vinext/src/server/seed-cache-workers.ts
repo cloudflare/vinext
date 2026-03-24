@@ -79,35 +79,39 @@ export async function seedRouteFromAssets(
   pathname: string,
   fetchAsset: AssetFetcher,
 ): Promise<void> {
-  const loaded = await loadManifest(fetchAsset);
-  if (!loaded) return;
+  try {
+    const loaded = await loadManifest(fetchAsset);
+    if (!loaded) return;
 
-  const route = loaded.lookup.get(pathname);
-  if (!route) return;
+    const route = loaded.lookup.get(pathname);
+    if (!route) return;
 
-  const baseKey = isrCacheKey("app", pathname, loaded.manifest.buildId);
-  const htmlKey = baseKey + ":html";
+    const baseKey = isrCacheKey("app", pathname, loaded.manifest.buildId);
+    const htmlKey = baseKey + ":html";
 
-  // Already in cache — nothing to do
-  const existing = await getCacheHandler().get(htmlKey);
-  if (existing) return;
+    // Already in cache — nothing to do
+    const existing = await getCacheHandler().get(htmlKey);
+    if (existing) return;
 
-  // Dedup concurrent cold hits — between the await above and this sync check,
-  // no other microtask can interleave, so at most one caller creates the promise.
-  const inflight = seedInFlight.get(htmlKey);
-  if (inflight) return inflight;
+    // Dedup concurrent cold hits — between the await above and this sync check,
+    // no other microtask can interleave, so at most one caller creates the promise.
+    const inflight = seedInFlight.get(htmlKey);
+    if (inflight) {
+      await inflight;
+      return;
+    }
 
-  const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
-  const promise = doSeedRoute(
-    loaded.manifest,
-    pathname,
-    baseKey,
-    revalidateSeconds,
-    fetchAsset,
-  ).finally(() => seedInFlight.delete(htmlKey));
+    const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const promise = doSeedRoute(loaded.manifest, pathname, baseKey, revalidateSeconds, fetchAsset)
+      .catch(() => {}) // seeding is best-effort — never propagate to joiners
+      .finally(() => seedInFlight.delete(htmlKey));
 
-  seedInFlight.set(htmlKey, promise);
-  return promise;
+    seedInFlight.set(htmlKey, promise);
+    await promise;
+  } catch {
+    // Catches errors from loadManifest, getCacheHandler().get(), or any
+    // unexpected throw before doSeedRoute. Never crash the request.
+  }
 }
 
 /**
@@ -141,6 +145,10 @@ async function loadManifest(fetchAsset: AssetFetcher): Promise<LoadedManifest | 
 
         return { manifest, lookup };
       } catch {
+        // Transient failure (network error, timeout) — allow retry on next request.
+        // Permanent failures (!res.ok, invalid JSON structure) return null above
+        // without resetting, since those indicate a malformed deployment.
+        loadedPromise = null;
         return null;
       }
     })();

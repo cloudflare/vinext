@@ -253,6 +253,133 @@ describe("seedRouteFromAssets", () => {
     expect(getRevalidateDuration(baseKey + ":rsc")).toBeUndefined();
   });
 
+  // ── Concurrent dedup (with async yield) ─────────────────────────────────
+
+  it("deduplicates concurrent seed requests even when fetches yield", async () => {
+    const manifest = makeManifest([
+      { route: "/slow", status: "rendered", revalidate: 60, router: "app" },
+    ]);
+    const calls: string[] = [];
+    const fetcher = async (assetPath: string): Promise<Response> => {
+      calls.push(assetPath);
+      // Yield to the event loop to simulate real async I/O
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (assetPath.includes("vinext-prerender.json")) {
+        return new Response(JSON.stringify(manifest), { status: 200 });
+      }
+      if (assetPath.includes("slow.html")) {
+        return new Response("<html>Slow</html>", { status: 200 });
+      }
+      if (assetPath.includes("slow.rsc")) {
+        return new Response("RSC slow", { status: 200 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    await Promise.all([
+      seedRouteFromAssets("/slow", fetcher),
+      seedRouteFromAssets("/slow", fetcher),
+    ]);
+
+    const htmlFetches = calls.filter((c) => c === "/__prerender/slow.html");
+    expect(htmlFetches.length).toBe(1);
+  });
+
+  // ── Error resilience ───────────────────────────────────────────────────────
+
+  it("does not throw when asset fetch fails", async () => {
+    const manifest = makeManifest([
+      { route: "/fail", status: "rendered", revalidate: 60, router: "app" },
+    ]);
+    const fetcher = async (assetPath: string): Promise<Response> => {
+      if (assetPath.includes("vinext-prerender.json")) {
+        return new Response(JSON.stringify(manifest), { status: 200 });
+      }
+      throw new Error("network failure");
+    };
+
+    // Should not throw — seeding is best-effort
+    await seedRouteFromAssets("/fail", fetcher);
+
+    const htmlKey = isrCacheKey("app", "/fail", BUILD_ID) + ":html";
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+  });
+
+  it("does not throw when cache handler fails", async () => {
+    const manifest = makeManifest([
+      { route: "/broken", status: "rendered", revalidate: 60, router: "app" },
+    ]);
+    const { fetcher } = createMockFetcher({
+      "/__prerender/vinext-prerender.json": JSON.stringify(manifest),
+      "/__prerender/broken.html": "<html>Broken</html>",
+      "/__prerender/broken.rsc": "RSC broken",
+    });
+
+    // Sabotage the cache handler
+    const handler = getCacheHandler();
+    handler.set = () => {
+      throw new Error("cache write failed");
+    };
+
+    await seedRouteFromAssets("/broken", fetcher);
+    // No assertion needed — test passes if it doesn't throw
+  });
+
+  it("retries manifest load after transient fetch failure", async () => {
+    let manifestCallCount = 0;
+    const manifest = makeManifest([
+      { route: "/retry", status: "rendered", revalidate: 60, router: "app" },
+    ]);
+
+    const fetcher = async (assetPath: string): Promise<Response> => {
+      if (assetPath.includes("vinext-prerender.json")) {
+        manifestCallCount++;
+        if (manifestCallCount === 1) {
+          throw new Error("transient network error");
+        }
+        return new Response(JSON.stringify(manifest), { status: 200 });
+      }
+      if (assetPath.includes("retry.html")) {
+        return new Response("<html>Retry</html>", { status: 200 });
+      }
+      if (assetPath.includes("retry.rsc")) {
+        return new Response("RSC retry", { status: 200 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    // First call — transient failure, no seeding
+    await seedRouteFromAssets("/retry", fetcher);
+    expect(
+      await getCacheHandler().get(isrCacheKey("app", "/retry", BUILD_ID) + ":html"),
+    ).toBeNull();
+
+    // Second call — should retry manifest load and succeed
+    await seedRouteFromAssets("/retry", fetcher);
+    expect(
+      await getCacheHandler().get(isrCacheKey("app", "/retry", BUILD_ID) + ":html"),
+    ).not.toBeNull();
+    expect(manifestCallCount).toBe(2);
+  });
+
+  it("does not retry manifest load after permanent 404", async () => {
+    let manifestCallCount = 0;
+
+    const fetcher = async (assetPath: string): Promise<Response> => {
+      if (assetPath.includes("vinext-prerender.json")) {
+        manifestCallCount++;
+        return new Response("Not Found", { status: 404 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    await seedRouteFromAssets("/a", fetcher);
+    await seedRouteFromAssets("/b", fetcher);
+
+    // Manifest 404 is permanent — should not retry
+    expect(manifestCallCount).toBe(1);
+  });
+
   // ── Graceful degradation ──────────────────────────────────────────────────
 
   it("seeds HTML even when RSC file is missing", async () => {

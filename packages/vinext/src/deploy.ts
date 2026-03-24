@@ -497,9 +497,8 @@ ${isrSetup}    const url = new URL(request.url);
     }
 
     // Seed the memory cache from pre-rendered assets (lazy, per-route).
-    // On first request for a pre-rendered page, fetches HTML/RSC from the
-    // assets binding and inserts into the cache. Subsequent requests in the
-    // same isolate get cache HITs. No-op for non-prerendered routes.
+    // Blocking (not waitUntil) so the RSC handler sees the seeded cache.
+    // seedRouteFromAssets handles errors internally — never throws.
     await seedRouteFromAssets(url.pathname, (p) => env.ASSETS.fetch(new Request(new URL(p, request.url))));
 
     // Delegate everything else to vinext, forwarding ctx so that
