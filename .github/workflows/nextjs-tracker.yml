@@ -1,0 +1,136 @@
+name: Next.js Tracker
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # daily at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      since_hours:
+        description: "How many hours back to look for commits (default: 24)"
+        required: false
+        default: "24"
+      dry_run:
+        description: "Dry run: print what issues would be opened without creating them"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: nextjs-tracker
+  cancel-in-progress: true
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+
+      - name: Fetch recent Next.js canary commits
+        id: commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HOURS="${{ github.event.inputs.since_hours || '24' }}"
+          SINCE=$(date -u -d "${HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "Fetching Next.js canary commits since $SINCE"
+
+          # Fetch commit list only (messages + metadata). The agent will fetch
+          # full diffs via gh api for any commits it finds potentially relevant,
+          # rather than us pre-fetching all of them upfront.
+          gh api \
+            "repos/vercel/next.js/commits?sha=canary&since=${SINCE}&per_page=100" \
+            --jq '[.[] | {
+              sha: .sha,
+              message: .commit.message,
+              author: .commit.author.name,
+              date: .commit.author.date,
+              url: .html_url
+            }]' > /tmp/nextjs-commits.json
+
+          COUNT=$(jq length /tmp/nextjs-commits.json)
+          echo "Found $COUNT commits"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_commits=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build tracker prompt
+        if: steps.commits.outputs.has_commits == 'true'
+        run: |
+          HOURS="${{ github.event.inputs.since_hours || '24' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            cat > /tmp/tracker-prompt.md << 'PROMPT_EOF'
+          You are the nextjs-tracker agent running in DRY RUN mode.
+
+          Review the Next.js canary commits in `/tmp/nextjs-commits.json` and determine which ones are relevant to vinext, but DO NOT create any GitHub issues.
+
+          The file contains commit messages and metadata. For any commit that looks potentially relevant based on its message, fetch the full diff with `gh api repos/vercel/next.js/commits/<sha>` to confirm before including it.
+
+          Skip commits that are obviously irrelevant from the message alone (docs, tests-only, turbopack internals, telemetry, etc.).
+
+          Print a structured report to stdout in this format for each relevant change:
+
+          ---
+          WOULD OPEN ISSUE: <title>
+          Priority: Breaking | Important | Minor
+          Commits: <sha(s)>
+          Summary: <2-3 sentences on what changed and why it matters to vinext>
+          Files affected in vinext: <which shim/server/config files would need updating>
+          ---
+
+          At the end, print a one-line summary: "X relevant changes found out of Y total commits. Z issues would be opened."
+          PROMPT_EOF
+          else
+            cat > /tmp/tracker-prompt.md << 'PROMPT_EOF'
+          You are the nextjs-tracker agent. Review the Next.js canary commits in `/tmp/nextjs-commits.json` and open GitHub issues for any that are relevant to vinext.
+
+          The file contains commit messages and metadata. For any commit that looks potentially relevant based on its message, fetch the full diff with `gh api repos/vercel/next.js/commits/<sha>` to confirm before opening an issue.
+
+          Skip commits that are obviously irrelevant from the message alone (docs, tests-only, turbopack internals, telemetry, etc.).
+
+          Follow the instructions in your agent configuration exactly:
+          - Classify each commit as relevant or not
+          - Group related commits into single issues
+          - Check for duplicate open issues before creating any new ones
+          - Use the exact issue format specified in your config
+          - Apply the label `nextjs-tracking` to every issue you create
+          - If nothing is relevant, do nothing
+
+          Do not summarize your findings in a comment. The only output is GitHub issues (or silence if nothing is relevant).
+          PROMPT_EOF
+          fi
+
+          echo "Prompt written (dry_run=$DRY_RUN)"
+
+      - name: Run Next.js Tracker
+        if: steps.commits.outputs.has_commits == 'true'
+        uses: ask-bonk/ask-bonk/github@main
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-6"
+          permissions: write
+          opencode_dev: false
+          agent: nextjs-tracker
+          prompt_file: /tmp/tracker-prompt.md
+
+      - name: Skip (no commits)
+        if: steps.commits.outputs.has_commits == 'false'
+        run: echo "No Next.js canary commits in the last ${{ github.event.inputs.since_hours || '24' }} hours. Nothing to do."
