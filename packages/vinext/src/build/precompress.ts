@@ -69,9 +69,9 @@ async function* walkFiles(dir: string, base: string = dir): AsyncGenerator<strin
 /**
  * Precompress all compressible hashed assets under `clientDir/assets/`.
  *
- * Writes `.br`, `.gz`, and `.zst` files alongside each original. Idempotent —
- * skips files that already have compressed variants, and never compresses
- * `.br`, `.gz`, or `.zst` files themselves.
+ * Writes `.br`, `.gz`, and `.zst` files alongside each original.
+ * Safe to re-run — overwrites existing compressed variants with identical
+ * output, and never compresses `.br`, `.gz`, or `.zst` files themselves.
  */
 export async function precompressAssets(clientDir: string): Promise<PrecompressResult> {
   const assetsDir = path.join(clientDir, "assets");

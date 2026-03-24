@@ -8,8 +8,8 @@
  *
  * Modeled after sirv's production mode. Key insight from sirv: pre-compute
  * ALL response headers at startup — Content-Type, Content-Length, ETag,
- * Cache-Control, Content-Encoding, Vary — as frozen objects. The per-request
- * handler should do zero object allocation for headers.
+ * Cache-Control, Content-Encoding, Vary — as reusable objects. The common
+ * per-request path (no extraHeaders) does zero object allocation for headers.
  */
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -182,9 +182,9 @@ export class StaticFileCache {
     }
 
     // Third pass: buffer small files in memory for zero-syscall serving.
-    // For a 50KB JS bundle compressed to ~100 bytes, res.end(buffer) is ~2x
-    // faster than createReadStream().pipe() because it skips fd open/close
-    // and stream plumbing overhead.
+    // For small compressed variants (e.g. a 50KB JS bundle → ~15KB brotli),
+    // res.end(buffer) is ~2x faster than createReadStream().pipe() because
+    // it skips fd open/close and stream plumbing overhead.
     const bufferReads: Promise<void>[] = [];
     const bufferedPaths = new Set<string>();
     for (const entry of entries.values()) {
