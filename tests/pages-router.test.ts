@@ -1394,7 +1394,7 @@ export const marker = "mdx-evaluated";
 
       expect(result).toBeDefined();
       expect(result.code).toContain("mdx-evaluated");
-      expect(result.code).not.toContain("---");
+      expect(result.code).not.toContain('title: "Second Post"');
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }

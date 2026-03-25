@@ -1316,6 +1316,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedMissingMdxPlugin = false;
 
   async function ensureMdxDelegate(reason: "detected" | "on-demand"): Promise<Plugin | null> {
+    // If user registered their own MDX plugin, don't interfere — their plugin
+    // will handle .mdx transforms later in the pipeline.
     if (mdxDelegate || hasUserMdxPlugin) return mdxDelegate;
     if (!mdxDelegatePromise) {
       mdxDelegatePromise = (async () => {
@@ -1345,7 +1347,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           return delegate;
         } catch {
-          if (!warnedMissingMdxPlugin) {
+          if (reason === "detected" && !warnedMissingMdxPlugin) {
             warnedMissingMdxPlugin = true;
             console.warn(
               "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +

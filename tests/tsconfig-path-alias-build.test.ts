@@ -309,5 +309,7 @@ date: "2025-08-20"
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
     expect(buildOutput).not.toContain("@/content/posts/");
+    expect(buildOutput).not.toContain('title: "Second Post"');
+    expect(buildOutput).toContain("text-red-500");
   }, 60_000);
 });
