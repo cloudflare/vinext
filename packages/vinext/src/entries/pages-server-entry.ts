@@ -45,6 +45,10 @@ const _pagesNodeCompatPath = fileURLToPath(
 const _pagesApiRoutePath = fileURLToPath(
   new URL("../server/pages-api-route.js", import.meta.url),
 ).replace(/\\/g, "/");
+const _isrCachePath = fileURLToPath(new URL("../server/isr-cache.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -275,7 +279,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { getCacheHandler, _runWithCacheState } from "next/cache";
+import { _runWithCacheState } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -294,6 +298,12 @@ import { reportRequestError as _reportRequestError } from "vinext/instrumentatio
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { createPagesReqRes as __createPagesReqRes } from ${JSON.stringify(_pagesNodeCompatPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
+import {
+  isrGet as __sharedIsrGet,
+  isrSet as __sharedIsrSet,
+  isrCacheKey as __sharedIsrCacheKey,
+  triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration,
+} from ${JSON.stringify(_isrCachePath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
@@ -310,51 +320,17 @@ const buildId = ${buildIdJson};
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
-// ISR cache helpers (inlined for the server entry)
-async function isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
+function isrGet(key) {
+  return __sharedIsrGet(key);
 }
-async function isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
+function isrSet(key, data, revalidateSeconds, tags) {
+  return __sharedIsrSet(key, data, revalidateSeconds, tags);
 }
-const pendingRegenerations = new Map();
 function triggerBackgroundRegeneration(key, renderFn) {
-  if (pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
-    .finally(() => pendingRegenerations.delete(key));
-  pendingRegenerations.set(key, promise);
-  // Register with the Workers ExecutionContext so the isolate is kept alive
-  // until the regeneration finishes, even after the Response has been sent.
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
+  return __sharedTriggerBackgroundRegeneration(key, renderFn);
 }
-
-function fnv1a64(input) {
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    h1 ^= input.charCodeAt(i);
-    h1 = (h1 * 0x01000193) >>> 0;
-  }
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < input.length; i++) {
-    h2 ^= input.charCodeAt(i);
-    h2 = (h2 * 0x01000193) >>> 0;
-  }
-  return h1.toString(36) + h2.toString(36);
-}
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-// buildId is a top-level const in the generated entry (see "const buildId = ..." above).
 function isrCacheKey(router, pathname) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  const prefix = buildId ? router + ":" + buildId : router;
-  const key = prefix + ":" + normalized;
-  if (key.length <= 200) return key;
-  return prefix + ":__hash:" + fnv1a64(normalized);
+  return __sharedIsrCacheKey(router, pathname, buildId || undefined);
 }
 
 async function renderToStringAsync(element) {
