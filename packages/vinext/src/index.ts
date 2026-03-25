@@ -1307,9 +1307,59 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
 
-  // Shared state for the MDX proxy plugin. Populated during config() if MDX
-  // files are detected and @mdx-js/rollup is installed.
+  // Shared state for the MDX proxy plugin. We auto-inject @mdx-js/rollup when
+  // MDX is detected in app/pages during config(), and lazily on first plain
+  // .mdx transform for MDX that only enters the graph via import.meta.glob.
   let mdxDelegate: Plugin | null = null;
+  let mdxDelegatePromise: Promise<Plugin | null> | null = null;
+  let hasUserMdxPlugin = false;
+  let warnedMissingMdxPlugin = false;
+
+  async function ensureMdxDelegate(reason: "detected" | "on-demand"): Promise<Plugin | null> {
+    if (mdxDelegate || hasUserMdxPlugin) return mdxDelegate;
+    if (!mdxDelegatePromise) {
+      mdxDelegatePromise = (async () => {
+        try {
+          const mdxRollup = await import("@mdx-js/rollup");
+          const mdxFactory = (mdxRollup.default ?? mdxRollup) as (
+            options: Record<string, unknown>,
+          ) => Plugin;
+          const mdxOpts: Record<string, unknown> = {};
+          if (nextConfig.mdx) {
+            if (nextConfig.mdx.remarkPlugins) mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
+            if (nextConfig.mdx.rehypePlugins) mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
+            if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
+          }
+          const delegate = mdxFactory(mdxOpts);
+          mdxDelegate = delegate;
+          if (reason === "detected") {
+            if (nextConfig.mdx) {
+              console.log(
+                "[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config",
+              );
+            } else {
+              console.log("[vinext] Auto-injected @mdx-js/rollup for MDX support");
+            }
+          } else {
+            console.log("[vinext] Auto-injected @mdx-js/rollup for on-demand MDX support");
+          }
+          return delegate;
+        } catch {
+          if (!warnedMissingMdxPlugin) {
+            warnedMissingMdxPlugin = true;
+            console.warn(
+              "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
+                "Install it with: " +
+                detectPackageManager(process.cwd()) +
+                " @mdx-js/rollup",
+            );
+          }
+          return null;
+        }
+      })();
+    }
+    return mdxDelegatePromise;
+  }
 
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
@@ -2035,7 +2085,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
         // already configured. Applies remark/rehype plugins from next.config.
-        const hasMdxPlugin = pluginsFlat.some(
+        hasUserMdxPlugin = pluginsFlat.some(
           (p: any) =>
             p &&
             typeof p === "object" &&
@@ -2043,37 +2093,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             (p.name === "@mdx-js/rollup" || p.name === "mdx"),
         );
         if (
-          !hasMdxPlugin &&
+          !hasUserMdxPlugin &&
           hasMdxFiles(root, hasAppDir ? appDir : null, hasPagesDir ? pagesDir : null)
         ) {
-          try {
-            const mdxRollup = await import("@mdx-js/rollup");
-            const mdxFactory = mdxRollup.default ?? mdxRollup;
-            const mdxOpts: Record<string, unknown> = {};
-            if (nextConfig.mdx) {
-              if (nextConfig.mdx.remarkPlugins)
-                mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
-              if (nextConfig.mdx.rehypePlugins)
-                mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
-              if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
-            }
-            mdxDelegate = mdxFactory(mdxOpts);
-            if (nextConfig.mdx) {
-              console.log(
-                "[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config",
-              );
-            } else {
-              console.log("[vinext] Auto-injected @mdx-js/rollup for MDX support");
-            }
-          } catch {
-            // @mdx-js/rollup not installed — warn but don't fail
-            console.warn(
-              "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
-                "Install it with: " +
-                detectPackageManager(process.cwd()) +
-                " @mdx-js/rollup",
-            );
-          }
+          await ensureMdxDelegate("detected");
         }
 
         // Detect if this is a standalone SSR build (set by `vite build --ssr`
@@ -2591,30 +2614,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const fn = typeof hook === "function" ? hook : hook.handler;
         return fn.call(this, config, env);
       },
-      transform(code, id, options) {
+      async transform(code, id, options) {
         // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
         // and would compile the file as MDX instead of returning raw text.
         if (id.includes("?")) return;
+        if (!id.endsWith(".mdx")) return;
 
-        const queryIndex = id.indexOf("?");
-        const baseId = queryIndex === -1 ? id : id.slice(0, queryIndex);
-        if (!baseId.endsWith(".mdx")) return;
-
-        // If we have the MDX plugin, delegate to it
-        if (mdxDelegate?.transform) {
-          const hook = mdxDelegate.transform;
-          const fn = typeof hook === "function" ? hook : hook.handler;
-          return fn.call(this, code, id, options);
+        const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
+        if (delegate?.transform) {
+          const hook = delegate.transform;
+          const transform = typeof hook === "function" ? hook : hook.handler;
+          return transform.call(this, code, id, options);
         }
 
-        // No MDX plugin registered — return a stub module so rsc:scan-strip
-        // doesn't choke on raw MDX frontmatter/JSX. This handles the case where
-        // MDX files enter the build graph via import.meta.glob but aren't inside
-        // app/ or pages/ (so hasMdxFiles() didn't detect them).
-        return {
-          code: `export default function MDXContent() { return null; }`,
-          map: null,
-        };
+        if (!hasUserMdxPlugin) {
+          throw new Error(
+            `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
+              `Install @mdx-js/rollup or register an MDX plugin manually.`,
+          );
+        }
       },
     },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
