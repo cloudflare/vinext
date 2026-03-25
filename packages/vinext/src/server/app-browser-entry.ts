@@ -62,14 +62,12 @@ type NavigationKind = "navigate" | "traverse" | "refresh";
 type HistoryUpdateMode = "push" | "replace";
 interface VisitedResponseCacheEntry {
   params: Record<string, string | string[]>;
-  createdAt: number;
-  regularExpiresAt: number;
-  response: Awaited<ReturnType<typeof snapshotRscResponse>>;
+  expiresAt: number;
+  response: CachedRscResponse;
 }
 
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
-const TRAVERSE_MAX_STALENESS = 5 * 60_000; // 5 minutes for back/forward
-const VISITED_RESPONSE_CACHE_TTL = 30_000;
+const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000; // 5 minutes (matches Next.js STATIC_STALETIME_MS)
 
 let nextNavigationRenderId = 0;
 let activeNavigationId = 0;
@@ -171,14 +169,6 @@ function createNavigationCommitEffect(
   };
 }
 
-function pruneVisitedResponseCache(now: number): void {
-  for (const [rscUrl, entry] of visitedResponseCache) {
-    if (entry.regularExpiresAt <= now) {
-      visitedResponseCache.delete(rscUrl);
-    }
-  }
-}
-
 function evictVisitedResponseCacheIfNeeded(): void {
   while (visitedResponseCache.size >= MAX_VISITED_RESPONSE_CACHE_SIZE) {
     const oldest = visitedResponseCache.keys().next().value;
@@ -203,16 +193,12 @@ function getVisitedResponse(
   }
 
   if (navigationKind === "traverse") {
-    // Back/forward bypasses the regular TTL for instant navigation,
-    // but still enforces a max staleness to avoid serving very old data.
-    if (Date.now() - cached.createdAt > TRAVERSE_MAX_STALENESS) {
-      visitedResponseCache.delete(rscUrl);
-      return null;
-    }
+    // Back/forward bypasses the TTL entirely for instant navigation.
+    // Next.js does the same: BFCache entries are served regardless of age.
     return cached;
   }
 
-  if (cached.regularExpiresAt > Date.now()) {
+  if (cached.expiresAt > Date.now()) {
     return cached;
   }
 
@@ -223,16 +209,14 @@ function getVisitedResponse(
 function storeVisitedResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
-  params: Record<string, string | string[]> = latestClientParams,
+  params: Record<string, string | string[]>,
 ): void {
-  const now = Date.now();
-  pruneVisitedResponseCache(now);
   visitedResponseCache.delete(rscUrl);
   evictVisitedResponseCacheIfNeeded();
+  const now = Date.now();
   visitedResponseCache.set(rscUrl, {
     params,
-    createdAt: now,
-    regularExpiresAt: now + VISITED_RESPONSE_CACHE_TTL,
+    expiresAt: now + VISITED_RESPONSE_CACHE_TTL,
     response: snapshot,
   });
 }

@@ -707,7 +707,7 @@ export function useParams<
     getServerParamsSnapshot as () => T,
   );
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
-    return (renderSnapshot.params ?? params) as T;
+    return renderSnapshot.params as T;
   }
   return params;
 }
