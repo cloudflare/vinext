@@ -348,7 +348,9 @@ function toViteAliasReplacement(absolutePath: string, projectRoot: string): stri
 
   for (const rootCandidate of rootCandidates) {
     for (const pathCandidate of pathCandidates) {
-      if (pathCandidate === rootCandidate) return "/";
+      if (pathCandidate === rootCandidate) {
+        return normalizedPath;
+      }
       const relativeId = relativeWithinRoot(rootCandidate, pathCandidate);
       if (relativeId) return "/" + relativeId;
     }

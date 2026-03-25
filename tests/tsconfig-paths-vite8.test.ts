@@ -110,11 +110,11 @@ describe("Vite tsconfig paths support", () => {
       { command: "serve", mode: "development" },
     );
 
-    expect(resolvedConfig?.resolve?.alias).toEqual(
-      expect.objectContaining({
-        "@": "/",
-      }),
-    );
+    const alias = resolvedConfig?.resolve?.alias as Record<string, string>;
+    expect(alias).toBeDefined();
+    expect(alias["@"]).toBeDefined();
+    expect(path.isAbsolute(alias["@"])).toBe(true);
+    expect(alias["@"].replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
 
     fs.rmSync(root, { recursive: true, force: true });
   });
