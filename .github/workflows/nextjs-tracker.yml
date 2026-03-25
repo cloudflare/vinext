@@ -67,9 +67,9 @@ jobs:
           fi
 
       - name: Build tracker prompt
+        id: build_prompt
         if: steps.commits.outputs.has_commits == 'true'
         run: |
-          HOURS="${{ github.event.inputs.since_hours || '24' }}"
           DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
 
           if [ "$DRY_RUN" = "true" ]; then
@@ -114,7 +114,11 @@ jobs:
           PROMPT_EOF
           fi
 
-          echo "Prompt written (dry_run=$DRY_RUN)"
+          {
+            echo 'prompt<<PROMPT_DELIM'
+            cat /tmp/tracker-prompt.md
+            echo 'PROMPT_DELIM'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run Next.js Tracker
         if: steps.commits.outputs.has_commits == 'true'
@@ -129,7 +133,7 @@ jobs:
           permissions: write
           opencode_dev: false
           agent: nextjs-tracker
-          prompt_file: /tmp/tracker-prompt.md
+          prompt: ${{ steps.build_prompt.outputs.prompt }}
 
       - name: Skip (no commits)
         if: steps.commits.outputs.has_commits == 'false'
