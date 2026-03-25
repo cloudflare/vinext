@@ -39,6 +39,12 @@ const _pagesPageResponsePath = fileURLToPath(
 const _pagesPageDataPath = fileURLToPath(
   new URL("../server/pages-page-data.js", import.meta.url),
 ).replace(/\\/g, "/");
+const _pagesNodeCompatPath = fileURLToPath(
+  new URL("../server/pages-node-compat.js", import.meta.url),
+).replace(/\\/g, "/");
+const _pagesApiRoutePath = fileURLToPath(
+  new URL("../server/pages-api-route.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Generate the virtual SSR server entry module.
@@ -279,14 +285,15 @@ import { runWithHeadState } from "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
-import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-import { parseCookies, sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
+import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
+import { createPagesReqRes as __createPagesReqRes } from ${JSON.stringify(_pagesNodeCompatPath)};
+import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
@@ -302,14 +309,6 @@ const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
-
-class ApiBodyParseError extends Error {
-  constructor(message, statusCode) {
-    super(message);
-    this.statusCode = statusCode;
-    this.name = "ApiBodyParseError";
-  }
-}
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -356,16 +355,6 @@ function isrCacheKey(router, pathname) {
   const key = prefix + ":" + normalized;
   if (key.length <= 200) return key;
   return prefix + ":__hash:" + fnv1a64(normalized);
-}
-
-function getMediaType(contentType) {
-  var type = (contentType || "text/plain").split(";")[0];
-  type = type && type.trim().toLowerCase();
-  return type || "text/plain";
-}
-
-function isJsonMediaType(mediaType) {
-  return mediaType === "application/json" || mediaType === "application/ld+json";
 }
 
 async function renderToStringAsync(element) {
@@ -592,126 +581,6 @@ function parseCookieLocaleFromHeader(cookieHeader) {
   return null;
 }
 
-// Lightweight req/res facade for getServerSideProps and API routes.
-// Next.js pages expect ctx.req/ctx.res with Node-like shapes.
-function createReqRes(request, url, query, body) {
-  const headersObj = {};
-  for (const [k, v] of request.headers) headersObj[k.toLowerCase()] = v;
-
-  const req = {
-    method: request.method,
-    url: url,
-    headers: headersObj,
-    query: query,
-    body: body,
-    cookies: parseCookies(request.headers.get("cookie")),
-  };
-
-  let resStatusCode = 200;
-  const resHeaders = {};
-  // set-cookie needs array support (multiple Set-Cookie headers are common)
-  const setCookieHeaders = [];
-  let resBody = null;
-  let ended = false;
-  let resolveResponse;
-  const responsePromise = new Promise(function(r) { resolveResponse = r; });
-
-  const res = {
-    get statusCode() { return resStatusCode; },
-    set statusCode(code) { resStatusCode = code; },
-    writeHead: function(code, headers) {
-      resStatusCode = code;
-      if (headers) {
-        for (const [k, v] of Object.entries(headers)) {
-          if (k.toLowerCase() === "set-cookie") {
-            if (Array.isArray(v)) { for (const c of v) setCookieHeaders.push(c); }
-            else { setCookieHeaders.push(v); }
-          } else {
-            resHeaders[k] = v;
-          }
-        }
-      }
-      return res;
-    },
-    setHeader: function(name, value) {
-      if (name.toLowerCase() === "set-cookie") {
-        if (Array.isArray(value)) { for (const c of value) setCookieHeaders.push(c); }
-        else { setCookieHeaders.push(value); }
-      } else {
-        resHeaders[name.toLowerCase()] = value;
-      }
-      return res;
-    },
-    getHeader: function(name) {
-      if (name.toLowerCase() === "set-cookie") return setCookieHeaders.length > 0 ? setCookieHeaders : undefined;
-      return resHeaders[name.toLowerCase()];
-    },
-    end: function(data) {
-      if (ended) return;
-      ended = true;
-      if (data !== undefined && data !== null) resBody = data;
-      const h = new Headers(resHeaders);
-      for (const c of setCookieHeaders) h.append("set-cookie", c);
-      resolveResponse(new Response(resBody, { status: resStatusCode, headers: h }));
-    },
-    status: function(code) { resStatusCode = code; return res; },
-    json: function(data) {
-      resHeaders["content-type"] = "application/json";
-      res.end(JSON.stringify(data));
-    },
-    send: function(data) {
-      if (Buffer.isBuffer(data)) {
-        if (!resHeaders["content-type"]) resHeaders["content-type"] = "application/octet-stream";
-        resHeaders["content-length"] = String(data.length);
-        res.end(data);
-      } else if (typeof data === "object" && data !== null) {
-        res.json(data);
-      } else {
-        if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain";
-        res.end(String(data));
-      }
-    },
-    redirect: function(statusOrUrl, url2) {
-      if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
-      else { res.writeHead(statusOrUrl, { Location: url2 }); }
-      res.end();
-    },
-    getHeaders: function() {
-      var h = Object.assign({}, resHeaders);
-      if (setCookieHeaders.length > 0) h["set-cookie"] = setCookieHeaders;
-      return h;
-    },
-    get headersSent() { return ended; },
-  };
-
-  return { req, res, responsePromise };
-}
-
-/**
- * Read request body as text with a size limit.
- * Throws if the body exceeds maxBytes. This prevents DoS via chunked
- * transfer encoding where Content-Length is absent or spoofed.
- */
-async function readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
 export async function renderPage(request, url, manifest, ctx) {
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
   return _renderPage(request, url, manifest);
@@ -818,7 +687,7 @@ async function _renderPage(request, url, manifest) {
 	      },
 	      buildId,
 	      createGsspReqRes() {
-	        return createReqRes(request, routeUrl, query, undefined);
+	        return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
 	      },
 	      createPageElement(currentPageProps) {
 	        var currentElement = AppComponent
@@ -943,76 +812,19 @@ async function _renderPage(request, url, manifest) {
 
 export async function handleApiRoute(request, url) {
   const match = matchRoute(url, apiRoutes);
-  if (!match) {
-    return new Response("404 - API route not found", { status: 404 });
-  }
-
-  const { route, params } = match;
-  const handler = route.module.default;
-  if (typeof handler !== "function") {
-    return new Response("API route does not export a default function", { status: 500 });
-  }
-
-  const query = { ...params };
-  const qs = url.split("?")[1];
-  if (qs) {
-    for (const [k, v] of new URLSearchParams(qs)) {
-      if (k in query) {
-        // Multi-value: promote to array (Next.js returns string[] for duplicate keys)
-        query[k] = Array.isArray(query[k]) ? query[k].concat(v) : [query[k], v];
-      } else {
-        query[k] = v;
-      }
-    }
-  }
-
-  // Parse request body (enforce 1MB limit to prevent memory exhaustion,
-  // matching Next.js default bodyParser sizeLimit).
-  // Check Content-Length first as a fast path, then enforce on the actual
-  // stream to prevent bypasses via chunked transfer encoding.
-  const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-  if (contentLength > 1 * 1024 * 1024) {
-    return new Response("Request body too large", { status: 413 });
-  }
-  try {
-    let body;
-    const mediaType = getMediaType(request.headers.get("content-type"));
-    let rawBody;
-    try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
-    catch { return new Response("Request body too large", { status: 413 }); }
-    if (!rawBody) {
-      body = isJsonMediaType(mediaType)
-        ? {}
-        : mediaType === "application/x-www-form-urlencoded"
-          ? decodeQueryString(rawBody)
-          : undefined;
-    } else if (isJsonMediaType(mediaType)) {
-      try { body = JSON.parse(rawBody); }
-      catch { throw new ApiBodyParseError("Invalid JSON", 400); }
-    } else if (mediaType === "application/x-www-form-urlencoded") {
-      body = decodeQueryString(rawBody);
-    } else {
-      body = rawBody;
-    }
-
-    const { req, res, responsePromise } = createReqRes(request, url, query, body);
-    await handler(req, res);
-    // If handler didn't call res.end(), end it now.
-    // The end() method is idempotent — safe to call twice.
-    res.end();
-    return await responsePromise;
-  } catch (e) {
-    if (e instanceof ApiBodyParseError) {
-      return new Response(e.message, { status: e.statusCode, statusText: e.message });
-    }
-    console.error("[vinext] API error:", e);
-    _reportRequestError(
-      e instanceof Error ? e : new Error(String(e)),
-      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
-    );
-    return new Response("Internal Server Error", { status: 500 });
-  }
+  return __handlePagesApiRoute({
+    match,
+    request,
+    url,
+    reportRequestError(error, routePattern) {
+      console.error("[vinext] API error:", error);
+      void _reportRequestError(
+        error,
+        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "Pages Router", routePath: routePattern, routeType: "route" },
+      );
+    },
+  });
 }
 
 ${middlewareExportCode}

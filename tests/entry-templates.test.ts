@@ -337,6 +337,19 @@ describe("Pages Router entry templates", () => {
     expect(code).not.toContain("const result = await pageModule.getStaticProps(ctx);");
   });
 
+  it("server entry delegates Pages API route handling and req/res shims to typed helpers", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("createPagesReqRes as __createPagesReqRes");
+    expect(code).toContain("handlePagesApiRoute as __handlePagesApiRoute");
+    expect(code).toContain("return __handlePagesApiRoute({");
+    expect(code).not.toContain("function createReqRes(request, url, query, body)");
+    expect(code).not.toContain("async function readBodyWithLimit(request, maxBytes)");
+    expect(code).not.toContain(
+      "const { req, res, responsePromise } = createReqRes(request, url, query, body);",
+    );
+  });
+
   it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 
