@@ -107,6 +107,21 @@ const projectServers = {
       timeout: 30_000,
     },
   },
+  "static-export": {
+    testDir: "./tests/e2e/static-export",
+    use: { baseURL: "http://localhost:4180" },
+    server: {
+      // Build the static export fixture, then serve the output with a
+      // lightweight static file server. No vinext runtime is needed —
+      // the output is pure pre-rendered HTML files.
+      command:
+        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4180",
+      cwd: "./tests/fixtures/static-export",
+      port: 4180,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

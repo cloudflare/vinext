@@ -138,6 +138,7 @@ jobs:
           - cloudflare-workers
           - cloudflare-dev
           - cloudflare-pages-router-dev
+          - static-export
     steps:
       - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
