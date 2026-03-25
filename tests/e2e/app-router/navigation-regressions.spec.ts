@@ -9,6 +9,13 @@ async function waitForHydration(page: import("@playwright/test").Page) {
   }).toPass({ timeout: 10_000 });
 }
 
+/** Wait for two animation frames to flush all pending paints and microtasks. */
+async function waitForPaintFlush(page: import("@playwright/test").Page) {
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+  );
+}
+
 async function waitForProvidersList(page: import("@playwright/test").Page) {
   await expect(page.locator("#providers-title")).toHaveText("Providers");
   await expect(page.locator("#provider-list")).toBeVisible({ timeout: 10_000 });
@@ -154,7 +161,7 @@ test.describe("App Router navigation regressions", () => {
     await expect(page.locator("#client-param-label")).toHaveText("Client param: beta");
     await expect(page.locator("#param-filter-title")).toHaveText("Server param: beta");
     await expect(page.locator("#param-filter-first-row")).toHaveText("Beta 1");
-    await page.waitForTimeout(100);
+    await waitForPaintFlush(page);
 
     const events = await page.evaluate(() => {
       (
@@ -264,7 +271,7 @@ test.describe("App Router navigation regressions", () => {
     await expect(page.locator("#client-filter-label")).toHaveText("Client filter: beta");
     await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
     await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
-    await page.waitForTimeout(100);
+    await waitForPaintFlush(page);
 
     const events = await page.evaluate(() => {
       (
@@ -362,7 +369,7 @@ test.describe("App Router navigation regressions", () => {
     await page.locator("#query-filter-beta").click();
     await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
     await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
-    await page.waitForTimeout(100);
+    await waitForPaintFlush(page);
 
     const events = await page.evaluate(() => {
       (
@@ -453,7 +460,7 @@ test.describe("App Router navigation regressions", () => {
     await page.locator("#query-filter-beta").click();
     await expect(page.locator("#query-filter-title")).toHaveText("Server filter: beta");
     await expect(page.locator("#query-filter-first-row")).toHaveText("Beta 1");
-    await page.waitForTimeout(100);
+    await waitForPaintFlush(page);
 
     const events = await page.evaluate(() => {
       (
@@ -550,7 +557,7 @@ test.describe("App Router navigation regressions", () => {
     await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: beta");
     await expect(page.locator("#link-filter-title")).toHaveText("Server filter: beta");
     await expect(page.locator("#link-filter-first-row")).toHaveText("Beta 1");
-    await page.waitForTimeout(100);
+    await waitForPaintFlush(page);
 
     const events = await page.evaluate(() => {
       (
@@ -609,7 +616,7 @@ test.describe("App Router navigation regressions", () => {
     await waitForHydration(page);
 
     await page.locator("#link-filter-beta").hover();
-    await page.waitForTimeout(50);
+    await waitForPaintFlush(page);
 
     await page.locator("#link-filter-beta").click();
     await expect(page.locator("#link-client-filter-label")).toHaveText("Client filter: beta");

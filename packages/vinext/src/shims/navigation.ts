@@ -245,10 +245,10 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
 
 export function restoreRscResponse(snapshot: CachedRscResponse): Response {
   // Uint8Array creates a view over the cached ArrayBuffer without copying.
-  // ReadableStream consumption does not detach the underlying buffer, so
-  // repeated restores from the same snapshot are safe. If a future consumer
-  // ever transfers or detaches the buffer, this assumption breaks — add a
-  // defensive .slice(0) in that case.
+  // ReadableStream consumption does not mutate or detach the underlying
+  // buffer, so repeated restores from the same snapshot are safe. If a
+  // future consumer ever mutates, transfers, or detaches the buffer, this
+  // assumption breaks — add a defensive .slice(0) in that case.
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new Uint8Array(snapshot.body));
@@ -367,6 +367,11 @@ export function prefetchRscResponse(rscUrl: string, responsePromise: Promise<Res
     evictPrefetchCacheIfNeeded();
   }
 
+  // The `pendingResponse` variable is assigned and then referenced inside its
+  // own .then()/.catch() chain. This is an intentional identity check pattern:
+  // when the promise settles, `cache.get(rscUrl)?.pendingResponse === pendingResponse`
+  // verifies this is still the *current* pending request for that URL (not a
+  // newer one that superseded it).
   let pendingResponse: Promise<CachedRscResponse | null>;
   pendingResponse = responsePromise
     .then(async (response) => {
@@ -660,9 +665,16 @@ export function usePathname(): string {
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
-  // Only use the render snapshot during an active navigation transition.
-  // After commit, fall through to useSyncExternalStore so user
-  // pushState/replaceState calls are immediately reflected.
+  // Prefer the render snapshot during an active navigation transition so
+  // hooks return the pending URL, not the stale committed one. After commit,
+  // fall through to useSyncExternalStore so user pushState/replaceState
+  // calls are immediately reflected.
+  //
+  // Reading navigationSnapshotActiveCount (mutable external state) during
+  // render is technically a React anti-pattern, but safe here: the counter
+  // only changes synchronously before startTransition (activate) and in
+  // useLayoutEffect after commit (deactivate). React's concurrent renders
+  // within a single transition see the same external state snapshot.
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.pathname;
   }

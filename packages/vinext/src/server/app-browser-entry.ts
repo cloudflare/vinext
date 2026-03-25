@@ -459,16 +459,17 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
+    // Clear navigation caches after the fetch succeeds but before RSC
+    // deserialization. Server actions may have mutated data, making cached
+    // responses stale. We clear immediately after the fetch (not after
+    // deserialization) so cache invalidation isn't skipped if the RSC
+    // payload is malformed.
+    clearClientNavigationCaches();
+
     const result = await createFromFetch<ServerActionResult | ReactNode>(
       Promise.resolve(fetchResponse),
       { temporaryReferences },
     );
-
-    // Clear navigation caches after the action succeeds — server actions
-    // may have mutated data, making cached responses stale. We clear here
-    // (not before the fetch) so failed actions don't unnecessarily
-    // invalidate valid caches.
-    clearClientNavigationCaches();
 
     if (isServerActionResult(result)) {
       updateBrowserTree(
@@ -538,6 +539,12 @@ async function main(): Promise<void> {
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
       // startTransition hangs in Firefox when replacing the entire tree.
+      //
+      // Note: window.location.pathname reflects the *previous* page here because
+      // the two-phase commit defers history updates to useLayoutEffect. During
+      // rapid A->B->A, the second navigation may see isSameRoute=true while the
+      // user perceives a cross-route nav. This is harmless — it only affects
+      // whether startTransition is used (smoother animation, not correctness).
       const isSameRoute = url.pathname === window.location.pathname;
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
