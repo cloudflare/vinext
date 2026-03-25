@@ -2306,7 +2306,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+                exclude: [
+                  ...new Set([
+                    ...incomingExclude,
+                    "vinext",
+                    "@vercel/og",
+                    "react-server-dom-webpack",
+                  ]),
+                ],
                 entries: appEntries,
               },
               build: {
@@ -2331,7 +2338,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+                exclude: [
+                  ...new Set([
+                    ...incomingExclude,
+                    "vinext",
+                    "@vercel/og",
+                    "react-server-dom-webpack",
+                  ]),
+                ],
                 entries: appEntries,
               },
               build: {

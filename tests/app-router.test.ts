@@ -1136,6 +1136,23 @@ describe("App Router integration", () => {
     expect(clientInclude).toContain("react-dom/client");
   });
 
+  it("excludes react-server-dom-webpack from rsc/ssr optimizeDeps to prevent dep optimizer re-runs from invalidating the Flight client", () => {
+    // react-server-dom-webpack is the RSC Flight protocol implementation.
+    // If it's pre-bundled by the dep optimizer, any re-optimisation cascade
+    // (triggered by lazily-discovered user-land deps) invalidates the Flight
+    // client module mid-request. In-flight RSC streams then crash with
+    // "chunk.reason.enqueueModel is not a function" because chunk objects
+    // from the old module instance don't match the new module's functions.
+    //
+    // Excluding it from the dep optimizer means it's loaded through Vite's
+    // regular transform pipeline and is immune to re-optimisation invalidation.
+    const rscExclude = server.config.environments.rsc?.optimizeDeps?.exclude;
+    const ssrExclude = server.config.environments.ssr?.optimizeDeps?.exclude;
+
+    expect(rscExclude).toContain("react-server-dom-webpack");
+    expect(ssrExclude).toContain("react-server-dom-webpack");
+  });
+
   // ── CSRF protection for server actions ───────────────────────────────
   it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
