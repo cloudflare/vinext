@@ -6,6 +6,7 @@ import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   collectNitroRouteRules,
+  convertToNitroPattern,
   generateNitroRouteRules,
   mergeNitroRouteRules,
   type NitroRouteRuleConfig,
@@ -122,6 +123,8 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
     throw new Error("vinext:config plugin not found");
   }
 
+  // Passing empty plugins array means hasNitroPlugin=false in the closure,
+  // but the nitro.setup hook doesn't gate on hasNitroPlugin (Nitro calls it directly).
   await configPlugin.config({ root, plugins: [] }, { command: "build", mode: "production" });
 
   const nitroPlugin = findNamedPlugin(plugins, "vinext:nitro-route-rules") as NitroSetupPlugin;
@@ -131,6 +134,27 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
 
   return nitroPlugin;
 }
+
+describe("convertToNitroPattern", () => {
+  it("leaves static routes unchanged", () => {
+    expect(convertToNitroPattern("/")).toBe("/");
+    expect(convertToNitroPattern("/about")).toBe("/about");
+    expect(convertToNitroPattern("/blog/featured")).toBe("/blog/featured");
+  });
+
+  it("converts :param segments to /** globs", () => {
+    expect(convertToNitroPattern("/blog/:slug")).toBe("/blog/**");
+    expect(convertToNitroPattern("/users/:id/posts")).toBe("/users/**/posts");
+  });
+
+  it("converts :param+ catch-all segments to /** globs", () => {
+    expect(convertToNitroPattern("/docs/:slug+")).toBe("/docs/**");
+  });
+
+  it("converts :param* optional catch-all segments to /** globs", () => {
+    expect(convertToNitroPattern("/docs/:slug*")).toBe("/docs/**");
+  });
+});
 
 describe("generateNitroRouteRules", () => {
   it("returns empty object when no ISR routes exist", () => {
@@ -143,22 +167,25 @@ describe("generateNitroRouteRules", () => {
     expect(generateNitroRouteRules(rows)).toEqual({});
   });
 
-  it("preserves exact vinext route patterns for Nitro rules", () => {
+  it("converts dynamic segments to Nitro glob patterns", () => {
     const rows = [
       { pattern: "/", type: "isr" as const, revalidate: 120 },
       { pattern: "/blog/:slug", type: "isr" as const, revalidate: 60 },
       { pattern: "/docs/:slug+", type: "isr" as const, revalidate: 30 },
-      { pattern: "/docs/:slug*", type: "isr" as const, revalidate: 15 },
+      { pattern: "/products/:id*", type: "isr" as const, revalidate: 15 },
     ];
 
     expect(generateNitroRouteRules(rows)).toEqual({
       "/": { swr: 120 },
-      "/blog/:slug": { swr: 60 },
-      "/docs/:slug+": { swr: 30 },
-      "/docs/:slug*": { swr: 15 },
+      "/blog/**": { swr: 60 },
+      "/docs/**": { swr: 30 },
+      "/products/**": { swr: 15 },
     });
   });
 
+  // In practice, buildReportRows never produces an ISR row with Infinity
+  // (classifyAppRoute maps Infinity to "static"), but generateNitroRouteRules
+  // should handle it defensively since Infinity serializes to null in JSON.
   it("ignores Infinity revalidate defensively", () => {
     const rows = [
       { pattern: "/isr", type: "isr" as const, revalidate: Infinity },
@@ -219,7 +246,7 @@ describe("collectNitroRouteRules", () => {
     });
 
     expect(routeRules).toEqual({
-      "/blog/:slug": { swr: 60 },
+      "/blog/**": { swr: 60 },
     });
   });
 
@@ -233,7 +260,7 @@ describe("collectNitroRouteRules", () => {
     });
 
     expect(routeRules).toEqual({
-      "/blog/:slug": { swr: 45 },
+      "/blog/**": { swr: 45 },
     });
   });
 });
@@ -247,7 +274,7 @@ describe("vinext Nitro setup integration", () => {
       options: {
         dev: false,
         routeRules: {
-          "/blog/:slug": { headers: { "x-test": "1" } },
+          "/blog/**": { headers: { "x-test": "1" } },
         },
       },
       logger: { warn },
@@ -256,7 +283,7 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({
-      "/blog/:slug": {
+      "/blog/**": {
         headers: { "x-test": "1" },
         swr: 60,
       },
@@ -272,7 +299,7 @@ describe("vinext Nitro setup integration", () => {
       options: {
         dev: false,
         routeRules: {
-          "/blog/:slug": { swr: 600 },
+          "/blog/**": { swr: 600 },
         },
       },
       logger: { warn },
@@ -281,10 +308,10 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({
-      "/blog/:slug": { swr: 600 },
+      "/blog/**": { swr: 600 },
     });
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("/blog/:slug");
+    expect(warn.mock.calls[0]?.[0]).toContain("/blog/**");
   });
 
   it("skips route rule generation during Nitro dev", async () => {

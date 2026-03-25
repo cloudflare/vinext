@@ -4413,7 +4413,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         },
       },
-    } as Plugin & { nitro: { setup: (nitro: NitroSetupContext) => Promise<void> } },
+    } as Plugin & { nitro: { setup: (nitro: NitroSetupContext) => Promise<void> } }, // Nitro plugin extension convention: https://nitro.build/guide/plugins
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
     // runtime, so rebuild those mappings from the emitted client bundle.
