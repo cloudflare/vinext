@@ -42,11 +42,13 @@ A commit is relevant if it touches anything that vinext reimplements or relies o
 
 ## How to work
 
+**Important:** All `gh issue` commands MUST use `--repo "$GITHUB_REPOSITORY"` so they target the correct repo. The `GITHUB_REPOSITORY` environment variable is set by the CI workflow (e.g., `cloudflare/vinext`). Never guess the repo name.
+
 1. Read through all commits provided. For each one, fetch the full diff using `gh api` if the summary is ambiguous.
 2. Classify each commit: relevant or not. If not, skip it.
 3. For relevant commits, group closely related commits (e.g., 3 commits all part of one feature) into a single issue rather than opening one issue per commit.
-4. Before opening any issue, check for duplicates: run `gh issue list --label "nextjs-tracking" --state open --limit 50` and search for the feature/area name. If a matching open issue already exists, skip it.
-5. Open one GitHub issue per distinct relevant change using the format below.
+4. Before opening any issue, check for duplicates: run `gh issue list --repo "$GITHUB_REPOSITORY" --label "nextjs-tracking" --state open --limit 50` and search for the feature/area name. If a matching open issue already exists, skip it.
+5. Open one GitHub issue per distinct relevant change using the format below. Always pass `--repo "$GITHUB_REPOSITORY"` when creating issues.
 6. If nothing is relevant, do nothing. Do not open an issue to say "nothing relevant today."
 
 ## Issue format
