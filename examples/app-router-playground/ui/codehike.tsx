@@ -12,20 +12,42 @@ import {
 } from 'codehike/code';
 import { MDXProps } from 'mdx/types';
 import Image from 'next/image';
-import { JSX } from 'react';
+import { type ComponentType, JSX } from 'react';
 import { z } from 'zod';
 
 const Schema = Block.extend({ col: z.array(Block) });
+const EMPTY_COMPONENTS: Record<string, ComponentType<any>> = {};
+
+function getGridColumnKey(col: { children?: unknown }) {
+  const children = Array.isArray(col.children)
+    ? col.children
+    : col.children === undefined
+      ? []
+      : [col.children];
+
+  const childKeys = children
+    .map((child) => {
+      if (typeof child === 'object' && child !== null && 'key' in child) {
+        const childKey = (child as { key: string | null }).key;
+        return childKey ? String(childKey) : '';
+      }
+
+      return '';
+    })
+    .filter(Boolean);
+
+  return childKeys.join('|') || `column-${children.length}`;
+}
 
 export function Grid(props: unknown) {
   const data = parseProps(props, Schema);
 
   return (
     <div className="my-5 grid grid-cols-1 gap-6 lg:grid-cols-2 [&:first-child]:mt-0 [&:last-child]:mb-0">
-      {data.col.map((col, index) => (
+      {data.col.map((col) => (
         <div
           className="[&>:first-child]:mt-0 [&>:last-child]:mb-0"
-          key={index}
+          key={getGridColumnKey(col)}
         >
           {col.children}
         </div>
@@ -94,7 +116,7 @@ const mark: AnnotationHandler = {
 async function MyCode({ codeblock }: { codeblock: RawCode }) {
   'use cache';
   const highlighted = await highlight(codeblock, 'github-dark');
-  const { background, ...style } = highlighted.style;
+  const { background: _background, ...style } = highlighted.style;
   return (
     <Boundary
       label={highlighted.meta}
@@ -124,23 +146,28 @@ async function MyInlineCode({ codeblock }: { codeblock: RawCode }) {
 
 export function Mdx({
   source: MdxComponent,
-  components = {},
+  components,
   collapsed,
   className,
   ...props
 }: {
   source: (props: MDXProps) => JSX.Element;
-  components?: Record<string, React.ComponentType<any>>;
+  components?: Record<string, ComponentType<any>>;
   collapsed?: boolean;
   className?: string;
 }) {
+  const resolvedComponents = components ?? EMPTY_COMPONENTS;
+
   return (
     <Prose
       collapsed={collapsed}
-      className="prose prose-sm prose-invert prose-h1:font-medium prose-h2:font-medium prose-h3:font-medium prose-h4:font-medium prose-h5:font-medium prose-h6:font-medium prose-pre:mt-0 prose-pre:mb-0 prose-pre:rounded-none prose-pre:bg-transparent max-w-none"
+      className={clsx(
+        'prose prose-sm prose-invert prose-h1:font-medium prose-h2:font-medium prose-h3:font-medium prose-h4:font-medium prose-h5:font-medium prose-h6:font-medium prose-pre:mt-0 prose-pre:mb-0 prose-pre:rounded-none prose-pre:bg-transparent max-w-none',
+        className,
+      )}
     >
       <MdxComponent
-        components={{ MyCode, MyInlineCode, Image, ...components }}
+        components={{ MyCode, MyInlineCode, Image, ...resolvedComponents }}
         {...props}
       />
     </Prose>

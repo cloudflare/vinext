@@ -7,7 +7,7 @@ export function ClickCounter() {
 
   return (
     <button
-      onClick={() => setCount(count + 1)}
+      onClick={() => setCount((prev) => prev + 1)}
       className="rounded-md bg-gray-700 px-3 py-1 text-sm font-semibold whitespace-nowrap text-gray-100 tabular-nums hover:bg-gray-500 hover:text-white"
     >
       {count} Clicks
