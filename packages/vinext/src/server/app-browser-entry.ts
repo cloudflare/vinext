@@ -26,7 +26,6 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   pushHistoryStateWithoutNotify,
-  replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   restoreRscResponse,
   setClientParams,
@@ -90,11 +89,6 @@ function getBrowserTreeStateSetter(): Dispatch<SetStateAction<BrowserTreeState>>
 function applyClientParams(params: Record<string, string | string[]>): void {
   latestClientParams = params;
   setClientParams(params);
-}
-
-function stageClientParams(params: Record<string, string | string[]>): void {
-  latestClientParams = params;
-  replaceClientParamsWithoutNotify(params);
 }
 
 function clearVisitedResponseCache(): void {
@@ -273,23 +267,25 @@ function updateBrowserTree(
     setter({ renderId, node: resolvedNode, navigationSnapshot });
   };
 
-  if (node instanceof Promise) {
+  if (node != null && typeof (node as PromiseLike<ReactNode>).then === "function") {
+    const thenable = node as PromiseLike<ReactNode>;
     if (useTransitionMode) {
-      void node.then((resolved) => {
+      void thenable.then((resolved) => {
         startTransition(() => resolvedThenSet(resolved));
       });
     } else {
-      void node.then(resolvedThenSet);
+      void thenable.then(resolvedThenSet);
     }
     return;
   }
 
+  const syncNode = node as ReactNode;
   if (useTransitionMode) {
-    startTransition(() => resolvedThenSet(node));
+    startTransition(() => resolvedThenSet(syncNode));
     return;
   }
 
-  resolvedThenSet(node);
+  resolvedThenSet(syncNode);
 }
 
 function renderNavigationPayload(
@@ -510,7 +506,7 @@ async function main(): Promise<void> {
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
-        stageClientParams(cachedRoute.params);
+        applyClientParams(cachedRoute.params);
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
           href,
           cachedRoute.params,
@@ -569,12 +565,12 @@ async function main(): Promise<void> {
             string,
             string | string[]
           >;
-          stageClientParams(navParams);
+          applyClientParams(navParams);
         } catch {
-          stageClientParams({});
+          applyClientParams({});
         }
       } else {
-        stageClientParams({});
+        applyClientParams({});
       }
       const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
 
