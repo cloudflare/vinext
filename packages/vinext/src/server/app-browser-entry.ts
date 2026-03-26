@@ -511,9 +511,10 @@ async function main(): Promise<void> {
           href,
           cachedRoute.params,
         );
-        const cachedPayload = createFromFetch<ReactNode>(
+        const cachedPayload = await createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );
+        if (navId !== activeNavigationId) return;
         await renderNavigationPayload(
           cachedPayload,
           cachedNavigationSnapshot,
@@ -579,9 +580,11 @@ async function main(): Promise<void> {
       if (navId !== activeNavigationId) return;
 
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
-      const rscPayload = createFromFetch<ReactNode>(
+      const rscPayload = await createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
       );
+
+      if (navId !== activeNavigationId) return;
 
       await renderNavigationPayload(
         rscPayload,
