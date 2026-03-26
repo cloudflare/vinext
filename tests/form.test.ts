@@ -109,12 +109,21 @@ function createWindowStub() {
       history: {
         pushState,
         replaceState,
+        state: null,
       },
       location: {
         origin: "http://localhost:3000",
         href: "http://localhost:3000/current",
+        pathname: "/current",
+        search: "",
+        hash: "",
+        hostname: "localhost",
       },
       scrollTo,
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: () => {},
+      dispatchEvent: () => {},
     },
   };
 }
@@ -240,7 +249,7 @@ describe("Form useActionState", () => {
 
 describe("Form client GET interception", () => {
   it("strips existing query params from the action URL and warns in development", async () => {
-    const { navigate, pushState, scrollTo } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate, scrollTo } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search?lang=en" });
     const event = createSubmitEvent({
@@ -253,13 +262,13 @@ describe("Form client GET interception", () => {
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(pushState).toHaveBeenCalledWith(null, "", "/search?q=react");
-    expect(navigate).toHaveBeenCalledWith("/search?q=react");
+    // navigateClientSide delegates URL push to __VINEXT_RSC_NAVIGATE__ (two-phase commit)
+    expect(navigate).toHaveBeenCalledWith("/search?q=react", 0, "navigate", "push");
     expect(scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("honors submitter formAction, formMethod, and submitter name/value", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const { onSubmit } = renderClientForm({ action: "/search", method: "POST" });
     const submitter = new FakeButtonElement({
       attributes: {
@@ -280,12 +289,12 @@ describe("Form client GET interception", () => {
     await onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(pushState).toHaveBeenCalledWith(
-      null,
-      "",
+    expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=button&lang=fr&source=submitter-action",
+      0,
+      "navigate",
+      "push",
     );
-    expect(navigate).toHaveBeenCalledWith("/search-alt?q=button&lang=fr&source=submitter-action");
   });
 
   it("falls back to appending submitter name/value when FormData submitter overload is unavailable", async () => {
@@ -310,11 +319,14 @@ describe("Form client GET interception", () => {
 
     expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=fallback&lang=de&source=fallback-submitter",
+      0,
+      "navigate",
+      "push",
     );
   });
 
   it("does not intercept POST submissions without a submitter GET override", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const { onSubmit } = renderClientForm({ action: "/search", method: "POST" });
     const event = createSubmitEvent({
       entries: [["q", "server-action"]],
@@ -323,12 +335,11 @@ describe("Form client GET interception", () => {
     await onSubmit(event);
 
     expect(event.preventDefault).not.toHaveBeenCalled();
-    expect(pushState).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
 
   it("strips submitter formAction query params and warns in development", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search" });
     const submitter = new FakeButtonElement({
@@ -348,16 +359,16 @@ describe("Form client GET interception", () => {
     expect(warn).toHaveBeenCalledWith(
       '<Form> received a `formAction` that contains search params: "/search-alt?lang=fr". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
-    expect(pushState).toHaveBeenCalledWith(
-      null,
-      "",
+    expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=button&source=submitter-action",
+      0,
+      "navigate",
+      "push",
     );
-    expect(navigate).toHaveBeenCalledWith("/search-alt?q=button&source=submitter-action");
   });
 
   it("does not intercept submitters with unsupported formTarget overrides", async () => {
-    const { navigate, pushState } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search" });
     const submitter = new FakeButtonElement({
@@ -376,7 +387,6 @@ describe("Form client GET interception", () => {
       `<Form>'s \`target\` was set to an unsupported value via \`formTarget="_blank"\`. This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
     );
     expect(event.preventDefault).not.toHaveBeenCalled();
-    expect(pushState).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
 });

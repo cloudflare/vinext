@@ -15,6 +15,12 @@ export default function HomePage() {
         <Link href="/redirect-test-config" data-testid="redirect-test-link">
           Go to Redirect Test
         </Link>
+        <Link href="/nav-flash/link-sync" data-testid="nav-flash-link">
+          Nav Flash Test
+        </Link>
+        <Link href="/nav-flash/list" data-testid="nav-flash-list-link">
+          Nav Flash List
+        </Link>
       </nav>
     </main>
   );
