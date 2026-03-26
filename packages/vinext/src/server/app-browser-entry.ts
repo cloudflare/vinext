@@ -26,6 +26,7 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   pushHistoryStateWithoutNotify,
+  replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   restoreRscResponse,
   setClientParams,
@@ -91,6 +92,11 @@ function applyClientParams(params: Record<string, string | string[]>): void {
   setClientParams(params);
 }
 
+function stageClientParams(params: Record<string, string | string[]>): void {
+  latestClientParams = params;
+  replaceClientParamsWithoutNotify(params);
+}
+
 function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
 }
@@ -138,9 +144,11 @@ function createNavigationCommitEffect(
   historyUpdateMode: HistoryUpdateMode | undefined,
 ): () => void {
   return () => {
-    if (historyUpdateMode === "replace") {
+    const targetHref = new URL(href, window.location.origin).href;
+
+    if (historyUpdateMode === "replace" && window.location.href !== targetHref) {
       replaceHistoryStateWithoutNotify(null, "", href);
-    } else if (historyUpdateMode === "push") {
+    } else if (historyUpdateMode === "push" && window.location.href !== targetHref) {
       pushHistoryStateWithoutNotify(null, "", href);
     }
 
@@ -506,7 +514,7 @@ async function main(): Promise<void> {
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
-        applyClientParams(cachedRoute.params);
+        stageClientParams(cachedRoute.params);
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
           href,
           cachedRoute.params,
@@ -548,6 +556,7 @@ async function main(): Promise<void> {
 
       if (finalUrl.pathname !== requestedUrl.pathname) {
         const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
+        replaceHistoryStateWithoutNotify(null, "", destinationPath);
 
         const navigate = window.__VINEXT_RSC_NAVIGATE__;
         if (!navigate) {
@@ -555,7 +564,7 @@ async function main(): Promise<void> {
           return;
         }
 
-        return navigate(destinationPath, redirectDepth + 1, navigationKind, historyUpdateMode);
+        return navigate(destinationPath, redirectDepth + 1, navigationKind);
       }
 
       let navParams: Record<string, string | string[]> = {};
@@ -566,12 +575,12 @@ async function main(): Promise<void> {
             string,
             string | string[]
           >;
-          applyClientParams(navParams);
+          stageClientParams(navParams);
         } catch {
-          applyClientParams({});
+          stageClientParams({});
         }
       } else {
-        applyClientParams({});
+        stageClientParams({});
       }
       const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
 

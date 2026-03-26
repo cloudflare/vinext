@@ -193,6 +193,7 @@ export const PREFETCH_CACHE_TTL = 30_000;
 export interface CachedRscResponse {
   buffer: ArrayBuffer;
   contentType: string;
+  paramsHeader: string | null;
   url: string;
 }
 
@@ -281,6 +282,7 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
   return {
     buffer,
     contentType: response.headers.get("content-type") ?? "text/x-component",
+    paramsHeader: response.headers.get("X-Vinext-Params"),
     url: response.url,
   };
 }
@@ -291,9 +293,14 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
  * can consume the stream from scratch.
  */
 export function restoreRscResponse(cached: CachedRscResponse): Response {
+  const headers = new Headers({ "content-type": cached.contentType });
+  if (cached.paramsHeader != null) {
+    headers.set("X-Vinext-Params", cached.paramsHeader);
+  }
+
   return new Response(cached.buffer.slice(0), {
     status: 200,
-    headers: { "content-type": cached.contentType },
+    headers,
   });
 }
 
@@ -897,6 +904,11 @@ export async function navigateClientSide(
   // before scrolling. This prevents the old page from visibly jumping to the
   // top before the new content paints.
   if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (mode === "replace") {
+      replaceHistoryStateWithoutNotify(null, "", fullHref);
+    } else {
+      pushHistoryStateWithoutNotify(null, "", fullHref);
+    }
     await window.__VINEXT_RSC_NAVIGATE__(fullHref, 0, "navigate", mode);
   } else {
     if (mode === "replace") {
