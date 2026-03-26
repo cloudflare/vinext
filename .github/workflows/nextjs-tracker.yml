@@ -71,52 +71,48 @@ jobs:
         if: steps.commits.outputs.has_commits == 'true'
         run: |
           DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          COMMITS=$(cat /tmp/nextjs-commits.json)
 
           if [ "$DRY_RUN" = "true" ]; then
-            cat > /tmp/tracker-prompt.md << 'PROMPT_EOF'
-          You are the nextjs-tracker agent running in DRY RUN mode.
-
-          Review the Next.js canary commits in `/tmp/nextjs-commits.json` and determine which ones are relevant to vinext, but DO NOT create any GitHub issues.
-
-          The file contains commit messages and metadata. For any commit that looks potentially relevant based on its message, fetch the full diff with `gh api repos/vercel/next.js/commits/<sha>` to confirm before including it.
-
-          Skip commits that are obviously irrelevant from the message alone (docs, tests-only, turbopack internals, telemetry, etc.).
-
-          Print a structured report to stdout in this format for each relevant change:
+            MODE_INSTRUCTION="You are running in DRY RUN mode. DO NOT create any GitHub issues. Instead, print a structured report to stdout."
+            ACTION_INSTRUCTION="Print each relevant change in this format:
 
           ---
           WOULD OPEN ISSUE: <title>
           Priority: Breaking | Important | Minor
           Commits: <sha(s)>
-          Summary: <2-3 sentences on what changed and why it matters to vinext>
-          Files affected in vinext: <which shim/server/config files would need updating>
+          Summary: <2-3 sentences>
+          Files affected in vinext: <file paths>
           ---
 
-          At the end, print a one-line summary: "X relevant changes found out of Y total commits. Z issues would be opened."
-          PROMPT_EOF
+          At the end, print: \"X relevant changes found out of Y total commits. Z issues would be opened.\""
           else
-            cat > /tmp/tracker-prompt.md << 'PROMPT_EOF'
-          You are the nextjs-tracker agent. Review the Next.js canary commits in `/tmp/nextjs-commits.json` and open GitHub issues for any that are relevant to vinext.
-
-          The file contains commit messages and metadata. For any commit that looks potentially relevant based on its message, fetch the full diff with `gh api repos/vercel/next.js/commits/<sha>` to confirm before opening an issue.
-
-          Skip commits that are obviously irrelevant from the message alone (docs, tests-only, turbopack internals, telemetry, etc.).
-
-          Follow the instructions in your agent configuration exactly:
-          - Classify each commit as relevant or not
-          - Group related commits into single issues
-          - Check for duplicate open issues before creating any new ones
+            MODE_INSTRUCTION="Create GitHub issues for relevant changes."
+            ACTION_INSTRUCTION="Follow your agent configuration exactly:
+          - Check for duplicate open issues before creating new ones
           - Use the exact issue format specified in your config
-          - Apply the label `nextjs-tracking` to every issue you create
-          - If nothing is relevant, do nothing
-
-          Do not summarize your findings in a comment. The only output is GitHub issues (or silence if nothing is relevant).
-          PROMPT_EOF
+          - Apply the label nextjs-tracking to every issue
+          - If nothing is relevant, do nothing"
           fi
 
           {
             echo 'prompt<<PROMPT_DELIM'
-            cat /tmp/tracker-prompt.md
+            cat << PROMPT_EOF
+          ${MODE_INSTRUCTION}
+
+          HERE ARE THE COMMITS (already fetched, do not read any files):
+
+          ${COMMITS}
+
+          INSTRUCTIONS:
+          1. Triage each commit from its message. Skip obvious non-relevant commits (docs, turbopack, tests, version bumps, telemetry, CLI-only, lint/format).
+          2. For potentially relevant commits, fetch the full diff: gh api repos/vercel/next.js/commits/<sha>
+          3. Classify and act.
+
+          ${ACTION_INSTRUCTION}
+
+          IMPORTANT: Do NOT explore the local codebase. Do NOT read local files. Do NOT launch subagents. All context you need about vinext is in your agent configuration. Start classifying commits immediately.
+          PROMPT_EOF
             echo 'PROMPT_DELIM'
           } >> "$GITHUB_OUTPUT"
 
