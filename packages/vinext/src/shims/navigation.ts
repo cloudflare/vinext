@@ -122,31 +122,68 @@ type NavigationContextWithReadonlyCache = NavigationContext & {
 //
 // On the server: state functions are set by navigation-state.ts at import time.
 // On the client: _serverContext falls back to null (hooks use window instead).
+//
+// Global accessor pattern (issue #688):
+// Vite's multi-environment dev mode can create separate module instances of
+// this file for the SSR entry vs "use client" components. When that happens,
+// _registerStateAccessors only updates the SSR entry's instance, leaving the
+// "use client" instance with the default (null) fallbacks.
+//
+// To fix this, navigation-state.ts also stores the accessors on globalThis
+// via Symbol.for, and the defaults here check for that global before falling
+// back to module-level state. This ensures all module instances can reach the
+// ALS-backed state regardless of which instance was registered.
 // ---------------------------------------------------------------------------
+
+interface _StateAccessors {
+  getServerContext: () => NavigationContext | null;
+  setServerContext: (ctx: NavigationContext | null) => void;
+  getInsertedHTMLCallbacks: () => Array<() => unknown>;
+  clearInsertedHTMLCallbacks: () => void;
+}
+
+const _GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
+
+function _getGlobalAccessors(): _StateAccessors | undefined {
+  return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
+}
 
 let _serverContext: NavigationContext | null = null;
 let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
 
 // These are overridden by navigation-state.ts on the server to use ALS.
-let _getServerContext = (): NavigationContext | null => _serverContext;
-let _setServerContext = (ctx: NavigationContext | null): void => {
-  _serverContext = ctx;
+// The defaults check globalThis for cross-module-instance access (issue #688).
+let _getServerContext = (): NavigationContext | null => {
+  const g = _getGlobalAccessors();
+  return g ? g.getServerContext() : _serverContext;
 };
-let _getInsertedHTMLCallbacks = (): Array<() => unknown> => _serverInsertedHTMLCallbacks;
+let _setServerContext = (ctx: NavigationContext | null): void => {
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.setServerContext(ctx);
+  } else {
+    _serverContext = ctx;
+  }
+};
+let _getInsertedHTMLCallbacks = (): Array<() => unknown> => {
+  const g = _getGlobalAccessors();
+  return g ? g.getInsertedHTMLCallbacks() : _serverInsertedHTMLCallbacks;
+};
 let _clearInsertedHTMLCallbacks = (): void => {
-  _serverInsertedHTMLCallbacks = [];
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.clearInsertedHTMLCallbacks();
+  } else {
+    _serverInsertedHTMLCallbacks = [];
+  }
 };
 
 /**
  * Register ALS-backed state accessors. Called by navigation-state.ts on import.
  * @internal
  */
-export function _registerStateAccessors(accessors: {
-  getServerContext: () => NavigationContext | null;
-  setServerContext: (ctx: NavigationContext | null) => void;
-  getInsertedHTMLCallbacks: () => Array<() => unknown>;
-  clearInsertedHTMLCallbacks: () => void;
-}): void {
+export function _registerStateAccessors(accessors: _StateAccessors): void {
   _getServerContext = accessors.getServerContext;
   _setServerContext = accessors.setServerContext;
   _getInsertedHTMLCallbacks = accessors.getInsertedHTMLCallbacks;
