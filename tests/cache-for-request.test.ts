@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
   runWithRequestContext,
+  runWithUnifiedStateMutation,
   createRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request";
@@ -68,9 +69,11 @@ describe("cacheForRequest", () => {
     const ctx = createRequestContext();
     await runWithRequestContext(ctx, async () => {
       const outer = get();
-      // Simulate a nested scope (e.g. runWithCacheState)
-      const inner = await runWithRequestContext(
-        { ...ctx, dynamicUsageDetected: true },
+      // Exercise the real nested scope path via runWithUnifiedStateMutation
+      const inner = await runWithUnifiedStateMutation(
+        (child) => {
+          child.dynamicUsageDetected = true;
+        },
         () => get(),
       );
       expect(outer).toBe("cached");

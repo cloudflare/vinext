@@ -50,7 +50,8 @@ import { getRequestContext, isInsideUnifiedScope } from "./unified-request-conte
 /**
  * Create a request-scoped cached version of a factory function.
  *
- * @param factory - Function that creates the value. Called at most once per request.
+ * @param factory - Function that creates the value. Called once per request for sync
+ *   factories. Async factories that reject have their cache cleared, allowing retry.
  * @returns A function with the same return type that caches the result per request.
  */
 export function cacheForRequest<T>(factory: () => T): () => T {
