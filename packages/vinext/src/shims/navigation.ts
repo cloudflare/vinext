@@ -142,7 +142,8 @@ interface _StateAccessors {
   clearInsertedHTMLCallbacks: () => void;
 }
 
-const _GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
 type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
 
 function _getGlobalAccessors(): _StateAccessors | undefined {

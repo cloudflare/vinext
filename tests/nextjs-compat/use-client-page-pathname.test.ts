@@ -33,7 +33,8 @@ beforeAll(async () => {
   }));
 
   // Warm up so first test doesn't pay cold-start cost.
-  await fetch(`${_baseUrl}${ROUTE}`);
+  const warmup = await fetch(`${_baseUrl}${ROUTE}`);
+  expect(warmup.ok).toBe(true);
 }, 60_000);
 
 afterAll(async () => {

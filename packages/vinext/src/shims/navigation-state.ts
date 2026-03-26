@@ -99,7 +99,7 @@ export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T |
 //    for "use client" components due to pre-bundling or env separation.
 // ---------------------------------------------------------------------------
 
-const _GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+import { GLOBAL_ACCESSORS_KEY } from "./navigation";
 
 const _accessors = {
   getServerContext(): NavigationContext | null {
@@ -117,7 +117,7 @@ const _accessors = {
   clearInsertedHTMLCallbacks(): void {
     _getState().serverInsertedHTMLCallbacks = [];
   },
-};
+} satisfies Parameters<typeof _registerStateAccessors>[0];
 
 _registerStateAccessors(_accessors);
-(globalThis as unknown as Record<PropertyKey, unknown>)[_GLOBAL_ACCESSORS_KEY] = _accessors;
+(globalThis as unknown as Record<PropertyKey, unknown>)[GLOBAL_ACCESSORS_KEY] = _accessors;
