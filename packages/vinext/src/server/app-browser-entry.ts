@@ -149,11 +149,10 @@ function registerServerActionCallback(): void {
       // If so, we can perform a soft RSC navigation (SPA-style) instead of
       // a hard page reload. This is the fix for issue #654.
       const contentType = fetchResponse.headers.get("content-type") ?? "";
-      const hasRscPayload =
-        contentType.includes("text/x-component") && fetchResponse.body !== null;
+      const hasRscPayload = contentType.includes("text/x-component");
       const redirectType = fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
 
-      if (hasRscPayload) {
+      if (hasRscPayload && fetchResponse.body) {
         // Server pre-rendered the redirect target — apply it as a soft SPA navigation.
         // This matches how Next.js handles action redirects internally.
         try {
@@ -183,7 +182,10 @@ function registerServerActionCallback(): void {
           }
         } catch (rscParseErr) {
           // RSC parse failed — fall through to hard redirect below.
-          console.error("[vinext] RSC navigation failed, falling back to hard redirect:", rscParseErr);
+          console.error(
+            "[vinext] RSC navigation failed, falling back to hard redirect:",
+            rscParseErr,
+          );
         }
       }
 
