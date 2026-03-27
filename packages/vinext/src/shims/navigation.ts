@@ -242,35 +242,41 @@ export function getPrefetchedUrls(): Set<string> {
 }
 
 /**
+ * Evict prefetch cache entries if at capacity.
+ * First sweeps expired entries, then falls back to FIFO eviction.
+ * Shared by storePrefetchResponse() and prefetchRscResponse().
+ */
+function evictPrefetchCacheIfNeeded(): void {
+  const cache = getPrefetchCache();
+  if (cache.size < MAX_PREFETCH_CACHE_SIZE) return;
+
+  const now = Date.now();
+  const prefetched = getPrefetchedUrls();
+
+  for (const [key, entry] of cache) {
+    if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
+      cache.delete(key);
+      prefetched.delete(key);
+    }
+  }
+
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      prefetched.delete(oldest);
+    }
+  }
+}
+
+/**
  * Store a prefetched RSC response in the cache.
  * Enforces a maximum cache size to prevent unbounded memory growth on
  * link-heavy pages.
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
-  const cache = getPrefetchCache();
-  const now = Date.now();
-
-  // Sweep expired entries before resorting to FIFO eviction
-  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
-    const prefetched = getPrefetchedUrls();
-    for (const [key, entry] of cache) {
-      if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
-        cache.delete(key);
-        prefetched.delete(key);
-      }
-    }
-  }
-
-  // FIFO fallback if still at capacity after sweep
-  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) {
-      cache.delete(oldest);
-      getPrefetchedUrls().delete(oldest);
-    }
-  }
-
-  cache.set(rscUrl, { response, timestamp: now });
+  evictPrefetchCacheIfNeeded();
+  getPrefetchCache().set(rscUrl, { response, timestamp: Date.now() });
 }
 
 /**
@@ -333,6 +339,7 @@ export function prefetchRscResponse(rscUrl: string, fetchPromise: Promise<Respon
       entry.pending = undefined;
     });
 
+  evictPrefetchCacheIfNeeded();
   cache.set(rscUrl, entry);
 }
 
@@ -352,7 +359,12 @@ export function consumePrefetchResponse(rscUrl: string): CachedRscResponse | nul
   cache.delete(rscUrl);
   getPrefetchedUrls().delete(rscUrl);
 
-  if (entry.snapshot) return entry.snapshot;
+  if (entry.snapshot) {
+    if (Date.now() - entry.timestamp >= PREFETCH_CACHE_TTL) {
+      return null;
+    }
+    return entry.snapshot;
+  }
 
   // Legacy: raw Response entries (from storePrefetchResponse)
   // These can't be consumed synchronously as snapshots — skip them.
@@ -903,12 +915,12 @@ export async function navigateClientSide(
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
   // top before the new content paints.
+  //
+  // History is NOT pushed here for RSC navigations — the commit effect inside
+  // navigateRsc owns the push/replace exclusively. This avoids a fragile
+  // double-push and ensures window.location still reflects the *current* URL
+  // when navigateRsc computes isSameRoute (cross-route vs same-route).
   if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-    if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
-    } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
-    }
     await window.__VINEXT_RSC_NAVIGATE__(fullHref, 0, "navigate", mode);
   } else {
     if (mode === "replace") {

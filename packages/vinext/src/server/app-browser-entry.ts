@@ -67,6 +67,7 @@ interface VisitedResponseCacheEntry {
 
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
+const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 
 let nextNavigationRenderId = 0;
 let activeNavigationId = 0;
@@ -180,10 +181,21 @@ function getVisitedResponse(
   }
 
   if (navigationKind === "traverse") {
+    const createdAt = cached.expiresAt - VISITED_RESPONSE_CACHE_TTL;
+    if (Date.now() - createdAt >= MAX_TRAVERSAL_CACHE_TTL) {
+      visitedResponseCache.delete(rscUrl);
+      return null;
+    }
+    // LRU: promote to most-recently-used (delete + re-insert moves to end of Map)
+    visitedResponseCache.delete(rscUrl);
+    visitedResponseCache.set(rscUrl, cached);
     return cached;
   }
 
   if (cached.expiresAt > Date.now()) {
+    // LRU: promote to most-recently-used
+    visitedResponseCache.delete(rscUrl);
+    visitedResponseCache.set(rscUrl, cached);
     return cached;
   }
 
@@ -244,7 +256,15 @@ function BrowserRoot({
     navigationSnapshot: initialNavigationSnapshot,
   });
 
-  setBrowserTreeState = setTreeState;
+  // Assign the module-level setter via useLayoutEffect instead of during render
+  // to avoid side effects that React Strict Mode / concurrent features may
+  // call multiple times. useLayoutEffect fires synchronously during commit,
+  // before hydrateRoot returns to main(), so setBrowserTreeState is available
+  // before __VINEXT_RSC_NAVIGATE__ is assigned. setTreeState is referentially
+  // stable so the effect only runs on mount.
+  useLayoutEffect(() => {
+    setBrowserTreeState = setTreeState;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- setTreeState is referentially stable
 
   const committedTree = createElement(NavigationCommitSignal, {
     renderId: treeState.renderId,
@@ -275,14 +295,25 @@ function updateBrowserTree(
     setter({ renderId, node: resolvedNode, navigationSnapshot });
   };
 
+  // Balance the activate/commit pairing if the async payload rejects
+  // after activateNavigationSnapshot() was called in renderNavigationPayload.
+  const handleAsyncError = () => {
+    pendingNavigationPrePaintEffects.delete(renderId);
+    const resolve = pendingNavigationCommits.get(renderId);
+    pendingNavigationCommits.delete(renderId);
+    commitClientNavigationState();
+    resolve?.();
+  };
+
   if (node != null && typeof (node as PromiseLike<ReactNode>).then === "function") {
     const thenable = node as PromiseLike<ReactNode>;
     if (useTransitionMode) {
-      void thenable.then((resolved) => {
-        startTransition(() => resolvedThenSet(resolved));
-      });
+      void thenable.then(
+        (resolved) => startTransition(() => resolvedThenSet(resolved)),
+        handleAsyncError,
+      );
     } else {
-      void thenable.then(resolvedThenSet);
+      void thenable.then(resolvedThenSet, handleAsyncError);
     }
     return;
   }
