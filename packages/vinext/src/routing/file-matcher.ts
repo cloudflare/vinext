@@ -103,7 +103,9 @@ export async function* scanWithExtensions(
   const isGlob = stem.includes("**") || stem.includes("*");
 
   // Extract the base name from stem (e.g., "**/page" -> "page", "page" -> "page")
+  // For "**/*", baseName will be "*" which means match all files
   const baseName = stem.split("/").pop() || stem;
+  const matchAllFiles = baseName === "*";
 
   async function* scanDir(currentDir: string, relativeBase: string): AsyncGenerator<string> {
     let entries: Dirent[];
@@ -124,26 +126,36 @@ export async function* scanWithExtensions(
         // Recurse into subdirectories
         yield* scanDir(fullPath, relativePath);
       } else if (entry.isFile()) {
-        // Check if file matches baseName.{extension}
-        for (const ext of extensions) {
-          const expectedName = `${baseName}.${ext}`;
-          if (entry.name === expectedName) {
-            // For glob patterns like **/page, match any path ending with page.tsx
-            if (isGlob) {
-              if (relativePath.endsWith(`${baseName}.${ext}`)) {
-                yield relativePath;
-              }
-            } else {
-              // For non-glob stems, the path should start with the stem
-              if (
-                relativePath === `${relativeBase}.${ext}` ||
-                relativePath.startsWith(`${relativeBase}/`) ||
-                relativePath === `${baseName}.${ext}`
-              ) {
-                yield relativePath;
-              }
+        if (matchAllFiles) {
+          // For "**/*" pattern, match any file with the given extensions
+          for (const ext of extensions) {
+            if (entry.name.endsWith(`.${ext}`)) {
+              yield relativePath;
+              break;
             }
-            break;
+          }
+        } else {
+          // Check if file matches baseName.{extension}
+          for (const ext of extensions) {
+            const expectedName = `${baseName}.${ext}`;
+            if (entry.name === expectedName) {
+              // For glob patterns like **/page, match any path ending with page.tsx
+              if (isGlob) {
+                if (relativePath.endsWith(`${baseName}.${ext}`)) {
+                  yield relativePath;
+                }
+              } else {
+                // For non-glob stems, the path should start with the stem
+                if (
+                  relativePath === `${relativeBase}.${ext}` ||
+                  relativePath.startsWith(`${relativeBase}/`) ||
+                  relativePath === `${baseName}.${ext}`
+                ) {
+                  yield relativePath;
+                }
+              }
+              break;
+            }
           }
         }
       }
