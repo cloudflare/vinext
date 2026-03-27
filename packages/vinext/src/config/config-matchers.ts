@@ -573,7 +573,10 @@ function matchSingleCondition(
 function _cachedConditionRegex(value: string): RegExp | null {
   let re = _compiledConditionCache.get(value);
   if (re === undefined) {
-    re = safeRegExp(value);
+    // Anchor the regex to match the full value, not a substring.
+    // Matches Next.js: new RegExp(`^${hasItem.value}$`)
+    // Without anchoring, has:[cookie:role=admin] would match "not-admin".
+    re = safeRegExp(`^${value}$`);
     _compiledConditionCache.set(value, re);
   }
   return re;

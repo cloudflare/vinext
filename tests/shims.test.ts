@@ -10871,3 +10871,64 @@ describe("isSafeAttrName", () => {
     expect(isSafeAttrName("-foo")).toBe(false);
   });
 });
+
+// ── has/missing condition value matching (anchored regex) ──────────────────
+
+describe("checkHasConditions value anchoring", () => {
+  let checkHasConditions: Function;
+  let requestContextFromRequest: Function;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/config/config-matchers.js");
+    checkHasConditions = mod.checkHasConditions;
+    requestContextFromRequest = mod.requestContextFromRequest;
+  });
+
+  it("exact value matches fully", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
+  });
+
+  it("does not match substring (anchored regex prevents partial match)", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=not-admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("does not match superstring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin-temp" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("regex patterns still work with anchoring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { "x-lang": "en-US" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "header", key: "x-lang", value: "en.*" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
+  });
+});
