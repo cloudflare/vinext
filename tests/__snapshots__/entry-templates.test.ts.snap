@@ -52,6 +52,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -2245,6 +2246,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -4441,6 +4443,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -6643,6 +6646,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 import * as _instrumentation from "/tmp/test/instrumentation.ts";
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -8869,6 +8873,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 import { sitemapToXml, robotsToText, manifestToJson } from "<ROOT>/packages/vinext/src/server/metadata-routes.js";
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -11069,6 +11074,7 @@ import * as middlewareModule from "/tmp/test/middleware.ts";
 
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,

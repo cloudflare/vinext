@@ -2705,6 +2705,89 @@ describe("normalizePath", () => {
   });
 });
 
+// ── escapePathDelimiters / decodePathParams ────────────────────────────────
+// Ported from Next.js: packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
+// and packages/next/src/server/lib/router-utils/decode-path-params.ts
+
+describe("escapePathDelimiters", () => {
+  let escapePathDelimiters: (segment: string, escapeEncoded?: boolean) => string;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    escapePathDelimiters = mod.escapePathDelimiters;
+  });
+
+  it("re-encodes forward slash", () => {
+    expect(escapePathDelimiters("admin/panel")).toBe("admin%2Fpanel");
+  });
+
+  it("re-encodes hash and question mark", () => {
+    expect(escapePathDelimiters("foo#bar")).toBe("foo%23bar");
+    expect(escapePathDelimiters("foo?bar")).toBe("foo%3Fbar");
+  });
+
+  it("re-encodes already-encoded delimiters when escapeEncoded is true", () => {
+    expect(escapePathDelimiters("admin%2Fpanel", true)).toBe("admin%252Fpanel");
+    expect(escapePathDelimiters("foo%23bar", true)).toBe("foo%2523bar");
+    expect(escapePathDelimiters("foo%3Fbar", true)).toBe("foo%253Fbar");
+    expect(escapePathDelimiters("foo%5Cbar", true)).toBe("foo%255Cbar");
+  });
+
+  it("leaves non-delimiter characters unchanged", () => {
+    expect(escapePathDelimiters("café")).toBe("café");
+    expect(escapePathDelimiters("hello world")).toBe("hello world");
+  });
+});
+
+describe("decodePathParams", () => {
+  let decodePathParams: (pathname: string) => string;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    decodePathParams = mod.decodePathParams;
+  });
+
+  it("decodes non-ASCII characters within segments", () => {
+    expect(decodePathParams("/caf%C3%A9")).toBe("/café");
+    expect(decodePathParams("/%E6%97%A5%E6%9C%AC%E8%AA%9E")).toBe("/日本語");
+  });
+
+  it("preserves encoded slashes (%2F) - does not change path structure", () => {
+    expect(decodePathParams("/admin%2Fpanel")).toBe("/admin%2Fpanel");
+  });
+
+  it("preserves encoded hash (%23) and question mark (%3F)", () => {
+    expect(decodePathParams("/foo%23bar")).toBe("/foo%23bar");
+    expect(decodePathParams("/foo%3Fbar")).toBe("/foo%3Fbar");
+  });
+
+  it("decodes encoded backslash (%5C) since it is not a path delimiter", () => {
+    // Backslash is not a URL path delimiter (browsers normalize \ to / before
+    // sending). The escapePathDelimiters function only re-encodes /, #, and ?.
+    // %5C is decoded to \ and left as-is, matching Next.js behavior.
+    expect(decodePathParams("/foo%5Cbar")).toBe("/foo\\bar");
+  });
+
+  it("decodes mixed paths correctly", () => {
+    // Non-ASCII decoded, structural delimiters preserved
+    expect(decodePathParams("/caf%C3%A9/admin%2Fpanel")).toBe("/café/admin%2Fpanel");
+  });
+
+  it("handles already-decoded paths", () => {
+    expect(decodePathParams("/about")).toBe("/about");
+    expect(decodePathParams("/foo/bar/baz")).toBe("/foo/bar/baz");
+  });
+
+  it("handles malformed percent-encoding gracefully", () => {
+    // Should not throw, just return the segment as-is
+    expect(decodePathParams("/%E0%A4%A")).toBe("/%E0%A4%A");
+  });
+
+  it("handles root path", () => {
+    expect(decodePathParams("/")).toBe("/");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Codegen parity tests (verify generated code matches runtime behavior)
 
