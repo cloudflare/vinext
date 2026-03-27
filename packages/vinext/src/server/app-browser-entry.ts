@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { ReactNode } from "react";
+import { startTransition } from "react";
 import type { Root } from "react-dom/client";
 import {
   createFromFetch,
@@ -144,11 +145,50 @@ function registerServerActionCallback(): void {
         // Fall through to hard redirect below if URL parsing fails.
       }
 
-      // Use hard redirect for all action redirects because vinext's server
-      // currently returns an empty body for redirect responses. RSC navigation
-      // requires a valid RSC payload. This is a known parity gap with Next.js,
-      // which pre-renders the redirect target's RSC payload.
+      // Check if the server pre-rendered the redirect target's RSC payload.
+      // If so, we can perform a soft RSC navigation (SPA-style) instead of
+      // a hard page reload. This is the fix for issue #654.
+      const contentType = fetchResponse.headers.get("content-type") ?? "";
+      const hasRscPayload =
+        contentType.includes("text/x-component") && fetchResponse.body !== null;
       const redirectType = fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
+
+      if (hasRscPayload) {
+        // Server pre-rendered the redirect target — apply it as a soft SPA navigation.
+        // This matches how Next.js handles action redirects internally.
+        try {
+          const result = await createFromFetch(Promise.resolve(fetchResponse), {
+            temporaryReferences,
+          });
+
+          if (isServerActionResult(result)) {
+            // Update the React tree with the redirect target's RSC payload
+            startTransition(() => {
+              getReactRoot().render(result.root);
+            });
+
+            // Update the browser URL without a reload
+            if (redirectType === "push") {
+              window.history.pushState(null, "", actionRedirect);
+            } else {
+              window.history.replaceState(null, "", actionRedirect);
+            }
+
+            // Handle return value if present
+            if (result.returnValue) {
+              if (!result.returnValue.ok) throw result.returnValue.data;
+              return result.returnValue.data;
+            }
+            return undefined;
+          }
+        } catch (rscParseErr) {
+          // RSC parse failed — fall through to hard redirect below.
+          console.error("[vinext] RSC navigation failed, falling back to hard redirect:", rscParseErr);
+        }
+      }
+
+      // Fallback: empty body (external URL, unmatched route, or parse error).
+      // Use hard redirect to ensure the navigation still completes.
       if (redirectType === "push") {
         window.location.assign(actionRedirect);
       } else {

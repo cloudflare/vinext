@@ -1877,6 +1877,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       // We can't use a real HTTP redirect (the fetch would follow it automatically
       // and receive a page HTML instead of RSC stream). Instead, we return a 200
       // with x-action-redirect header that the client entry detects and handles.
+      // 
+      // For same-origin routes, we pre-render the redirect target's RSC payload
+      // so the client can perform a soft RSC navigation (SPA-style) instead of
+      // a hard page reload. This matches Next.js behavior.
       if (actionRedirect) {
         const actionPendingCookies = getAndClearPendingCookies();
         const actionDraftCookie = getDraftModeCookieHeader();
@@ -1893,8 +1897,71 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           redirectHeaders.append("Set-Cookie", cookie);
         }
         if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
+
+        // Try to pre-render the redirect target for soft RSC navigation.
+        // This is the Next.js parity fix for issue #654.
+        try {
+          const redirectUrl = new URL(actionRedirect.url, request.url);
+          
+          // Only pre-render same-origin URLs. External URLs fall through to
+          // the empty-body response, which triggers a hard redirect on the client.
+          if (redirectUrl.origin === new URL(request.url).origin) {
+            const redirectMatch = matchRoute(redirectUrl.pathname);
+            
+            if (redirectMatch) {
+              const { route: redirectRoute, params: redirectParams } = redirectMatch;
+              
+              // Set navigation context for the redirect target
+              setNavigationContext({
+                pathname: redirectUrl.pathname,
+                searchParams: redirectUrl.searchParams,
+                params: redirectParams,
+              });
+              
+              // Build and render the redirect target page
+              const redirectElement = buildPageElement(
+                redirectRoute,
+                redirectParams,
+                undefined,
+                redirectUrl.searchParams,
+              );
+              
+              const redirectOnError = createRscOnErrorHandler(
+                request,
+                redirectUrl.pathname,
+                redirectRoute.pattern,
+              );
+              
+              const rscStream = renderToReadableStream(
+                { root: redirectElement, returnValue },
+                { temporaryReferences, onError: redirectOnError },
+              );
+              
+              const redirectResponse = new Response(rscStream, {
+                status: 200,
+                headers: redirectHeaders,
+              });
+              
+              // Append cookies to the response
+              if (actionPendingCookies.length > 0 || actionDraftCookie) {
+                for (const cookie of actionPendingCookies) {
+                  redirectResponse.headers.append("Set-Cookie", cookie);
+                }
+                if (actionDraftCookie) redirectResponse.headers.append("Set-Cookie", actionDraftCookie);
+              }
+              
+              return redirectResponse;
+            }
+          }
+        } catch (preRenderErr) {
+          // If pre-rendering fails (e.g., auth guard, missing data, unmatched route),
+          // fall through to the empty-body response below. This ensures graceful
+          // degradation to hard redirect rather than a 500 error.
+          console.error("[vinext] Failed to pre-render redirect target:", preRenderErr);
+        }
+
+        // Fallback: external URL or unmatched route — client will hard-navigate.
+        return new Response(null, { status: 200, headers: redirectHeaders });
       }
 
       // After the action, re-render the current page so the client

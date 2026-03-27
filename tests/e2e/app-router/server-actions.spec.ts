@@ -189,4 +189,30 @@ test.describe("useActionState", () => {
     await expect(page).toHaveURL(/\/action-state-test$/);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
   });
+
+  test("server action redirect performs soft RSC navigation (issue #654)", async ({ page }) => {
+    await page.goto(`${BASE}/action-redirect-test`);
+    await expect(page.locator("h1")).toHaveText("Action Redirect Test");
+    await waitForHydration(page);
+
+    // Track hard navigation events — a hard reload triggers a full page navigation.
+    // Soft RSC navigation should NOT trigger any framenavigated events after the initial load.
+    const hardNavigations: string[] = [];
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        hardNavigations.push(frame.url());
+      }
+    });
+
+    // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
+    await page.click('[data-testid="redirect-btn"]');
+
+    // Should navigate to /about
+    await expect(page).toHaveURL(/\/about/, { timeout: 10_000 });
+    await expect(page.locator("h1")).toHaveText("About");
+
+    // Soft navigation = no hard navigation events after the initial page load
+    // The initial page.goto() counts as one navigation, so we expect exactly 1 entry
+    expect(hardNavigations).toHaveLength(0);
+  });
 });
