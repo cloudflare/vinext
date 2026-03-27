@@ -25,7 +25,7 @@ The skill handles compatibility checking, dependency installation, config genera
 ### Or do it manually
 
 ```bash
-npm install -D vinext vite @vitejs/plugin-react
+npm install -D vinext vite@^8 @vitejs/plugin-react
 ```
 
 If you're using the App Router, also install:
@@ -34,23 +34,25 @@ If you're using the App Router, also install:
 npm install -D @vitejs/plugin-rsc react-server-dom-webpack
 ```
 
-Replace `next` with `vinext` in your scripts:
+`vinext init` adds side-by-side vinext scripts instead of overwriting your existing Next.js commands. If you're migrating manually, mirror that flow first:
 
 ```json
 {
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "start": "vinext start"
+    "dev:vinext": "vite dev --port 3001",
+    "build:vinext": "vite build",
+    "start:vinext": "vinext start"
   }
 }
 ```
 
 ```bash
-vinext dev          # Development server with HMR
-vinext build        # Production build
+npm run dev:vinext  # Development server with HMR
+npm run build:vinext
 vinext deploy       # Build and deploy to Cloudflare Workers
 ```
+
+Once the vinext path looks good, you can swap your default `dev` / `build` scripts over if you want vinext to take over completely.
 
 vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
 
@@ -70,7 +72,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--prerender-all`, `--experimental-tpr`, `--tpr-coverage <pct>`, `--tpr-limit <count>`, `--tpr-window <hours>`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
@@ -91,7 +93,7 @@ npx vinext init
 This will:
 
 1. Run `vinext check` to scan for compatibility issues
-2. Install `vite`, `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
+2. Install `vite` (latest Vite 8 by default), `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext` and `build:vinext` scripts to `package.json`
@@ -99,7 +101,7 @@ This will:
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
-vinext supports both Vite 7 and Vite 8. If you bring custom Vite config or plugins from an older setup, note that Vite 8 now defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. Prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency only breaks on Vite 8 because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
+New migrations should target Vite 8. vinext still keeps Vite 7 compatibility for older setups, but the docs and examples below assume the Vite 8 defaults (Rolldown, Oxc, Lightning CSS, and the newer browser baseline). Prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency only breaks on Vite 8 because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
@@ -391,7 +393,7 @@ See the [Nitro deployment docs](https://v3.nitro.build/deploy) for the full list
 
 ## Live examples
 
-These are deployed to Cloudflare Workers and updated on every push to `main`:
+Most of these are deployed to Cloudflare Workers and updated on every push to `main`. The Nitro example is kept here as a checked-in multi-platform deployment reference:
 
 | Example                | Description                                                                                                      | URL                                                                                              |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -402,7 +404,9 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | Pages Router (minimal) | Minimal Pages Router on Workers                                                                                  | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API          | REST API routes example                                                                                          | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev)           |
 | Benchmarks Dashboard   | Build performance tracking over time (D1-backed)                                                                 | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev)                           |
-| App Router + Nitro     | App Router deployed via Nitro (multi-platform)                                                                   | [examples/app-router-nitro](examples/app-router-nitro)                                           |
+| App Router + Nitro     | App Router deployed via Nitro (multi-platform)                                                                   | [examples/app-router-nitro](examples/app-router-nitro) |
+
+Additional checked-in examples that are not part of the auto-deploy matrix live under [`examples/`](examples/), including `fumadocs-docs-template` and `tpr-demo`.
 
 ## API coverage
 
@@ -650,23 +654,24 @@ tests/
   *.test.ts               # Vitest unit + integration tests
   nextjs-compat/          # Tests ported from Next.js test suite
   fixtures/               # Test apps (pages-basic, app-basic, ecosystem libs)
-  e2e/                    # Playwright E2E tests (5 projects)
+  e2e/                    # Playwright E2E tests (7 projects)
 
-examples/                 # Deployed demo apps (see Live Examples above)
+examples/                 # Demo apps (some auto-deployed, some local/reference)
 ```
 
 ## Tests
 
 ```bash
-pnpm test             # Vitest unit + integration tests
-pnpm run test:e2e     # Playwright E2E tests (5 projects)
-pnpm run check        # Format, lint, and type checks
-pnpm run lint         # Lint only (type-aware oxlint)
-pnpm run fmt          # Formatting (oxfmt)
-pnpm run fmt:check    # Check formatting without writing
+vp test run --project unit        # Vitest unit tests
+vp test run --project integration # Vitest integration tests
+vp run test:e2e                   # Playwright E2E tests (7 projects; set PLAYWRIGHT_PROJECT=<name> to target one)
+vp run check                      # Format, lint, and type checks
+vp run lint                       # Lint only (type-aware oxlint)
+vp run fmt                        # Formatting (oxfmt)
+vp run fmt:check                  # Check formatting without writing
 ```
 
-E2E tests cover Pages Router (dev + production), App Router (dev), and both routers on Cloudflare Workers via `wrangler dev`.
+E2E tests cover Pages Router (dev + production), App Router (dev), and both routers on Cloudflare Workers and Cloudflare-flavored dev flows.
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — see it live at [app-router-playground.vinext.workers.dev](https://app-router-playground.vinext.workers.dev).
 
@@ -677,17 +682,17 @@ If you're working from the repo instead of installing from npm:
 ```bash
 git clone https://github.com/cloudflare/vinext.git
 cd vinext
-pnpm install
-pnpm run build
+vp install
+vp run build
 ```
 
-This builds the vinext package to `packages/vinext/dist/` via `vp pack`. For active development, use `pnpm --filter vinext run dev` to run `vp pack --watch`.
+This builds the vinext package to `packages/vinext/dist/` via `vp pack`. For active development, use `vp run vinext#dev` to run `vp pack --watch`.
 
-To use it against an external Next.js app, link the built package:
+To use it against an external Next.js app, install the built package from your local checkout:
 
 ```bash
 # From your Next.js project directory:
-pnpm link /path/to/vinext/packages/vinext
+vp add "file:/path/to/vinext/packages/vinext"
 ```
 
 Or add it to your `package.json` as a file dependency:
@@ -700,7 +705,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite ^7.0.0 || ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react >=19.2.0`, `react-dom >=19.2.0`, and `vite ^7.0.0 || ^8.0.0`. New projects should prefer Vite 8.
 
 ## Contributing
 
@@ -708,9 +713,9 @@ This project is experimental and under active development. Issues and PRs are we
 
 ### CI
 
-When you open a PR, CI (check, Vitest, Playwright E2E) runs automatically. First-time contributors need one manual approval from a maintainer, then subsequent PRs run without intervention.
+When you open a PR, CI (Check, Vitest unit + integration, create-next-app, and Playwright E2E) runs automatically. First-time contributors need one manual approval from a maintainer, then subsequent PRs run without intervention.
 
-Deploy previews (building and deploying examples to Cloudflare Workers) only run for branches pushed to the main repo. If you're a Cloudflare employee, push your branch to the main repo instead of forking, and previews deploy automatically. For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy and post preview URLs.
+Deploy previews (building and deploying examples to Cloudflare Workers) only run for same-repo branches today. Fork PRs still get the safe CI workflow, but they do not get preview deploys unless the changes are mirrored onto a branch in the main repo.
 
 ### Reporting bugs
 

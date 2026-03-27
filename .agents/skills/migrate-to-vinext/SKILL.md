@@ -7,6 +7,8 @@ description: Migrates Next.js projects to vinext (Vite-based Next.js reimplement
 
 vinext reimplements the Next.js API surface on Vite. Existing `app/`, `pages/`, and `next.config.js` work as-is — migration is a package swap, config generation, and ESM conversion. No changes to application code required.
 
+For user projects, prefer plain Vite 8. vinext still supports Vite 7 for older setups, but new migrations should assume Vite 8 unless you are unblocking a specific compatibility issue.
+
 ## FIRST: Verify Next.js Project
 
 Confirm `next` is in `dependencies` or `devDependencies` in `package.json`. If not found, STOP — this skill does not apply.
@@ -44,7 +46,7 @@ See [references/compatibility.md](references/compatibility.md) for supported/uns
 Run `vinext init`. This command:
 
 1. Runs `vinext check` for a compatibility report
-2. Installs `vite` as a devDependency (and `@vitejs/plugin-rsc` for App Router)
+2. Installs `vite`, `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
 3. Adds `"type": "module"` to package.json
 4. Renames CJS config files (e.g., `postcss.config.js` → `.cjs`) to avoid ESM conflicts
 5. Adds `dev:vinext` and `build:vinext` scripts to package.json
@@ -58,29 +60,30 @@ If `vinext init` succeeds, skip to Phase 4 (Verify). If it fails or the user pre
 
 Use this as a fallback when `vinext init` doesn't work or the user wants full control.
 
-### 3a. Replace packages
+### 3a. Add vinext + Vite 8 dependencies
 
 ```bash
 # Example with npm:
-npm uninstall next
 npm install vinext
-npm install -D vite
+npm install -D vite@^8 @vitejs/plugin-react
 # App Router only:
-npm install -D @vitejs/plugin-rsc
+npm install -D @vitejs/plugin-rsc react-server-dom-webpack
 ```
 
-### 3b. Update scripts
+Keep `next` installed until you've validated the vinext path. This mirrors `vinext init`, which adds vinext scripts without overwriting the existing Next.js ones.
 
-Replace all `next` commands in `package.json` scripts:
+### 3b. Add or update scripts
 
-| Before       | After          | Notes                      |
-| ------------ | -------------- | -------------------------- |
-| `next dev`   | `vinext dev`   | Dev server with HMR        |
-| `next build` | `vinext build` | Production build           |
-| `next start` | `vinext start` | Local production server    |
-| `next lint`  | `vinext lint`  | Delegates to eslint/oxlint |
+Mirror `vinext init`: add parallel vinext scripts first so you can validate the vinext path without losing the existing Next.js commands:
 
-Preserve flags: `next dev --port 3001` → `vinext dev --port 3001`.
+| Script         | Command                | Notes                                 |
+| -------------- | ---------------------- | ------------------------------------- |
+| `dev:vinext`   | `vite dev --port 3001` | Dev server with HMR                   |
+| `build:vinext` | `vite build`           | Production build                      |
+| `start:vinext` | `vinext start`         | Local production server for built app |
+| `lint:vinext`  | `vinext lint`          | Delegates to eslint/oxlint            |
+
+Once the vinext path is working, you can decide whether to swap your default `dev` / `build` scripts over.
 
 ### 3c. Convert to ESM
 
@@ -176,6 +179,7 @@ Nitro auto-detects the platform in most CI/CD environments, so the preset is oft
 ## Phase 5: Verify
 
 1. Run `vinext dev` to start the development server
+   Or `npm run dev:vinext` if you added parallel scripts.
 2. Confirm the server starts without errors
 3. Navigate key routes and check functionality
 4. Report the result to the user — if errors occur, share full output

@@ -7,12 +7,14 @@
 | `ERR_REQUIRE_ESM` or `require() of ES Module` | Project missing `"type": "module"`                   | Add `"type": "module"` to package.json                                                                                 |
 | `module.exports` syntax error in config file  | CJS config loaded as ESM                             | Rename `.js` config to `.cjs` (e.g., `postcss.config.js` → `postcss.config.cjs`)                                       |
 | `Cannot find module '@vitejs/plugin-rsc'`     | App Router project missing RSC plugin                | `npm install -D @vitejs/plugin-rsc`                                                                                    |
-| `Cannot find module 'vite'`                   | Vite not installed                                   | `npm install -D vite`                                                                                                  |
+| `Cannot find module 'vite'`                   | Vite not installed                                   | `npm install -D vite@^8`                                                                                               |
 | `vinext: command not found`                   | vinext not installed or not in PATH                  | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts                                |
 | RSC environment crash on dev start            | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
 | `ASSETS binding not found`                    | wrangler.jsonc missing assets config                 | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                     |
 
 ## Vite 8 Migration Notes
+
+Vite 8 is the preferred path for new vinext migrations. Keep Vite 7 only when you are working around a specific compatibility issue in an existing project.
 
 - **Symptom:** deprecation warnings for `esbuild`, `optimizeDeps.esbuildOptions`, or `build.rollupOptions`.
   **Cause:** Vite 8 now defaults to Oxc and Rolldown.
@@ -83,7 +85,7 @@ imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\li
 
 After migration, confirm:
 
-- [ ] `vinext dev` starts without errors
+- [ ] `vinext dev` or `npm run dev:vinext` starts without errors
 - [ ] Home page renders correctly
 - [ ] Dynamic routes resolve (e.g., `/posts/[id]`)
 - [ ] API routes respond (Pages Router) or route handlers respond (App Router)

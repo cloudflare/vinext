@@ -17,16 +17,35 @@ vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers 
 ### Commands
 
 ```bash
-pnpm test                                        # Vitest — full suite (~2 min, serial)
-pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
-pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
-pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
-pnpm run check                                   # Format, lint, and type checks
-pnpm run lint                                    # Lint only (type-aware oxlint)
-pnpm run fmt                                     # oxfmt (format)
-pnpm run fmt:check                               # oxfmt (check only, no writes)
-pnpm run build                                   # Build the vinext package (via vp pack)
+vp install                                       # Install/update deps through Vite+
+vp test run                                      # Vitest — full suite (~2 min, serial)
+vp test run tests/routing.test.ts                # Run a single test file (~seconds)
+vp test run tests/shims.test.ts tests/link.test.ts # Run specific files
+vp run test:e2e                                  # Playwright E2E tests (all 7 projects, use PLAYWRIGHT_PROJECT=<name> to target one)
+vp run check                                     # Format, lint, and type checks
+vp run lint                                      # Lint only (type-aware oxlint)
+vp run fmt                                       # oxfmt (format)
+vp run fmt:check                                 # oxfmt (check only, no writes)
+vp run build                                     # Build the vinext package (via vp pack)
 ```
+
+### Fresh Worktree Bootstrap
+
+**Every new Codex session / git worktree should run this bootstrap before doing feature work.** Assume a fresh worktree does **not** have installed dependencies or a local Next.js reference clone yet.
+
+```bash
+vp install
+
+if [ ! -d .nextjs-ref/.git ]; then
+  git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+else
+  git -C .nextjs-ref pull --ff-only
+fi
+```
+
+- `vp install` is required before running tests or builds in a fresh worktree.
+- `.nextjs-ref/` is gitignored and lives per worktree, so clone or update it in each new session.
+- Do this bootstrap before searching the Next.js source or test suite.
 
 ### Project Structure
 
@@ -128,7 +147,7 @@ gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit
 
 **Always run targeted tests, not the full suite.** The full Vitest suite takes ~2 minutes because test files run serially (to avoid Vite deps optimizer cache races). Running the full suite during development wastes time, especially when multiple agents are working on the repo simultaneously.
 
-**Prefer `vp` for day-to-day local work.** The `pnpm` scripts above still work, but current repo workflow and CI debugging usually use the direct Vite+ commands:
+**Prefer `vp` for day-to-day local work.** The repo still exposes a few wrapper scripts via `vp run ...`, but current repo workflow and CI debugging usually use the direct Vite+ commands:
 
 ```bash
 vp check tests/app-router.test.ts
@@ -141,16 +160,16 @@ vp run vinext#build
 
 ```bash
 # Run a single test file (fast — seconds, not minutes)
-pnpm test tests/routing.test.ts
+vp test run tests/routing.test.ts
 
 # Run a few related files
-pnpm test tests/shims.test.ts tests/link.test.ts
+vp test run tests/shims.test.ts tests/link.test.ts
 
 # Run all nextjs-compat tests
-pnpm test tests/nextjs-compat/
+vp test run tests/nextjs-compat/
 
 # Run tests matching a name pattern
-pnpm test -t "middleware"
+vp test run -t "middleware"
 ```
 
 **Which test files to run** depends on what you changed:
@@ -165,7 +184,7 @@ pnpm test -t "middleware"
 | Build/deploy                                   | `tests/deploy.test.ts`, `tests/build-optimization.test.ts`                               |
 | Next.js compat features                        | `tests/nextjs-compat/` (the relevant file)                                               |
 
-**Let CI run the full suite.** The full `pnpm test` and all 5 Playwright E2E projects run in CI on every PR. You do not need to run the full suite locally before pushing. CI will catch any cross-cutting regressions.
+**Let CI run the full suite.** The full `vp test run` and all 7 Playwright E2E projects run in CI on every PR. You do not need to run the full suite locally before pushing. CI will catch any cross-cutting regressions.
 
 **When to run the full suite locally:** Only if you're making a broad change that touches shared infrastructure (e.g., the Vite plugin's `resolveId` hook, virtual module generation, or the test helpers themselves). Even then, consider pushing and letting CI do it.
 
@@ -185,7 +204,7 @@ If Next.js and vinext should behave differently (defense-in-depth, Cloudflare-sp
 - `entries/app-rsc-entry.ts` — App Router dev (generates the RSC entry)
 - `server/dev-server.ts` — Pages Router dev
 - `server/prod-server.ts` — Pages Router production (handles middleware, routing, SSR directly)
-- `cloudflare/worker-entry.ts` — Cloudflare Workers entry
+- `server/app-router-entry.ts` — default Cloudflare/App Router worker entry
 
 The App Router production server delegates to the built RSC entry, so it inherits fixes from `entries/app-rsc-entry.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
 
@@ -193,7 +212,7 @@ When fixing a bug in any of these files, check whether the same bug exists in th
 
 ### Debugging
 
-- **Dev server logs**: Run `npx vite dev` in a fixture directory
+- **Dev server logs**: Run `vp dev` in a fixture directory
 - **RSC streaming issues**: Context is often cleared before stream consumption — check AsyncLocalStorage usage
 - **Module resolution**: Vite has separate module instances for RSC/SSR/client environments
 
@@ -219,6 +238,8 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 | `nextra-docs-template`    | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev`    |
 | `benchmarks`              | Performance benchmarks             | `benchmarks.vinext.workers.dev`              |
 | `hackernews`              | HN clone (App Router, RSC)         | `hackernews.vinext.workers.dev`              |
+
+The repo also keeps non-deployed/reference examples such as `app-router-nitro`, `fumadocs-docs-template`, and `tpr-demo` under `examples/`.
 
 #### Adding a New Example
 
@@ -325,7 +346,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.
 
-- **Branch protection is enabled on main.** Required checks: Check, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
+- **Branch protection is enabled on main.** Wait for the full CI fanout to pass before merging: Check, Vitest (unit + integration), create-next-app, and E2E.
 
 - **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
 
@@ -334,7 +355,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   2. Make changes and commit
   3. Push branch: `git push -u origin fix/descriptive-name`
   4. Open PR via `gh pr create`
-  5. Wait for CI to pass — all required checks (Check, Vitest, Playwright E2E) must be green
+  5. Wait for CI to pass — Check, Vitest (unit + integration), create-next-app, and E2E should all be green
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
 
@@ -344,7 +365,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   3. Push, fix CI, and re-request review
   4. Rebase the next stacked branch after each merge
 
-- **Use `/bigbonk` after meaningful updates on stacked refactor PRs.** That is the normal re-review loop for this repo once a PR has been rebased or a review comment has been addressed.
+- **Use `/bigbonk` after meaningful updates on stacked refactor PRs.** That is the normal deep re-review loop once a PR has been rebased or a review comment has been addressed. Use `/bonk` or `@ask-bonk` when you want a lighter follow-up pass.
 
 ### CI for External Contributors
 
@@ -352,7 +373,7 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 **Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
 
-- Check, Vitest, Playwright E2E
+- Check, Vitest (unit + integration), create-next-app, and Playwright E2E
 - Uses zero secrets and read-only permissions
 - First-time contributors need one manual approval, then subsequent PRs run automatically
 
@@ -360,19 +381,13 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 - The entire workflow is skipped for fork PRs via a job-level `if` condition
 - Cloudflare employees should push branches to the main repo (not fork), so previews deploy automatically
-- For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy (see `deploy-preview-command.yml`)
-
-**`/deploy-preview` slash command** (`deploy-preview-command.yml`):
-
-- Triggered by commenting `/deploy-preview` on any PR
-- Restricted to org members, collaborators, and repo owners via `author_association`
-- Builds all examples, deploys previews, runs smoke tests, and posts preview URLs
+- Fork PRs currently do not have a checked-in preview-deploy override workflow; if preview URLs are needed, mirror the changes onto a same-repo branch first
 
 When modifying CI workflows, keep these rules in mind:
 
 - `ci.yml` must never use secrets. It runs untrusted code from forks.
 - `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
-- The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
+- The Bonk workflows (`bonk.yml`, `bigbonk.yml`) gate write-capable review automation behind the `author_association` check.
 
 ---
 
@@ -570,7 +585,7 @@ Vite+ automatically detects and wraps the underlying package manager such as pnp
 
 - upgrade - Update `vp` itself to the latest version
 
-These commands map to their corresponding tools. For example, `vp dev --port 3000` runs Vite's dev server and works the same as Vite. `vp test` runs JavaScript tests through the bundled Vitest. The version of all tools can be checked using `vp --version`. This is useful when researching documentation, features, and bugs.
+This repo treats Vite 8 as the preferred baseline. Keep Vite 7 compatibility when it is cheap, but new repo-facing docs, scripts, and examples should assume Vite 8 + latest Vite+ by default. The version of all tools can be checked using `vp --version`, which is useful when researching docs, features, and bugs.
 
 ## Common Pitfalls
 
@@ -579,11 +594,12 @@ These commands map to their corresponding tools. For example, `vp dev --port 300
 - **Running scripts:** Vite+ commands take precedence over `package.json` scripts. If there is a `test` script defined in `scripts` that conflicts with the built-in `vp test` command, run it using `vp run test`.
 - **Do not install Vitest, Oxlint, Oxfmt, or tsdown directly:** Vite+ wraps these tools. They must not be installed directly. You cannot upgrade these tools by installing their latest versions. Always use Vite+ commands.
 - **Use Vite+ wrappers for one-off binaries:** Use `vp dlx` instead of package-manager-specific `dlx`/`npx` commands.
-- **Import JavaScript modules from `vite-plus`:** Instead of importing from `vite` or `vitest`, all modules should be imported from the project's `vite-plus` dependency. For example, `import { defineConfig } from 'vite-plus';` or `import { expect, test, vi } from 'vite-plus/test';`. You must not install `vitest` to import test utilities.
+- **Prefer `vite-plus` in repo-owned configs, tests, and docs examples:** Use `vite-plus` / `vite-plus/test` by default when you are editing the repo's own config and test surfaces. When touching vinext runtime code or generated/public-facing config templates that intentionally target Vite's public API, importing from `vite` is still expected.
 - **Static checks:** Prefer `vp check` as the default validation command. It runs formatting, linting, and type checks together, and `vp lint --type-aware` works when you need lint-only feedback.
 
 ## Review Checklist for Agents
 
 - [ ] Run `vp install` after pulling remote changes and before getting started.
-- [ ] Run `vp check` and `vp test` to validate changes.
+- [ ] Ensure `.nextjs-ref/` exists in this worktree; clone it if missing, `git -C .nextjs-ref pull --ff-only` if present.
+- [ ] Run `vp run check` plus the targeted `vp test run ...` commands relevant to your change.
 <!--VITE PLUS END-->

@@ -1,5 +1,7 @@
 # Compatibility Reference
 
+These notes assume a Vite 8 migration path for new projects. vinext still keeps Vite 7 compatibility, but Vite 8 is the preferred baseline.
+
 ## Supported next/\* Imports
 
 All of these resolve automatically to vinext shims. Do not rewrite imports in application code.

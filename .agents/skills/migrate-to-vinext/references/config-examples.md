@@ -1,6 +1,6 @@
 # Vite Config Examples
 
-These examples stay minimal on purpose. If you add custom build tuning on Vite 8, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` / `worker.rolldownOptions` over older `esbuild` and `build.rollupOptions` settings.
+These examples stay minimal on purpose. New migrations should target Vite 8. If you add custom build tuning on Vite 8, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` / `worker.rolldownOptions` over older `esbuild` and `build.rollupOptions` settings.
 
 ## Pages Router — Local Development
 
@@ -192,8 +192,13 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 | Flag                 | Description                              |
 | -------------------- | ---------------------------------------- |
+| `--env <name>`       | Deploy using `wrangler.jsonc` `env.name` |
 | `--preview`          | Deploy to preview environment            |
 | `--name <name>`      | Override worker name                     |
 | `--skip-build`       | Skip build step (deploy existing output) |
 | `--dry-run`          | Generate config without deploying        |
+| `--prerender-all`    | Pre-render discovered routes after build |
 | `--experimental-tpr` | Enable Traffic-aware Pre-Rendering       |
+| `--tpr-coverage`     | Set TPR traffic coverage target          |
+| `--tpr-limit`        | Cap the number of TPR pages              |
+| `--tpr-window`       | Set the TPR analytics lookback window    |
