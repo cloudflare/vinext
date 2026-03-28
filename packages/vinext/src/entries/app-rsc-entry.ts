@@ -8,7 +8,7 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolveEntryPath } from "./runtime-entry-module.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -29,52 +29,40 @@ import { isProxyFile } from "../server/middleware.js";
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
-const configMatchersPath = fileURLToPath(
-  new URL("../config/config-matchers.js", import.meta.url),
-).replace(/\\/g, "/");
-const requestPipelinePath = fileURLToPath(
-  new URL("../server/request-pipeline.js", import.meta.url),
-).replace(/\\/g, "/");
-const requestContextShimPath = fileURLToPath(
-  new URL("../shims/request-context.js", import.meta.url),
-).replace(/\\/g, "/");
-const normalizePathModulePath = fileURLToPath(
-  new URL("../server/normalize-path.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerRuntimePath = fileURLToPath(
-  new URL("../server/app-route-handler-runtime.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerPolicyPath = fileURLToPath(
-  new URL("../server/app-route-handler-policy.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerExecutionPath = fileURLToPath(
-  new URL("../server/app-route-handler-execution.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerCachePath = fileURLToPath(
-  new URL("../server/app-route-handler-cache.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageCachePath = fileURLToPath(
-  new URL("../server/app-page-cache.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageExecutionPath = fileURLToPath(
-  new URL("../server/app-page-execution.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageBoundaryRenderPath = fileURLToPath(
-  new URL("../server/app-page-boundary-render.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageRenderPath = fileURLToPath(
-  new URL("../server/app-page-render.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageRequestPath = fileURLToPath(
-  new URL("../server/app-page-request.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerResponsePath = fileURLToPath(
-  new URL("../server/app-route-handler-response.js", import.meta.url),
-).replace(/\\/g, "/");
-const routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
-  /\\/g,
-  "/",
+const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
+const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
+const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
+const appRouteHandlerRuntimePath = resolveEntryPath(
+  "../server/app-route-handler-runtime.js",
+  import.meta.url,
 );
+const appRouteHandlerPolicyPath = resolveEntryPath(
+  "../server/app-route-handler-policy.js",
+  import.meta.url,
+);
+const appRouteHandlerExecutionPath = resolveEntryPath(
+  "../server/app-route-handler-execution.js",
+  import.meta.url,
+);
+const appRouteHandlerCachePath = resolveEntryPath(
+  "../server/app-route-handler-cache.js",
+  import.meta.url,
+);
+const appPageCachePath = resolveEntryPath("../server/app-page-cache.js", import.meta.url);
+const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
+const appPageBoundaryRenderPath = resolveEntryPath(
+  "../server/app-page-boundary-render.js",
+  import.meta.url,
+);
+const appPageRenderPath = resolveEntryPath("../server/app-page-render.js", import.meta.url);
+const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
+const appRouteHandlerResponsePath = resolveEntryPath(
+  "../server/app-route-handler-response.js",
+  import.meta.url,
+);
+const routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
+const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -358,7 +346,7 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};

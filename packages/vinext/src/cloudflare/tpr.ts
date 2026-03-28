@@ -22,7 +22,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -608,8 +607,7 @@ async function prerenderRoutes(
  * to the current module (works whether vinext is installed or linked).
  */
 function startLocalServer(root: string, port: number): ChildProcess {
-  const thisDir = fileURLToPath(new URL(".", import.meta.url));
-  const prodServerPath = path.resolve(thisDir, "..", "server", "prod-server.js");
+  const prodServerPath = path.resolve(import.meta.dirname, "..", "server", "prod-server.js");
   const outDir = path.join(root, "dist");
 
   // Escape backslashes for Windows paths inside the JS string

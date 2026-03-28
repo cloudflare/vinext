@@ -63,13 +63,13 @@ import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
 
 function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {

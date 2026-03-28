@@ -7,8 +7,7 @@
  *
  * Extracted from index.ts.
  */
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveEntryPath } from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -21,34 +20,17 @@ import {
 } from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const _requestContextShimPath = fileURLToPath(
-  new URL("../shims/request-context.js", import.meta.url),
-).replace(/\\/g, "/");
-const _routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
-  /\\/g,
-  "/",
+const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const _routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
+const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.url);
+const _pagesPageResponsePath = resolveEntryPath(
+  "../server/pages-page-response.js",
+  import.meta.url,
 );
-const _pagesI18nPath = fileURLToPath(new URL("../server/pages-i18n.js", import.meta.url)).replace(
-  /\\/g,
-  "/",
-);
-const _pagesPageResponsePath = fileURLToPath(
-  new URL("../server/pages-page-response.js", import.meta.url),
-).replace(/\\/g, "/");
-const _pagesPageDataPath = fileURLToPath(
-  new URL("../server/pages-page-data.js", import.meta.url),
-).replace(/\\/g, "/");
-const _pagesNodeCompatPath = fileURLToPath(
-  new URL("../server/pages-node-compat.js", import.meta.url),
-).replace(/\\/g, "/");
-const _pagesApiRoutePath = fileURLToPath(
-  new URL("../server/pages-api-route.js", import.meta.url),
-).replace(/\\/g, "/");
-const _isrCachePath = fileURLToPath(new URL("../server/isr-cache.js", import.meta.url)).replace(
-  /\\/g,
-  "/",
-);
+const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
+const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
+const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -291,7 +273,7 @@ import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
+import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
