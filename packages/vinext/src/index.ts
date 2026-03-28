@@ -3651,17 +3651,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     //    keeping ESM import semantics intact.
     // 2. During production builds, fetches Google Fonts CSS + font files and
     //    injects _selfHostedCSS into statically analyzable font loader calls.
-    {
+    (() => {
+      // Vite does not bind `this` to the plugin object when calling hooks, so
+      // plugin state must be held in closure variables rather than as properties.
+      let isBuild = false;
+      const fontCache = new Map<string, string>(); // url -> local @font-face CSS
+      let cacheDir = "";
+
+      return {
       name: "vinext:google-fonts",
       enforce: "pre",
 
-      _isBuild: false,
-      _fontCache: new Map<string, string>(), // url -> local @font-face CSS
-      _cacheDir: "",
-
       configResolved(config) {
-        (this as any)._isBuild = config.command === "build";
-        (this as any)._cacheDir = path.join(config.root, ".vinext", "fonts");
+        isBuild = config.command === "build";
+        cacheDir = path.join(config.root, ".vinext", "fonts");
       },
 
       transform: {
@@ -3770,8 +3773,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             hasChanges = true;
           }
 
-          const cacheDir = (this as any)._cacheDir as string;
-          const fontCache = (this as any)._fontCache as Map<string, string>;
 
           async function injectSelfHostedCss(
             callStart: number,
@@ -3853,7 +3854,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             hasChanges = true;
           }
 
-          if ((this as any)._isBuild) {
+          if (isBuild) {
             const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
             let namedCallMatch;
             while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
@@ -3906,7 +3907,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           };
         },
       },
-    } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
+      } satisfies Plugin;
+    })(),
     // Local font path resolution:
     // When a source file calls localFont({ src: "./font.woff2" }) or
     // localFont({ src: [{ path: "./font.woff2" }] }), the relative paths
