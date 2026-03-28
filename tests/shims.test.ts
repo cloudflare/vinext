@@ -3317,6 +3317,32 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.waitUntilPromises![0]).toBe(capturedPromise);
   });
 
+  it("runMiddleware bubbles up waitUntil promises on continue: true path", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("analytics");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return NextResponse.next();
+        },
+        config: { matcher: ["/dashboard"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/dashboard");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
+  });
+
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
     // Verify the Cloudflare Worker entry does not decode the pathname itself,
     // leaving that responsibility to the RSC handler.
