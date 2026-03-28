@@ -185,4 +185,43 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     await page.click("#link-list");
     await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
   });
+
+  test("cancelled slow navigation does not leak params to committed route", async ({ page }) => {
+    // This test verifies the fix for: stale navigation bailout leaving staged params
+    // that could be committed by the next navigation.
+    await page.goto(`${BASE}/nav-flash/slow-route/slow-value`);
+    await waitForHydration(page);
+    await expect(page.locator("#slow-param")).toHaveText("Param: slow-value");
+
+    // Set marker to detect full page reload
+    await page.evaluate(() => {
+      (window as any).__CANCELLED_NAV_MARKER__ = "active";
+    });
+
+    // Start a slow navigation to a different param value
+    // This will be superseded before it completes
+    const slowNavPromise = page.click("#link-superseded", { timeout: 100 }).catch(() => {});
+
+    // Immediately navigate to a different route entirely (list)
+    // This should supersede the slow navigation
+    await page.click("#link-list");
+
+    // Wait for list to render
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+
+    // Verify we're on the list page
+    expect(page.url()).toBe(`${BASE}/nav-flash/list`);
+
+    // The list page doesn't use params, so there should be no leaked params
+    // Go back to a param-sync page to verify params state is clean
+    await page.click("#to-param-sync");
+    await expect(page.locator("#param-title")).toHaveText("Filter: active", { timeout: 10_000 });
+
+    // Verify the param reflects the route we navigated to, not the cancelled one
+    await expect(page.locator("#hook-params")).toHaveText("params.filter: active");
+
+    // No full page reload occurred
+    const marker = await page.evaluate(() => (window as any).__CANCELLED_NAV_MARKER__);
+    expect(marker).toBe("active");
+  });
 });

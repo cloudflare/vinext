@@ -15,6 +15,11 @@ export default function ListPage() {
             Query Sync
           </Link>
         </li>
+        <li>
+          <Link href="/nav-flash/param-sync/active" id="to-param-sync">
+            Param Sync
+          </Link>
+        </li>
       </ul>
     </div>
   );

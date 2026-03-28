@@ -458,6 +458,10 @@ function getClientNavigationState(): ClientNavigationState | null {
       clientParamsJson: "{}",
       pendingClientParams: null,
       pendingClientParamsJson: null,
+      // NB: These capture the currently installed history methods, not guaranteed
+      // native ones. If a third-party library (analytics, router) has already patched
+      // history methods before this module loads, we intentionally preserve that
+      // wrapper. With Symbol.for global state, the first module instance to load wins.
       originalPushState: window.history.pushState.bind(window.history),
       originalReplaceState: window.history.replaceState.bind(window.history),
       patchInstalled: false,

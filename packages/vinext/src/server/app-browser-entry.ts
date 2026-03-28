@@ -586,15 +586,18 @@ async function main(): Promise<void> {
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
-        stageClientParams(cachedRoute.params);
+        // Keep params local until the final stale-navigation gate
+        const cachedParams = cachedRoute.params;
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
           href,
-          cachedRoute.params,
+          cachedParams,
         );
         const cachedPayload = await createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );
         if (navId !== activeNavigationId) return;
+        // Stage params only after confirming this navigation hasn't been superseded
+        stageClientParams(cachedParams);
         await renderNavigationPayload(
           cachedPayload,
           cachedNavigationSnapshot,
@@ -650,19 +653,18 @@ async function main(): Promise<void> {
             string,
             string | string[]
           >;
-          stageClientParams(navParams);
         } catch {
-          stageClientParams({});
+          // navParams stays as {}
         }
-      } else {
-        stageClientParams({});
       }
-      const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
+      // Build snapshot from local params, not latestClientParams
+      const navigationSnapshot = createClientNavigationRenderSnapshot(href, navParams);
 
       const responseSnapshot = await snapshotRscResponse(navResponse);
 
       if (navId !== activeNavigationId) return;
 
+      // Store visited response only for navigations that haven't been superseded
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       const rscPayload = await createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
@@ -670,6 +672,8 @@ async function main(): Promise<void> {
 
       if (navId !== activeNavigationId) return;
 
+      // Stage params only after confirming this navigation hasn't been superseded
+      stageClientParams(navParams);
       await renderNavigationPayload(
         rscPayload,
         navigationSnapshot,
