@@ -14,9 +14,7 @@ test.describe('"use cache" file-level directive', () => {
   // In dev mode, shared cache is bypassed so HMR changes are immediately
   // reflected (cache key is module path + export name, not file content).
   // Each request executes fresh, so timestamps differ between requests.
-  test("use-cache page returns fresh data on each request in dev mode", async ({
-    request,
-  }) => {
+  test("use-cache page returns fresh data on each request in dev mode", async ({ request }) => {
     // First request
     const res1 = await request.get(`${BASE}/use-cache-test`);
     expect(res1.status()).toBe(200);
@@ -37,9 +35,7 @@ test.describe('"use cache" file-level directive', () => {
 
   // TTL expiry: the "seconds" cacheLife profile has revalidate: 1s, so after
   // ~1.5s the cached entry becomes stale and re-execution produces fresh data.
-  test("use-cache page returns fresh data after TTL expires", async ({
-    request,
-  }) => {
+  test("use-cache page returns fresh data after TTL expires", async ({ request }) => {
     // First request
     const res1 = await request.get(`${BASE}/use-cache-test`);
     const html1 = await res1.text();

@@ -16,7 +16,7 @@ jobs:
     outputs:
       repos: ${{ steps.read.outputs.repos }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: read
         run: echo "repos=$(jq -c . .github/repos.json)" >> "$GITHUB_OUTPUT"
 
@@ -41,15 +41,16 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24
+          cache: "false"
+          run-install: false
 
       - name: Send failure notification
-        if: ${{ secrets.EMAIL_API_TOKEN != '' }}
+        if: env.EMAIL_API_TOKEN != ''
         env:
           EMAIL_API_TOKEN: ${{ secrets.EMAIL_API_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

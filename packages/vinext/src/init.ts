@@ -4,12 +4,13 @@
  * Automates the steps needed to run a Next.js app under vinext:
  *
  *   1. Run `vinext check` to show compatibility report
- *   2. Install dependencies (vite, @vitejs/plugin-rsc for App Router)
+ *   2. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   3. Add "type": "module" to package.json
  *   4. Rename CJS config files to .cjs
  *   5. Add vinext scripts to package.json
  *   6. Generate vite.config.ts
- *   7. Print summary
+ *   7. Update .gitignore to include /dist/
+ *   8. Print summary
  *
  * Non-destructive: does NOT modify next.config, tsconfig, or source files.
  * The project should work with both Next.js and vinext simultaneously.
@@ -57,6 +58,8 @@ export interface InitResult {
   generatedViteConfig: boolean;
   /** Whether vite.config.ts generation was skipped (already exists) */
   skippedViteConfig: boolean;
+  /** Whether .gitignore was updated to include /dist/ */
+  updatedGitignore: boolean;
 }
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
@@ -119,7 +122,7 @@ export function addScripts(root: string, port: number): string[] {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 export function getInitDeps(isAppRouter: boolean): string[] {
-  const deps = ["vinext", "vite"];
+  const deps = ["vinext", "vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
     deps.push("react-server-dom-webpack");
@@ -220,15 +223,44 @@ function installDeps(
   });
 }
 
+// ─── .gitignore Update ───────────────────────────────────────────────────────
+
+/**
+ * Ensure /dist/ is listed in .gitignore. Creates the file if it doesn't exist.
+ * Returns true if the file was modified (or created), false if /dist/ was already present.
+ */
+export function updateGitignore(root: string): boolean {
+  const gitignorePath = path.join(root, ".gitignore");
+  const exactEntry = "/dist/";
+
+  let content = "";
+  if (fs.existsSync(gitignorePath)) {
+    content = fs.readFileSync(gitignorePath, "utf-8");
+
+    // Check if dist is already covered — match /dist/, dist/, or dist (all common variants)
+    const lines = content.split("\n").map((l) => l.trim());
+    if (lines.includes(exactEntry) || lines.includes("dist/") || lines.includes("dist")) {
+      return false;
+    }
+  }
+
+  // Append /dist/ with a trailing newline, ensuring we don't merge with an existing last line
+  const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+  fs.writeFileSync(gitignorePath, content + separator + exactEntry + "\n", "utf-8");
+  return true;
+}
+
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
   const port = options.port ?? 3001;
-  const exec = options._exec ?? ((cmd: string, opts: { cwd: string; stdio: string }) => {
-    const [program, ...args] = cmd.split(" ");
-    execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
-  });
+  const exec =
+    options._exec ??
+    ((cmd: string, opts: { cwd: string; stdio: string }) => {
+      const [program, ...args] = cmd.split(" ");
+      execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
+    });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
 
@@ -267,7 +299,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (isApp && missingDeps.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
-      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      console.log(
+        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+      );
       installDeps(root, reactUpgrade, exec, { dev: false });
     }
   }
@@ -298,7 +332,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
     generatedViteConfig = true;
   }
 
-  // ── Step 6: Print summary ──────────────────────────────────────────────
+  // ── Step 6: Update .gitignore ───────────────────────────────────────
+
+  const updatedGitignore = updateGitignore(root);
+
+  // ── Step 7: Print summary ──────────────────────────────────────────────
 
   console.log("  vinext init complete!\n");
 
@@ -320,6 +358,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (skippedViteConfig) {
     console.log(`    - Skipped vite.config.ts (already exists, use --force to overwrite)`);
   }
+  if (updatedGitignore) {
+    console.log(`    \u2713 Added /dist/ to .gitignore`);
+  }
 
   console.log(`
   Next steps:
@@ -336,5 +377,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
     addedScripts,
     generatedViteConfig,
     skippedViteConfig,
+    updatedGitignore,
   };
 }

@@ -8,9 +8,7 @@ test.describe("Parallel Routes", () => {
 
     // Dashboard layout
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
-      "Dashboard Nav",
-    );
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
 
     // Main children
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -24,9 +22,7 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).toBeVisible();
   });
 
-  test("child route renders default.tsx fallbacks for inherited slots", async ({
-    page,
-  }) => {
+  test("child route renders default.tsx fallbacks for inherited slots", async ({ page }) => {
     await page.goto(`${BASE}/dashboard/settings`);
 
     // Dashboard layout should still be present
@@ -42,9 +38,7 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 
-  test("slot directories are not accessible as direct routes", async ({
-    page,
-  }) => {
+  test("slot directories are not accessible as direct routes", async ({ page }) => {
     const response = await page.goto(`${BASE}/dashboard/team`);
     expect(response?.status()).toBe(404);
   });
@@ -56,9 +50,7 @@ test.describe("Intercepting Routes", () => {
 
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
     await expect(page.locator("h1")).toContainText("Photo");
-    await expect(page.locator('[data-testid="photo-page"]')).toContainText(
-      "Full photo view",
-    );
+    await expect(page.locator('[data-testid="photo-page"]')).toContainText("Full photo view");
     // Should NOT contain modal
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
@@ -91,18 +83,14 @@ test.describe("Intercepting Routes", () => {
 });
 
 test.describe("Route Segment Config", () => {
-  test("force-dynamic page returns no-store Cache-Control", async ({
-    page,
-  }) => {
+  test("force-dynamic page returns no-store Cache-Control", async ({ page }) => {
     const response = await page.goto(`${BASE}/dynamic-test`);
     const headers = response?.headers();
     expect(headers?.["cache-control"]).toContain("no-store");
     await expect(page.locator('[data-testid="dynamic-test-page"]')).toBeVisible();
   });
 
-  test("dynamicParams=false returns 404 for unknown params", async ({
-    page,
-  }) => {
+  test("dynamicParams=false returns 404 for unknown params", async ({ page }) => {
     const response = await page.goto(`${BASE}/products/999`);
     expect(response?.status()).toBe(404);
   });
@@ -154,15 +142,12 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     await expect(page.locator('[data-testid="search"]')).toHaveText("search: ");
 
     // Click pushState button to set filter=active
-    await page
-      .locator('[data-testid="push-filter"]')
-      .click({ noWaitAfter: true });
+    await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
 
     // useSearchParams should react to the URL change
-    await expect(page.locator('[data-testid="search"]')).toHaveText(
-      "search: filter=active",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
+      timeout: 10_000,
+    });
 
     // URL should be updated
     await expect
@@ -170,9 +155,7 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
       .toContain("/shallow-test?filter=active");
   });
 
-  test("replaceState updates useSearchParams without adding history entry", async ({
-    page,
-  }) => {
+  test("replaceState updates useSearchParams without adding history entry", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
     await page.waitForFunction(
@@ -182,20 +165,15 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
 
     // Replace with sort=name
-    await page
-      .locator('[data-testid="replace-sort"]')
-      .click({ noWaitAfter: true });
+    await page.locator('[data-testid="replace-sort"]').click({ noWaitAfter: true });
 
-    await expect(page.locator('[data-testid="search"]')).toHaveText(
-      "search: sort=name",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: sort=name", {
+      timeout: 10_000,
+    });
 
     // Going back should go to the page before /shallow-test (not to /shallow-test without params)
     // because replaceState replaces the current entry
-    await expect
-      .poll(() => page.url(), { timeout: 10_000 })
-      .toContain("/shallow-test?sort=name");
+    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/shallow-test?sort=name");
   });
 
   test("pushState updates usePathname", async ({ page }) => {
@@ -208,9 +186,7 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
 
     // Initial pathname
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
-      "pathname: /shallow-test",
-    );
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
 
     // Push new path
     await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
@@ -222,9 +198,7 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
-  test.fixme("multiple pushState calls update search params correctly", async ({
-    page,
-  }) => {
+  test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
 
     await page.waitForFunction(
@@ -234,27 +208,20 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
 
     // Push filter, then combined
-    await page
-      .locator('[data-testid="push-filter"]')
-      .click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="search"]')).toHaveText(
-      "search: filter=active",
-      { timeout: 10_000 },
-    );
+    await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
+      timeout: 10_000,
+    });
 
-    await page
-      .locator('[data-testid="push-combined"]')
-      .click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="search"]')).toHaveText(
-      "search: a=1&b=2",
-      { timeout: 10_000 },
-    );
+    await page.locator('[data-testid="push-combined"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: a=1&b=2", {
+      timeout: 10_000,
+    });
 
     // Go back should restore previous state
     await page.goBack();
-    await expect(page.locator('[data-testid="search"]')).toHaveText(
-      "search: filter=active",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
+      timeout: 10_000,
+    });
   });
 });

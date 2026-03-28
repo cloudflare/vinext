@@ -1,5 +1,7 @@
 # Vite Config Examples
 
+These examples stay minimal on purpose. If you add custom build tuning on Vite 8, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` / `worker.rolldownOptions` over older `esbuild` and `build.rollupOptions` settings.
+
 ## Pages Router — Local Development
 
 No Cloudflare, no deployment. Simplest possible config.
@@ -87,8 +89,8 @@ Minimal config for deployment:
   "compatibility_flags": ["nodejs_compat"],
   "main": "vinext/server/app-router-entry",
   "assets": {
-    "not_found_handling": "none"
-  }
+    "not_found_handling": "none",
+  },
 }
 ```
 
@@ -103,25 +105,95 @@ For custom worker entries (e.g., adding KV cache, image optimization bindings):
   "main": "./worker/index.ts",
   "assets": {
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
-  "images": { "binding": "IMAGES" }
+  "images": { "binding": "IMAGES" },
 }
 ```
 
+## Accessing Cloudflare Bindings
+
+Use `import { env } from "cloudflare:workers"` in server components, route handlers, and server actions. No custom worker entry needed.
+
+```tsx
+// app/page.tsx (server component)
+import { env } from "cloudflare:workers";
+
+export default async function Page() {
+  const result = await env.DB.prepare("SELECT * FROM posts").all();
+  return <div>{JSON.stringify(result)}</div>;
+}
+```
+
+```ts
+// app/api/data/route.ts (route handler)
+import { env } from "cloudflare:workers";
+
+export async function GET() {
+  const value = await env.CACHE.get("key");
+  return Response.json({ value });
+}
+```
+
+Define bindings in `wrangler.jsonc`:
+
+```jsonc
+{
+  "name": "my-app",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/app-router-entry",
+  "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "..." }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "my-bucket" }],
+  "ai": { "binding": "AI" },
+}
+```
+
+Run `wrangler types` to generate TypeScript types for the `env` object.
+
+Do NOT use `getPlatformProxy()`, `getRequestContext()`, or custom worker entries with `fetch(request, env)`. These are older patterns. `cloudflare:workers` is the recommended approach.
+
+## App Router — Other Platforms (via Nitro)
+
+For deploying to Vercel, Netlify, AWS, Deno Deploy, or any other Nitro-supported platform:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { nitro } from "nitro/vite";
+
+export default defineConfig({
+  plugins: [vinext(), nitro()],
+});
+```
+
+Build with a preset:
+
+```bash
+NITRO_PRESET=vercel npx vite build
+NITRO_PRESET=netlify npx vite build
+NITRO_PRESET=deno_deploy npx vite build
+NITRO_PRESET=node npx vite build
+```
+
+Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET` is often unnecessary.
+
+**For Cloudflare Workers,** Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
+
 ## VinextOptions
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `appDir` | `string` | project root | Custom base directory for `app/` and `pages/` |
-| `rsc` | `boolean` | `true` | Auto-register `@vitejs/plugin-rsc` for App Router |
+| Option   | Type      | Default      | Description                                       |
+| -------- | --------- | ------------ | ------------------------------------------------- |
+| `appDir` | `string`  | project root | Custom base directory for `app/` and `pages/`     |
+| `rsc`    | `boolean` | `true`       | Auto-register `@vitejs/plugin-rsc` for App Router |
 
 ## vinext deploy flags
 
-| Flag | Description |
-|------|-------------|
-| `--preview` | Deploy to preview environment |
-| `--name <name>` | Override worker name |
-| `--skip-build` | Skip build step (deploy existing output) |
-| `--dry-run` | Generate config without deploying |
-| `--experimental-tpr` | Enable Traffic-aware Pre-Rendering |
+| Flag                 | Description                              |
+| -------------------- | ---------------------------------------- |
+| `--preview`          | Deploy to preview environment            |
+| `--name <name>`      | Override worker name                     |
+| `--skip-build`       | Skip build step (deploy existing output) |
+| `--dry-run`          | Generate config without deploying        |
+| `--experimental-tpr` | Enable Traffic-aware Pre-Rendering       |

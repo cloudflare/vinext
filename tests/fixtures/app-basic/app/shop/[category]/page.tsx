@@ -2,11 +2,7 @@ export async function generateStaticParams() {
   return [{ category: "electronics" }, { category: "clothing" }];
 }
 
-export default async function CategoryPage({
-  params,
-}: {
-  params: Promise<{ category: string }>;
-}) {
+export default async function CategoryPage({ params }: { params: Promise<{ category: string }> }) {
   const { category } = await params;
   return (
     <div>

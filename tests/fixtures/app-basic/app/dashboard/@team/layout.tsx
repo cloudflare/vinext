@@ -1,8 +1,4 @@
-export default function TeamSlotLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function TeamSlotLayout({ children }: { children: React.ReactNode }) {
   return (
     <div data-testid="team-slot-layout">
       <nav data-testid="team-slot-nav">

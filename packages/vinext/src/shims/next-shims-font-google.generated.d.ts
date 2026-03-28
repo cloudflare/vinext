@@ -2,6 +2,7 @@
 // Source: https://fonts.google.com/metadata/fonts
 // @generated
 declare module "next/font/google" {
+  export function createFontLoader(family: string): FontLoader;
   export const ABeeZee: FontLoader;
   export const Abel: FontLoader;
   export const Abhaya_Libre: FontLoader;

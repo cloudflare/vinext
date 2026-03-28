@@ -9,6 +9,7 @@ out/
 .wrangler/
 test-results/
 playwright-report/
+out-e2e
 
 # Environment + secrets
 .env
@@ -23,7 +24,20 @@ yarn-error.log*
 pnpm-debug.log*
 coverage/
 
+# Worktrees
+.worktrees/
+
+# Next.js reference clone (for searching source/tests)
+.nextjs-ref/
+
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
+.claude/
+
+# Nix
+result
+result-*
+.direnv/
+.corepack/

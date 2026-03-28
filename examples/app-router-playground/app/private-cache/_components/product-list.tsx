@@ -2,7 +2,6 @@ import db from '#/lib/db';
 import { Boundary } from '#/ui/boundary';
 import { ProductCard } from '#/ui/product-card';
 import { cacheTag } from 'next/cache';
-import Link from 'next/link';
 import SessionButton from './session-button';
 import ProductLink from './product-link';
 
@@ -69,9 +68,9 @@ export function ProductListSkeleton() {
           Available Products
         </h1>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
+          {[1, 2, 3, 4, 5, 6].map((slot) => (
             <div
-              key={i}
+              key={`product-skeleton-${slot}`}
               className="h-48 animate-pulse rounded-lg bg-gray-800"
             />
           ))}

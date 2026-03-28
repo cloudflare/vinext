@@ -13,9 +13,7 @@ test.describe("App Router Hydration", () => {
     await page.goto(`${BASE}/interactive`);
 
     // SSR should render the initial count
-    await expect(page.locator('[data-testid="count"]')).toContainText(
-      "Count:",
-    );
+    await expect(page.locator('[data-testid="count"]')).toContainText("Count:");
 
     // Wait for hydration to complete — the browser entry now uses embedded RSC
     // data, so hydration should be fast. We wait for the Increment button to
@@ -32,9 +30,7 @@ test.describe("App Router Hydration", () => {
 
     // Now the component is hydrated. Reset by navigating fresh.
     await page.goto(`${BASE}/interactive`);
-    await expect(page.locator('[data-testid="count"]')).toContainText(
-      "Count:",
-    );
+    await expect(page.locator('[data-testid="count"]')).toContainText("Count:");
 
     // Wait for hydration again
     await expect(async () => {
@@ -46,14 +42,10 @@ test.describe("App Router Hydration", () => {
     // Verify sequential clicks work
     // We don't know exact count since polling may have clicked multiple
     // times. Just verify clicking changes the value.
-    const currentText = await page
-      .locator('[data-testid="count"]')
-      .textContent();
+    const currentText = await page.locator('[data-testid="count"]').textContent();
     const currentCount = parseInt(currentText!.replace("Count: ", ""), 10);
     await incrementBtn.click();
-    await expect(page.locator('[data-testid="count"]')).toHaveText(
-      `Count: ${currentCount + 1}`,
-    );
+    await expect(page.locator('[data-testid="count"]')).toHaveText(`Count: ${currentCount + 1}`);
 
     // consoleErrors fixture will fail the test if any errors occurred
     void consoleErrors;

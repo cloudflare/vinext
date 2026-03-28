@@ -3,14 +3,10 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("CJS interop", () => {
-  test("server component with CJS require('server-only') renders correctly", async ({
-    page,
-  }) => {
+  test("server component with CJS require('server-only') renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/cjs/server-only`);
 
-    await expect(page.getByTestId("cjs-server-only")).toContainText(
-      "This page uses CJS require",
-    );
+    await expect(page.getByTestId("cjs-server-only")).toContainText("This page uses CJS require");
   });
 
   test("server component with CJS require() and module.exports renders correctly", async ({

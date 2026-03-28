@@ -9,6 +9,48 @@
  * rather than bug-for-bug parity with Next.js internals.
  */
 
+import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
+import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { getRequestExecutionContext } from "./request-context.js";
+
+// ---------------------------------------------------------------------------
+// Inlined cache-scope guard for after()
+//
+// We cannot statically import throwIfInsideCacheScope from headers.ts here
+// because headers.ts contains the "use cache" directive string in its error
+// message, which causes Vite's use-cache transform to include it in the module
+// graph. If headers.ts is pulled in via static import from server.ts, the
+// transform fires on it in Pages Router fixtures that lack @vitejs/plugin-rsc.
+//
+// The connection() function in this file avoids the same problem by using
+// `await import("./headers.js")` (dynamic import, async function). after()
+// must remain synchronous, so we inline the check using the same Symbol.for
+// keys that cache-runtime.ts and cache.ts register their ALS instances with.
+// ---------------------------------------------------------------------------
+
+const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
+const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function _throwIfInsideCacheScope(apiName: string): void {
+  const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (cacheAls?.getStore() != null) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside "use cache". ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+  const unstableAls = _g[_UNSTABLE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (unstableAls?.getStore() === true) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NextRequest
 // ---------------------------------------------------------------------------
@@ -17,7 +59,18 @@ export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _cookies: RequestCookies;
 
-  constructor(input: URL | RequestInfo, init?: RequestInit) {
+  constructor(
+    input: URL | RequestInfo,
+    init?: RequestInit & {
+      nextConfig?: {
+        basePath?: string;
+        i18n?: { locales: string[]; defaultLocale: string };
+      };
+    },
+  ) {
+    // Strip nextConfig before passing to super() — it's vinext-internal,
+    // not a valid RequestInit property.
+    const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
@@ -28,17 +81,21 @@ export class NextRequest extends Request {
         body: req.body,
         // @ts-expect-error - duplex is not in RequestInit type but needed for streams
         duplex: req.body ? "half" : undefined,
-        ...init,
+        ...requestInit,
       });
     } else {
-      super(input, init);
+      super(input, requestInit);
     }
-    const url = typeof input === "string"
-      ? new URL(input, "http://localhost")
-      : input instanceof URL
-        ? input
-        : new URL(input.url, "http://localhost");
-    this._nextUrl = new NextURL(url);
+    const url =
+      typeof input === "string"
+        ? new URL(input, "http://localhost")
+        : input instanceof URL
+          ? input
+          : new URL(input.url, "http://localhost");
+    const urlConfig: NextURLConfig | undefined = _nextConfig
+      ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
+      : undefined;
+    this._nextUrl = new NextURL(url, undefined, urlConfig);
     this._cookies = new RequestCookies(this.headers);
   }
 
@@ -55,27 +112,48 @@ export class NextRequest extends Request {
    * over the spoofable X-Forwarded-For. Returns undefined if unavailable.
    */
   get ip(): string | undefined {
-    return this.headers.get("cf-connecting-ip")
-      ?? this.headers.get("x-real-ip")
-      ?? this.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-      ?? undefined;
+    return (
+      this.headers.get("cf-connecting-ip") ??
+      this.headers.get("x-real-ip") ??
+      this.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      undefined
+    );
   }
 
   /**
    * Geolocation data. Platform-dependent (e.g., Cloudflare, Vercel).
    * Returns undefined if not available.
    */
-  get geo(): { city?: string; country?: string; region?: string; latitude?: string; longitude?: string } | undefined {
+  get geo():
+    | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
+    | undefined {
     // Check Cloudflare-style headers, Vercel-style headers
-    const country = this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
+    const country =
+      this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
     if (!country) return undefined;
     return {
       country,
       city: this.headers.get("cf-ipcity") ?? this.headers.get("x-vercel-ip-city") ?? undefined,
-      region: this.headers.get("cf-region") ?? this.headers.get("x-vercel-ip-country-region") ?? undefined,
-      latitude: this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
-      longitude: this.headers.get("cf-iplongitude") ?? this.headers.get("x-vercel-ip-longitude") ?? undefined,
+      region:
+        this.headers.get("cf-region") ??
+        this.headers.get("x-vercel-ip-country-region") ??
+        undefined,
+      latitude:
+        this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
+      longitude:
+        this.headers.get("cf-iplongitude") ??
+        this.headers.get("x-vercel-ip-longitude") ??
+        undefined,
     };
+  }
+
+  /**
+   * The build ID of the Next.js application.
+   * Delegates to `nextUrl.buildId` to match Next.js API surface.
+   * Can be used in middleware to detect deployment skew between client and server.
+   */
+  get buildId(): string | undefined {
+    return this._nextUrl.buildId;
   }
 }
 
@@ -113,7 +191,7 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a redirect response.
    */
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
-    const status = typeof init === "number" ? init : init?.status ?? 307;
+    const status = typeof init === "number" ? init : (init?.status ?? 307);
     const destination = typeof url === "string" ? url : url.toString();
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
     headers.set("Location", destination);
@@ -128,6 +206,9 @@ export class NextResponse<_Body = unknown> extends Response {
     const url = typeof destination === "string" ? destination : destination.toString();
     const headers = new Headers(init?.headers);
     headers.set("x-middleware-rewrite", url);
+    if (init?.request?.headers) {
+      encodeMiddlewareRequestHeaders(headers, init.request.headers);
+    }
     return new NextResponse(null, { ...init, headers });
   }
 
@@ -138,50 +219,228 @@ export class NextResponse<_Body = unknown> extends Response {
   static next(init?: MiddlewareResponseInit): NextResponse {
     const headers = new Headers(init?.headers);
     headers.set("x-middleware-next", "1");
-    // Forward request headers if provided
     if (init?.request?.headers) {
-      for (const [key, value] of init.request.headers.entries()) {
-        headers.set(`x-middleware-request-${key}`, value);
-      }
+      encodeMiddlewareRequestHeaders(headers, init.request.headers);
     }
     return new NextResponse(null, { ...init, headers });
   }
 }
 
-
-
 // ---------------------------------------------------------------------------
 // NextURL — lightweight URL wrapper with pathname helpers
 // ---------------------------------------------------------------------------
 
-export class NextURL {
-  private _url: URL;
+export interface NextURLConfig {
+  basePath?: string;
+  nextConfig?: {
+    i18n?: {
+      locales: string[];
+      defaultLocale: string;
+    };
+  };
+}
 
-  constructor(input: string | URL, base?: string | URL) {
+export class NextURL {
+  /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
+  private _url: URL;
+  private _basePath: string;
+  private _locale: string | undefined;
+  private _defaultLocale: string | undefined;
+  private _locales: string[] | undefined;
+
+  constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
+    this._basePath = config?.basePath ?? "";
+    this._stripBasePath();
+    const i18n = config?.nextConfig?.i18n;
+    if (i18n) {
+      this._locales = [...i18n.locales];
+      this._defaultLocale = i18n.defaultLocale;
+      this._analyzeLocale(this._locales);
+    }
   }
 
-  get href(): string { return this._url.href; }
-  get origin(): string { return this._url.origin; }
-  get protocol(): string { return this._url.protocol; }
-  get host(): string { return this._url.host; }
-  get hostname(): string { return this._url.hostname; }
-  get port(): string { return this._url.port; }
-  get pathname(): string { return this._url.pathname; }
-  get search(): string { return this._url.search; }
-  get searchParams(): URLSearchParams { return this._url.searchParams; }
-  get hash(): string { return this._url.hash; }
+  /** Strip basePath prefix from the internal pathname. */
+  private _stripBasePath(): void {
+    if (!this._basePath) return;
+    const { pathname } = this._url;
+    if (pathname === this._basePath || pathname.startsWith(this._basePath + "/")) {
+      this._url.pathname = pathname.slice(this._basePath.length) || "/";
+    }
+  }
 
-  set pathname(value: string) { this._url.pathname = value; }
-  set search(value: string) { this._url.search = value; }
-  set hash(value: string) { this._url.hash = value; }
+  /** Extract locale from pathname, stripping it from the internal URL. */
+  private _analyzeLocale(locales: string[]): void {
+    const segments = this._url.pathname.split("/");
+    const candidate = segments[1]?.toLowerCase();
+    const match = locales.find((l) => l.toLowerCase() === candidate);
+    if (match) {
+      this._locale = match;
+      this._url.pathname = "/" + segments.slice(2).join("/");
+    } else {
+      this._locale = this._defaultLocale;
+    }
+  }
+
+  /**
+   * Reconstruct the full pathname with basePath + locale prefix.
+   * Mirrors Next.js's internal formatPathname().
+   */
+  private _formatPathname(): string {
+    // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
+    let prefix = this._basePath;
+    if (this._locale && this._locale !== this._defaultLocale) {
+      prefix += "/" + this._locale;
+    }
+    if (!prefix) return this._url.pathname;
+    const inner = this._url.pathname;
+    return inner === "/" ? prefix : prefix + inner;
+  }
+
+  get href(): string {
+    const formatted = this._formatPathname();
+    if (formatted === this._url.pathname) return this._url.href;
+    // Replace pathname in href via string slicing — avoids URL allocation.
+    // URL.href is always <origin+auth><pathname><search><hash>.
+    const { href, pathname, search, hash } = this._url;
+    const baseEnd = href.length - pathname.length - search.length - hash.length;
+    return href.slice(0, baseEnd) + formatted + search + hash;
+  }
+  set href(value: string) {
+    this._url.href = value;
+    this._stripBasePath();
+    if (this._locales) this._analyzeLocale(this._locales);
+  }
+
+  get origin(): string {
+    return this._url.origin;
+  }
+
+  get protocol(): string {
+    return this._url.protocol;
+  }
+  set protocol(value: string) {
+    this._url.protocol = value;
+  }
+
+  get username(): string {
+    return this._url.username;
+  }
+  set username(value: string) {
+    this._url.username = value;
+  }
+
+  get password(): string {
+    return this._url.password;
+  }
+  set password(value: string) {
+    this._url.password = value;
+  }
+
+  get host(): string {
+    return this._url.host;
+  }
+  set host(value: string) {
+    this._url.host = value;
+  }
+
+  get hostname(): string {
+    return this._url.hostname;
+  }
+  set hostname(value: string) {
+    this._url.hostname = value;
+  }
+
+  get port(): string {
+    return this._url.port;
+  }
+  set port(value: string) {
+    this._url.port = value;
+  }
+
+  /** Returns the pathname WITHOUT basePath or locale prefix. */
+  get pathname(): string {
+    return this._url.pathname;
+  }
+  set pathname(value: string) {
+    this._url.pathname = value;
+  }
+
+  get search(): string {
+    return this._url.search;
+  }
+  set search(value: string) {
+    this._url.search = value;
+  }
+
+  get searchParams(): URLSearchParams {
+    return this._url.searchParams;
+  }
+
+  get hash(): string {
+    return this._url.hash;
+  }
+  set hash(value: string) {
+    this._url.hash = value;
+  }
+
+  get basePath(): string {
+    return this._basePath;
+  }
+  set basePath(value: string) {
+    this._basePath = value === "" ? "" : value.startsWith("/") ? value : "/" + value;
+  }
+
+  get locale(): string {
+    return this._locale ?? "";
+  }
+  set locale(value: string | undefined) {
+    if (this._locales) {
+      if (!value) {
+        this._locale = this._defaultLocale;
+        return;
+      }
+      if (!this._locales.includes(value)) {
+        throw new TypeError(
+          `The locale "${value}" is not in the configured locales: ${this._locales.join(", ")}`,
+        );
+      }
+    }
+    this._locale = this._locales ? value : this._locale;
+  }
+
+  get defaultLocale(): string | undefined {
+    return this._defaultLocale;
+  }
+
+  get locales(): string[] | undefined {
+    return this._locales ? [...this._locales] : undefined;
+  }
 
   clone(): NextURL {
-    return new NextURL(this._url.href);
+    const config: NextURLConfig = {
+      basePath: this._basePath,
+      nextConfig: this._locales
+        ? { i18n: { locales: [...this._locales], defaultLocale: this._defaultLocale! } }
+        : undefined,
+    };
+    // Pass the full href (with locale/basePath re-added) so the constructor
+    // can re-analyze and extract locale correctly.
+    return new NextURL(this.href, undefined, config);
   }
 
   toString(): string {
-    return this._url.toString();
+    return this.href;
+  }
+
+  /**
+   * The build ID of the Next.js application.
+   * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
+   * Can be used in middleware to detect deployment skew between client and server.
+   * Matches the Next.js API: `request.nextUrl.buildId`.
+   */
+  get buildId(): string | undefined {
+    return process.env.__VINEXT_BUILD_ID ?? undefined;
   }
 }
 
@@ -196,35 +455,79 @@ interface CookieEntry {
 
 export class RequestCookies {
   private _headers: Headers;
+  private _parsed: Map<string, string>;
 
   constructor(headers: Headers) {
     this._headers = headers;
-  }
-
-  private _parse(): Map<string, string> {
-    const map = new Map<string, string>();
-    const cookie = this._headers.get("cookie") ?? "";
-    for (const part of cookie.split(";")) {
-      const eq = part.indexOf("=");
-      if (eq === -1) continue;
-      const name = part.slice(0, eq).trim();
-      const value = part.slice(eq + 1).trim();
-      map.set(name, value);
-    }
-    return map;
+    this._parsed = parseCookieHeader(headers.get("cookie") ?? "");
   }
 
   get(name: string): CookieEntry | undefined {
-    const value = this._parse().get(name);
+    const value = this._parsed.get(name);
     return value !== undefined ? { name, value } : undefined;
   }
 
-  getAll(): CookieEntry[] {
-    return [...this._parse().entries()].map(([name, value]) => ({ name, value }));
+  getAll(nameOrOptions?: string | CookieEntry): CookieEntry[] {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions?.name;
+    return [...this._parsed.entries()]
+      .filter(([cookieName]) => name === undefined || cookieName === name)
+      .map(([cookieName, value]) => ({ name: cookieName, value }));
   }
 
   has(name: string): boolean {
-    return this._parse().has(name);
+    return this._parsed.has(name);
+  }
+
+  set(nameOrOptions: string | CookieEntry, value?: string): this {
+    let cookieName: string;
+    let cookieValue: string;
+    if (typeof nameOrOptions === "string") {
+      cookieName = nameOrOptions;
+      cookieValue = value ?? "";
+    } else {
+      cookieName = nameOrOptions.name;
+      cookieValue = nameOrOptions.value;
+    }
+    this._parsed.set(cookieName, cookieValue);
+    this._syncHeader();
+    return this;
+  }
+
+  delete(names: string | string[]): boolean | boolean[] {
+    if (Array.isArray(names)) {
+      const results = names.map((name) => this._parsed.delete(name));
+      this._syncHeader();
+      return results;
+    }
+    const result = this._parsed.delete(names);
+    this._syncHeader();
+    return result;
+  }
+
+  clear(): this {
+    this._parsed.clear();
+    this._syncHeader();
+    return this;
+  }
+
+  get size(): number {
+    return this._parsed.size;
+  }
+
+  toString(): string {
+    return this._serialize();
+  }
+
+  private _serialize(): string {
+    return [...this._parsed.entries()].map(([n, v]) => `${n}=${encodeURIComponent(v)}`).join("; ");
+  }
+
+  private _syncHeader(): void {
+    if (this._parsed.size === 0) {
+      this._headers.delete("cookie");
+    } else {
+      this._headers.set("cookie", this._serialize());
+    }
   }
 
   [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
@@ -237,7 +540,8 @@ export class RequestCookies {
  * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
  * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
  */
-const VALID_COOKIE_NAME_RE = /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+const VALID_COOKIE_NAME_RE =
+  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
 
 function validateCookieName(name: string): void {
   if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
@@ -248,7 +552,7 @@ function validateCookieName(name: string): void {
 function validateCookieAttributeValue(value: string, attributeName: string): void {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
-    if (code <= 0x1F || code === 0x7F || value[i] === ";") {
+    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
       throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
     }
   }
@@ -290,11 +594,19 @@ export class ResponseCookies {
         const semi = header.indexOf(";", eq);
         const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
         let value: string;
-        try { value = decodeURIComponent(raw); } catch { value = raw; }
+        try {
+          value = decodeURIComponent(raw);
+        } catch {
+          value = raw;
+        }
         return { name, value };
       }
     }
     return undefined;
+  }
+
+  has(name: string): boolean {
+    return this.get(name) !== undefined;
   }
 
   getAll(): CookieEntry[] {
@@ -306,7 +618,11 @@ export class ResponseCookies {
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
       let value: string;
-      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      try {
+        value = decodeURIComponent(raw);
+      } catch {
+        value = raw;
+      }
       entries.push({ name: cookieName, value });
     }
     return entries;
@@ -326,7 +642,11 @@ export class ResponseCookies {
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
       let value: string;
-      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      try {
+        value = decodeURIComponent(raw);
+      } catch {
+        value = raw;
+      }
       entries.push([cookieName, { name: cookieName, value }]);
     }
     return entries[Symbol.iterator]();
@@ -375,6 +695,15 @@ export class NextFetchEvent {
   waitUntil(promise: Promise<unknown>): void {
     this._waitUntilPromises.push(promise);
   }
+
+  get waitUntilPromises(): Promise<unknown>[] {
+    return this._waitUntilPromises;
+  }
+
+  /** Drain all waitUntil promises. Returns a single promise that settles when all are done. */
+  drainWaitUntil(): Promise<PromiseSettledResult<unknown>[]> {
+    return Promise.allSettled(this._waitUntilPromises);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -414,14 +743,41 @@ export interface UserAgent {
 
 /**
  * after() — schedule work after the response is sent.
- * In a real server, this would use the platform's waitUntil.
- * Here we simply run it as a microtask (best-effort).
+ *
+ * Uses the platform's `waitUntil` (via the per-request ExecutionContext) when
+ * available so the task survives past the response on Cloudflare Workers.
+ * Falls back to a fire-and-forget microtask on runtimes without an execution
+ * context (e.g. Node.js dev server).
+ *
+ * Throws when called inside a cached scope — request-specific
+ * side-effects must not leak into cached results.
  */
 export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
+  _throwIfInsideCacheScope("after()");
+
   const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
-  promise.catch((err) => {
+  // NOTE: vinext runs function tasks concurrently with response streaming (next microtask),
+  // whereas Next.js queues them to run strictly after the response is sent via onClose.
+  // This is a known simplification — function tasks here are not guaranteed to run
+  // after the response completes, only after the current synchronous execution.
+  //
+  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
+  // there is no window where a pre-rejected `task` promise could trigger an
+  // `unhandledrejection` event before the handler is in place.
+  const guarded = promise.catch((err) => {
     console.error("[vinext] after() task failed:", err);
   });
+
+  // TODO: Next.js throws when after() is called outside a request context or when
+  // waitUntil is unavailable, preventing silent task loss. vinext falls back to
+  // fire-and-forget here, which is correct for the Node.js dev server (where
+  // getRequestExecutionContext() always returns null). On Workers, a misconfigured
+  // entry that omits runWithExecutionContext would silently drop tasks — consider
+  // a one-time console.warn on the fallback path, gated to production only (e.g.
+  // `process.env.NODE_ENV === 'production'` or `typeof caches !== 'undefined'` for
+  // a Workers runtime check) with a module-level `let _warned = false` guard so it
+  // fires at most once and doesn't spam the dev-server console.
+  getRequestExecutionContext()?.waitUntil(guarded);
 }
 
 /**
@@ -430,7 +786,8 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * and sets Cache-Control: no-store on the response.
  */
 export async function connection(): Promise<void> {
-  const { markDynamicUsage } = await import("./headers.js");
+  const { markDynamicUsage, throwIfInsideCacheScope } = await import("./headers.js");
+  throwIfInsideCacheScope("connection()");
   markDynamicUsage();
 }
 

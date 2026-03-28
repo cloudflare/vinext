@@ -10,12 +10,17 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerRouterStateAccessors } from "./router.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface SSRContext {
+export interface SSRContext {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
@@ -24,20 +29,24 @@ interface SSRContext {
   defaultLocale?: string;
 }
 
-interface RouterState {
+export interface RouterState {
   ssrContext: SSRContext | null;
 }
 
 const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,
 } satisfies RouterState) as RouterState;
 
 function _getState(): RouterState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -47,6 +56,12 @@ function _getState(): RouterState {
  * on concurrent runtimes.
  */
 export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.ssrContext = null;
+    }, fn);
+  }
+
   const state: RouterState = {
     ssrContext: null,
   };
@@ -63,12 +78,6 @@ _registerRouterStateAccessors({
   },
 
   setSSRContext(ctx: SSRContext | null): void {
-    const state = _als.getStore();
-    if (state) {
-      state.ssrContext = ctx;
-    } else {
-      // No ALS scope — fallback for environments without als.run() wrapping.
-      _fallbackState.ssrContext = ctx;
-    }
+    _getState().ssrContext = ctx;
   },
 });
