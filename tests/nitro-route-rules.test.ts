@@ -142,9 +142,9 @@ describe("convertToNitroPattern", () => {
     expect(convertToNitroPattern("/blog/featured")).toBe("/blog/featured");
   });
 
-  it("converts :param segments to /** globs", () => {
-    expect(convertToNitroPattern("/blog/:slug")).toBe("/blog/**");
-    expect(convertToNitroPattern("/users/:id/posts")).toBe("/users/**/posts");
+  it("converts :param segments to /* single-segment wildcards", () => {
+    expect(convertToNitroPattern("/blog/:slug")).toBe("/blog/*");
+    expect(convertToNitroPattern("/users/:id/posts")).toBe("/users/*/posts");
   });
 
   it("converts :param+ catch-all segments to /** globs", () => {
@@ -156,9 +156,16 @@ describe("convertToNitroPattern", () => {
   });
 
   it("handles consecutive dynamic segments correctly", () => {
-    expect(convertToNitroPattern("/:a/:b")).toBe("/**/**");
-    expect(convertToNitroPattern("/blog/:year/:month/:slug")).toBe("/blog/**/**/**");
-    expect(convertToNitroPattern("/api/:version/:resource/:id")).toBe("/api/**/**/**");
+    expect(convertToNitroPattern("/:a/:b")).toBe("/*/*");
+    expect(convertToNitroPattern("/blog/:year/:month/:slug")).toBe("/blog/*/*/*");
+    expect(convertToNitroPattern("/api/:version/:resource/:id")).toBe("/api/*/*/*");
+  });
+
+  it("distinguishes single-segment params from catch-all params", () => {
+    // Mixed: single segment followed by catch-all
+    expect(convertToNitroPattern("/blog/:year/:slug+")).toBe("/blog/*/**");
+    // Optional catch-all behaves like catch-all
+    expect(convertToNitroPattern("/shop/:category/:id*")).toBe("/shop/*/**");
   });
 });
 
@@ -183,7 +190,7 @@ describe("generateNitroRouteRules", () => {
 
     expect(generateNitroRouteRules(rows)).toEqual({
       "/": { swr: 120 },
-      "/blog/**": { swr: 60 },
+      "/blog/*": { swr: 60 },
       "/docs/**": { swr: 30 },
       "/products/**": { swr: 15 },
     });
@@ -252,7 +259,7 @@ describe("collectNitroRouteRules", () => {
     });
 
     expect(routeRules).toEqual({
-      "/blog/**": { swr: 60 },
+      "/blog/*": { swr: 60 },
     });
   });
 
@@ -266,7 +273,7 @@ describe("collectNitroRouteRules", () => {
     });
 
     expect(routeRules).toEqual({
-      "/blog/**": { swr: 45 },
+      "/blog/*": { swr: 45 },
     });
   });
 });
@@ -280,7 +287,7 @@ describe("vinext Nitro setup integration", () => {
       options: {
         dev: false,
         routeRules: {
-          "/blog/**": { headers: { "x-test": "1" } },
+          "/blog/*": { headers: { "x-test": "1" } },
         },
       },
       logger: { warn },
@@ -289,7 +296,7 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({
-      "/blog/**": {
+      "/blog/*": {
         headers: { "x-test": "1" },
         swr: 60,
       },
@@ -305,7 +312,7 @@ describe("vinext Nitro setup integration", () => {
       options: {
         dev: false,
         routeRules: {
-          "/blog/**": { swr: 600 },
+          "/blog/*": { swr: 600 },
         },
       },
       logger: { warn },
@@ -314,10 +321,10 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({
-      "/blog/**": { swr: 600 },
+      "/blog/*": { swr: 600 },
     });
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("/blog/**");
+    expect(warn.mock.calls[0]?.[0]).toContain("/blog/*");
   });
 
   it("skips route rule generation during Nitro dev", async () => {

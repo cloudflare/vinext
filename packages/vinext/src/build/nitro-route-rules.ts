@@ -70,22 +70,24 @@ export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
 }
 
 /**
- * Converts vinext's internal `:param` route syntax to Nitro's `/**` glob
- * pattern format. Nitro's `routeRules` use radix3's `toRouteMatcher` which
- * documents exact paths and `/**` globs, not `:param` segments.
+ * Converts vinext's internal `:param` route syntax to Nitro's rou3
+ * pattern format. Nitro uses `rou3` for routeRules matching, which
+ * supports `*` (single-segment) and `**` (multi-segment) wildcards.
  *
- *   /blog/:slug   -> /blog/**
- *   /docs/:slug+  -> /docs/**
- *   /docs/:slug*  -> /docs/**
- *   /about        -> /about  (unchanged)
- *   /:a/:b        -> /`**`/`**`  (consecutive segments)
+ *   /blog/:slug   -> /blog/*   (single segment)
+ *   /docs/:slug+  -> /docs/**  (one or more segments — catch-all)
+ *   /docs/:slug*  -> /docs/**  (zero or more segments — optional catch-all)
+ *   /about        -> /about    (unchanged)
+ *   /:a/:b        -> `/*`/`/*`  (consecutive single-segment params)
  */
 export function convertToNitroPattern(pattern: string): string {
   return pattern
     .split("/")
     .map((segment) => {
       if (segment.startsWith(":")) {
-        return "**";
+        // Catch-all (:param+) and optional catch-all (:param*) match multiple segments → **
+        // Single dynamic param (:param) matches one segment → *
+        return segment.endsWith("+") || segment.endsWith("*") ? "**" : "*";
       }
       return segment;
     })
