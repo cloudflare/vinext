@@ -9,10 +9,7 @@
  * e2e tests to assert against.
  */
 
-import {
-  markRegisterCalled,
-  recordRequestError,
-} from "./instrumentation-state";
+import { markRegisterCalled, recordRequestError } from "./instrumentation-state";
 
 export async function register(): Promise<void> {
   markRegisterCalled();

@@ -17,11 +17,7 @@ export function LikeButton() {
   return (
     <div>
       <p data-testid="likes">Likes: {likes}</p>
-      <button
-        data-testid="like-btn"
-        onClick={handleClick}
-        disabled={isPending}
-      >
+      <button data-testid="like-btn" onClick={handleClick} disabled={isPending}>
         {isPending ? "Liking..." : "Like"}
       </button>
     </div>

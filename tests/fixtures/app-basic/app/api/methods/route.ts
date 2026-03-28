@@ -22,7 +22,10 @@ export async function GET() {
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") || "";
 
-  if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
     const formData = await request.formData();
     const name = formData.get("name");
     const email = formData.get("email");
@@ -58,16 +61,6 @@ export async function HEAD() {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "special-header": "vinext is great",
-    },
-  });
-}
-
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
-      special: "vinext is great",
     },
   });
 }

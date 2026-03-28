@@ -7,9 +7,7 @@ const BASE = "http://localhost:4174";
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -49,9 +47,7 @@ test.describe("App Router navigation flows", () => {
     // (goTo does reload, but we verify the first 3 Link navigations preserved marker)
   });
 
-  test("back/forward through multiple pages preserves content", async ({
-    page,
-  }) => {
+  test("back/forward through multiple pages preserves content", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await waitForHydration(page);
 
@@ -82,40 +78,30 @@ test.describe("App Router navigation flows", () => {
     await expect(page.locator("h1")).toHaveText("Blog Post");
   });
 
-  test("search form flow: type, submit, modify, resubmit", async ({
-    page,
-  }) => {
+  test("search form flow: type, submit, modify, resubmit", async ({ page }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
     await waitForHydration(page);
 
     // Empty state
-    await expect(page.locator("#search-empty")).toHaveText(
-      "Enter a search term",
-    );
+    await expect(page.locator("#search-empty")).toHaveText("Enter a search term");
 
     // First search
     await page.fill("#search-input", "react");
     await page.click("#search-button");
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: react",
-    );
+    await expect(page.locator("#search-result")).toHaveText("Results for: react");
     expect(page.url()).toContain("q=react");
 
     // Clear and search again
     await page.fill("#search-input", "vite");
     await page.click("#search-button");
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: vite",
-    );
+    await expect(page.locator("#search-result")).toHaveText("Results for: vite");
     expect(page.url()).toContain("q=vite");
 
     // Third search
     await page.fill("#search-input", "cloudflare workers");
     await page.click("#search-button");
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: cloudflare workers",
-    );
+    await expect(page.locator("#search-result")).toHaveText("Results for: cloudflare workers");
   });
 
   test("server action: like button click flow", async ({ page }) => {
@@ -140,10 +126,9 @@ test.describe("App Router navigation flows", () => {
 
     // Click again
     await page.click('[data-testid="like-btn"]');
-    await expect(page.locator('[data-testid="likes"]')).toHaveText(
-      `Likes: ${count1 + 1}`,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="likes"]')).toHaveText(`Likes: ${count1 + 1}`, {
+      timeout: 10_000,
+    });
   });
 
   test("server action: message form submit flow", async ({ page }) => {
@@ -153,10 +138,9 @@ test.describe("App Router navigation flows", () => {
     // Type and submit a message
     await page.fill('[data-testid="message-input"]', "Hello!");
     await page.click('[data-testid="send-btn"]');
-    await expect(page.locator('[data-testid="message-result"]')).toHaveText(
-      "Received: Hello!",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="message-result"]')).toHaveText("Received: Hello!", {
+      timeout: 10_000,
+    });
 
     // Submit another message
     await page.fill('[data-testid="message-input"]', "Testing vinext");
@@ -211,9 +195,7 @@ test.describe("App Router navigation flows", () => {
     // Navigate to catch-all route
     await page.goto(`${BASE}/docs/api/v2/reference`);
     await expect(page.locator("h1")).toHaveText("Documentation");
-    await expect(page.locator("main > p:first-of-type")).toHaveText(
-      "Path: api/v2/reference",
-    );
+    await expect(page.locator("main > p:first-of-type")).toHaveText("Path: api/v2/reference");
   });
 
   test("error → reset → navigate flow", async ({ page }) => {
@@ -242,20 +224,14 @@ test.describe("App Router navigation flows", () => {
   test("direct URL navigation with query params", async ({ page }) => {
     // Navigate directly to search with query
     await page.goto(`${BASE}/search?q=initial`);
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: initial",
-    );
+    await expect(page.locator("#search-result")).toHaveText("Results for: initial");
 
     // Navigate to search without query
     await page.goto(`${BASE}/search`);
-    await expect(page.locator("#search-empty")).toHaveText(
-      "Enter a search term",
-    );
+    await expect(page.locator("#search-empty")).toHaveText("Enter a search term");
 
     // Navigate to client-nav-test with query
     await page.goto(`${BASE}/client-nav-test?q=test-param`);
-    await expect(page.locator('[data-testid="client-search-q"]')).toHaveText(
-      "test-param",
-    );
+    await expect(page.locator('[data-testid="client-search-q"]')).toHaveText("test-param");
   });
 });

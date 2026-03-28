@@ -1,5 +1,96 @@
 packages:
-  - "packages/*"
-  - "examples/*"
-  - "tests/fixtures/*"
-  - "tests/fixtures/ecosystem/*"
+  - packages/*
+  - examples/*
+  - tests/fixtures/*
+  - tests/fixtures/ecosystem/*
+  - benchmarks/vinext
+
+catalog:
+  "@cloudflare/kumo": ^1.6.0
+  "@cloudflare/vite-plugin": ^1.25.0
+  "@cloudflare/workers-types": ^4.0.0
+  "@heroicons/react": 2.2.0
+  "@mdx-js/react": ^3.1.1
+  "@mdx-js/rollup": ^3.1.1
+  "@phosphor-icons/react": ^2.1.7
+  "@playwright/test": ^1.58.2
+  "@radix-ui/react-dialog": ^1.1.14
+  "@radix-ui/react-dropdown-menu": ^2.1.15
+  "@radix-ui/react-slot": ^1.2.3
+  "@tailwindcss/forms": 0.5.10
+  "@tailwindcss/postcss": 4.1.4
+  "@tailwindcss/typography": 0.5.16
+  "@tailwindcss/vite": ^4.1.0
+  "@takumi-rs/image-response": ^0.72.0
+  "@types/mdx": 2.0.13
+  "@types/ms": 2.1.0
+  "@types/node": ^25.2.3
+  "@types/react": ^19.2.14
+  "@types/react-dom": ^19.2.3
+  "@typescript/native-preview": ^7.0.0-dev.20260213.1
+  "@unpic/react": ^1.0.2
+  "@vercel/og": ^0.8.6
+  "@vitejs/plugin-react": ^6.0.1
+  "@vitejs/plugin-rsc": ^0.5.21
+  better-auth: ^1.4.0
+  better-sqlite3: ^12.0.0
+  class-variance-authority: ^0.7.1
+  clsx: ^2.1.1
+  codehike: 1.0.7
+  date-fns: 4.1.0
+  fumadocs-core: 16.6.17
+  fumadocs-mdx: 14.2.10
+  fumadocs-ui: 16.6.17
+  image-size: 2.0.2
+  lucide-react: ^0.577.0
+  magic-string: ^0.30.21
+  ms: 3.0.0-canary.1
+  next: 16.1.7
+  next-intl: ^4.8.2
+  next-themes: ^0.4.6
+  next-view-transitions: ^0.3.5
+  nitro: npm:nitro-nightly@latest
+  nuqs: ^2.8.8
+  playwright: ^1.52.0
+  postcss: 8.5.3
+  react: ^19.2.4
+  react-dom: ^19.2.4
+  react-server-dom-webpack: ^19.2.4
+  rsc-html-stream: ^0.0.7
+  server-only: ^0.0.1
+  swr: ^2.0.0
+  tailwind-merge: ^3.3.0
+  tailwindcss: 4.1.4
+  typescript: ^5.7.0
+  use-count-up: 3.0.1
+  validator: ^13.15.26
+  vite: npm:@voidzero-dev/vite-plus-core@0.1.12
+  vite-plugin-commonjs: ^0.10.4
+  vite-plus: 0.1.12
+  vite-tsconfig-paths: ^6.1.1
+  vitest: npm:@voidzero-dev/vite-plus-test@0.1.12
+  wrangler: ^4.66.0
+  zod: 3.24.3
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
+  ignoreMissing:
+    - next
+    - webpack
+    - rollup
+
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - sharp
+  - workerd
+  - "@parcel/watcher"
+  - "@swc/core"

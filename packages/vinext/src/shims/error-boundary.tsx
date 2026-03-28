@@ -18,10 +18,7 @@ interface ErrorBoundaryState {
  * This must be a client component since error boundaries use
  * componentDidCatch / getDerivedStateFromError.
  */
-export class ErrorBoundary extends React.Component<
-  ErrorBoundaryProps,
-  ErrorBoundaryState
-> {
+export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { error: null };
@@ -51,9 +48,7 @@ export class ErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       const FallbackComponent = this.props.fallback;
-      return (
-        <FallbackComponent error={this.state.error} reset={this.reset} />
-      );
+      return <FallbackComponent error={this.state.error} reset={this.reset} />;
     }
     return this.props.children;
   }
@@ -109,10 +104,7 @@ class NotFoundBoundaryInner extends React.Component<
   static getDerivedStateFromError(error: Error): Partial<NotFoundBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String((error as any).digest);
-      if (
-        digest === "NEXT_NOT_FOUND" ||
-        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;404")
-      ) {
+      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;404")) {
         return { notFound: true };
       }
     }

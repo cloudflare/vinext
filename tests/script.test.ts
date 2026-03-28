@@ -6,7 +6,7 @@
  * initScriptLoader). Only SSR-testable behaviors are verified here;
  * client-side loading strategies require a browser environment.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Script, { type ScriptProps } from "../packages/vinext/src/shims/script.js";
@@ -91,7 +91,7 @@ describe("Script SSR rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Script, {
         strategy: "beforeInteractive",
-        dangerouslySetInnerHTML: { __html: 'window.x = 1' },
+        dangerouslySetInnerHTML: { __html: "window.x = 1" },
       } as ScriptProps),
     );
     expect(html).toContain("<script");

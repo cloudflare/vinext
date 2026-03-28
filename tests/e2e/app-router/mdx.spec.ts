@@ -16,6 +16,8 @@ test.describe("MDX support", () => {
     // Bold text should render
     await expect(page.locator('[data-testid="mdx-page"] strong').first()).toHaveText("MDX");
     // List items should render
-    await expect(page.locator('[data-testid="mdx-page"] ul > li').first()).toContainText("Item one");
+    await expect(page.locator('[data-testid="mdx-page"] ul > li').first()).toContainText(
+      "Item one",
+    );
   });
 });

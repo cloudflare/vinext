@@ -147,7 +147,10 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
  * Check if a Content-Type header value is a safe image type.
  * Returns false for SVG (unless dangerouslyAllowSVG is true), HTML, or any non-image type.
  */
-export function isSafeImageContentType(contentType: string | null, dangerouslyAllowSVG = false): boolean {
+export function isSafeImageContentType(
+  contentType: string | null,
+  dangerouslyAllowSVG = false,
+): boolean {
   if (!contentType) return false;
   // Extract the media type, ignoring parameters (e.g., charset)
   const mediaType = contentType.split(";")[0].trim().toLowerCase();
@@ -163,9 +166,23 @@ export function isSafeImageContentType(contentType: string | null, dangerouslyAl
  * When an ImageConfig is provided, uses its values for CSP and Content-Disposition.
  */
 function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
-  headers.set("Content-Security-Policy", config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY);
+  headers.set(
+    "Content-Security-Policy",
+    config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
+  );
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
+  headers.set(
+    "Content-Disposition",
+    config?.contentDispositionType === "attachment" ? "attachment" : "inline",
+  );
+}
+
+function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+  const headers = new Headers(source.headers);
+  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+  headers.set("Vary", "Accept");
+  setImageSecurityHeaders(headers, config);
+  return new Response(source.body, { status: 200, headers });
 }
 
 /**
@@ -178,7 +195,7 @@ export interface ImageHandlers {
   /** Optional: Transform the image (resize, format, quality). */
   transformImage?: (
     body: ReadableStream,
-    options: { width: number; format: string; quality: number }
+    options: { width: number; format: string; quality: number },
   ) => Promise<Response>;
 }
 
@@ -226,11 +243,7 @@ export async function handleImageOptimization(
   // This matches Next.js behavior where SVG is a "bypass type".
   const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
   if (sourceMediaType === "image/svg+xml") {
-    const headers = new Headers(source.headers);
-    headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-    headers.set("Vary", "Accept");
-    setImageSecurityHeaders(headers, imageConfig);
-    return new Response(source.body, { status: 200, headers });
+    return createPassthroughImageResponse(source, imageConfig);
   }
 
   // Transform if handler provided, otherwise serve original
@@ -255,14 +268,24 @@ export async function handleImageOptimization(
       return new Response(transformed.body, { status: 200, headers });
     } catch (e) {
       console.error("[vinext] Image optimization error:", e);
-      // Fall through to serve original
     }
   }
 
   // Fallback: serve original image with cache headers
-  const headers = new Headers(source.headers);
-  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-  headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers, imageConfig);
-  return new Response(source.body, { status: 200, headers });
+  try {
+    return createPassthroughImageResponse(source, imageConfig);
+  } catch (e) {
+    console.error("[vinext] Image fallback error, refetching source image:", e);
+    const refetchedSource = await handlers.fetchAsset(imageUrl, request);
+    if (!refetchedSource.ok || !refetchedSource.body) {
+      return new Response("Image not found", { status: 404 });
+    }
+
+    const refetchedContentType = refetchedSource.headers.get("Content-Type");
+    if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
+      return new Response("The requested resource is not an allowed image type", { status: 400 });
+    }
+
+    return createPassthroughImageResponse(refetchedSource, imageConfig);
+  }
 }

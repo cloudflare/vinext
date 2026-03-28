@@ -44,32 +44,24 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     await expect(page.locator("h1")).toContainText("Pages Router on Workers");
   });
 
-  test("navigating to SSR page via link shows server data", async ({
-    page,
-  }) => {
+  test("navigating to SSR page via link shows server data", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toContainText("Pages Router on Workers");
 
     // Click SSR link
     await page.click('a[href="/ssr"]');
-    await expect(page.locator("h1")).toHaveText(
-      "Server-Side Rendered on Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
     // Should have timestamp from GSSP
     await expect(page.locator("p")).toContainText("Generated at:");
   });
 
-  test("browser back button works after navigating to SSR page", async ({
-    page,
-  }) => {
+  test("browser back button works after navigating to SSR page", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toContainText("Pages Router on Workers");
 
     // Navigate to SSR page via link
     await page.click('a[href="/ssr"]');
-    await expect(page.locator("h1")).toHaveText(
-      "Server-Side Rendered on Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
 
     // Press back — should return to home
     await page.goBack();
@@ -77,9 +69,7 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     expect(page.url()).toBe(`${BASE}/`);
   });
 
-  test("browser back and forward buttons work across pages", async ({
-    page,
-  }) => {
+  test("browser back and forward buttons work across pages", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toContainText("Pages Router on Workers");
 
@@ -98,9 +88,7 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
-  test("SSR page renders different timestamps on each request", async ({
-    page,
-  }) => {
+  test("SSR page renders different timestamps on each request", async ({ page }) => {
     // First request
     await page.goto(`${BASE}/ssr`);
     const text1 = await page.locator("p").textContent();
@@ -118,33 +106,21 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
 test.describe("Pages Router dynamic routes on Cloudflare Workers", () => {
   test("dynamic route renders with GSSP data", async ({ page }) => {
     await page.goto(`${BASE}/posts/hello`);
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText(
-      "Post hello",
-    );
-    await expect(page.locator('[data-testid="post-id"]')).toHaveText(
-      "ID: hello",
-    );
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post hello");
+    await expect(page.locator('[data-testid="post-id"]')).toHaveText("ID: hello");
   });
 
-  test("different dynamic param renders different content", async ({
-    page,
-  }) => {
+  test("different dynamic param renders different content", async ({ page }) => {
     await page.goto(`${BASE}/posts/123`);
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText(
-      "Post 123",
-    );
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post 123");
 
     await page.goto(`${BASE}/posts/world`);
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText(
-      "Post world",
-    );
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post world");
   });
 
   test("dynamic route has working links", async ({ page }) => {
     await page.goto(`${BASE}/posts/first`);
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText(
-      "Post first",
-    );
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post first");
 
     // Click link to home
     await page.click('a[href="/"]');

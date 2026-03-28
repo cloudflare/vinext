@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  generateBuildId: () => "test-build-id",
   env: {
     CUSTOM_VAR: "hello-from-config",
   },
@@ -10,6 +11,21 @@ const nextConfig = {
         destination: "/about",
         permanent: true,
       },
+      {
+        source: "/repeat-redirect/:id",
+        destination: "/docs/:id/:id",
+        permanent: false,
+      },
+      {
+        source: "/redirect-before-middleware-rewrite",
+        destination: "/about",
+        permanent: false,
+      },
+      {
+        source: "/redirect-before-middleware-response",
+        destination: "/about",
+        permanent: false,
+      },
     ];
   },
   async rewrites() {
@@ -18,6 +34,10 @@ const nextConfig = {
         {
           source: "/before-rewrite",
           destination: "/about",
+        },
+        {
+          source: "/repeat-rewrite/:id",
+          destination: "/docs/:id/:id",
         },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
@@ -79,6 +99,10 @@ const nextConfig = {
       {
         source: "/ssr",
         headers: [{ key: "Vary", value: "Accept-Language" }],
+      },
+      {
+        source: "/headers-before-middleware-rewrite",
+        headers: [{ key: "X-Rewrite-Source-Header", value: "1" }],
       },
     ];
   },

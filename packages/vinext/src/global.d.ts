@@ -37,7 +37,9 @@ declare global {
      * Written and read by `shims/router.ts` to avoid re-importing on every
      * client-side navigation.
      */
-    __VINEXT_APP__: React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }> | undefined;
+    __VINEXT_APP__:
+      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | undefined;
 
     /**
      * The current active locale for Pages Router internationalisation.
@@ -102,42 +104,12 @@ declare global {
     __VINEXT_RSC_PREFETCHED_URLS__: Set<string> | undefined;
 
     // ── Next.js conventional globals ────────────────────────────────────────
-
-    /**
-     * Pages Router SSR data injected by the server as an inline `<script>`.
-     * Contains page props, route params, locale info, and vinext-specific
-     * metadata (page module URL, app module URL) needed for client hydration
-     * and subsequent client-side navigations.
-     */
-    __NEXT_DATA__:
-      | {
-          /** Serialised page props. */
-          props: { pageProps: unknown };
-          /** Next.js route pattern (e.g. `"/posts/[id]"`). */
-          page: string;
-          /** Merged URL search params + dynamic route params. */
-          query: Record<string, string | string[]>;
-          /** `true` while a fallback SSG page is being generated. */
-          isFallback: boolean;
-          /** Active locale. */
-          locale?: string;
-          /** All configured locales. */
-          locales?: string[];
-          /** Default locale. */
-          defaultLocale?: string;
-          /** vinext-specific additions (not part of Next.js upstream). */
-          __vinext?: {
-            /** Absolute URL of the page module for dynamic import. */
-            pageModuleUrl?: string;
-            /** Absolute URL of the `_app` module for dynamic import. */
-            appModuleUrl?: string;
-          };
-          /** Serialised page module path (legacy — used by `client/entry.ts`). */
-          __pageModule?: string;
-          /** Serialised `_app` module path (legacy — used by `client/entry.ts`). */
-          __appModule?: string;
-        }
-      | undefined;
+    //
+    // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as
+    // `NEXT_DATA` from `next/dist/shared/lib/utils`. We intentionally do NOT
+    // re-declare it here to avoid type conflicts. vinext-specific extensions
+    // (__vinext, __pageModule, __appModule) are accessed via the
+    // `VinextNextData` type in `client/vinext-next-data.ts`.
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────
@@ -173,6 +145,17 @@ declare global {
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
+   * Navigation context embedded by `generateSsrEntry()` for hydration
+   * snapshot consistency. Contains the pathname and searchParams used
+   * during SSR so `useSyncExternalStore` `getServerSnapshot` matches the
+   * SSR-rendered HTML.
+   * `searchParams` is serialised as an array of `[key, value]` pairs to
+   * preserve duplicate keys (e.g. `?tag=a&tag=b`).
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
+
+  /**
    * Legacy RSC embed format (pre-progressive-streaming).
    * A single object containing all RSC chunks and the route params, embedded
    * in a single `<script>` block.
@@ -183,9 +166,7 @@ declare global {
    *   `__VINEXT_RSC_PARAMS__` instead.
    */
   // eslint-disable-next-line no-var
-  var __VINEXT_RSC__:
-    | { rsc: string[]; params: Record<string, string | string[]> }
-    | undefined;
+  var __VINEXT_RSC__: { rsc: string[]; params: Record<string, string | string[]> } | undefined;
 
   // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
   //
@@ -244,7 +225,25 @@ declare global {
    * is not yet available (e.g. during SSR of Link components).
    */
   // eslint-disable-next-line no-var
-	var __VINEXT_DEFAULT_LOCALE__: string | undefined;
+  var __VINEXT_DEFAULT_LOCALE__: string | undefined;
+
+  /**
+   * Configured Pages Router domain locale mappings, set on `globalThis` for
+   * server-side rendering so `next/link` can resolve cross-domain locale hrefs
+   * before hydration.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_DOMAIN_LOCALES__:
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | undefined;
+
+  /**
+   * Current request hostname, set on `globalThis` during Pages Router SSR so
+   * locale-domain links can decide whether to render relative or absolute
+   * hrefs.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_HOSTNAME__: string | undefined;
 
   /**
    * The onRequestError handler registered by instrumentation.ts.
@@ -255,8 +254,25 @@ declare global {
    * `@cloudflare/vite-plugin` it runs entirely inside the Worker, so
    * `globalThis` is the Worker's global — also correct.
    */
-	// eslint-disable-next-line no-var
-	var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
+  // eslint-disable-next-line no-var
+  var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// process.features — Node.js v22.10.0+ feature flags
+// ---------------------------------------------------------------------------
+//
+// `process.features.typescript` is available since Node.js v22.10.0 and
+// indicates whether the runtime has built-in TypeScript support (--experimental-strip-types).
+// Declared here so we don't have to cast `process.features as any` at the call site.
+
+declare global {
+  namespace NodeJS {
+    interface ProcessFeatures {
+      /** Available since Node.js v22.10.0. `true` when run with --experimental-strip-types. */
+      typescript?: boolean;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +291,13 @@ declare global {
        * Generated once at build time and injected via Vite `define`.
        */
       __VINEXT_DRAFT_SECRET?: string;
+
+      /**
+       * Build ID string injected via Vite `define` at production build time.
+       * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
+       * `undefined` in dev mode.
+       */
+      __VINEXT_BUILD_ID?: string;
 
       /**
        * JSON-encoded array of `RemotePattern` objects from
@@ -306,6 +329,22 @@ declare global {
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG?: string;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// node:http augmentations — vinext properties added to IncomingMessage
+// ---------------------------------------------------------------------------
+
+declare module "node:http" {
+  interface IncomingMessage {
+    /**
+     * The HTTP status code set by vinext middleware for Pages Router rewrite
+     * responses (e.g. 307 for a rewrite that should surface as a redirect).
+     * Written in `index.ts` when middleware emits a `rewriteStatus`, read by
+     * the downstream Pages Router handler to decide the final response status.
+     */
+    __vinextRewriteStatus?: number;
   }
 }
 

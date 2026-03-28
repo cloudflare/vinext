@@ -8,11 +8,7 @@ export default function SignUpPage({ segments }: { segments: string[] }) {
   );
 }
 
-export async function getServerSideProps({
-  params,
-}: {
-  params: { "sign-up"?: string[] };
-}) {
+export async function getServerSideProps({ params }: { params: { "sign-up"?: string[] } }) {
   return {
     props: {
       segments: params["sign-up"] ?? [],

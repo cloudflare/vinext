@@ -5,9 +5,7 @@ const BASE = "http://localhost:4176";
 test.describe("App Router interactive behavior on Cloudflare Workers", () => {
   test("counter increments on multiple clicks", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     // Wait for hydration by polling counter clicks
     await expect(async () => {
@@ -28,9 +26,7 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 
   test("clicking link to About navigates correctly", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     // Click About link
     await page.click('a[href="/about"]');
@@ -47,17 +43,13 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 
     // Click back link
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
     expect(page.url()).toBe(`${BASE}/`);
   });
 
   test("browser back button works after navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     // Navigate to about
     await page.click('a[href="/about"]');
@@ -65,9 +57,7 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 
     // Browser back
     await page.goBack();
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
     expect(page.url()).toBe(`${BASE}/`);
 
     // Browser forward
@@ -76,19 +66,13 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
-  test("server component timestamp changes on each request", async ({
-    page,
-  }) => {
+  test("server component timestamp changes on each request", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    const ts1 = await page
-      .locator('[data-testid="timestamp"]')
-      .textContent();
+    const ts1 = await page.locator('[data-testid="timestamp"]').textContent();
 
     await page.waitForTimeout(100);
     await page.goto(`${BASE}/`);
-    const ts2 = await page
-      .locator('[data-testid="timestamp"]')
-      .textContent();
+    const ts2 = await page.locator('[data-testid="timestamp"]').textContent();
 
     // Each request should produce a different timestamp (server rendering)
     expect(ts1).not.toBe(ts2);
@@ -96,9 +80,7 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 
   test("counter state resets on full page navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     // Wait for hydration and increment counter
     await expect(async () => {
@@ -118,36 +100,24 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 test.describe("App Router dynamic routes on Cloudflare Workers", () => {
   test("renders blog post with dynamic slug", async ({ page }) => {
     await page.goto(`${BASE}/blog/hello-world`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
-      "Blog: hello-world",
-    );
-    await expect(page.locator('[data-testid="blog-slug"]')).toHaveText(
-      "Slug: hello-world",
-    );
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: hello-world");
+    await expect(page.locator('[data-testid="blog-slug"]')).toHaveText("Slug: hello-world");
   });
 
   test("different slugs render different content", async ({ page }) => {
     await page.goto(`${BASE}/blog/first-post`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
-      "Blog: first-post",
-    );
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: first-post");
 
     await page.goto(`${BASE}/blog/second-post`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
-      "Blog: second-post",
-    );
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: second-post");
   });
 
   test("blog page has back link to home", async ({ page }) => {
     await page.goto(`${BASE}/blog/test`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
-      "Blog: test",
-    );
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: test");
 
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
   });
 });
 
@@ -158,9 +128,7 @@ test.describe("App Router API routes on Workers — extended", () => {
     expect(body.runtime).toContain("Cloudflare-Workers");
   });
 
-  test("API response is valid JSON with correct headers", async ({
-    request,
-  }) => {
+  test("API response is valid JSON with correct headers", async ({ request }) => {
     const response = await request.get(`${BASE}/api/hello`);
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toContain("application/json");

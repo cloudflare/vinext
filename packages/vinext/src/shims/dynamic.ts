@@ -1,4 +1,3 @@
-"use client";
 /**
  * next/dynamic shim
  *
@@ -6,12 +5,19 @@
  * renderToReadableStream suspends until the dynamically-imported component is
  * available. On the client, also uses React.lazy for code splitting.
  *
+ * Works in RSC, SSR, and client environments:
+ * - RSC: Uses React.lazy + Suspense (available in React 19.x react-server).
+ *   Falls back to async component pattern if a future React version
+ *   strips lazy from react-server.
+ * - SSR: React.lazy + Suspense (renderToReadableStream suspends)
+ * - Client: React.lazy + Suspense (standard code splitting)
+ *
  * Supports:
  * - dynamic(() => import('./Component'))
  * - dynamic(() => import('./Component'), { loading: () => <Spinner /> })
  * - dynamic(() => import('./Component'), { ssr: false })
  */
-import React, { lazy, Suspense, type ComponentType, useState, useEffect } from "react";
+import React, { type ComponentType } from "react";
 
 interface DynamicOptions {
   loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
@@ -33,10 +39,15 @@ let DynamicErrorBoundary: any;
 function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
   if (!React.Component) return null;
-  DynamicErrorBoundary = class extends React.Component<
-    { fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>; children: React.ReactNode },
-    { error: Error | null }
-  > {
+  DynamicErrorBoundary = class extends (
+    React.Component<
+      {
+        fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+        children: React.ReactNode;
+      },
+      { error: Error | null }
+    >
+  ) {
     constructor(props: any) {
       super(props);
       this.state = { error: null };
@@ -85,7 +96,7 @@ function dynamic<P extends object = object>(
   // ssr: false — render nothing on the server, lazy-load on client
   if (!ssr) {
     if (isServer) {
-      // On the server, just render the loading state or nothing
+      // On the server (SSR or RSC), just render the loading state or nothing
       const SSRFalse = (_props: P) => {
         return LoadingComponent
           ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
@@ -96,15 +107,15 @@ function dynamic<P extends object = object>(
     }
 
     // Client: use lazy with Suspense
-    const LazyComponent = lazy(async () => {
+    const LazyComponent = React.lazy(async () => {
       const mod = await loader();
       if ("default" in mod) return mod as { default: ComponentType<P> };
       return { default: mod as ComponentType<P> };
     });
 
     const ClientSSRFalse = (props: P) => {
-      const [mounted, setMounted] = useState(false);
-      useEffect(() => setMounted(true), []);
+      const [mounted, setMounted] = React.useState(false);
+      React.useEffect(() => setMounted(true), []);
 
       if (!mounted) {
         return LoadingComponent
@@ -116,7 +127,7 @@ function dynamic<P extends object = object>(
         ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
         : null;
       return React.createElement(
-        Suspense,
+        React.Suspense,
         { fallback },
         React.createElement(LazyComponent, props),
       );
@@ -128,12 +139,32 @@ function dynamic<P extends object = object>(
 
   // SSR-enabled path
   if (isServer) {
-    // Use React.lazy so that renderToReadableStream can suspend until the
-    // dynamically-imported component is available. The previous eager-load
-    // pattern relied on flushPreloads() being called before rendering, which
-    // works for the Pages Router but not the App Router where client modules
-    // are loaded lazily during RSC stream deserialization (issue #75).
-    const LazyServer = lazy(async () => {
+    // Defensive fallback: if a future React version strips React.lazy from the
+    // react-server condition, fall back to an async component pattern.
+    // In React 19.x, React.lazy IS available in react-server, so this branch
+    // does not execute — it exists for forward compatibility only.
+    if (typeof React.lazy !== "function") {
+      const AsyncServerDynamic = async (props: P) => {
+        // Note: LoadingComponent is not used here — in the RSC environment,
+        // async components suspend natively and parent <Suspense> boundaries
+        // provide loading states. Error handling also defers to the nearest
+        // error boundary in the component tree.
+        const mod = await loader();
+        const Component =
+          "default" in mod
+            ? (mod as { default: ComponentType<P> }).default
+            : (mod as ComponentType<P>);
+        return React.createElement(Component, props);
+      };
+      AsyncServerDynamic.displayName = "DynamicAsyncServer";
+      // Cast is safe: async components are natively supported by the RSC renderer,
+      // but TypeScript's ComponentType<P> doesn't account for async return types.
+      return AsyncServerDynamic as unknown as ComponentType<P>;
+    }
+
+    // SSR path: Use React.lazy so that renderToReadableStream can suspend
+    // until the dynamically-imported component is available.
+    const LazyServer = React.lazy(async () => {
       const mod = await loader();
       if ("default" in mod) return mod as { default: ComponentType<P> };
       return { default: mod as ComponentType<P> };
@@ -150,7 +181,7 @@ function dynamic<P extends object = object>(
       const content = ErrorBoundary
         ? React.createElement(ErrorBoundary, { fallback: LoadingComponent }, lazyElement)
         : lazyElement;
-      return React.createElement(Suspense, { fallback }, content);
+      return React.createElement(React.Suspense, { fallback }, content);
     };
 
     ServerDynamic.displayName = "DynamicServer";
@@ -158,7 +189,7 @@ function dynamic<P extends object = object>(
   }
 
   // Client path: standard React.lazy with Suspense
-  const LazyComponent = lazy(async () => {
+  const LazyComponent = React.lazy(async () => {
     const mod = await loader();
     if ("default" in mod) return mod as { default: ComponentType<P> };
     return { default: mod as ComponentType<P> };
@@ -169,7 +200,7 @@ function dynamic<P extends object = object>(
       ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
       : null;
     return React.createElement(
-      Suspense,
+      React.Suspense,
       { fallback },
       React.createElement(LazyComponent, props),
     );

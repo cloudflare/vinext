@@ -1,10 +1,10 @@
 import { Suspense } from "react";
 async function SlowA() {
-  await new Promise(resolve => setTimeout(resolve, 200));
+  await new Promise((resolve) => setTimeout(resolve, 200));
   return <p id="content-a">Content A loaded</p>;
 }
 async function SlowB() {
-  await new Promise(resolve => setTimeout(resolve, 600));
+  await new Promise((resolve) => setTimeout(resolve, 600));
   return <p id="content-b">Content B loaded</p>;
 }
 export default function Page() {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -65,7 +65,7 @@ function setupProject(
 
   if (router === "app") {
     mkdir(dir, "app");
-    writeFile(dir, "app/page.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(dir, "app/page.tsx", "export default function Home() { return <div>hi</div> }");
     writeFile(
       dir,
       "app/layout.tsx",
@@ -73,7 +73,7 @@ function setupProject(
     );
   } else {
     mkdir(dir, "pages");
-    writeFile(dir, "pages/index.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(dir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
   }
 }
 
@@ -127,10 +127,7 @@ async function runInit(
 /**
  * Run init expecting it to fail (process.exit).
  */
-async function runInitExpectExit(
-  dir: string,
-  opts: Partial<InitOptions> = {},
-): Promise<string> {
+async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): Promise<string> {
   const { exec } = noopExec();
 
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -251,18 +248,20 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-rsc + react-server-dom-webpack for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react + App Router deps for App Router", () => {
     const deps = getInitDeps(true);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).toContain("@vitejs/plugin-rsc");
     expect(deps).toContain("react-server-dom-webpack");
   });
 
-  it("returns vinext + vite for Pages Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react for Pages Router", () => {
     const deps = getInitDeps(false);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
   });
@@ -467,15 +466,20 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
   it("treats src/app projects as App Router", async () => {
     setupProject(tmpDir);
     fs.rmSync(path.join(tmpDir, "app"), { recursive: true, force: true });
-    
+
     mkdir(tmpDir, "src/app");
-    writeFile(tmpDir, "src/app/page.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(
+      tmpDir,
+      "src/app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     writeFile(
       tmpDir,
       "src/app/layout.tsx",
@@ -484,6 +488,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
@@ -493,6 +498,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
@@ -501,6 +507,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
@@ -509,6 +516,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
@@ -528,7 +536,10 @@ describe("init — dependency installation", () => {
 
     // The second exec call should be the dev deps install (with -D)
     const devDepsCall = execCalls.find(
-      (c) => c.cmd.includes("react-server-dom-webpack") && c.cmd.includes("-D"),
+      (c) =>
+        c.cmd.includes("@vitejs/plugin-react") &&
+        c.cmd.includes("react-server-dom-webpack") &&
+        c.cmd.includes("-D"),
     );
     expect(devDepsCall).toBeDefined();
 
@@ -545,9 +556,7 @@ describe("init — dependency installation", () => {
     const { execCalls } = await runInit(tmpDir);
 
     // No React upgrade call
-    const reactUpgradeCall = execCalls.find(
-      (c) => c.cmd.includes("react@latest"),
-    );
+    const reactUpgradeCall = execCalls.find((c) => c.cmd.includes("react@latest"));
     expect(reactUpgradeCall).toBeUndefined();
   });
 
@@ -574,7 +583,9 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await runInit(tmpDir);
 
-    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^pnpm add -D/);
   });
@@ -585,7 +596,9 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await runInit(tmpDir);
 
-    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^bun add -D/);
   });
@@ -598,7 +611,9 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await runInit(tmpDir);
 
-    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^bun add -D/);
   });
@@ -606,9 +621,13 @@ describe("init — dependency installation", () => {
   it("uses invoking package manager from npm_config_user_agent when project has no PM hints", async () => {
     setupProject(tmpDir, { router: "pages" });
 
-    const { execCalls } = await withUserAgent("bun/1.2.3 npm/? node/v22.0.0", () => runInit(tmpDir));
+    const { execCalls } = await withUserAgent("bun/1.2.3 npm/? node/v22.0.0", () =>
+      runInit(tmpDir),
+    );
 
-    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^bun add -D/);
   });
@@ -618,7 +637,9 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await withUserAgent(undefined, () => runInit(tmpDir));
 
-    const installCall = execCalls.find((c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^npm install -D/);
   });

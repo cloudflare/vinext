@@ -76,14 +76,22 @@ declare module "next/navigation" {
     prefetch(href: string): void;
   };
   export function usePathname(): string;
-  export function useSearchParams(): URLSearchParams;
-  export function useParams<T extends Record<string, string | string[]> = Record<string, string | string[]>>(): T;
+  export class ReadonlyURLSearchParams extends URLSearchParams {
+    append(name: string, value: string): never;
+    delete(name: string, value?: string): never;
+    set(name: string, value: string): never;
+    sort(): never;
+  }
+  export function useSearchParams(): ReadonlyURLSearchParams;
+  export function useParams<
+    T extends Record<string, string | string[]> = Record<string, string | string[]>,
+  >(): T;
   export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null;
   export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[];
   export function useServerInsertedHTML(callback: () => unknown): void;
-  export const ServerInsertedHTMLContext: import("react").Context<
-    ((callback: () => unknown) => void) | null
-  > | null;
+  export const ServerInsertedHTMLContext:
+    | import("react").Context<((callback: () => unknown) => void) | null>
+    | null;
   export enum RedirectType {
     push = "push",
     replace = "replace",
@@ -96,19 +104,18 @@ declare module "next/navigation" {
   export const HTTP_ERROR_FALLBACK_ERROR_CODE: string;
   export function isHTTPAccessFallbackError(error: unknown): boolean;
   export function getAccessFallbackHTTPStatus(error: unknown): number;
-  export type ReadonlyURLSearchParams = URLSearchParams;
-
   // Context management (internal)
   export function setNavigationContext(ctx: any): void;
   export function setClientParams(params: Record<string, string | string[]>): void;
   export function getClientParams(): Record<string, string | string[]>;
-  export function getLayoutSegmentContext(): import("react").Context<number> | null;
+  export function getLayoutSegmentContext(): import("react").Context<string[]> | null;
 
   // RSC prefetch cache utilities (shared between link.tsx and browser entry)
   export interface PrefetchCacheEntry {
     response: Response;
     timestamp: number;
   }
+  export const MAX_PREFETCH_CACHE_SIZE: number;
   export const PREFETCH_CACHE_TTL: number;
   export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
@@ -117,7 +124,14 @@ declare module "next/navigation" {
 }
 
 declare module "next/image" {
-  import { ForwardRefExoticComponent, RefAttributes, ImgHTMLAttributes, CSSProperties, ReactEventHandler, MouseEventHandler } from "react";
+  import {
+    ForwardRefExoticComponent,
+    RefAttributes,
+    ImgHTMLAttributes,
+    CSSProperties,
+    ReactEventHandler,
+    MouseEventHandler,
+  } from "react";
 
   export interface StaticImageData {
     src: string;
@@ -141,6 +155,8 @@ declare module "next/image" {
     className?: string;
     style?: CSSProperties;
     onLoad?: ReactEventHandler<HTMLImageElement>;
+    /** @deprecated Use onLoad instead. Still supported for migration compat. */
+    onLoadingComplete?: (img: HTMLImageElement) => void;
     onError?: ReactEventHandler<HTMLImageElement>;
     onClick?: MouseEventHandler<HTMLImageElement>;
     id?: string;
@@ -158,7 +174,12 @@ declare module "next/image" {
 }
 
 declare module "next/legacy/image" {
-  import { ForwardRefExoticComponent, RefAttributes, CSSProperties, ReactEventHandler } from "react";
+  import {
+    ForwardRefExoticComponent,
+    RefAttributes,
+    CSSProperties,
+    ReactEventHandler,
+  } from "react";
 
   interface LegacyImageProps {
     src: string | { src: string; width: number; height: number; blurDataURL?: string };
@@ -202,12 +223,125 @@ declare module "next/error" {
 }
 
 declare module "next/constants" {
-  export const PHASE_PRODUCTION_BUILD: string;
-  export const PHASE_DEVELOPMENT_SERVER: string;
-  export const PHASE_PRODUCTION_SERVER: string;
-  export const PHASE_EXPORT: string;
-  export const PHASE_INFO: string;
-  export const PHASE_TEST: string;
+  export const MODERN_BROWSERSLIST_TARGET: string[];
+
+  export type ValueOf<T> = Required<T>[keyof T];
+
+  export const COMPILER_NAMES: {
+    client: "client";
+    server: "server";
+    edgeServer: "edge-server";
+  };
+
+  export type CompilerNameValues = ValueOf<typeof COMPILER_NAMES>;
+
+  export const COMPILER_INDEXES: Record<CompilerNameValues, number>;
+
+  export const UNDERSCORE_NOT_FOUND_ROUTE: string;
+  export const UNDERSCORE_NOT_FOUND_ROUTE_ENTRY: string;
+  export const UNDERSCORE_GLOBAL_ERROR_ROUTE: string;
+  export const UNDERSCORE_GLOBAL_ERROR_ROUTE_ENTRY: string;
+
+  export enum AdapterOutputType {
+    PAGES = "PAGES",
+    PAGES_API = "PAGES_API",
+    APP_PAGE = "APP_PAGE",
+    APP_ROUTE = "APP_ROUTE",
+    PRERENDER = "PRERENDER",
+    STATIC_FILE = "STATIC_FILE",
+    MIDDLEWARE = "MIDDLEWARE",
+  }
+
+  export const PHASE_PRODUCTION_BUILD: "phase-production-build";
+  export const PHASE_DEVELOPMENT_SERVER: "phase-development-server";
+  export const PHASE_PRODUCTION_SERVER: "phase-production-server";
+  export const PHASE_EXPORT: "phase-export";
+  export const PHASE_INFO: "phase-info";
+  export const PHASE_TEST: "phase-test";
+  export const PHASE_ANALYZE: "phase-analyze";
+
+  export type PHASE_TYPE =
+    | typeof PHASE_INFO
+    | typeof PHASE_TEST
+    | typeof PHASE_EXPORT
+    | typeof PHASE_ANALYZE
+    | typeof PHASE_PRODUCTION_BUILD
+    | typeof PHASE_PRODUCTION_SERVER
+    | typeof PHASE_DEVELOPMENT_SERVER;
+
+  export const PAGES_MANIFEST: string;
+  export const WEBPACK_STATS: string;
+  export const APP_PATHS_MANIFEST: string;
+  export const APP_PATH_ROUTES_MANIFEST: string;
+  export const BUILD_MANIFEST: string;
+  export const FUNCTIONS_CONFIG_MANIFEST: string;
+  export const SUBRESOURCE_INTEGRITY_MANIFEST: string;
+  export const NEXT_FONT_MANIFEST: string;
+  export const EXPORT_MARKER: string;
+  export const EXPORT_DETAIL: string;
+  export const PRERENDER_MANIFEST: string;
+  export const ROUTES_MANIFEST: string;
+  export const IMAGES_MANIFEST: string;
+  export const SERVER_FILES_MANIFEST: string;
+  export const DEV_CLIENT_PAGES_MANIFEST: string;
+  export const MIDDLEWARE_MANIFEST: string;
+  export const TURBOPACK_CLIENT_MIDDLEWARE_MANIFEST: string;
+  export const TURBOPACK_CLIENT_BUILD_MANIFEST: string;
+  export const DEV_CLIENT_MIDDLEWARE_MANIFEST: string;
+  export const REACT_LOADABLE_MANIFEST: string;
+  export const SERVER_DIRECTORY: string;
+  export const CONFIG_FILES: string[];
+  export const BUILD_ID_FILE: string;
+  export const BLOCKED_PAGES: string[];
+  export const CLIENT_PUBLIC_FILES_PATH: string;
+  export const CLIENT_STATIC_FILES_PATH: string;
+  export const STRING_LITERAL_DROP_BUNDLE: string;
+  export const NEXT_BUILTIN_DOCUMENT: string;
+  export const BARREL_OPTIMIZATION_PREFIX: string;
+  export const CLIENT_REFERENCE_MANIFEST: string;
+  export const SERVER_REFERENCE_MANIFEST: string;
+  export const MIDDLEWARE_BUILD_MANIFEST: string;
+  export const MIDDLEWARE_REACT_LOADABLE_MANIFEST: string;
+  export const INTERCEPTION_ROUTE_REWRITE_MANIFEST: string;
+  export const DYNAMIC_CSS_MANIFEST: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_MAIN: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_MAIN_APP: string;
+  export const APP_CLIENT_INTERNALS: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_REACT_REFRESH: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_WEBPACK: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_POLYFILLS: string;
+  export const CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL: symbol;
+  export const DEFAULT_RUNTIME_WEBPACK: string;
+  export const EDGE_RUNTIME_WEBPACK: string;
+  export const STATIC_PROPS_ID: string;
+  export const SERVER_PROPS_ID: string;
+  export const DEFAULT_SERIF_FONT: {
+    name: string;
+    xAvgCharWidth: number;
+    azAvgWidth: number;
+    unitsPerEm: number;
+  };
+  export const DEFAULT_SANS_SERIF_FONT: {
+    name: string;
+    xAvgCharWidth: number;
+    azAvgWidth: number;
+    unitsPerEm: number;
+  };
+  export const STATIC_STATUS_PAGES: string[];
+  export const TRACE_OUTPUT_VERSION: number;
+  export const TURBO_TRACE_DEFAULT_MEMORY_LIMIT: number;
+  export const RSC_MODULE_TYPES: {
+    client: "client";
+    server: "server";
+  };
+  export const EDGE_UNSUPPORTED_NODE_APIS: string[];
+  export const SYSTEM_ENTRYPOINTS: Set<string>;
+}
+
+declare module "next/compat/router" {
+  import type { NextRouter } from "./router.js";
+  // oxlint-disable-next-line no-redundant-type-constituents -- NextRouter is a proper interface, not an error type
+  export function useRouter(): NextRouter | null;
 }
 
 declare module "next/server" {
@@ -215,7 +349,9 @@ declare module "next/server" {
     get nextUrl(): any;
     get cookies(): any;
     get ip(): string | undefined;
-    get geo(): { city?: string; country?: string; region?: string; latitude?: string; longitude?: string } | undefined;
+    get geo():
+      | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
+      | undefined;
   }
   export class NextResponse<Body = unknown> extends Response {
     get cookies(): any;
@@ -288,7 +424,11 @@ declare module "next/font/local" {
 declare module "next/cache" {
   export interface CacheHandler {
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
-    set(key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>): Promise<void>;
+    set(
+      key: string,
+      data: IncrementalCacheValue | null,
+      ctx?: Record<string, unknown>,
+    ): Promise<void>;
     revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
     resetRequestCache?(): void;
   }
@@ -301,16 +441,43 @@ declare module "next/cache" {
   }
 
   export type IncrementalCacheValue =
-    | { kind: "FETCH"; data: { headers: Record<string, string>; body: string; url: string; status?: number }; tags?: string[]; revalidate: number | false }
-    | { kind: "APP_PAGE"; html: string; rscData: ArrayBuffer | undefined; headers: Record<string, string | string[]> | undefined; postponed: string | undefined; status: number | undefined }
-    | { kind: "PAGES"; html: string; pageData: object; headers: Record<string, string | string[]> | undefined; status: number | undefined }
-    | { kind: "APP_ROUTE"; body: ArrayBuffer; status: number; headers: Record<string, string | string[]> }
+    | {
+        kind: "FETCH";
+        data: { headers: Record<string, string>; body: string; url: string; status?: number };
+        tags?: string[];
+        revalidate: number | false;
+      }
+    | {
+        kind: "APP_PAGE";
+        html: string;
+        rscData: ArrayBuffer | undefined;
+        headers: Record<string, string | string[]> | undefined;
+        postponed: string | undefined;
+        status: number | undefined;
+      }
+    | {
+        kind: "PAGES";
+        html: string;
+        pageData: object;
+        headers: Record<string, string | string[]> | undefined;
+        status: number | undefined;
+      }
+    | {
+        kind: "APP_ROUTE";
+        body: ArrayBuffer;
+        status: number;
+        headers: Record<string, string | string[]>;
+      }
     | { kind: "REDIRECT"; props: object }
     | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
 
   export class MemoryCacheHandler implements CacheHandler {
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
-    set(key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>): Promise<void>;
+    set(
+      key: string,
+      data: IncrementalCacheValue | null,
+      ctx?: Record<string, unknown>,
+    ): Promise<void>;
     revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
     resetRequestCache(): void;
   }

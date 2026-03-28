@@ -15,9 +15,10 @@ import { hydrateRoot } from "react-dom/client";
 // navigateClient() is never invoked on history changes.
 import "next/router";
 import { isValidModulePath } from "./validate-module-path.js";
+import type { VinextNextData } from "./vinext-next-data.js";
 
 // Read the SSR data injected by the server
-const nextData = window.__NEXT_DATA__;
+const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
 const pageProps = (nextData?.props.pageProps ?? {}) as Record<string, unknown>;
 const pageModulePath = nextData?.__pageModule;
 const appModulePath = nextData?.__appModule;

@@ -11,9 +11,7 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Config Redirects (OpenNext compat)", () => {
-  test("config redirects are applied to direct RSC requests", async ({
-    page,
-  }) => {
+  test("config redirects are applied to direct RSC requests", async ({ page }) => {
     await page.goto(`${BASE}/redirect-test-config.rsc`);
     expect(page.url()).toMatch(/\/about/);
 
@@ -33,9 +31,7 @@ test.describe("Config Redirects (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare config.redirect.test.ts — simple redirect
-  test("simple redirect from config source to destination", async ({
-    page,
-  }) => {
+  test("simple redirect from config source to destination", async ({ page }) => {
     await page.goto(`${BASE}/config-redirect-source`);
     await page.waitForURL(/\/about$/);
 
@@ -90,7 +86,9 @@ test.describe("Config Redirects (OpenNext compat)", () => {
     expect(withRedirect.headers()["location"]).toMatch(/\/about$/);
   });
 
-  test("redirect with missing cookie condition only fires when cookie absent", async ({ request }) => {
+  test("redirect with missing cookie condition only fires when cookie absent", async ({
+    request,
+  }) => {
     // Without the cookie — should redirect (cookie is missing → condition met)
     const shouldRedirect = await request.get(`${BASE}/missing-cookie-redirect`, {
       maxRedirects: 0,
@@ -110,9 +108,7 @@ test.describe("Config Redirects (OpenNext compat)", () => {
 
 test.describe("Config Rewrites (OpenNext compat)", () => {
   // Config rewrite: /config-rewrite → / (URL stays, content from /)
-  test("config rewrite serves / content at /config-rewrite URL", async ({
-    page,
-  }) => {
+  test("config rewrite serves / content at /config-rewrite URL", async ({ page }) => {
     await page.goto(`${BASE}/config-rewrite`);
 
     // URL should stay as /config-rewrite
@@ -126,9 +122,7 @@ test.describe("Config Rewrites (OpenNext compat)", () => {
 
 test.describe("Config Custom Headers (OpenNext compat)", () => {
   // Ref: opennextjs-cloudflare headers.test.ts — "Headers"
-  test("custom header from next.config headers() is present on pages", async ({
-    request,
-  }) => {
+  test("custom header from next.config headers() is present on pages", async ({ request }) => {
     const res = await request.get(`${BASE}/about`);
     expect(res.status()).toBe(200);
     // The /(.*) catch-all header applies to all routes
@@ -164,9 +158,7 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
   //          next.config.ts sets e2e-headers=next.config.js on /(.*)
   // Tests: ON-8 #2 in TRACKING.md
   // Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
-  test("middleware headers override config headers for same key", async ({
-    request,
-  }) => {
+  test("middleware headers override config headers for same key", async ({ request }) => {
     const res = await request.get(`${BASE}/headers/override-from-middleware`);
     expect(res.status()).toBe(200);
     // Middleware wins: the response should carry the middleware value, not the config value.
@@ -191,7 +183,7 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     const blockedByMissingCondition = await request.get(`${BASE}/about`, {
       headers: {
         "x-user-tier": "pro",
-        "cookie": "no-config-header=1",
+        cookie: "no-config-header=1",
       },
     });
     expect(blockedByMissingCondition.status()).toBe(200);

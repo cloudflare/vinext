@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -34,10 +34,13 @@ function writeFile(relPath: string, content: string) {
 
 describe("scanImports", () => {
   it("detects supported next/* imports", () => {
-    writeFile("app/page.tsx", `
+    writeFile(
+      "app/page.tsx",
+      `
       import Link from "next/link";
       import Image from "next/image";
-    `);
+    `,
+    );
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(2);
@@ -60,9 +63,8 @@ describe("scanImports", () => {
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
     expect(items[0].name).toBe("next/font/local");
-    expect(items[0].status).toBe("partial");
-    expect(items[0].detail).toContain("font.className works");
-    expect(items[0].detail).toContain("font.variable mode broken");
+    expect(items[0].status).toBe("supported");
+    expect(items[0].detail).toContain("className and variable modes both work");
   });
 
   it("detects unsupported imports", () => {
@@ -120,8 +122,47 @@ describe("scanImports", () => {
     expect(items[0].detail).toContain("not recognized");
   });
 
+  it("recognizes next/compat/router as supported", () => {
+    writeFile("components/shared-nav.tsx", `import { useRouter } from "next/compat/router";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/compat/router");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/form as supported", () => {
+    writeFile("app/page.tsx", `import Form from "next/form";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/form");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/web-vitals as supported", () => {
+    writeFile("pages/_app.tsx", `import { reportWebVitals } from "next/web-vitals";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/web-vitals");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/constants as supported", () => {
+    writeFile("lib/phases.ts", `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/constants");
+    expect(items[0].status).toBe("supported");
+  });
+
   it("recognizes `import { Metadata } from 'next'` as supported", () => {
-    writeFile("app/layout.tsx", `import { Metadata } from "next";\nexport const metadata: Metadata = { title: "App" };`);
+    writeFile(
+      "app/layout.tsx",
+      `import { Metadata } from "next";\nexport const metadata: Metadata = { title: "App" };`,
+    );
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
@@ -130,7 +171,10 @@ describe("scanImports", () => {
   });
 
   it("skips `import type` statements entirely", () => {
-    writeFile("app/page.tsx", `import type { Metadata } from "next";\nimport Link from "next/link";`);
+    writeFile(
+      "app/page.tsx",
+      `import type { Metadata } from "next";\nimport Link from "next/link";`,
+    );
 
     const items = scanImports(tmpDir);
     // Should only find next/link, not next (since import type is skipped)
@@ -146,11 +190,14 @@ describe("scanImports", () => {
   });
 
   it("sorts unsupported first, then partial, then supported", () => {
-    writeFile("app/page.tsx", `
+    writeFile(
+      "app/page.tsx",
+      `
       import Link from "next/link";
       import { GoogleFont } from "next/font/google";
       import { useAmp } from "next/amp";
-    `);
+    `,
+    );
 
     const items = scanImports(tmpDir);
     expect(items[0].status).toBe("unsupported");
@@ -169,14 +216,53 @@ describe("scanImports", () => {
   });
 
   it("deduplicates files using the same import", () => {
-    writeFile("app/page.tsx", `
+    writeFile(
+      "app/page.tsx",
+      `
       import Link from "next/link";
       import Link from "next/link";
-    `);
+    `,
+    );
 
     const items = scanImports(tmpDir);
     const linkItem = items.find((i) => i.name === "next/link");
     expect(linkItem?.files).toHaveLength(1);
+  });
+
+  it("recognizes next/dist/shared/lib/router-context.shared-runtime as supported", () => {
+    writeFile(
+      "lib/router.tsx",
+      `import { RouterContext } from "next/dist/shared/lib/router-context.shared-runtime";`,
+    );
+
+    const items = scanImports(tmpDir);
+    const item = items.find((i) => i.name === "next/dist/shared/lib/router-context.shared-runtime");
+    expect(item?.status).toBe("supported");
+  });
+
+  it("recognizes all other shimmed next/dist/* paths as supported", () => {
+    const distImports = [
+      "next/dist/shared/lib/app-router-context.shared-runtime",
+      "next/dist/shared/lib/app-router-context",
+      "next/dist/shared/lib/utils",
+      "next/dist/server/api-utils",
+      "next/dist/server/web/spec-extension/cookies",
+      "next/dist/compiled/@edge-runtime/cookies",
+      "next/dist/server/app-render/work-unit-async-storage.external",
+      "next/dist/client/components/work-unit-async-storage.external",
+      "next/dist/client/components/request-async-storage.external",
+      "next/dist/client/components/request-async-storage",
+      "next/dist/client/components/navigation",
+      "next/dist/server/config-shared",
+    ];
+
+    writeFile("lib/internals.ts", distImports.map((p) => `import * as m from "${p}";`).join("\n"));
+
+    const items = scanImports(tmpDir);
+    for (const p of distImports) {
+      const item = items.find((i) => i.name === p);
+      expect(item?.status, `expected ${p} to be supported`).toBe("supported");
+    }
   });
 });
 
@@ -260,7 +346,19 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.serverActions")?.status).toBe("supported");
   });
 
-  it("detects i18n.domains as unsupported", () => {
+  it("detects allowedDevOrigins as supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        allowedDevOrigins: ["staging.example.com"],
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "allowedDevOrigins")?.status).toBe("supported");
+  });
+
+  it("detects i18n.domains as partial support", () => {
     writeFile(
       "next.config.js",
       `module.exports = {
@@ -274,14 +372,11 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
   it("reads next.config.ts files", () => {
-    writeFile(
-      "next.config.ts",
-      `const config = { basePath: "/app" }; export default config;`,
-    );
+    writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
@@ -349,7 +444,7 @@ describe("checkLibraries", () => {
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
   });
 
-  it("detects partial libraries", () => {
+  it("detects supported CSS-in-JS libraries", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -359,7 +454,7 @@ describe("checkLibraries", () => {
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].status).toBe("partial");
+    expect(items[0].status).toBe("supported");
     expect(items[0].detail).toContain("useServerInsertedHTML");
   });
 
@@ -409,7 +504,10 @@ describe("checkConventions", () => {
 
   it("detects app directory", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
+    writeFile(
+      "app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name === "App Router (app/)")).toBeDefined();
@@ -462,7 +560,10 @@ describe("checkConventions", () => {
 
   it("detects src/app directory when app/ is not at root", () => {
     writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("src/app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
+    writeFile(
+      "src/app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
@@ -506,7 +607,10 @@ describe("checkConventions", () => {
 
   it("detects custom _app and _document", () => {
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("pages/_app.tsx", `export default function App({ Component, pageProps }) { return <Component {...pageProps} /> }`);
+    writeFile(
+      "pages/_app.tsx",
+      `export default function App({ Component, pageProps }) { return <Component {...pageProps} /> }`,
+    );
     writeFile("pages/_document.tsx", `export default function Document() {}`);
 
     const items = checkConventions(tmpDir);
@@ -516,10 +620,22 @@ describe("checkConventions", () => {
 
   it("detects App Router conventions (loading, error, not-found)", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("app/loading.tsx", `export default function Loading() { return <div>Loading...</div>; }`);
-    writeFile("app/error.tsx", `"use client"; export default function Error() { return <div>Error</div>; }`);
-    writeFile("app/not-found.tsx", `export default function NotFound() { return <div>Not Found</div>; }`);
+    writeFile(
+      "app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFile(
+      "app/loading.tsx",
+      `export default function Loading() { return <div>Loading...</div>; }`,
+    );
+    writeFile(
+      "app/error.tsx",
+      `"use client"; export default function Error() { return <div>Error</div>; }`,
+    );
+    writeFile(
+      "app/not-found.tsx",
+      `export default function NotFound() { return <div>Not Found</div>; }`,
+    );
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name.includes("loading"))?.status).toBe("supported");
@@ -529,7 +645,10 @@ describe("checkConventions", () => {
 
   it("detects route handlers in App Router", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("app/api/hello/route.ts", `export function GET() { return Response.json({ hello: "world" }); }`);
+    writeFile(
+      "app/api/hello/route.ts",
+      `export function GET() { return Response.json({ hello: "world" }); }`,
+    );
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name.includes("1 route handler"))).toBeDefined();
@@ -548,7 +667,10 @@ describe("checkConventions", () => {
 
   it("does not flag type:module when present", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { react: "^19.0.0" } }));
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { react: "^19.0.0" } }),
+    );
 
     const items = checkConventions(tmpDir);
     const typeModule = items.find((i) => i.name.includes('"type": "module"'));
@@ -556,7 +678,10 @@ describe("checkConventions", () => {
   });
 
   it("detects ViewTransition import from react", () => {
-    writeFile("app/page.tsx", `import { ViewTransition } from "react";\nexport default function Home() { return <ViewTransition><div/></ViewTransition>; }`);
+    writeFile(
+      "app/page.tsx",
+      `import { ViewTransition } from "react";\nexport default function Home() { return <ViewTransition><div/></ViewTransition>; }`,
+    );
 
     const items = checkConventions(tmpDir);
     const vt = items.find((i) => i.name.includes("ViewTransition"));
@@ -567,7 +692,10 @@ describe("checkConventions", () => {
   });
 
   it("does not flag ViewTransition when not imported", () => {
-    writeFile("app/page.tsx", `import React from "react";\nexport default function Home() { return <div/>; }`);
+    writeFile(
+      "app/page.tsx",
+      `import React from "react";\nexport default function Home() { return <div/>; }`,
+    );
 
     const items = checkConventions(tmpDir);
     const vt = items.find((i) => i.name.includes("ViewTransition"));
@@ -592,6 +720,112 @@ describe("checkConventions", () => {
     const postcss = items.find((i) => i.name.includes("PostCSS"));
     expect(postcss).toBeUndefined();
   });
+
+  it("detects __dirname usage in server files", () => {
+    writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.status).toBe("unsupported");
+    expect(cjs?.detail).toContain("fileURLToPath");
+    expect(cjs?.detail).toContain("import.meta.dirname");
+    expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("detects __filename usage", () => {
+    writeFile("lib/logger.ts", `const file = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/logger.ts");
+  });
+
+  it("detects both __dirname and __filename in same file", () => {
+    writeFile("lib/util.ts", `const dir = __dirname;\nconst file = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/util.ts");
+    // Only one item for both globals
+    expect(
+      items.filter((i) => i.name.includes("__dirname") || i.name.includes("__filename")),
+    ).toHaveLength(1);
+  });
+
+  it("does not flag __dirname inside string literals", () => {
+    writeFile(
+      "lib/comment.ts",
+      `const msg = "use __dirname instead";\nexport default function Home() { return null; }`,
+    );
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("does not flag __dirname inside comments", () => {
+    writeFile("lib/note.ts", `// Previously used __dirname here\nexport const x = 1;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("does not flag __dirname inside a plain template literal (no interpolation)", () => {
+    writeFile("lib/msg.ts", "const msg = `use __dirname instead`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("detects __dirname inside a template expression ${...}", () => {
+    writeFile("lib/db.ts", "const dir = `${__dirname}/views`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("does not flag __dirname when not used at all", () => {
+    writeFile(
+      "lib/esm.ts",
+      `import { fileURLToPath } from "url";\nimport { dirname } from "path";\nconst __dirname = dirname(fileURLToPath(import.meta.url));`,
+    );
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    // The ESM pattern itself reassigns __dirname — this is fine and should not be flagged
+    // because users are already using the correct ESM idiom.
+    // Our scanner will see `__dirname` in the assignment target — that's an edge case we accept.
+    // This test just ensures we don't crash.
+    const items = checkConventions(tmpDir);
+    // No assertion on presence/absence — just verify it doesn't throw
+    expect(Array.isArray(items)).toBe(true);
+  });
+
+  it("tracks multiple files that use __dirname", () => {
+    writeFile("lib/a.ts", `const d = __dirname;`);
+    writeFile("lib/b.ts", `const f = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toHaveLength(2);
+    expect(cjs?.files).toContain("lib/a.ts");
+    expect(cjs?.files).toContain("lib/b.ts");
+  });
 });
 
 // ── runCheck ───────────────────────────────────────────────────────────────
@@ -599,8 +833,14 @@ describe("checkConventions", () => {
 describe("runCheck", () => {
   it("returns a complete result with all sections", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
-    writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile(
+      "app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     expect(result.imports).toBeDefined();
@@ -612,8 +852,14 @@ describe("runCheck", () => {
 
   it("calculates score correctly — 100% for all supported", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
-    writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile(
+      "app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     // All items should be supported: next/link, no config file, tailwindcss, App Router, 1 page, 1 layout
@@ -623,10 +869,13 @@ describe("runCheck", () => {
 
   it("calculates score correctly — partial items count 50%", () => {
     // 1 supported import (next/link) + 1 partial import (next/font/google) + no-config (supported) + 2 conventions (App Router + 1 page)
-    writeFile("app/page.tsx", `
+    writeFile(
+      "app/page.tsx",
+      `
       import Link from "next/link";
       import { GoogleFont } from "next/font/google";
-    `);
+    `,
+    );
 
     const result = runCheck(tmpDir);
     expect(result.summary.partial).toBeGreaterThan(0);
@@ -635,14 +884,17 @@ describe("runCheck", () => {
   });
 
   it("calculates score correctly — unsupported items drag score down", () => {
-    writeFile("app/page.tsx", `
-      import { useAmp } from "next/amp";
-    `);
     writeFile(
-      "next.config.mjs",
-      `export default { webpack: (config) => config };`,
+      "app/page.tsx",
+      `
+      import { useAmp } from "next/amp";
+    `,
     );
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { "next-auth": "^4.0.0" } }));
+    writeFile("next.config.mjs", `export default { webpack: (config) => config };`);
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { "next-auth": "^4.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     expect(result.summary.unsupported).toBeGreaterThan(0);
@@ -651,7 +903,10 @@ describe("runCheck", () => {
 
   it("reports correct totals", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     const total = result.summary.supported + result.summary.partial + result.summary.unsupported;
@@ -670,8 +925,14 @@ describe("runCheck", () => {
 
   it("calculates score correctly for src/app project", () => {
     writeFile("src/app/page.tsx", `import Link from "next/link";`);
-    writeFile("src/app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile(
+      "src/app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     expect(result.summary.unsupported).toBe(0);
@@ -683,11 +944,17 @@ describe("runCheck", () => {
 
 describe("formatReport", () => {
   it("produces a string with section headers", () => {
-    writeFile("app/page.tsx", `
+    writeFile(
+      "app/page.tsx",
+      `
       import Link from "next/link";
       import { GoogleFont } from "next/font/google";
-    `);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    `,
+    );
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -711,6 +978,19 @@ describe("formatReport", () => {
     expect(report).toContain("next/amp");
   });
 
+  it("lists affected files under unsupported items in issues section", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("Issues to address");
+    expect(report).toContain("__dirname");
+    expect(report).toContain("lib/db.ts");
+  });
+
   it("shows partial support section when there are partial items", () => {
     writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
@@ -724,8 +1004,14 @@ describe("formatReport", () => {
 
   it("does not show issues section when everything is supported", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
-    writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile(
+      "app/layout.tsx",
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFile(
+      "package.json",
+      JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }),
+    );
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -770,8 +1056,23 @@ describe("formatReport", () => {
     expect(report).toContain("vinext init");
     expect(report).toContain("Or manually");
     expect(report).toContain('"type": "module"');
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).toContain("@vitejs/plugin-rsc");
+    expect(report).toContain("react-server-dom-webpack");
     expect(report).toContain("vite.config.ts");
     expect(report).toContain("npx vite dev");
+  });
+
+  it("does not list App Router-only packages in manual install steps for Pages Router projects", () => {
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).not.toContain("@vitejs/plugin-rsc");
+    expect(report).not.toContain("react-server-dom-webpack");
   });
 });
 

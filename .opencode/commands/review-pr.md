@@ -14,7 +14,7 @@ Review pull request #$ARGUMENTS on cloudflare/vinext.
 3. **Read full files**: For each modified file, read the complete file (not just the diff) so you understand the surrounding code and can catch issues the diff alone won't reveal.
 
 4. **Check server parity**: If any of these files were touched, check whether the others need matching changes:
-   - `packages/vinext/src/server/app-dev-server.ts`
+   - `packages/vinext/src/entries/app-rsc-entry.ts`
    - `packages/vinext/src/server/dev-server.ts`
    - `packages/vinext/src/server/prod-server.ts`
    - `packages/vinext/src/cloudflare/worker-entry.ts`
@@ -27,6 +27,7 @@ Review pull request #$ARGUMENTS on cloudflare/vinext.
    - `--comment --body "..."` if there are only suggestions
 
    For inline comments on specific files/lines, use:
+
    ```
    gh api repos/cloudflare/vinext/pulls/$ARGUMENTS/comments -f body="..." -f path="..." -F line=N -f side="RIGHT"
    ```

@@ -22,9 +22,7 @@ import { test, expect } from "@playwright/test";
  * re-set after a DELETE reset.
  */
 test.describe("instrumentation.ts startup", () => {
-  test("register() was called before the first request", async ({
-    request,
-  }) => {
+  test("register() was called before the first request", async ({ request }) => {
     // Do NOT reset first — we want to see the state from server startup.
     const res = await request.get("/api/instrumentation-test");
     expect(res.status()).toBe(200);
@@ -49,9 +47,7 @@ test.describe("instrumentation.ts onRequestError", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("onRequestError() is called when a route handler throws", async ({
-    request,
-  }) => {
+  test("onRequestError() is called when a route handler throws", async ({ request }) => {
     // /api/error-route throws an unhandled Error — vinext should invoke
     // the onRequestError handler registered in instrumentation.ts.
     const errorRes = await request.get("/api/error-route");
@@ -74,9 +70,7 @@ test.describe("instrumentation.ts onRequestError", () => {
     expect(err.routeType).toBe("route");
   });
 
-  test("onRequestError() receives the correct route path pattern", async ({
-    request,
-  }) => {
+  test("onRequestError() receives the correct route path pattern", async ({ request }) => {
     const errorRes = await request.get("/api/error-route");
     expect(errorRes.status()).toBe(500);
 
@@ -103,9 +97,7 @@ test.describe("instrumentation.ts onRequestError", () => {
     expect(data.errors.length).toBeGreaterThanOrEqual(2);
   });
 
-  test("successful requests do not trigger onRequestError()", async ({
-    request,
-  }) => {
+  test("successful requests do not trigger onRequestError()", async ({ request }) => {
     // A normal successful API request should not produce an error entry.
     const okRes = await request.get("/api/hello");
     expect(okRes.status()).toBe(200);

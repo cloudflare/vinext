@@ -5,5 +5,6 @@
  * Provides the Pages Router context.
  */
 import { createContext } from "react";
+import type { NextRouter } from "../router";
 
-export const RouterContext = createContext<unknown>(null);
+export const RouterContext = createContext<NextRouter | null>(null);

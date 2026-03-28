@@ -29,7 +29,17 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { getCacheHandler, cacheLifeProfiles, _registerCacheContextAccessor, type CacheLifeConfig } from "./cache.js";
+import {
+  getCacheHandler,
+  cacheLifeProfiles,
+  _registerCacheContextAccessor,
+  type CacheLifeConfig,
+} from "./cache.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
@@ -48,9 +58,8 @@ export interface CacheContext {
 // without a direct import (avoiding circular dependencies).
 const _CONTEXT_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 const _gCacheRuntime = globalThis as unknown as Record<PropertyKey, unknown>;
-export const cacheContextStorage = (
-  _gCacheRuntime[_CONTEXT_ALS_KEY] ??= new AsyncLocalStorage<CacheContext>()
-) as AsyncLocalStorage<CacheContext>;
+export const cacheContextStorage = (_gCacheRuntime[_CONTEXT_ALS_KEY] ??=
+  new AsyncLocalStorage<CacheContext>()) as AsyncLocalStorage<CacheContext>;
 
 // Register the context accessor so cacheLife()/cacheTag() in cache.ts can
 // access the context without a circular import.
@@ -88,7 +97,7 @@ let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
 async function getRscModule(): Promise<RscModule | null> {
   if (_rscModule !== NOT_LOADED) return _rscModule;
   try {
-    _rscModule = await import("@vitejs/plugin-rsc/react/rsc") as RscModule;
+    _rscModule = (await import("@vitejs/plugin-rsc/react/rsc")) as RscModule;
   } catch {
     _rscModule = null;
   }
@@ -154,7 +163,7 @@ export async function replyToCacheKey(reply: string | FormData): Promise<string>
   // Collect entries in stable order (sorted by name, then by value for
   // entries with the same name) so the hash is deterministic.
   const entries: [string, FormDataEntryValue][] = [...reply.entries()];
-  const valStr = (v: FormDataEntryValue): string => typeof v === "string" ? v : v.name;
+  const valStr = (v: FormDataEntryValue): string => (typeof v === "string" ? v : v.name);
   entries.sort((a, b) => a[0].localeCompare(b[0]) || valStr(a[1]).localeCompare(valStr(b[1])));
 
   const parts: string[] = [];
@@ -197,19 +206,18 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 
   for (const config of configs) {
     if (config.stale !== undefined) {
-      result.stale = result.stale !== undefined
-        ? Math.min(result.stale, config.stale)
-        : config.stale;
+      result.stale =
+        result.stale !== undefined ? Math.min(result.stale, config.stale) : config.stale;
     }
     if (config.revalidate !== undefined) {
-      result.revalidate = result.revalidate !== undefined
-        ? Math.min(result.revalidate, config.revalidate)
-        : config.revalidate;
+      result.revalidate =
+        result.revalidate !== undefined
+          ? Math.min(result.revalidate, config.revalidate)
+          : config.revalidate;
     }
     if (config.expire !== undefined) {
-      result.expire = result.expire !== undefined
-        ? Math.min(result.expire, config.expire)
-        : config.expire;
+      result.expire =
+        result.expire !== undefined ? Math.min(result.expire, config.expire) : config.expire;
     }
   }
 
@@ -221,20 +229,28 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // Uses AsyncLocalStorage for request isolation so concurrent requests
 // on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
-interface PrivateCacheState {
-  cache: Map<string, unknown>;
+export interface PrivateCacheState {
+  _privateCache: Map<string, unknown> | null;
 }
 
 const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _privateAls = (_g[_PRIVATE_ALS_KEY] ??= new AsyncLocalStorage<PrivateCacheState>()) as AsyncLocalStorage<PrivateCacheState>;
+const _privateAls = (_g[_PRIVATE_ALS_KEY] ??=
+  new AsyncLocalStorage<PrivateCacheState>()) as AsyncLocalStorage<PrivateCacheState>;
 
 const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
-  cache: new Map<string, unknown>(),
+  _privateCache: new Map<string, unknown>(),
 } satisfies PrivateCacheState) as PrivateCacheState;
 
 function _getPrivateState(): PrivateCacheState {
+  if (isInsideUnifiedScope()) {
+    const ctx = getRequestContext();
+    if (ctx._privateCache === null) {
+      ctx._privateCache = new Map();
+    }
+    return ctx;
+  }
   return _privateAls.getStore() ?? _privateFallbackState;
 }
 
@@ -244,8 +260,13 @@ function _getPrivateState(): PrivateCacheState {
  * on concurrent runtimes.
  */
 export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx._privateCache = new Map();
+    }, fn);
+  }
   const state: PrivateCacheState = {
-    cache: new Map(),
+    _privateCache: new Map(),
   };
   return _privateAls.run(state, fn);
 }
@@ -255,11 +276,15 @@ export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T>
  * Only needed when not using runWithPrivateCache() (legacy path).
  */
 export function clearPrivateCache(): void {
+  if (isInsideUnifiedScope()) {
+    getRequestContext()._privateCache = new Map();
+    return;
+  }
   const state = _privateAls.getStore();
   if (state) {
-    state.cache = new Map();
+    state._privateCache = new Map();
   } else {
-    _privateFallbackState.cache = new Map();
+    _privateFallbackState._privateCache = new Map();
   }
 }
 
@@ -328,7 +353,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
-      const privateCache = _getPrivateState().cache;
+      const privateCache = _getPrivateState()._privateCache!;
       const privateHit = privateCache.get(cacheKey);
       if (privateHit !== undefined) {
         return privateHit;
@@ -379,7 +404,8 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // Resolve effective cache life from collected configs
     const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
-    const revalidateSeconds = effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
+    const revalidateSeconds =
+      effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
     // Store in cache — use RSC stream serialization when available (handles
     // React elements, client refs, Promises, etc.), JSON otherwise.
@@ -514,7 +540,7 @@ function stableStringify(value: unknown, seen?: Set<unknown>): string {
     if (!seen) seen = new Set();
     if (seen.has(value)) throw new Error("Circular reference");
     seen.add(value);
-    const result = "[" + value.map(v => stableStringify(v, seen)).join(",") + "]";
+    const result = "[" + value.map((v) => stableStringify(v, seen)).join(",") + "]";
     seen.delete(value);
     return result;
   }
@@ -528,7 +554,15 @@ function stableStringify(value: unknown, seen?: Set<unknown>): string {
     if (seen.has(value)) throw new Error("Circular reference");
     seen.add(value);
     const keys = Object.keys(value).sort();
-    const result = "{" + keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`).join(",") + "}";
+    const result =
+      "{" +
+      keys
+        .map(
+          (k) =>
+            `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`,
+        )
+        .join(",") +
+      "}";
     seen.delete(value);
     return result;
   }

@@ -32,16 +32,13 @@ export default function BeforePopStateTest() {
       <Link href="/about" data-testid="link-about">
         Go to About
       </Link>
-      <button
-        data-testid="toggle-blocking"
-        onClick={() => setBlocking(!blocking)}
-      >
+      <Link href="/before-pop-state-destination" data-testid="link-destination">
+        Go to Destination With Router
+      </Link>
+      <button data-testid="toggle-blocking" onClick={() => setBlocking(!blocking)}>
         {blocking ? "Blocking: ON" : "Blocking: OFF"}
       </button>
-      <button
-        data-testid="enable-blocking"
-        onClick={() => setBlocking(true)}
-      >
+      <button data-testid="enable-blocking" onClick={() => setBlocking(true)}>
         Enable Blocking
       </button>
       <div data-testid="pop-attempts">{popAttempts}</div>

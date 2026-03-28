@@ -7,11 +7,7 @@ export default function DocsPage({ slug }: { slug: string[] }) {
   );
 }
 
-export async function getServerSideProps({
-  params,
-}: {
-  params: { slug: string[] };
-}) {
+export async function getServerSideProps({ params }: { params: { slug: string[] } }) {
   return {
     props: {
       slug: params.slug,

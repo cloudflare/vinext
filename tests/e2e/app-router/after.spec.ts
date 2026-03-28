@@ -15,9 +15,7 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("next/after deferred work (OpenNext compat)", () => {
-  test("after() runs deferred work after response is sent", async ({
-    request,
-  }) => {
+  test("after() runs deferred work after response is sent", async ({ request }) => {
     // Ref: opennextjs-cloudflare after.test.ts "Next after"
     test.setTimeout(30_000);
 

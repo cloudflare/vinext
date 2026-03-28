@@ -70,15 +70,7 @@ const LegacyImage = forwardRef<HTMLImageElement, LegacyImageProps>(
       : onLoad;
 
     if (layout === "fill") {
-      return (
-        <Image
-          ref={ref}
-          fill
-          style={modernStyle}
-          onLoad={handleLoad}
-          {...rest}
-        />
-      );
+      return <Image ref={ref} fill style={modernStyle} onLoad={handleLoad} {...rest} />;
     }
 
     if (layout === "responsive") {
@@ -92,14 +84,7 @@ const LegacyImage = forwardRef<HTMLImageElement, LegacyImageProps>(
     const h = typeof height === "string" ? parseInt(height, 10) : height;
 
     return (
-      <Image
-        ref={ref}
-        width={w}
-        height={h}
-        style={modernStyle}
-        onLoad={handleLoad}
-        {...rest}
-      />
+      <Image ref={ref} width={w} height={h} style={modernStyle} onLoad={handleLoad} {...rest} />
     );
   },
 );

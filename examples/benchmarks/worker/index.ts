@@ -16,7 +16,6 @@ interface Env {
 const RUNNER_MAP: Record<string, string> = {
   nextjs: "nextjs",
   vinext: "vinext",
-  vinextRolldown: "vinext_rolldown",
 };
 
 export default {
