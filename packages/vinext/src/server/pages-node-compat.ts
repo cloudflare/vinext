@@ -1,7 +1,14 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
 export const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
+
+/**
+ * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
+ * Kept for backwards compatibility.
+ */
+export { PagesBodyParseError as PagesApiBodyParseError };
 
 export type PagesRequestQuery = Record<string, string | string[]>;
 
@@ -45,25 +52,6 @@ export interface CreatePagesReqResResult {
   responsePromise: Promise<Response>;
 }
 
-export class PagesApiBodyParseError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = "PagesApiBodyParseError";
-  }
-}
-
-function getMediaType(contentType: string | null): string {
-  const [type] = (contentType ?? "text/plain").split(";");
-  return type?.trim().toLowerCase() || "text/plain";
-}
-
-function isJsonMediaType(mediaType: string): boolean {
-  return mediaType === "application/json" || mediaType === "application/ld+json";
-}
-
 async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) {
     return "";
@@ -83,7 +71,7 @@ async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number)
     totalSize += result.value.byteLength;
     if (totalSize > maxBytes) {
       await reader.cancel();
-      throw new Error("Request body too large");
+      throw new PagesBodyParseError("Request body too large", 413);
     }
 
     chunks.push(decoder.decode(result.value, { stream: true }));
@@ -99,14 +87,17 @@ export async function parsePagesApiBody(
 ): Promise<unknown> {
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
-    throw new Error("Request body too large");
+    throw new PagesBodyParseError("Request body too large", 413);
   }
 
   let rawBody = "";
   try {
     rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
-  } catch {
-    throw new Error("Request body too large");
+  } catch (err) {
+    if (err instanceof PagesBodyParseError) {
+      throw err;
+    }
+    throw new PagesBodyParseError("Request body too large", 413);
   }
 
   const mediaType = getMediaType(request.headers.get("content-type"));
@@ -122,7 +113,7 @@ export async function parsePagesApiBody(
     try {
       return JSON.parse(rawBody);
     } catch {
-      throw new PagesApiBodyParseError("Invalid JSON", 400);
+      throw new PagesBodyParseError("Invalid JSON", 400);
     }
   }
 
@@ -187,6 +178,8 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     },
     setHeader(name, value) {
       if (name.toLowerCase() === "set-cookie") {
+        // Node.js res.setHeader() replaces the existing value entirely.
+        setCookieHeaders.length = 0;
         if (Array.isArray(value)) {
           setCookieHeaders.push(...value.map(String));
         } else {

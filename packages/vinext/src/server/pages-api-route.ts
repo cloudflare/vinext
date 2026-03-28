@@ -73,10 +73,6 @@ export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): 
       });
     }
 
-    if ((error as Error).message === "Request body too large") {
-      return new Response("Request body too large", { status: 413 });
-    }
-
     void options.reportRequestError?.(
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,

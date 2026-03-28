@@ -136,4 +136,103 @@ describe("pages api route", () => {
     expect(response.status).toBe(413);
     await expect(response.text()).resolves.toBe("Request body too large");
   });
+
+  it("returns 404 when match is null", async () => {
+    const response = await handlePagesApiRoute({
+      match: null,
+      request: new Request("https://example.com/api/not-found"),
+      url: "/api/not-found",
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("404 - API route not found");
+  });
+
+  it("returns 500 when the route module has no default export", async () => {
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/no-export",
+          module: {},
+        },
+      },
+      request: new Request("https://example.com/api/no-export"),
+      url: "/api/no-export",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("API route does not export a default function");
+  });
+
+  it("res.redirect() uses 307 by default and 2-arg form uses the given status", async () => {
+    const defaultRedirectResponse = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.redirect("/new-path");
+      }),
+      request: new Request("https://example.com/api/redir"),
+      url: "/api/redir",
+    });
+
+    expect(defaultRedirectResponse.status).toBe(307);
+    expect(defaultRedirectResponse.headers.get("location")).toBe("/new-path");
+
+    const customRedirectResponse = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.redirect(301, "/permanent");
+      }),
+      request: new Request("https://example.com/api/redir"),
+      url: "/api/redir",
+    });
+
+    expect(customRedirectResponse.status).toBe(301);
+    expect(customRedirectResponse.headers.get("location")).toBe("/permanent");
+  });
+
+  it("res.writeHead() lowercases header keys and joins array values", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.writeHead(200, { "X-Custom": "value", "X-Multi": ["a", "b"] });
+        res.end();
+      }),
+      request: new Request("https://example.com/api/headers"),
+      url: "/api/headers",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-custom")).toBe("value");
+    expect(response.headers.get("x-multi")).toBe("a, b");
+  });
+
+  it("res.setHeader and res.getHeader round-trip correctly", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.setHeader("x-foo", "bar");
+        const val = res.getHeader("x-foo");
+        res.json({ val });
+      }),
+      request: new Request("https://example.com/api/roundtrip"),
+      url: "/api/roundtrip",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ val: "bar" });
+  });
+
+  it("res.setHeader replaces set-cookie on repeated calls (Node.js parity)", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.setHeader("set-cookie", "session=abc");
+        res.setHeader("set-cookie", "session=xyz"); // should replace, not append
+        res.end();
+      }),
+      request: new Request("https://example.com/api/cookie"),
+      url: "/api/cookie",
+    });
+
+    expect(response.status).toBe(200);
+    // Only one set-cookie header — the replacement
+    const cookies = response.headers.getSetCookie();
+    expect(cookies).toEqual(["session=xyz"]);
+  });
 });

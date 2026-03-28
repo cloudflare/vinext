@@ -12,6 +12,7 @@ import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -39,24 +40,6 @@ interface NextApiResponse extends ServerResponse {
  */
 const MAX_BODY_SIZE = 1 * 1024 * 1024;
 
-class ApiBodyParseError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = "ApiBodyParseError";
-  }
-}
-
-function getMediaType(contentType: string | undefined): string {
-  const [type] = (contentType ?? "text/plain").split(";");
-  return type?.trim().toLowerCase() || "text/plain";
-}
-
-function isJsonMediaType(mediaType: string): boolean {
-  return mediaType === "application/json" || mediaType === "application/ld+json";
-}
 /**
  * Parse the request body based on content-type.
  * Enforces a size limit to prevent memory exhaustion attacks.
@@ -71,7 +54,7 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
       if (totalSize > MAX_BODY_SIZE) {
         settled = true;
         req.destroy();
-        reject(new Error("Request body too large"));
+        reject(new PagesBodyParseError("Request body too large", 413));
         return;
       }
       chunks.push(chunk);
@@ -101,7 +84,7 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
         try {
           resolve(JSON.parse(raw));
         } catch {
-          reject(new ApiBodyParseError("Invalid JSON", 400));
+          reject(new PagesBodyParseError("Invalid JSON", 400));
         }
       } else if (mediaType === "application/x-www-form-urlencoded") {
         resolve(decodeQueryString(raw));
@@ -234,7 +217,7 @@ export async function handleApiRoute(
     await handler(apiReq, apiRes);
     return true;
   } catch (e) {
-    if (e instanceof ApiBodyParseError) {
+    if (e instanceof PagesBodyParseError) {
       res.statusCode = e.statusCode;
       res.statusMessage = e.message;
       res.end(e.message);
@@ -259,13 +242,8 @@ export async function handleApiRoute(
       { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
     );
     if (!res.headersSent) {
-      if ((e as Error).message === "Request body too large") {
-        res.statusCode = 413;
-        res.end("Request body too large");
-      } else {
-        res.statusCode = 500;
-        res.end("Internal Server Error");
-      }
+      res.statusCode = 500;
+      res.end("Internal Server Error");
     } else if (!res.writableEnded) {
       res.end();
     }
