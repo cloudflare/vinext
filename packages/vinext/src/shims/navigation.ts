@@ -352,6 +352,8 @@ export function restoreRscResponse(cached: CachedRscResponse): Response {
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
  * of firing a duplicate fetch.
+ * Enforces a maximum cache size to prevent unbounded memory growth on
+ * link-heavy pages.
  */
 export function prefetchRscResponse(rscUrl: string, fetchPromise: Promise<Response>): void {
   const cache = getPrefetchCache();
@@ -377,8 +379,11 @@ export function prefetchRscResponse(rscUrl: string, fetchPromise: Promise<Respon
       entry.pending = undefined;
     });
 
-  evictPrefetchCacheIfNeeded();
+  // Add entry first, then evict to ensure we don't exceed the limit.
+  // This handles the case where the new entry pushes us over capacity.
+  prefetched.add(rscUrl);
   cache.set(rscUrl, entry);
+  evictPrefetchCacheIfNeeded();
 }
 
 /**
@@ -476,12 +481,28 @@ function notifyNavigationListeners(): void {
 // new instances on every render (infinite re-renders).
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
 
+/**
+ * Get cached pathname snapshot for useSyncExternalStore.
+ * Note: Returns cached value from ClientNavigationState, not live window.location.
+ * The cache is updated by syncCommittedUrlStateFromLocation() after navigation commits.
+ * This ensures referential stability and prevents infinite re-renders.
+ * External pushState/replaceState while URL notifications are suppressed won't
+ * be visible until the next commit.
+ */
 function getPathnameSnapshot(): string {
   return getClientNavigationState()?.cachedPathname ?? "/";
 }
 
 let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
 
+/**
+ * Get cached search params snapshot for useSyncExternalStore.
+ * Note: Returns cached value from ClientNavigationState, not live window.location.search.
+ * The cache is updated by syncCommittedUrlStateFromLocation() after navigation commits.
+ * This ensures referential stability and prevents infinite re-renders.
+ * External pushState/replaceState while URL notifications are suppressed won't
+ * be visible until the next commit.
+ */
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const cached = getClientNavigationState()?.cachedReadonlySearchParams;
   if (cached) return cached;
@@ -1252,6 +1273,11 @@ if (!isServer) {
   if (state && !state.patchInstalled) {
     state.patchInstalled = true;
 
+    // Listen for popstate on the client.
+    // Note: This handler runs for Pages Router only (when __VINEXT_RSC_NAVIGATE__
+    // is not available). It restores scroll position with microtask-based deferral.
+    // App Router scroll restoration is handled in app-browser-entry.ts with RSC
+    // navigation coordination (waits for pending navigation to settle).
     window.addEventListener("popstate", (event) => {
       if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function") {
         commitClientNavigationState();

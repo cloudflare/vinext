@@ -37,6 +37,7 @@ import {
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
 } from "../shims/navigation.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   chunksToReadableStream,
   createProgressiveRscStream,
@@ -219,6 +220,12 @@ function storeVisitedResponseSnapshot(
   });
 }
 
+/**
+ * Resolve all pending navigation commits with renderId <= the committed renderId.
+ * Note: Map iteration handles concurrent deletion safely — entries are visited in
+ * insertion order and deletion doesn't affect the iterator's view of remaining entries.
+ * This pattern is also used in drainPrePaintEffects with the same semantics.
+ */
 function resolveCommittedNavigations(renderId: number): void {
   for (const [pendingId, resolve] of pendingNavigationCommits) {
     if (pendingId <= renderId) {
@@ -350,7 +357,20 @@ function renderNavigationPayload(
   });
 
   activateNavigationSnapshot();
-  updateBrowserTree(payload, navigationSnapshot, renderId, useTransition);
+
+  // Wrap updateBrowserTree in try-catch to ensure counter is decremented
+  // if a synchronous error occurs before the async promise chain is established.
+  try {
+    updateBrowserTree(payload, navigationSnapshot, renderId, useTransition);
+  } catch (error) {
+    // Clean up pending state and decrement counter on synchronous error.
+    pendingNavigationPrePaintEffects.delete(renderId);
+    const resolve = pendingNavigationCommits.get(renderId);
+    pendingNavigationCommits.delete(renderId);
+    commitClientNavigationState();
+    resolve?.();
+    throw error; // Re-throw to maintain error propagation
+  }
 
   return committed;
 }
@@ -484,6 +504,13 @@ function registerServerActionCallback(): void {
       { temporaryReferences },
     );
 
+    // Note: Server actions update the tree via updateBrowserTree directly (not
+    // renderNavigationPayload) because they stay on the same URL. This means
+    // activateNavigationSnapshot is not called, so hooks use useSyncExternalStore
+    // values directly. This is correct for the current server action flow, but if
+    // server actions ever trigger URL changes (redirects handled via RSC payload
+    // instead of hard redirects), this would need to use renderNavigationPayload()
+    // to properly activate/commit the navigation snapshot.
     if (isServerActionResult(result)) {
       updateBrowserTree(
         result.root,
@@ -549,7 +576,12 @@ async function main(): Promise<void> {
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
       // startTransition hangs in Firefox when replacing the entire tree.
-      const isSameRoute = url.pathname === window.location.pathname;
+      // Strip basePath from both sides for robust comparison (handles edge cases
+      // like navigating between bare URL and basePath-prefixed URL).
+      const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+      const isSameRoute =
+        stripBasePath(url.pathname, __basePath) ===
+        stripBasePath(window.location.pathname, __basePath);
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
@@ -604,7 +636,10 @@ async function main(): Promise<void> {
           return;
         }
 
-        return navigate(destinationPath, redirectDepth + 1, navigationKind);
+        // The URL has already been updated via replaceHistoryStateWithoutNotify above,
+        // so the recursive navigation should NOT push/replace again. Pass undefined
+        // for historyUpdateMode to make the commit effect a no-op for history updates.
+        return navigate(destinationPath, redirectDepth + 1, navigationKind, undefined);
       }
 
       let navParams: Record<string, string | string[]> = {};
@@ -652,6 +687,10 @@ async function main(): Promise<void> {
     history.scrollRestoration = "manual";
   }
 
+  // Note: This popstate handler runs for App Router (RSC navigation available).
+  // It coordinates scroll restoration with the pending RSC navigation.
+  // Pages Router scroll restoration is handled in navigation.ts with
+  // microtask-based deferral for compatibility with non-RSC navigation.
   window.addEventListener("popstate", (event) => {
     const pendingNavigation =
       window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ?? Promise.resolve();
