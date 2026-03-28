@@ -17,6 +17,8 @@ let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
+let snapshotRscResponse: Navigation["snapshotRscResponse"];
+let restoreRscResponse: Navigation["restoreRscResponse"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -35,6 +37,8 @@ beforeEach(async () => {
   getPrefetchedUrls = nav.getPrefetchedUrls;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
+  snapshotRscResponse = nav.snapshotRscResponse;
+  restoreRscResponse = nav.restoreRscResponse;
 });
 
 afterEach(() => {
@@ -54,6 +58,22 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
 }
 
 describe("prefetch cache eviction", () => {
+  it("preserves X-Vinext-Params when replaying cached RSC responses", async () => {
+    const response = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component; charset=utf-8",
+        "x-vinext-params": encodeURIComponent('{"id":"2"}'),
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot);
+
+    expect(restored.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
+    await expect(restored.text()).resolves.toBe("flight");
+  });
+
   it("sweeps all expired entries before FIFO", () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;

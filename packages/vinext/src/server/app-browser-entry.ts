@@ -1,7 +1,15 @@
 /// <reference types="vite/client" />
 
-import type { ReactNode } from "react";
-import type { Root } from "react-dom/client";
+import {
+  createElement,
+  startTransition,
+  use,
+  useLayoutEffect,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import {
   createFromFetch,
   createFromReadableStream,
@@ -9,15 +17,25 @@ import {
   encodeReply,
   setServerCallback,
 } from "@vitejs/plugin-rsc/browser";
-import { flushSync } from "react-dom";
 import { hydrateRoot } from "react-dom/client";
 import {
-  PREFETCH_CACHE_TTL,
+  activateNavigationSnapshot,
+  commitClientNavigationState,
+  consumePrefetchResponse,
+  createClientNavigationRenderSnapshot,
+  getClientNavigationRenderContext,
   getPrefetchCache,
   getPrefetchedUrls,
+  pushHistoryStateWithoutNotify,
+  replaceClientParamsWithoutNotify,
+  replaceHistoryStateWithoutNotify,
+  restoreRscResponse,
   setClientParams,
+  snapshotRscResponse,
   setNavigationContext,
   toRscUrl,
+  type CachedRscResponse,
+  type ClientNavigationRenderSnapshot,
 } from "../shims/navigation.js";
 import {
   chunksToReadableStream,
@@ -35,17 +53,306 @@ interface ServerActionResult {
   };
 }
 
-let reactRoot: Root | null = null;
-
-function getReactRoot(): Root {
-  if (!reactRoot) {
-    throw new Error("[vinext] React root is not initialized");
-  }
-  return reactRoot;
+type BrowserTreeState = {
+  renderId: number;
+  node: ReactNode;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+};
+type NavigationKind = "navigate" | "traverse" | "refresh";
+type HistoryUpdateMode = "push" | "replace";
+interface VisitedResponseCacheEntry {
+  params: Record<string, string | string[]>;
+  expiresAt: number;
+  response: CachedRscResponse;
 }
+
+const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
+const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
+const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
+
+let nextNavigationRenderId = 0;
+let activeNavigationId = 0;
+const pendingNavigationCommits = new Map<number, () => void>();
+const pendingNavigationPrePaintEffects = new Map<number, () => void>();
+let setBrowserTreeState: Dispatch<SetStateAction<BrowserTreeState>> | null = null;
+let latestClientParams: Record<string, string | string[]> = {};
+const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
 
 function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
+}
+
+function getBrowserTreeStateSetter(): Dispatch<SetStateAction<BrowserTreeState>> {
+  if (!setBrowserTreeState) {
+    throw new Error("[vinext] Browser tree state is not initialized");
+  }
+  return setBrowserTreeState;
+}
+
+function applyClientParams(params: Record<string, string | string[]>): void {
+  latestClientParams = params;
+  setClientParams(params);
+}
+
+function stageClientParams(params: Record<string, string | string[]>): void {
+  latestClientParams = params;
+  replaceClientParamsWithoutNotify(params);
+}
+
+function clearVisitedResponseCache(): void {
+  visitedResponseCache.clear();
+}
+
+function clearPrefetchState(): void {
+  getPrefetchCache().clear();
+  getPrefetchedUrls().clear();
+}
+
+function clearClientNavigationCaches(): void {
+  clearVisitedResponseCache();
+  clearPrefetchState();
+}
+
+function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
+  if (!effect) {
+    return;
+  }
+  pendingNavigationPrePaintEffects.set(renderId, effect);
+}
+
+/**
+ * Run all queued pre-paint effects for renderIds up to and including the
+ * given renderId. When React supersedes a startTransition update (rapid
+ * clicks on same-route links), the superseded NavigationCommitSignal never
+ * mounts, so its pre-paint effect never fires. By draining all effects
+ * <= the committed renderId here, the winning transition cleans up after
+ * any superseded ones, keeping the counter balanced.
+ */
+function drainPrePaintEffects(upToRenderId: number): void {
+  for (const [id, effect] of pendingNavigationPrePaintEffects) {
+    if (id <= upToRenderId) {
+      pendingNavigationPrePaintEffects.delete(id);
+      if (id === upToRenderId) {
+        effect();
+      } else {
+        commitClientNavigationState();
+      }
+    }
+  }
+}
+
+function createNavigationCommitEffect(
+  href: string,
+  historyUpdateMode: HistoryUpdateMode | undefined,
+): () => void {
+  return () => {
+    const targetHref = new URL(href, window.location.origin).href;
+
+    if (historyUpdateMode === "replace" && window.location.href !== targetHref) {
+      replaceHistoryStateWithoutNotify(null, "", href);
+    } else if (historyUpdateMode === "push" && window.location.href !== targetHref) {
+      pushHistoryStateWithoutNotify(null, "", href);
+    }
+
+    commitClientNavigationState();
+  };
+}
+
+function evictVisitedResponseCacheIfNeeded(): void {
+  while (visitedResponseCache.size >= MAX_VISITED_RESPONSE_CACHE_SIZE) {
+    const oldest = visitedResponseCache.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    visitedResponseCache.delete(oldest);
+  }
+}
+
+function getVisitedResponse(
+  rscUrl: string,
+  navigationKind: NavigationKind,
+): VisitedResponseCacheEntry | null {
+  const cached = visitedResponseCache.get(rscUrl);
+  if (!cached) {
+    return null;
+  }
+
+  if (navigationKind === "refresh") {
+    return null;
+  }
+
+  if (navigationKind === "traverse") {
+    const createdAt = cached.expiresAt - VISITED_RESPONSE_CACHE_TTL;
+    if (Date.now() - createdAt >= MAX_TRAVERSAL_CACHE_TTL) {
+      visitedResponseCache.delete(rscUrl);
+      return null;
+    }
+    // LRU: promote to most-recently-used (delete + re-insert moves to end of Map)
+    visitedResponseCache.delete(rscUrl);
+    visitedResponseCache.set(rscUrl, cached);
+    return cached;
+  }
+
+  if (cached.expiresAt > Date.now()) {
+    // LRU: promote to most-recently-used
+    visitedResponseCache.delete(rscUrl);
+    visitedResponseCache.set(rscUrl, cached);
+    return cached;
+  }
+
+  visitedResponseCache.delete(rscUrl);
+  return null;
+}
+
+function storeVisitedResponseSnapshot(
+  rscUrl: string,
+  snapshot: CachedRscResponse,
+  params: Record<string, string | string[]>,
+): void {
+  visitedResponseCache.delete(rscUrl);
+  evictVisitedResponseCacheIfNeeded();
+  const now = Date.now();
+  visitedResponseCache.set(rscUrl, {
+    params,
+    expiresAt: now + VISITED_RESPONSE_CACHE_TTL,
+    response: snapshot,
+  });
+}
+
+function resolveCommittedNavigations(renderId: number): void {
+  for (const [pendingId, resolve] of pendingNavigationCommits) {
+    if (pendingId <= renderId) {
+      pendingNavigationCommits.delete(pendingId);
+      resolve();
+    }
+  }
+}
+
+function NavigationCommitSignal({
+  renderId,
+  children,
+}: {
+  renderId: number;
+  children?: ReactNode;
+}) {
+  useLayoutEffect(() => {
+    drainPrePaintEffects(renderId);
+
+    const frame = requestAnimationFrame(() => {
+      resolveCommittedNavigations(renderId);
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [renderId]);
+
+  return children;
+}
+
+function BrowserRoot({
+  initialNode,
+  initialNavigationSnapshot,
+}: {
+  initialNode: ReactNode | Promise<ReactNode>;
+  initialNavigationSnapshot: ClientNavigationRenderSnapshot;
+}) {
+  const resolvedNode = use(initialNode as Promise<ReactNode>);
+  const [treeState, setTreeState] = useState<BrowserTreeState>({
+    renderId: 0,
+    node: resolvedNode,
+    navigationSnapshot: initialNavigationSnapshot,
+  });
+
+  // Assign the module-level setter via useLayoutEffect instead of during render
+  // to avoid side effects that React Strict Mode / concurrent features may
+  // call multiple times. useLayoutEffect fires synchronously during commit,
+  // before hydrateRoot returns to main(), so setBrowserTreeState is available
+  // before __VINEXT_RSC_NAVIGATE__ is assigned. setTreeState is referentially
+  // stable so the effect only runs on mount.
+  useLayoutEffect(() => {
+    setBrowserTreeState = setTreeState;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- setTreeState is referentially stable
+
+  const committedTree = createElement(
+    NavigationCommitSignal,
+    { renderId: treeState.renderId },
+    treeState.node,
+  );
+
+  const ClientNavigationRenderContext = getClientNavigationRenderContext();
+  if (!ClientNavigationRenderContext) {
+    return committedTree;
+  }
+
+  return createElement(
+    ClientNavigationRenderContext.Provider,
+    { value: treeState.navigationSnapshot },
+    committedTree,
+  );
+}
+
+function updateBrowserTree(
+  node: ReactNode | Promise<ReactNode>,
+  navigationSnapshot: ClientNavigationRenderSnapshot,
+  renderId: number,
+  useTransitionMode: boolean,
+): void {
+  const setter = getBrowserTreeStateSetter();
+
+  const resolvedThenSet = (resolvedNode: ReactNode) => {
+    setter({ renderId, node: resolvedNode, navigationSnapshot });
+  };
+
+  // Balance the activate/commit pairing if the async payload rejects
+  // after activateNavigationSnapshot() was called in renderNavigationPayload.
+  const handleAsyncError = () => {
+    pendingNavigationPrePaintEffects.delete(renderId);
+    const resolve = pendingNavigationCommits.get(renderId);
+    pendingNavigationCommits.delete(renderId);
+    commitClientNavigationState();
+    resolve?.();
+  };
+
+  if (node != null && typeof (node as PromiseLike<ReactNode>).then === "function") {
+    const thenable = node as PromiseLike<ReactNode>;
+    if (useTransitionMode) {
+      void thenable.then(
+        (resolved) => startTransition(() => resolvedThenSet(resolved)),
+        handleAsyncError,
+      );
+    } else {
+      void thenable.then(resolvedThenSet, handleAsyncError);
+    }
+    return;
+  }
+
+  const syncNode = node as ReactNode;
+  if (useTransitionMode) {
+    startTransition(() => resolvedThenSet(syncNode));
+    return;
+  }
+
+  resolvedThenSet(syncNode);
+}
+
+function renderNavigationPayload(
+  payload: Promise<ReactNode> | ReactNode,
+  navigationSnapshot: ClientNavigationRenderSnapshot,
+  prePaintEffect: (() => void) | null = null,
+  useTransition = true,
+): Promise<void> {
+  const renderId = ++nextNavigationRenderId;
+  queuePrePaintNavigationEffect(renderId, prePaintEffect);
+
+  const committed = new Promise<void>((resolve) => {
+    pendingNavigationCommits.set(renderId, resolve);
+  });
+
+  activateNavigationSnapshot();
+  updateBrowserTree(payload, navigationSnapshot, renderId, useTransition);
+
+  return committed;
 }
 
 function restoreHydrationNavigationContext(
@@ -60,6 +367,19 @@ function restoreHydrationNavigationContext(
   });
 }
 
+function restorePopstateScrollPosition(state: unknown): void {
+  if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
+    return;
+  }
+
+  const y = Number(state.__vinext_scrollY);
+  const x = "__vinext_scrollX" in state ? Number(state.__vinext_scrollX) : 0;
+
+  requestAnimationFrame(() => {
+    window.scrollTo(x, y);
+  });
+}
+
 async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   const vinext = getVinextBrowserGlobal();
 
@@ -70,7 +390,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
 
       const params = embedData.params ?? {};
       if (embedData.params) {
-        setClientParams(embedData.params);
+        applyClientParams(embedData.params);
       }
       if (embedData.nav) {
         restoreHydrationNavigationContext(
@@ -85,7 +405,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
 
     const params = vinext.__VINEXT_RSC_PARAMS__ ?? {};
     if (vinext.__VINEXT_RSC_PARAMS__) {
-      setClientParams(vinext.__VINEXT_RSC_PARAMS__);
+      applyClientParams(vinext.__VINEXT_RSC_PARAMS__);
     }
     if (vinext.__VINEXT_RSC_NAV__) {
       restoreHydrationNavigationContext(
@@ -105,7 +425,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   if (paramsHeader) {
     try {
       params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
-      setClientParams(params);
+      applyClientParams(params);
     } catch {
       // Ignore malformed param headers and continue with hydration.
     }
@@ -157,12 +477,20 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    const result = await createFromFetch(Promise.resolve(fetchResponse), {
-      temporaryReferences,
-    });
+    clearClientNavigationCaches();
+
+    const result = await createFromFetch<ServerActionResult | ReactNode>(
+      Promise.resolve(fetchResponse),
+      { temporaryReferences },
+    );
 
     if (isServerActionResult(result)) {
-      getReactRoot().render(result.root);
+      updateBrowserTree(
+        result.root,
+        createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+        ++nextNavigationRenderId,
+        false,
+      );
       if (result.returnValue) {
         if (!result.returnValue.ok) throw result.returnValue.data;
         return result.returnValue.data;
@@ -170,7 +498,12 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    getReactRoot().render(result as ReactNode);
+    updateBrowserTree(
+      result,
+      createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+      ++nextNavigationRenderId,
+      false,
+    );
     return result;
   });
 }
@@ -179,19 +512,26 @@ async function main(): Promise<void> {
   registerServerActionCallback();
 
   const rscStream = await readInitialRscStream();
-  const root = createFromReadableStream(rscStream);
-
-  reactRoot = hydrateRoot(
-    document,
-    root as ReactNode,
-    import.meta.env.DEV ? { onCaughtError() {} } : undefined,
+  const root = createFromReadableStream<ReactNode>(rscStream);
+  const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
+    window.location.href,
+    latestClientParams,
   );
 
-  window.__VINEXT_RSC_ROOT__ = reactRoot;
+  window.__VINEXT_RSC_ROOT__ = hydrateRoot(
+    document,
+    createElement(BrowserRoot, {
+      initialNode: root,
+      initialNavigationSnapshot,
+    }),
+    import.meta.env.DEV ? { onCaughtError() {} } : undefined,
+  );
 
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
     redirectDepth = 0,
+    navigationKind: NavigationKind = "navigate",
+    historyUpdateMode?: HistoryUpdateMode,
   ): Promise<void> {
     if (redirectDepth > 10) {
       console.error(
@@ -204,18 +544,42 @@ async function main(): Promise<void> {
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
+      const navId = ++activeNavigationId;
+      // Use startTransition for same-route navigations (searchParam changes)
+      // so React keeps the old UI visible during the transition. For cross-route
+      // navigations (different pathname), use synchronous updates — React's
+      // startTransition hangs in Firefox when replacing the entire tree.
+      const isSameRoute = url.pathname === window.location.pathname;
+      const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
+      const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
+
+      if (cachedRoute) {
+        stageClientParams(cachedRoute.params);
+        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
+          href,
+          cachedRoute.params,
+        );
+        const cachedPayload = await createFromFetch<ReactNode>(
+          Promise.resolve(restoreRscResponse(cachedRoute.response)),
+        );
+        if (navId !== activeNavigationId) return;
+        await renderNavigationPayload(
+          cachedPayload,
+          cachedNavigationSnapshot,
+          navigationCommitEffect,
+          isSameRoute,
+        );
+        return;
+      }
 
       let navResponse: Response | undefined;
-      const prefetchCache = getPrefetchCache();
-      const cached = prefetchCache.get(rscUrl);
-
-      if (cached && Date.now() - cached.timestamp < PREFETCH_CACHE_TTL) {
-        navResponse = cached.response;
-        prefetchCache.delete(rscUrl);
-        getPrefetchedUrls().delete(rscUrl);
-      } else if (cached) {
-        prefetchCache.delete(rscUrl);
-        getPrefetchedUrls().delete(rscUrl);
+      let navResponseUrl: string | null = null;
+      if (navigationKind !== "refresh") {
+        const prefetchedResponse = consumePrefetchResponse(rscUrl);
+        if (prefetchedResponse) {
+          navResponse = restoreRscResponse(prefetchedResponse);
+          navResponseUrl = prefetchedResponse.url;
+        }
       }
 
       if (!navResponse) {
@@ -225,11 +589,14 @@ async function main(): Promise<void> {
         });
       }
 
-      const finalUrl = new URL(navResponse.url);
+      if (navId !== activeNavigationId) return;
+
+      const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
       const requestedUrl = new URL(rscUrl, window.location.origin);
+
       if (finalUrl.pathname !== requestedUrl.pathname) {
         const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
-        window.history.replaceState(null, "", destinationPath);
+        replaceHistoryStateWithoutNotify(null, "", destinationPath);
 
         const navigate = window.__VINEXT_RSC_NAVIGATE__;
         if (!navigate) {
@@ -237,35 +604,60 @@ async function main(): Promise<void> {
           return;
         }
 
-        return navigate(destinationPath, redirectDepth + 1);
+        return navigate(destinationPath, redirectDepth + 1, navigationKind);
       }
 
+      let navParams: Record<string, string | string[]> = {};
       const paramsHeader = navResponse.headers.get("X-Vinext-Params");
       if (paramsHeader) {
         try {
-          setClientParams(JSON.parse(decodeURIComponent(paramsHeader)));
+          navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
+            string,
+            string | string[]
+          >;
+          stageClientParams(navParams);
         } catch {
-          setClientParams({});
+          stageClientParams({});
         }
       } else {
-        setClientParams({});
+        stageClientParams({});
       }
+      const navigationSnapshot = createClientNavigationRenderSnapshot(href, latestClientParams);
 
-      const rscPayload = await createFromFetch(Promise.resolve(navResponse));
-      flushSync(() => {
-        getReactRoot().render(rscPayload as ReactNode);
-      });
+      const responseSnapshot = await snapshotRscResponse(navResponse);
+
+      if (navId !== activeNavigationId) return;
+
+      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
+      const rscPayload = await createFromFetch<ReactNode>(
+        Promise.resolve(restoreRscResponse(responseSnapshot)),
+      );
+
+      if (navId !== activeNavigationId) return;
+
+      await renderNavigationPayload(
+        rscPayload,
+        navigationSnapshot,
+        navigationCommitEffect,
+        isSameRoute,
+      );
     } catch (error) {
+      commitClientNavigationState();
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
     }
   };
 
-  window.addEventListener("popstate", () => {
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
+  window.addEventListener("popstate", (event) => {
     const pendingNavigation =
-      window.__VINEXT_RSC_NAVIGATE__?.(window.location.href) ?? Promise.resolve();
+      window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ?? Promise.resolve();
     window.__VINEXT_RSC_PENDING__ = pendingNavigation;
     void pendingNavigation.finally(() => {
+      restorePopstateScrollPosition(event.state);
       if (window.__VINEXT_RSC_PENDING__ === pendingNavigation) {
         window.__VINEXT_RSC_PENDING__ = null;
       }
@@ -275,10 +667,16 @@ async function main(): Promise<void> {
   if (import.meta.hot) {
     import.meta.hot.on("rsc:update", async () => {
       try {
-        const rscPayload = await createFromFetch(
+        clearClientNavigationCaches();
+        const rscPayload = await createFromFetch<ReactNode>(
           fetch(toRscUrl(window.location.pathname + window.location.search)),
         );
-        getReactRoot().render(rscPayload as ReactNode);
+        updateBrowserTree(
+          rscPayload,
+          createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+          ++nextNavigationRenderId,
+          false,
+        );
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);
       }
