@@ -6,7 +6,9 @@
  * available. On the client, also uses React.lazy for code splitting.
  *
  * Works in RSC, SSR, and client environments:
- * - RSC: React.lazy is not available, so we use an async component pattern
+ * - RSC: Uses React.lazy + Suspense (available in React 19.x react-server).
+ *   Falls back to async component pattern if a future React version
+ *   strips lazy from react-server.
  * - SSR: React.lazy + Suspense (renderToReadableStream suspends)
  * - Client: React.lazy + Suspense (standard code splitting)
  *
@@ -137,10 +139,10 @@ function dynamic<P extends object = object>(
 
   // SSR-enabled path
   if (isServer) {
-    // In RSC environment, React.lazy is not available (react-server condition
-    // exports a stripped-down React without lazy/useState/useEffect).
-    // Use an async server component pattern instead — the RSC renderer
-    // natively supports async components.
+    // Defensive fallback: if a future React version strips React.lazy from the
+    // react-server condition, fall back to an async component pattern.
+    // In React 19.x, React.lazy IS available in react-server, so this branch
+    // does not execute — it exists for forward compatibility only.
     if (typeof React.lazy !== "function") {
       const AsyncServerDynamic = async (props: P) => {
         // Note: LoadingComponent is not used here — in the RSC environment,
