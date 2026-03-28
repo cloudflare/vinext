@@ -454,11 +454,13 @@ describe("vinext:google-fonts plugin", () => {
       const url = String(input);
       if (url.includes("Inter")) {
         return new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-          status: 200, headers: { "content-type": "text/css" },
+          status: 200,
+          headers: { "content-type": "text/css" },
         });
       }
       return new Response("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
-        status: 200, headers: { "content-type": "text/css" },
+        status: 200,
+        headers: { "content-type": "text/css" },
       });
     };
 
@@ -491,7 +493,8 @@ describe("vinext:google-fonts plugin", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => {
       return new Response("@font-face { font-family: 'Inter'; }", {
-        status: 200, headers: { "content-type": "text/css" },
+        status: 200,
+        headers: { "content-type": "text/css" },
       });
     };
 
