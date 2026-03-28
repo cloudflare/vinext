@@ -807,13 +807,6 @@ export default {
         return new Response("404 - Not found", { status: 404 });
       }
 
-      // Bubble up any background tasks attached by middleware via __vinextWaitUntil
-      if (response && typeof response === "object" && "__vinextWaitUntil" in response && Array.isArray((response as any).__vinextWaitUntil)) {
-        for (const p of (response as any).__vinextWaitUntil) {
-          ctx.waitUntil(p);
-        }
-      }
-
       return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
     } catch (error) {
       console.error("[vinext] Worker error:", error);

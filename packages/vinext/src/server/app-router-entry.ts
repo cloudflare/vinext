@@ -51,20 +51,6 @@ export default {
     const handleFn = () => rscHandler(request, ctx);
     const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
-    // Extract waitUntil promises BEFORE the instanceof check — the property is
-    // non-enumerable on the Response and we need to hand it off to ctx before returning.
-    if (
-      ctx &&
-      result &&
-      typeof result === "object" &&
-      "__vinextWaitUntil" in result &&
-      Array.isArray(result.__vinextWaitUntil)
-    ) {
-      for (const p of result.__vinextWaitUntil) {
-        ctx.waitUntil(p);
-      }
-    }
-
     if (result instanceof Response) {
       return result;
     }
