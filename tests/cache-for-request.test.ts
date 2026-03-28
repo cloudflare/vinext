@@ -23,7 +23,7 @@ describe("cacheForRequest", () => {
     const get = cacheForRequest(factory);
 
     const ctx = createRequestContext();
-    runWithRequestContext(ctx, () => {
+    void runWithRequestContext(ctx, () => {
       const a = get();
       const b = get();
       expect(a).toBe(b);
@@ -38,7 +38,7 @@ describe("cacheForRequest", () => {
     const getB = cacheForRequest(factoryB);
 
     const ctx = createRequestContext();
-    runWithRequestContext(ctx, () => {
+    void runWithRequestContext(ctx, () => {
       expect(getA()).toBe("a");
       expect(getB()).toBe("b");
       expect(factoryA).toHaveBeenCalledTimes(1);
