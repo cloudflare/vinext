@@ -1,10 +1,17 @@
+"use client";
+
 /**
  * Layout segment context provider.
  *
- * Does NOT use "use client" — this module is imported directly by the RSC
- * entry which runs in the react-server condition. getLayoutSegmentContext()
- * returns null when React.createContext is unavailable (RSC), and the
- * provider gracefully falls back to passing children through unchanged.
+ * Must be "use client" so that Vite's RSC bundler renders this component in
+ * the SSR/browser environment where React.createContext is available. The RSC
+ * entry imports and renders LayoutSegmentProvider directly, but because of the
+ * "use client" boundary the actual execution happens on the SSR/client side
+ * where the context can be created and consumed by useSelectedLayoutSegment(s).
+ *
+ * Without "use client", this runs in the RSC environment where
+ * React.createContext is undefined, getLayoutSegmentContext() returns null,
+ * the provider becomes a no-op, and useSelectedLayoutSegments always returns [].
  *
  * The context is shared with navigation.ts via getLayoutSegmentContext()
  * to avoid creating separate contexts in different modules.
