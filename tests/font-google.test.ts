@@ -398,7 +398,6 @@ describe("vinext:google-fonts plugin", () => {
     initPlugin(plugin, { command: "build", root });
 
     // Pre-populate the on-disk cache so fetchAndCacheFont finds it
-    const cacheDir = path.join(root, ".vinext", "fonts");
     const fakeCSS = "@font-face { font-family: 'Inter'; src: url(/fake.woff2); }";
     // The plugin hashes the URL to create the dir name. Instead, call
     // transform twice: first with a real fetch to populate the in-memory
@@ -406,7 +405,7 @@ describe("vinext:google-fonts plugin", () => {
     // Simpler approach: mock fetch to return controlled CSS.
     const originalFetch = globalThis.fetch;
     const fetchCount = { value: 0 };
-    globalThis.fetch = async (input: any, init?: any) => {
+    globalThis.fetch = async (_input: any, _init?: any) => {
       fetchCount.value++;
       // Return fake Google Fonts CSS
       return new Response(fakeCSS, {
