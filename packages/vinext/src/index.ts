@@ -1313,6 +1313,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // MDX is detected in app/pages during config(), and lazily on first plain
   // .mdx transform for MDX that only enters the graph via import.meta.glob.
   let mdxDelegate: Plugin | null = null;
+  // Cached across calls — only the first invocation's `reason` affects logging.
+  // This is correct because config() always runs before transform() in the same build.
   let mdxDelegatePromise: Promise<Plugin | null> | null = null;
   let hasUserMdxPlugin = false;
   let warnedMissingMdxPlugin = false;
@@ -1320,6 +1322,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   async function ensureMdxDelegate(reason: "detected" | "on-demand"): Promise<Plugin | null> {
     // If user registered their own MDX plugin, don't interfere — their plugin
     // will handle .mdx transforms later in the pipeline.
+    // Note: hasUserMdxPlugin is set during config() which always runs before transform().
+    // When true, we return null (mdxDelegate is null) and the caller silently
+    // returns undefined to let the user's plugin handle the file.
     if (mdxDelegate || hasUserMdxPlugin) return mdxDelegate;
     if (!mdxDelegatePromise) {
       mdxDelegatePromise = (async () => {
@@ -1349,6 +1354,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           return delegate;
         } catch {
+          // Only warn during "detected" path (MDX files in app/pages at config time).
+          // For "on-demand" (MDX encountered during transform), the error thrown
+          // in transform() is more actionable and immediate. Avoid double messaging.
           if (reason === "detected" && !warnedMissingMdxPlugin) {
             warnedMissingMdxPlugin = true;
             console.warn(
@@ -2622,7 +2630,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
         // and would compile the file as MDX instead of returning raw text.
         if (id.includes("?")) return;
-        if (!id.endsWith(".mdx")) return;
+        // Case-insensitive extension check for cross-platform compatibility
+        // (Windows/macOS case-insensitive, Linux case-sensitive)
+        if (!id.toLowerCase().endsWith(".mdx")) return;
 
         const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
         if (delegate?.transform) {

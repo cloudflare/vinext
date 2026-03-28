@@ -1400,6 +1400,26 @@ export const marker = "mdx-evaluated";
     }
   });
 
+  it("skips MDX files with various query parameters", async () => {
+    const plugins = vinext() as any[];
+    const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
+
+    // All query variants should be skipped (return undefined)
+    await expect(
+      mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
+    ).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
+    ).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    // Edge case: query value contains .mdx but isn't the extension
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
+    ).resolves.toBeUndefined();
+  });
+
   it("vinext:mdx proxy logic — ?raw guard prevents delegate from compiling query imports", () => {
     // Self-contained unit test that exercises the guard independently of whether
     // mdxDelegate is set. Without the guard, @mdx-js/rollup silently compiles
