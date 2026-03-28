@@ -3310,6 +3310,8 @@ describe("double-encoded path handling in middleware", () => {
 
     // The most critical behavior: waitUntil promises must appear in the result
     // so the runtime (e.g. Cloudflare Workers ctx.waitUntil) can keep them alive.
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBeDefined();
     expect(result.waitUntilPromises).toBeDefined();
     expect(result.waitUntilPromises!.length).toBe(1);
     expect(result.waitUntilPromises![0]).toBe(capturedPromise);

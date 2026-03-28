@@ -1190,7 +1190,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // Must run BEFORE the !result.continue check so promises survive redirect/response paths
         // (e.g. Clerk auth redirecting unauthenticated users).
         if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
-          Promise.allSettled(result.waitUntilPromises).catch(() => {});
+          void Promise.allSettled(result.waitUntilPromises);
         }
 
         if (!result.continue) {
