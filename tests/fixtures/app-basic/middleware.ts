@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
 
 /**
@@ -12,7 +12,7 @@ import { recordMiddlewareInvocation } from "./instrumentation-state";
  * - Block with 403
  * - Search params forwarding
  */
-export function middleware(request: NextRequest, event: any) {
+export function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
