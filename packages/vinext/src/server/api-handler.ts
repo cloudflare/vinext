@@ -7,11 +7,12 @@
  * The req/res objects are Node.js IncomingMessage/ServerResponse with
  * Next.js extensions: req.query, req.body, res.json(), res.status(), etc.
  */
-import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError } from "./instrumentation.js";
+import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -53,7 +54,7 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
       if (totalSize > MAX_BODY_SIZE) {
         settled = true;
         req.destroy();
-        reject(new Error("Request body too large"));
+        reject(new PagesBodyParseError("Request body too large", 413));
         return;
       }
       chunks.push(chunk);
@@ -68,24 +69,25 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
       if (settled) return;
       settled = true;
       const raw = Buffer.concat(chunks).toString("utf-8");
+      const mediaType = getMediaType(req.headers["content-type"]);
       if (!raw) {
-        resolve(undefined);
+        resolve(
+          isJsonMediaType(mediaType)
+            ? {}
+            : mediaType === "application/x-www-form-urlencoded"
+              ? decodeQueryString(raw)
+              : undefined,
+        );
         return;
       }
-      const contentType = req.headers["content-type"] ?? "";
-      if (contentType.includes("application/json")) {
+      if (isJsonMediaType(mediaType)) {
         try {
           resolve(JSON.parse(raw));
         } catch {
-          resolve(raw);
+          reject(new PagesBodyParseError("Invalid JSON", 400));
         }
-      } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        const params = new URLSearchParams(raw);
-        const obj: Record<string, string> = {};
-        for (const [key, value] of params) {
-          obj[key] = value;
-        }
-        resolve(obj);
+      } else if (mediaType === "application/x-www-form-urlencoded") {
+        resolve(decodeQueryString(raw));
       } else {
         resolve(raw);
       }
@@ -135,6 +137,15 @@ function enhanceApiObjects(
   };
 
   apiRes.send = function (data: unknown) {
+    if (Buffer.isBuffer(data)) {
+      if (!this.getHeader("Content-Type")) {
+        this.setHeader("Content-Type", "application/octet-stream");
+      }
+      this.setHeader("Content-Length", String(data.length));
+      this.end(data);
+      return;
+    }
+
     if (typeof data === "object" && data !== null) {
       this.setHeader("Content-Type", "application/json");
       this.end(JSON.stringify(data));
@@ -163,7 +174,7 @@ function enhanceApiObjects(
  * Returns true if the request was handled, false if no API route matched.
  */
 export async function handleApiRoute(
-  server: ViteDevServer,
+  runner: ModuleImporter,
   req: IncomingMessage,
   res: ServerResponse,
   url: string,
@@ -175,8 +186,8 @@ export async function handleApiRoute(
   const { route, params } = match;
 
   try {
-    // Load the API route module through Vite
-    const apiModule = await server.ssrLoadModule(route.filePath);
+    // Load the API route module through the ModuleRunner
+    const apiModule = await importModule(runner, route.filePath);
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
@@ -206,9 +217,17 @@ export async function handleApiRoute(
     await handler(apiReq, apiRes);
     return true;
   } catch (e) {
-    server.ssrFixStacktrace(e as Error);
+    if (e instanceof PagesBodyParseError) {
+      res.statusCode = e.statusCode;
+      res.statusMessage = e.message;
+      res.end(e.message);
+      return true;
+    }
+
+    // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
+    // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
-    reportRequestError(
+    void reportRequestError(
       e instanceof Error ? e : new Error(String(e)),
       {
         path: url,
@@ -221,15 +240,12 @@ export async function handleApiRoute(
         ),
       },
       { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
-    ).catch(() => {
-      /* ignore reporting errors */
-    });
-    if ((e as Error).message === "Request body too large") {
-      res.statusCode = 413;
-      res.end("Request body too large");
-    } else {
+    );
+    if (!res.headersSent) {
       res.statusCode = 500;
       res.end("Internal Server Error");
+    } else if (!res.writableEnded) {
+      res.end();
     }
     return true;
   }

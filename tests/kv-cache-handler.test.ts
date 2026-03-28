@@ -8,7 +8,7 @@
  * - Valid entries round-trip correctly
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
 
 // ---------------------------------------------------------------------------
@@ -16,15 +16,47 @@ import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handl
 // ---------------------------------------------------------------------------
 
 function createMockKV(store: Map<string, string> = new Map()) {
+  // Metadata store mirrors what Cloudflare KV returns on list()
+  const metadataStore = new Map<string, Record<string, unknown>>();
+
   return {
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => {
-      store.set(key, value);
-    }),
+    put: vi.fn(
+      async (
+        key: string,
+        value: string,
+        options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
+      ) => {
+        store.set(key, value);
+        if (options?.metadata) metadataStore.set(key, options.metadata);
+      },
+    ),
     delete: vi.fn(async (key: string) => {
       store.delete(key);
+      metadataStore.delete(key);
     }),
-    list: vi.fn(async () => ({ keys: [], list_complete: true })),
+    list: vi.fn(async (options?: { prefix?: string; limit?: number; cursor?: string }) => {
+      const prefix = options?.prefix ?? "";
+      const limit = options?.limit ?? 1000;
+      const cursor = options?.cursor;
+
+      const allKeys = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
+
+      let startIdx = 0;
+      if (cursor) {
+        const idx = allKeys.indexOf(cursor);
+        startIdx = idx >= 0 ? idx + 1 : 0;
+      }
+
+      const pageKeys = allKeys.slice(startIdx, startIdx + limit);
+      const hasMore = startIdx + limit < allKeys.length;
+
+      return {
+        keys: pageKeys.map((name) => ({ name, metadata: metadataStore.get(name) })),
+        list_complete: !hasMore,
+        cursor: hasMore ? pageKeys[pageKeys.length - 1] : undefined,
+      };
+    }),
   };
 }
 
@@ -356,6 +388,133 @@ describe("KVCacheHandler", () => {
       expect(result!.value!.kind).toBe("PAGES");
       expect((result!.value as any).html).toBe("<div>hi</div>");
     });
+
+    it("preserves slash-based path tags for Workers invalidation", async () => {
+      await handler.set(
+        "rt-path-tags",
+        {
+          kind: "APP_PAGE",
+          html: "<div>hi</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        {
+          revalidate: 60,
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test", "test-data"],
+        },
+      );
+
+      const raw = store.get("cache:rt-path-tags");
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!);
+      expect(parsed.tags).toEqual([
+        "/revalidate-tag-test",
+        "_N_T_/revalidate-tag-test",
+        "test-data",
+      ]);
+    });
+  });
+
+  describe("tag invalidation", () => {
+    it("revalidateTag persists slash-based path invalidation markers", async () => {
+      await handler.revalidateTag(["/revalidate-tag-test", "_N_T_/revalidate-tag-test"]);
+
+      expect(store.get("__tag:/revalidate-tag-test")).toMatch(/^\d+$/);
+      expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
+    });
+
+    it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
+      const entryTime = 1000;
+      const invalidatedTime = 2000;
+
+      store.set(
+        "cache:app-page",
+        JSON.stringify({
+          value: {
+            kind: "APP_PAGE",
+            html: "<html>cached</html>",
+            rscData: undefined,
+            headers: undefined,
+            postponed: undefined,
+            status: 200,
+          },
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:/revalidate-tag-test", String(invalidatedTime));
+
+      const result = await handler.get("app-page");
+
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ArrayBuffer base64 roundtrip edge cases
+  // -------------------------------------------------------------------------
+
+  describe("ArrayBuffer base64 roundtrip edge cases", () => {
+    it("round-trips a large buffer (1 MiB)", async () => {
+      const size = 1024 * 1024; // 1 MiB
+      const original = new Uint8Array(size);
+      for (let i = 0; i < size; i++) {
+        original[i] = i % 256;
+      }
+
+      await handler.set("large-buf", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+
+      const result = await handler.get("large-buf");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored.byteLength).toBe(size);
+      // Verify every byte survived the roundtrip
+      expect(restored).toEqual(original);
+    });
+
+    it("round-trips a buffer containing null bytes", async () => {
+      const original = new Uint8Array([0, 0, 0, 72, 101, 108, 108, 111, 0, 0, 0]);
+
+      await handler.set("null-bytes", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: {},
+      });
+
+      const result = await handler.get("null-bytes");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored).toEqual(original);
+    });
+
+    it("round-trips a buffer with all 256 byte values", async () => {
+      const original = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        original[i] = i;
+      }
+
+      await handler.set("all-bytes", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: {},
+      });
+
+      const result = await handler.get("all-bytes");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored).toEqual(original);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -458,6 +617,237 @@ describe("KVCacheHandler", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Local tag cache
+  // -------------------------------------------------------------------------
+
+  describe("local tag cache", () => {
+    it("cached tags skip KV on second get()", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:tagged-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      // No tag invalidation timestamps in KV — tags are valid
+
+      // First get() — should fetch tags from KV (cache miss in local cache)
+      const result1 = await handler.get("tagged-page");
+      expect(result1).not.toBeNull();
+
+      // kv.get calls: 1 for the entry + 2 for the tags = 3
+      expect(kv.get).toHaveBeenCalledTimes(3);
+
+      // Reset call counts
+      kv.get.mockClear();
+
+      // Second get() — tags should come from local cache, NOT from KV
+      const result2 = await handler.get("tagged-page");
+      expect(result2).not.toBeNull();
+
+      // kv.get calls: 1 for the entry only, 0 for tags
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      expect(kv.get).toHaveBeenCalledWith("cache:tagged-page");
+    });
+
+    it("revalidateTag() updates local cache so subsequent get() skips KV for that tag", async () => {
+      const entryTime = 1000;
+
+      // revalidateTag sets the invalidation timestamp
+      await handler.revalidateTag("t1");
+
+      kv.get.mockClear();
+
+      // Now store an entry with tag t1 that was created BEFORE the invalidation
+      store.set(
+        "cache:rt-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>old</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // get() should see tag t1 is invalidated via local cache — no KV GET for __tag:t1
+      const result = await handler.get("rt-page");
+      expect(result).toBeNull(); // invalidated
+
+      // kv.get: 1 for entry, 0 for tags (t1 was in local cache)
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      expect(kv.get).toHaveBeenCalledWith("cache:rt-page");
+    });
+
+    it("TTL expiry triggers fresh KV fetch", async () => {
+      // Use tagCacheTtlMs: 0 so entries expire immediately — no fake timers needed.
+      const shortTtlHandler = new KVCacheHandler(kv as any, { tagCacheTtlMs: 0 });
+
+      const entryTime = 1000;
+      store.set(
+        "cache:ttl-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — populates local tag cache (entry + tag = 2 calls)
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      kv.get.mockClear();
+
+      // Second get() — TTL is 0ms so entry is already expired; must re-fetch tag from KV
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag again
+    });
+
+    it("tag invalidation works end-to-end with local cache", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:e2e-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>original</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() succeeds (no invalidation yet)
+      const result1 = await handler.get("e2e-page");
+      expect(result1).not.toBeNull();
+
+      // Now invalidate tag t1
+      await handler.revalidateTag("t1");
+
+      // get() should return null (cache miss due to tag invalidation)
+      const result2 = await handler.get("e2e-page");
+      expect(result2).toBeNull();
+    });
+
+    it("uncached tags are still fetched from KV", async () => {
+      const entryTime = 1000;
+
+      // Store entry with two tags
+      store.set(
+        "cache:partial-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() populates local cache for both t1 and t2
+      await handler.get("partial-page");
+      kv.get.mockClear();
+
+      // Now add a DIFFERENT entry that shares t1 but also has t3 (not yet cached)
+      store.set(
+        "cache:partial-page2",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>other</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t3"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      const result = await handler.get("partial-page2");
+      expect(result).not.toBeNull();
+
+      // kv.get: 1 for entry + 1 for t3 (t1 was cached). NOT 2 for tags.
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      // Verify the calls are for the entry and t3 only
+      expect(kv.get).toHaveBeenCalledWith("cache:partial-page2");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t3");
+    });
+
+    it("NaN tag timestamp in local cache treated as invalidation", async () => {
+      const entryTime = 1000;
+
+      // Put a non-numeric tag value in KV
+      store.set("__tag:bad-tag", "not-a-number");
+
+      store.set(
+        "cache:nan-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["bad-tag"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — fetches from KV, gets NaN, caches it, returns null
+      const result1 = await handler.get("nan-page");
+      expect(result1).toBeNull();
+
+      kv.get.mockClear();
+
+      // Re-store the entry (it was deleted by the first get)
+      store.set(
+        "cache:nan-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["bad-tag"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // Second get() — NaN is in local cache, should still treat as invalidation
+      const result2 = await handler.get("nan-page");
+      expect(result2).toBeNull();
+
+      // kv.get: 1 for entry, 0 for tag (NaN was cached locally)
+      expect(kv.get).toHaveBeenCalledTimes(1);
+    });
+
+    it("resetRequestCache() forces tags to be re-fetched from KV", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:reset-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — populates local tag cache (1 entry + 2 tags = 3 calls)
+      const result1 = await handler.get("reset-page");
+      expect(result1).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      kv.get.mockClear();
+
+      // Second get() without reset — tags served from local cache (1 entry only)
+      const result2 = await handler.get("reset-page");
+      expect(result2).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      kv.get.mockClear();
+
+      // Clear the local cache
+      handler.resetRequestCache();
+
+      // Third get() after reset — tags must be re-fetched from KV (1 entry + 2 tags = 3 calls)
+      const result3 = await handler.get("reset-page");
+      expect(result3).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledWith("cache:reset-page");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t1");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t2");
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // STALE → regen → HIT lifecycle
   //
   // Regression test for: KVCacheHandler.set() was returning Promise.resolve()
@@ -522,7 +912,7 @@ describe("KVCacheHandler", () => {
 
       // The set() promise should NOT be resolved yet because the kv.put hasn't resolved.
       let setSettled = false;
-      setPromise.then(() => {
+      void setPromise.then(() => {
         setSettled = true;
       });
 
@@ -596,6 +986,186 @@ describe("KVCacheHandler", () => {
       expect(store.has("cache:regen-key")).toBe(true);
       const entry = JSON.parse(store.get("cache:regen-key")!);
       expect(entry.value.html).toBe("<html>revalidated</html>");
+    });
+  });
+
+  describe("revalidate: 0 skips storage", () => {
+    it("skips KV write when ctx.revalidate is 0", async () => {
+      await handler.set(
+        "no-cache-ctx",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "test", url: "" },
+          tags: [],
+          revalidate: false,
+        },
+        { revalidate: 0 },
+      );
+
+      expect(store.has("cache:no-cache-ctx")).toBe(false);
+      const result = await handler.get("no-cache-ctx");
+      expect(result).toBeNull();
+    });
+
+    it("skips KV write when data.revalidate is 0", async () => {
+      await handler.set(
+        "no-cache-data",
+        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 },
+        { tags: [] },
+      );
+
+      expect(store.has("cache:no-cache-data")).toBe(false);
+      const result = await handler.get("no-cache-data");
+      expect(result).toBeNull();
+    });
+
+    it("stores entry when ctx.revalidate is 0 but data.revalidate is positive", async () => {
+      await handler.set(
+        "override-positive",
+        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 60 },
+        { revalidate: 0 },
+      );
+
+      expect(store.has("cache:override-positive")).toBe(true);
+      const result = await handler.get("override-positive");
+      expect(result).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revalidateByPathPrefix
+  // -------------------------------------------------------------------------
+
+  describe("revalidateByPathPrefix", () => {
+    async function setPageEntry(h: KVCacheHandler, pathname: string, extraTags: string[] = []) {
+      const tags = [pathname, `_N_T_${pathname}`, ...extraTags];
+      await h.set(
+        pathname,
+        {
+          kind: "APP_PAGE",
+          html: `<html>${pathname}</html>`,
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags },
+      );
+    }
+
+    it("invalidates entries whose paths match the prefix (segment-aware)", async () => {
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/dashboard/settings");
+      await setPageEntry(handler, "/about");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/dashboard/settings")).toBeNull();
+      expect(await handler.get("/about")).not.toBeNull();
+    });
+
+    it("does NOT match partial segment names", async () => {
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/dashboard-admin");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/dashboard-admin")).not.toBeNull();
+    });
+
+    it("root prefix / invalidates all path-tagged entries", async () => {
+      await setPageEntry(handler, "/");
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/about");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/")).toBeNull();
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/about")).toBeNull();
+    });
+
+    it("skips entries with only non-path custom tags", async () => {
+      await handler.set(
+        "custom-only",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "data", url: "/api" },
+          tags: ["api-tag"],
+          revalidate: 60,
+        },
+        { tags: ["api-tag"] },
+      );
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("custom-only")).not.toBeNull();
+    });
+
+    it("gracefully skips entries without metadata (written before metadata support)", async () => {
+      // Manually write an entry without metadata (simulating old entries)
+      store.set(
+        "cache:/legacy",
+        JSON.stringify({
+          value: { kind: "APP_PAGE", html: "<html>/legacy</html>", status: 200 },
+          tags: ["/legacy", "_N_T_/legacy"],
+          lastModified: Date.now(),
+          revalidateAt: null,
+        }),
+      );
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/legacy");
+      handler.resetRequestCache();
+
+      // Legacy entry is NOT invalidated — no metadata to read tags from
+      expect(await handler.get("/legacy")).not.toBeNull();
+    });
+
+    it("omits metadata when tags exceed 1024-byte KV limit, entry still cached", async () => {
+      // Generate tags that exceed 1024 bytes when JSON-serialized
+      const longTags = Array.from({ length: 50 }, (_, i) => `/very/deep/nested/path/segment-${i}`);
+      const allTags = longTags.flatMap((t) => [t, `_N_T_${t}`]);
+
+      await handler.set(
+        "/big-tags",
+        {
+          kind: "APP_PAGE",
+          html: "<html>big</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags: allTags },
+      );
+
+      // Entry IS cached (set didn't fail)
+      handler.resetRequestCache();
+      const result = await handler.get("/big-tags");
+      expect(result).not.toBeNull();
+      expect(result!.value!.kind).toBe("APP_PAGE");
+
+      // But prefix invalidation skips it (no metadata to read)
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/very");
+      handler.resetRequestCache();
+      expect(await handler.get("/big-tags")).not.toBeNull();
+
+      // Exact-path invalidation via revalidateTag still works
+      await handler.revalidateTag(allTags.slice(0, 2));
+      handler.resetRequestCache();
+      expect(await handler.get("/big-tags")).toBeNull();
     });
   });
 });

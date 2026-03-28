@@ -91,23 +91,11 @@ test.describe("Middleware execution count", () => {
     expect(res.status()).toBe(200);
   });
 
-  // Known issue: in a hybrid app+pages fixture (hasPagesDir && hasAppDir) the
-  // Vite connect handler runs middleware via ssrLoadModule (SSR env) before
-  // routing, and the RSC entry also runs it inline (RSC env) for App Router
-  // requests that fall through to next(). A single App Router request therefore
-  // produces 2 invocations instead of 1.
-  //
-  // The fix requires either:
-  //   (a) skipping the connect-handler middleware for requests that will be
-  //       handled by the RSC plugin — but this can't be known before matching, or
-  //   (b) passing a "middleware already ran" signal from the connect handler to
-  //       the RSC entry that also carries the rewrite URL so the RSC entry can
-  //       apply the rewrite without re-running the function.
-  //
-  // Pure App Router apps (no pages/) are not affected — they skip the connect
-  // handler entirely (hasPagesDir is false) and only run middleware in the RSC
-  // entry. Pure Pages Router apps are also not affected — there is no RSC entry.
-  test.fixme("middleware runs exactly once per App Router request in hybrid app+pages fixture", async ({
+  // Regression test: in a hybrid app+pages fixture the connect handler
+  // forwards middleware results to the RSC entry via x-vinext-mw-ctx so that
+  // middleware only executes once per request. Without this, middleware runs
+  // twice — once in the SSR env (connect handler) and again in the RSC env.
+  test("middleware runs exactly once per App Router request in hybrid app+pages fixture", async ({
     request,
   }) => {
     // /about is an App Router route that is in the middleware matcher.

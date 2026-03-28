@@ -5,7 +5,10 @@
  * Tests the treeshake config, manualChunks function, and experimentalMinChunkSize
  * to ensure large barrel-exporting libraries (e.g. mermaid) produce smaller bundles.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
@@ -113,10 +116,91 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
-      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        optimizeDeps: { exclude: ["@lingui/macro"] },
+      };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
+      expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      // Incoming excludes from other plugins must survive the merge
+      expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
+      // No duplicates
+      expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("merges top-level optimizeDeps.exclude from other plugins into per-environment configs", async () => {
+    // Simulates plugins like @lingui/vite-plugin that add entries to
+    // config.optimizeDeps.exclude before vinext's config hook runs.
+    // See: https://github.com/cloudflare/vinext/issues/538
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-merge-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        optimizeDeps: {
+          // Include "vinext" to simulate overlap with vinext's own excludes
+          exclude: ["@lingui/macro", "@lingui/core/macro", "vinext"],
+          include: ["some-lib"],
+        },
+      };
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+
+      // All environments should contain the incoming excludes
+      for (const envName of ["rsc", "ssr", "client"]) {
+        const envExclude = result.environments[envName].optimizeDeps?.exclude;
+        expect(envExclude, `${envName} should contain @lingui/macro`).toContain("@lingui/macro");
+        expect(envExclude, `${envName} should contain @lingui/core/macro`).toContain(
+          "@lingui/core/macro",
+        );
+        // vinext's own excludes should still be present
+        expect(envExclude, `${envName} should contain vinext`).toContain("vinext");
+        expect(envExclude, `${envName} should contain @vercel/og`).toContain("@vercel/og");
+        // Verify no duplicates exist (Set-based dedup works correctly even
+        // when incoming config overlaps with vinext's own entries)
+        expect(new Set(envExclude).size, `${envName} should have no duplicate excludes`).toBe(
+          envExclude.length,
+        );
+      }
+
+      // Client environment should merge incoming includes
+      const clientInclude = result.environments.client.optimizeDeps?.include;
+      expect(clientInclude).toContain("some-lib");
+      expect(clientInclude).toContain("react");
+      expect(clientInclude).toContain("react-dom");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -874,6 +958,70 @@ describe("augmentSsrManifestFromBundle", () => {
 
     expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
   });
+
+  it("normalizes existing absolute manifest keys before merging bundle metadata", () => {
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          "/app/pages/counter.tsx": {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "/app/pages/counter.tsx": ["/assets/counter.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+    expect(augmented["/app/pages/counter.tsx"]).toBeUndefined();
+  });
+
+  it("normalizes manifest keys across symlinked project roots", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-manifest-root-"));
+    const realRoot = path.join(tmpDir, "real");
+    const aliasRoot = path.join(tmpDir, "alias");
+    const realModulePath = path.join(realRoot, "pages", "counter.tsx");
+
+    await fsp.mkdir(path.join(realRoot, "pages"), { recursive: true });
+    await fsp.writeFile(realModulePath, "export default function Counter() { return null; }\n");
+    await fsp.symlink(realRoot, aliasRoot, "junction");
+
+    const escapedAliasKey = path.relative(aliasRoot, realModulePath).replace(/\\/g, "/");
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          [realModulePath]: {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      [escapedAliasKey]: ["/assets/counter.js"],
+    };
+
+    try {
+      const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, aliasRoot);
+
+      expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+      expect(augmented[escapedAliasKey]).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── collectAssetTags lazy filtering (integration) ────────────────────────────
@@ -1177,6 +1325,7 @@ describe("vinext:async-hooks-stub", () => {
       // string shape. This catches subtle syntax errors that string matching misses.
       // Strip the ES module `export` keyword so we can evaluate with new Function.
       const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
+      // oxlint-disable-next-line typescript-eslint/no-implied-eval -- evaluating generated source is the behavior under test
       const ALS = new Function(cjsSource)() as new () => {
         getStore(): unknown;
         // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

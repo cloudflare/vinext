@@ -64,7 +64,7 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 | ---------------- | ----- | ---- | ---- | --- | ---- | ------ |
 | 1. app-rendering | 8     | 6    | 2    | 0   | 0    | Done   |
 | 2. not-found     | 17    | 12   | 0    | 5   | 0    | Done   |
-| 3. global-error  | 11    | 3    | 3    | 5   | 0    | Done   |
+| 3. global-error  | 11    | 6    | 0    | 5   | 0    | Done   |
 | 4. dynamic       | 17    | 8    | 0    | 9   | 0    | Done   |
 
 ---
@@ -75,27 +75,27 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 **Local**: `tests/nextjs-compat/global-error.test.ts`
 **Fixtures**: `fixtures/app-basic/app/nextjs-compat/global-error-{rsc,ssr}/`, `metadata-error-{with,without}-boundary/`
 
-| #   | Next.js Test                                                          | Vinext Status | Notes                                                                                                                                                                                                                                                                          |
-| --- | --------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | error-server-test: server component throw caught by error.tsx         | **SKIP**      | Vinext returns 500 instead of rendering error.tsx boundary (200). RSC error propagates to HTTP handler instead of being caught at segment level. Fix: `packages/vinext/src/entries/app-rsc-entry.ts` — SSR layer needs to handle RSC error chunks by rendering error boundary. |
-| 2   | error-nested-test: nested error caught by inner error.tsx             | **SKIP**      | Same root cause as #1.                                                                                                                                                                                                                                                         |
-| 3   | Server component throw without local error.tsx returns a response     | PASS          | Returns a response (500) — server doesn't crash. Next.js would render global-error.tsx with 200.                                                                                                                                                                               |
-| 4   | Client component SSR throw without local error.tsx returns a response | PASS          | Same — returns response, server stays up.                                                                                                                                                                                                                                      |
-| 5   | generateMetadata() error caught by local error.tsx boundary           | **SKIP**      | Vinext shows Vite dev error overlay instead of rendering co-located error.tsx. Fix: `packages/vinext/src/shims/metadata.tsx` (resolveModuleMetadata ~line 135) — wrap generateMetadata() in try/catch, render error boundary if sibling error.tsx exists.                      |
-| 6   | generateMetadata() error without local boundary returns a response    | PASS          | Returns a response (Vite overlay HTML), server stays up.                                                                                                                                                                                                                       |
-| 7   | Client-side error trigger via button click -> global-error renders    | N/A           | Requires Playwright — client component state change triggers throw                                                                                                                                                                                                             |
-| 8   | Nested client error auto-thrown via useEffect -> global-error         | N/A           | Requires Playwright                                                                                                                                                                                                                                                            |
-| 9   | Dev-only Redbox display verification                                  | N/A           | Tests Next.js-specific dev overlay format, not applicable                                                                                                                                                                                                                      |
-| 10  | Client-side notFound() trigger from button (root)                     | N/A           | Requires Playwright                                                                                                                                                                                                                                                            |
-| 11  | Client-side notFound() trigger from button (nested)                   | N/A           | Requires Playwright                                                                                                                                                                                                                                                            |
+| #   | Next.js Test                                                          | Vinext Status | Notes                                                                                                                       |
+| --- | --------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1   | error-server-test: server component throw caught by error.tsx         | PASS          | Verified in dev + production preview: vinext renders the local `error.tsx` boundary with HTTP 200.                          |
+| 2   | error-nested-test: nested error caught by inner error.tsx             | PASS          | Verified in dev + production preview: vinext resolves to the nearest matching `error.tsx`, not the parent boundary.         |
+| 3   | Server component throw without local error.tsx returns a response     | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 when no local boundary exists.        |
+| 4   | Client component SSR throw without local error.tsx returns a response | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 for SSR-time client component throws. |
+| 5   | generateMetadata() error caught by local error.tsx boundary           | PASS          | Verified in dev + production preview: vinext renders the co-located `error.tsx` boundary with HTTP 200.                     |
+| 6   | generateMetadata() error without local boundary returns a response    | PASS          | Verified in dev + production preview: vinext escalates to `global-error.tsx` with HTTP 200 when no local boundary exists.   |
+| 7   | Client-side error trigger via button click -> global-error renders    | N/A           | Requires Playwright — client component state change triggers throw                                                          |
+| 8   | Nested client error auto-thrown via useEffect -> global-error         | N/A           | Requires Playwright                                                                                                         |
+| 9   | Dev-only Redbox display verification                                  | N/A           | Tests Next.js-specific dev overlay format, not applicable                                                                   |
+| 10  | Client-side notFound() trigger from button (root)                     | N/A           | Requires Playwright                                                                                                         |
+| 11  | Client-side notFound() trigger from button (nested)                   | N/A           | Requires Playwright                                                                                                         |
 
-**Result: 3/6 pass (HTTP-level), 3 skip (vinext issues), 5 N/A (browser-only, dev overlay)**
+**Result: 6/6 pass (HTTP-level), 0 skip, 5 N/A (browser-only, dev overlay)**
 
 ### Findings
 
-- **Server component errors return 500**: When a server component throws during RSC rendering, vinext returns HTTP 500 instead of catching the error and rendering the nearest error.tsx boundary with a 200. The RSC stream correctly encodes the error, but the SSR layer doesn't handle error chunks by activating React error boundaries.
-- **generateMetadata() errors bypass error.tsx**: When `generateMetadata()` throws, vinext's metadata resolution lets the error propagate to the top-level handler, triggering Vite's dev error overlay instead of rendering the co-located error.tsx boundary.
-- **Server stays up**: Despite errors, the dev server doesn't crash — all error paths return some HTTP response.
+- **Tracked skips were stale**: Current vinext already matches Next.js for the HTTP-level cases in this chunk. The test file was green in dev, and production preview matches the same 200-status boundary behavior.
+- **Server component and `generateMetadata()` errors use separate paths**: Server/render errors are rerouted through `renderErrorBoundaryPage()` from the RSC/SSR pipeline in `packages/vinext/src/entries/app-rsc-entry.ts`, while page-level `generateMetadata()` errors surface earlier from `buildPageElement()` and are routed to the same boundary renderer by a different catch path.
+- **Remaining gaps are browser-only**: The unported cases are still the client-triggered `global-error` interactions and Next.js-specific dev redbox assertions, not server-side HTTP semantics.
 
 ---
 
@@ -298,7 +298,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 
 **Config**: `tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts`
 **Run**: `node node_modules/@playwright/test/cli.js test -c tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts`
-**Prereq**: Build vinext (`npx tsc -p packages/vinext/tsconfig.json`) and start dev server (`npx vite --port 4174` from `fixtures/app-basic`)
+**Prereq**: Build vinext (`vp run vinext#build`) and start dev server (`npx vite --port 4174` from `fixtures/app-basic`)
 
 ### Chunk 4: dynamic (Playwright)
 
@@ -355,7 +355,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | ------------------------ | -------- | ------- | ----- | -------- | ----- | ------------- |
 | 1. app-rendering         | 8        | 6       | 2     | 0        | 0     | Done          |
 | 2. not-found             | 17       | 12      | 0     | 5        | 0     | Done          |
-| 3. global-error          | 11       | 3       | 3     | 5        | 0     | Done          |
+| 3. global-error          | 11       | 6       | 0     | 5        | 0     | Done          |
 | 4. dynamic               | 17       | 8       | 0     | 9        | 0     | Done          |
 | 5. app-routes            | 37       | 23      | 0     | 14       | 0     | Done          |
 | 6. metadata              | 45       | 30      | 0     | 15       | 0     | Done          |
@@ -371,7 +371,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 21. prefetch             | 4        | 4       | 0     | 0        | 0     | Done          |
 | 22. metadata-suspense    | 3        | 2       | 1     | 0        | 0     | Done          |
 | P5. shim/core unit tests | 230      | 230     | 0     | 0        | 0     | Done          |
-| **Total**                | **555+** | **362** | **6** | **188+** | **0** |               |
+| **Total**                | **555+** | **365** | **3** | **188+** | **0** |               |
 
 ### Playwright Browser Tests
 
@@ -706,22 +706,23 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
 **Local**: `tests/e2e/app-router/api-routes.spec.ts` (enhanced)
 
-| #   | OpenNext Test                                    | Vinext Status | Notes                                                        |
-| --- | ------------------------------------------------ | ------------- | ------------------------------------------------------------ |
-| 1   | GET returns 200 with JSON                        | PASS          | Already tested                                               |
-| 2   | POST with text body, status-based responses      | PASS          | Already tested                                               |
-| 3   | PUT returns 201 with JSON                        | PASS          | New test                                                     |
-| 4   | PATCH returns 202 with timestamp                 | PASS          | New test                                                     |
-| 5   | DELETE returns 204                               | PASS          | New test                                                     |
-| 6   | HEAD returns 200 with custom headers, empty body | PASS          | Already tested                                               |
-| 7   | OPTIONS returns 204 with Allow header            | FIXME         | vinext auto-OPTIONS does not set Allow header — feature gap  |
-| 8   | formData POST works                              | PASS          | New test                                                     |
-| 9   | Cookies set via route handler                    | PASS          | Already tested                                               |
-| 10  | redirect() in route handler returns 307          | PASS          | Already tested                                               |
-| 11  | Dynamic segment params in route handler          | PASS          | Already tested                                               |
-| 12  | Query parameters in route handler                | PASS          | New test                                                     |
-| 13  | Static GET route has `s-maxage` Cache-Control    | FIXME         | vinext does not read `revalidate` from route handler modules |
-| 14  | Revalidation timing in GET route handler         | FIXME         | Same: route handler cache headers not implemented            |
+| #   | OpenNext Test                                    | Vinext Status | Notes                                                                                                   |
+| --- | ------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------- |
+| 1   | GET returns 200 with JSON                        | PASS          | Already tested                                                                                          |
+| 2   | POST with text body, status-based responses      | PASS          | Already tested                                                                                          |
+| 3   | PUT returns 201 with JSON                        | PASS          | New test                                                                                                |
+| 4   | PATCH returns 202 with timestamp                 | PASS          | New test                                                                                                |
+| 5   | DELETE returns 204                               | PASS          | New test                                                                                                |
+| 6   | HEAD returns 200 with custom headers, empty body | PASS          | Already tested                                                                                          |
+| 7   | OPTIONS returns 204 with Allow header            | PASS          | Auto-OPTIONS now sorts the Allow list to match Next.js and 405 responses no longer emit Allow           |
+| 8   | formData POST works                              | PASS          | New test                                                                                                |
+| 9   | Cookies set via route handler                    | PASS          | Already tested                                                                                          |
+| 10  | redirect() in route handler returns 307          | PASS          | Already tested                                                                                          |
+| 11  | Dynamic segment params in route handler          | PASS          | Already tested                                                                                          |
+| 12  | Query parameters in route handler                | PASS          | New test                                                                                                |
+| 13  | Static GET route has `s-maxage` Cache-Control    | FIXME         | vinext does not read `revalidate` from route handler modules                                            |
+| 14  | Revalidation timing in GET route handler         | FIXME         | Same: route handler cache headers not implemented                                                       |
+| 15  | Route handler default export is ignored          | PASS          | Next.js parity: default export is ignored for dispatch (dev warning only); unmatched methods return 405 |
 
 ### ON-4: SSR + loading.tsx Suspense Timing
 

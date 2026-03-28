@@ -6,7 +6,7 @@
  * SSR rendering, ssr:false behavior, loading components, error
  * boundaries, displayName assignment, and flushPreloads().
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";

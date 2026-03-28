@@ -22,7 +22,6 @@ const SAFE_DEV_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
  *
  * Allowed origins:
  * - Requests with no Origin header (same-origin navigations, curl, etc.)
- * - Requests where Origin is "null" (sandboxed iframes, privacy-sensitive contexts)
  * - Requests from localhost, 127.0.0.1, or [::1] (any port)
  * - Requests from any subdomain of localhost (e.g., foo.localhost)
  * - Requests where Origin hostname matches the Host header
@@ -39,7 +38,14 @@ export function isAllowedDevOrigin(
 ): boolean {
   // No Origin header — same-origin requests from non-fetch navigations,
   // curl, Postman, etc. These are safe to allow.
-  if (!origin || origin === "null") return true;
+  if (!origin) return true;
+
+  // Origin "null" is sent by browsers in opaque/privacy-sensitive contexts
+  // (sandboxed iframes, data: URLs, etc.). Treat it as an explicit cross-origin
+  // value — only allow if "null" is in allowedDevOrigins (CVE: GHSA-jcc7-9wpm-mj36).
+  if (origin === "null") {
+    return allowedDevOrigins?.includes("null") ?? false;
+  }
 
   let originHostname: string;
   try {
@@ -150,7 +156,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {

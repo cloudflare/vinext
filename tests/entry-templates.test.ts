@@ -10,8 +10,8 @@
  *   Vite's pluginContainer.load() on the virtual module IDs.
  */
 import path from "node:path";
-import { describe, it, expect, afterAll } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import { describe, it, expect, afterAll } from "vite-plus/test";
+import { createServer, type ViteDevServer } from "vite-plus";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import type { AppRouterConfig } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";
@@ -277,9 +277,120 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
-  it("server entry rejects malformed non-terminal catch-all patterns", async () => {
+  it("server entry uses trie-based route matching", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
-    expect(stabilize(code)).toContain("if (i !== patternParts.length - 1) return null;");
+    expect(stabilize(code)).toContain("buildRouteTrie");
+    expect(stabilize(code)).toContain("trieMatch");
+  });
+
+  it("server entry delegates Pages ISR cache plumbing to shared helpers", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const stableCode = stabilize(code);
+
+    expect(stableCode).toContain('from "<ROOT>/packages/vinext/src/server/isr-cache.js";');
+    expect(code).toContain("function isrGet(key) {");
+    expect(code).toContain("return __sharedIsrGet(key);");
+    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).not.toContain("const promise = renderFn()");
+    expect(code).not.toContain("ctx.waitUntil(promise)");
+  });
+
+  it("server entry seeds the main Pages Router unified context with executionContext", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const renderPageIndex = code.indexOf("async function _renderPage(request, url, manifest) {");
+    const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
+
+    expect(renderPageIndex).toBeGreaterThan(-1);
+    expect(unifiedCtxIndex).toBeGreaterThan(renderPageIndex);
+
+    const renderPageSection = code.slice(unifiedCtxIndex, unifiedCtxIndex + 200);
+    expect(renderPageSection).toContain("executionContext: _getRequestExecutionContext(),");
+  });
+
+  it("server entry passes a fresh unified-context ISR runner into the typed page-data helper", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const runnerIndex = code.indexOf("runInFreshUnifiedContext(callback) {");
+
+    expect(runnerIndex).toBeGreaterThan(-1);
+
+    const runnerSection = code.slice(runnerIndex, runnerIndex + 500);
+    expect(runnerSection).toContain("_createUnifiedCtx");
+    expect(runnerSection).toContain("executionContext: _getRequestExecutionContext()");
+    expect(runnerSection).toContain("_runWithUnifiedCtx");
+    expect(runnerSection).toContain("ensureFetchPatch();");
+    expect(runnerSection).toContain("return callback();");
+  });
+
+  it("server entry delegates Pages HTML stream/response shaping to a typed helper", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("renderPagesPageResponse as __renderPagesPageResponse");
+    expect(code).toContain("return __renderPagesPageResponse({");
+    expect(code).not.toContain('var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";');
+    expect(code).not.toContain("var compositeStream = new ReadableStream({");
+  });
+
+  it("server entry delegates Pages data/ISR handling to a typed helper", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("resolvePagesPageData as __resolvePagesPageData");
+    expect(code).toContain("isrGet as __sharedIsrGet");
+    expect(code).toContain("isrSet as __sharedIsrSet");
+    expect(code).toContain("isrCacheKey as __sharedIsrCacheKey");
+    expect(code).toContain(
+      "triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration",
+    );
+    expect(code).toContain("const pageDataResult = await __resolvePagesPageData({");
+    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).not.toContain("async function isrGet(key)");
+    expect(code).not.toContain("async function isrSet(key, data, revalidateSeconds, tags)");
+    expect(code).not.toContain("const pendingRegenerations = new Map();");
+    expect(code).not.toContain("function fnv1a64(input)");
+    expect(code).not.toContain("const result = await pageModule.getServerSideProps(ctx);");
+    expect(code).not.toContain("const result = await pageModule.getStaticProps(ctx);");
+  });
+
+  it("server entry delegates Pages API route handling and req/res shims to typed helpers", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("createPagesReqRes as __createPagesReqRes");
+    expect(code).toContain("handlePagesApiRoute as __handlePagesApiRoute");
+    expect(code).toContain("return __handlePagesApiRoute({");
+    expect(code).not.toContain("function createReqRes(request, url, query, body)");
+    expect(code).not.toContain("async function readBodyWithLimit(request, maxBytes)");
+    expect(code).not.toContain(
+      "const { req, res, responsePromise } = createReqRes(request, url, query, body);",
+    );
+  });
+
+  it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("async function renderIsrPassToStringAsync(element)");
+    expect(code).toContain("runWithServerInsertedHTMLState(() =>");
+    expect(code).toContain("runWithHeadState(() =>");
+    expect(code).toContain("_runWithCacheState(() =>");
+    expect(code).toContain(
+      "runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element)))",
+    );
+    expect(code).toContain("renderIsrPassToStringAsync,");
+  });
+
+  it("server entry registers i18n state without wrapping the unified request scope", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain('import "vinext/i18n-state";');
+    expect(code).not.toContain("return runWithI18nState(() =>");
+  });
+
+  it("server entry calls reportRequestError for SSR and API errors", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    // The generated prod entry must import reportRequestError
+    expect(code).toContain("reportRequestError");
+    // SSR page render catch block should report with routeType "render"
+    expect(code).toContain('"render"');
+    // API route catch block should report with routeType "route"
+    expect(code).toContain('"route"');
   });
 
   it("client entry snapshot", async () => {

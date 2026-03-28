@@ -11,12 +11,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Request context
 // ---------------------------------------------------------------------------
 
-interface HeadersContext {
+export interface HeadersContext {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
@@ -27,7 +32,7 @@ interface HeadersContext {
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
-type VinextHeadersShimState = {
+export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   pendingSetCookies: string[];
@@ -55,10 +60,13 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   draftModeCookieHeader: null,
   phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
+const EXPIRED_COOKIE_DATE = new Date(0).toUTCString();
 
 function _getState(): VinextHeadersShimState {
-  const state = _als.getStore();
-  return state ?? _fallbackState;
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
+  return _als.getStore() ?? _fallbackState;
 }
 
 /**
@@ -171,36 +179,16 @@ export function getHeadersContext(): HeadersContext | null {
 }
 
 export function setHeadersContext(ctx: HeadersContext | null): void {
+  const state = _getState();
   if (ctx !== null) {
-    // For backward compatibility, set context on the current ALS store
-    // if one exists, otherwise update the fallback. Callers should
-    // migrate to runWithHeadersContext() for new-request setup.
-    const existing = _als.getStore();
-    if (existing) {
-      existing.headersContext = ctx;
-      existing.dynamicUsageDetected = false;
-      existing.pendingSetCookies = [];
-      existing.draftModeCookieHeader = null;
-      existing.phase = "render";
-    } else {
-      _fallbackState.headersContext = ctx;
-      _fallbackState.dynamicUsageDetected = false;
-      _fallbackState.pendingSetCookies = [];
-      _fallbackState.draftModeCookieHeader = null;
-      _fallbackState.phase = "render";
-    }
-    return;
-  }
-
-  // End of request cleanup: keep the store (so consumeDynamicUsage and
-  // cookie flushing can still run), but clear the request headers/cookies.
-  const state = _als.getStore();
-  if (state) {
-    state.headersContext = null;
+    state.headersContext = ctx;
+    state.dynamicUsageDetected = false;
+    state.pendingSetCookies = [];
+    state.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
-    _fallbackState.headersContext = null;
-    _fallbackState.phase = "render";
+    state.headersContext = null;
+    state.phase = "render";
   }
 }
 
@@ -218,6 +206,16 @@ export function runWithHeadersContext<T>(
   ctx: HeadersContext,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.headersContext = ctx;
+      uCtx.dynamicUsageDetected = false;
+      uCtx.pendingSetCookies = [];
+      uCtx.draftModeCookieHeader = null;
+      uCtx.phase = "render";
+    }, fn);
+  }
+
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,
@@ -443,16 +441,12 @@ export function headersContextFromRequest(request: Request): HeadersContext {
   let _mutable: Headers | null = null;
 
   const headersProxy = new Proxy(request.headers, {
-    get(target, prop: string | symbol, receiver) {
+    get(target, prop: string | symbol) {
       // Route to the materialised copy if it exists.
       const src = _mutable ?? target;
 
-      if (typeof prop !== "string") {
-        return Reflect.get(src, prop, receiver);
-      }
-
       // Intercept mutating methods: materialise on first write.
-      if (_HEADERS_MUTATING_METHODS.has(prop)) {
+      if (typeof prop === "string" && _HEADERS_MUTATING_METHODS.has(prop)) {
         return (...args: unknown[]) => {
           if (!_mutable) {
             _mutable = new Headers(target);
@@ -776,10 +770,9 @@ class RequestCookies {
 
     // Build Set-Cookie header string
     const parts = [`${cookieName}=${encodeURIComponent(cookieValue)}`];
-    if (opts?.path) {
-      validateCookieAttributeValue(opts.path, "Path");
-      parts.push(`Path=${opts.path}`);
-    }
+    const path = opts?.path ?? "/";
+    validateCookieAttributeValue(path, "Path");
+    parts.push(`Path=${path}`);
     if (opts?.domain) {
       validateCookieAttributeValue(opts.domain, "Domain");
       parts.push(`Domain=${opts.domain}`);
@@ -795,12 +788,24 @@ class RequestCookies {
   }
 
   /**
-   * Delete a cookie by setting it with Max-Age=0.
+   * Delete a cookie by emitting an expired Set-Cookie header.
    */
-  delete(name: string): this {
+  delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
+    const path = typeof nameOrOptions === "string" ? "/" : (nameOrOptions.path ?? "/");
+    const domain = typeof nameOrOptions === "string" ? undefined : nameOrOptions.domain;
+
     validateCookieName(name);
+    validateCookieAttributeValue(path, "Path");
+    if (domain) {
+      validateCookieAttributeValue(domain, "Domain");
+    }
+
     this._cookies.delete(name);
-    _getState().pendingSetCookies.push(`${name}=; Path=/; Max-Age=0`);
+    const parts = [`${name}=`, `Path=${path}`];
+    if (domain) parts.push(`Domain=${domain}`);
+    parts.push(`Expires=${EXPIRED_COOKIE_DATE}`);
+    _getState().pendingSetCookies.push(parts.join("; "));
     return this;
   }
 

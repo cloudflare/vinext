@@ -24,8 +24,8 @@
  * - fixtures/app-basic/app/api/* (pre-existing, referenced for some tests)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 describe("Next.js compat: app-routes", () => {
@@ -257,7 +257,7 @@ describe("Next.js compat: app-routes", () => {
   });
 
   // ── cookies().delete() ───────────────────────────────────────
-  it("cookies().delete() produces Set-Cookie with Max-Age=0", async () => {
+  it("cookies().delete() produces an expired Set-Cookie header", async () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`, {
       method: "POST",
     });
@@ -265,7 +265,7 @@ describe("Next.js compat: app-routes", () => {
     const setCookies = res.headers.getSetCookie();
     const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
-    expect(sessionCookie).toContain("Max-Age=0");
+    expect(sessionCookie).toContain("Expires=");
   });
 
   // ── Dynamic params ───────────────────────────────────────────
@@ -381,4 +381,16 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'permanentRedirect' — Would need fixture, minor variant of redirect
   //
   // N/A: 'catch-all routes' — Would need fixture with [...slug] route handler
+
+  // ── ISR caching (dev mode) ─────────────────────────────────
+  // In dev mode, ISR caching is disabled. Route handlers should NOT emit
+  // X-Vinext-Cache headers — every request re-executes the handler fresh.
+  // Production ISR behavioral tests are in app-router.test.ts's production server section.
+
+  it("dev mode: route handler with revalidate does not emit X-Vinext-Cache header", async () => {
+    const res = await fetch(`${baseUrl}/api/static-data`);
+    expect(res.status).toBe(200);
+    // Dev mode should not set X-Vinext-Cache (ISR is production-only)
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+  });
 });

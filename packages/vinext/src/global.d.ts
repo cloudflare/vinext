@@ -228,6 +228,24 @@ declare global {
   var __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
   /**
+   * Configured Pages Router domain locale mappings, set on `globalThis` for
+   * server-side rendering so `next/link` can resolve cross-domain locale hrefs
+   * before hydration.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_DOMAIN_LOCALES__:
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | undefined;
+
+  /**
+   * Current request hostname, set on `globalThis` during Pages Router SSR so
+   * locale-domain links can decide whether to render relative or absolute
+   * hrefs.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_HOSTNAME__: string | undefined;
+
+  /**
    * The onRequestError handler registered by instrumentation.ts.
    * Set by the instrumentation.ts register() function.
    *
@@ -238,6 +256,23 @@ declare global {
    */
   // eslint-disable-next-line no-var
   var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// process.features — Node.js v22.10.0+ feature flags
+// ---------------------------------------------------------------------------
+//
+// `process.features.typescript` is available since Node.js v22.10.0 and
+// indicates whether the runtime has built-in TypeScript support (--experimental-strip-types).
+// Declared here so we don't have to cast `process.features as any` at the call site.
+
+declare global {
+  namespace NodeJS {
+    interface ProcessFeatures {
+      /** Available since Node.js v22.10.0. `true` when run with --experimental-strip-types. */
+      typescript?: boolean;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +291,13 @@ declare global {
        * Generated once at build time and injected via Vite `define`.
        */
       __VINEXT_DRAFT_SECRET?: string;
+
+      /**
+       * Build ID string injected via Vite `define` at production build time.
+       * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
+       * `undefined` in dev mode.
+       */
+      __VINEXT_BUILD_ID?: string;
 
       /**
        * JSON-encoded array of `RemotePattern` objects from
@@ -287,6 +329,22 @@ declare global {
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG?: string;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// node:http augmentations — vinext properties added to IncomingMessage
+// ---------------------------------------------------------------------------
+
+declare module "node:http" {
+  interface IncomingMessage {
+    /**
+     * The HTTP status code set by vinext middleware for Pages Router rewrite
+     * responses (e.g. 307 for a rewrite that should surface as a redirect).
+     * Written in `index.ts` when middleware emits a `rewriteStatus`, read by
+     * the downstream Pages Router handler to decide the final response status.
+     */
+    __vinextRewriteStatus?: number;
   }
 }
 

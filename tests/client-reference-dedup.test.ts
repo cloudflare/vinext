@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
+import type { Plugin } from "vite";
+import vinext from "../packages/vinext/src/index.js";
 import {
   extractPackageName,
   clientReferenceDedupPlugin,
@@ -179,5 +181,25 @@ describe("clientReferenceDedupPlugin", () => {
     it("applies only in serve mode", () => {
       expect(plugin.apply).toBe("serve");
     });
+  });
+});
+
+describe("vinext experimental.clientReferenceDedup", () => {
+  function getPluginNames(options?: Parameters<typeof vinext>[0]) {
+    return ((vinext(options) as Plugin[]).flat(Infinity) as Plugin[])
+      .map((plugin) => plugin?.name)
+      .filter(Boolean);
+  }
+
+  it("does not register clientReferenceDedupPlugin by default", () => {
+    expect(getPluginNames()).not.toContain("vinext:client-reference-dedup");
+  });
+
+  it("registers clientReferenceDedupPlugin when explicitly enabled", () => {
+    expect(
+      getPluginNames({
+        experimental: { clientReferenceDedup: true },
+      }),
+    ).toContain("vinext:client-reference-dedup");
   });
 });

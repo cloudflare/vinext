@@ -9,8 +9,10 @@ export default function SSRResEndPage() {
 export async function getServerSideProps({ res }: { res: any }) {
   // Short-circuit: gSSP calls res.end() directly instead of returning props.
   // This is a valid Next.js pattern for custom responses.
+  const body = JSON.stringify({ ok: true, source: "gssp-res-end" });
   res.setHeader("content-type", "application/json");
+  res.setHeader("content-length", String(Buffer.byteLength(body)));
   res.statusCode = 202;
-  res.end(JSON.stringify({ ok: true, source: "gssp-res-end" }));
+  res.end(body);
   return { props: {} };
 }

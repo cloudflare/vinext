@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { isExternalUrl } from "./config-matchers.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -186,6 +187,12 @@ export interface NextConfig {
   cacheComponents?: boolean;
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
+  /**
+   * Packages that should be treated as server-external (not bundled by Vite).
+   * Corresponds to Next.js `serverExternalPackages` (or the legacy
+   * `experimental.serverComponentsExternalPackages`).
+   */
+  serverExternalPackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
@@ -196,6 +203,13 @@ export interface NextConfig {
   /** Any other options */
   [key: string]: unknown;
 }
+
+export type NextConfigFactory = (
+  phase: string,
+  opts: { defaultConfig: NextConfig },
+) => NextConfig | Promise<NextConfig>;
+
+export type NextConfigInput = NextConfig | NextConfigFactory;
 
 /**
  * Resolved configuration with all async values awaited.
@@ -224,8 +238,16 @@ export interface ResolvedNextConfig {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
+  optimizePackageImports: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /**
+   * Packages that should be treated as server-external (not bundled by Vite).
+   * Sourced from `serverExternalPackages` or the legacy
+   * `experimental.serverComponentsExternalPackages` in next.config.
+   */
+  serverExternalPackages: string[];
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
 }
@@ -261,7 +283,9 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
     stack.includes("next-intl/plugin") ||
     stack.includes("next-intl/dist");
 
-  console.warn(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
+  console.error(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
   if (isNextIntlPlugin) {
     console.warn(
       "[vinext] Hint: createNextIntlPlugin() is not needed with vinext. " +
@@ -272,14 +296,13 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
 }
 
 /**
- * Unwrap the config value from a loaded module, calling it if it's a
- * function-form config (Next.js supports `module.exports = (phase, opts) => config`).
+ * Resolve a Next-style config value, calling it if it's a function-form config
+ * (Next.js supports `module.exports = (phase, opts) => config`).
  */
-async function unwrapConfig(
-  mod: any,
+async function resolveConfigValue(
+  config: unknown,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig> {
-  const config = mod.default ?? mod;
   if (typeof config === "function") {
     const result = await config(phase, {
       defaultConfig: {},
@@ -287,6 +310,33 @@ async function unwrapConfig(
     return result as NextConfig;
   }
   return config as NextConfig;
+}
+
+/**
+ * Unwrap the config value from a loaded module namespace.
+ */
+async function unwrapConfig(
+  mod: any,
+  phase: string = PHASE_DEVELOPMENT_SERVER,
+): Promise<NextConfig> {
+  return await resolveConfigValue(mod.default ?? mod, phase);
+}
+
+export function findNextConfigPath(root: string): string | null {
+  for (const filename of CONFIG_FILES) {
+    const configPath = path.join(root, filename);
+    if (fs.existsSync(configPath)) return configPath;
+  }
+  return null;
+}
+
+export async function resolveNextConfigInput(
+  config: NextConfigInput,
+  phase: string = PHASE_DEVELOPMENT_SERVER,
+): Promise<NextConfig> {
+  // Inline vinext({ nextConfig }) already receives the config value itself,
+  // not a module namespace object, so do not treat a "default" key specially.
+  return await resolveConfigValue(config, phase);
 }
 
 /**
@@ -302,39 +352,37 @@ export async function loadNextConfig(
   root: string,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig | null> {
-  for (const filename of CONFIG_FILES) {
-    const configPath = path.join(root, filename);
-    if (!fs.existsSync(configPath)) continue;
+  const configPath = findNextConfigPath(root);
+  if (!configPath) return null;
 
-    try {
-      // Load config via Vite's module runner (TS + extensionless import support)
-      const { runnerImport } = await import("vite");
-      const { module: mod } = await runnerImport(configPath, {
-        root,
-        logLevel: "error",
-        clearScreen: false,
-      });
-      return await unwrapConfig(mod, phase);
-    } catch (e) {
-      // If the error indicates a CJS file loaded in ESM context, retry with
-      // createRequire which provides a proper CommonJS environment.
-      if (isCjsError(e) && (filename.endsWith(".js") || filename.endsWith(".cjs"))) {
-        try {
-          const require = createRequire(path.join(root, "package.json"));
-          const mod = require(configPath);
-          return await unwrapConfig({ default: mod }, phase);
-        } catch (e2) {
-          warnConfigLoadFailure(filename, e2 as Error);
-          return null;
-        }
+  const filename = path.basename(configPath);
+
+  try {
+    // Load config via Vite's module runner (TS + extensionless import support)
+    const { runnerImport } = await import("vite");
+    const { module: mod } = await runnerImport(configPath, {
+      root,
+      logLevel: "error",
+      clearScreen: false,
+    });
+    return await unwrapConfig(mod, phase);
+  } catch (e) {
+    // If the error indicates a CJS file loaded in ESM context, retry with
+    // createRequire which provides a proper CommonJS environment.
+    if (isCjsError(e) && (filename.endsWith(".js") || filename.endsWith(".cjs"))) {
+      try {
+        const require = createRequire(path.join(root, "package.json"));
+        const mod = require(configPath);
+        return await unwrapConfig(mod, phase);
+      } catch (e2) {
+        warnConfigLoadFailure(filename, e2 as Error);
+        throw e2;
       }
-
-      warnConfigLoadFailure(filename, e as Error);
-      return null;
     }
-  }
 
-  return null;
+    warnConfigLoadFailure(filename, e as Error);
+    throw e;
+  }
 }
 
 /**
@@ -405,7 +453,9 @@ export async function resolveNextConfig(
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverExternalPackages: [],
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -438,6 +488,26 @@ export async function resolveNextConfig(
     }
   }
 
+  {
+    const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+
+    if (externalRewrites.length > 0) {
+      const noun = externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
+      const listing = externalRewrites
+        .map((rewrite) => `  ${rewrite.source} → ${rewrite.destination}`)
+        .join("\n");
+
+      console.warn(
+        `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to external origins:\n` +
+          `${listing}\n` +
+          `Request headers, including credential headers (cookie, authorization, proxy-authorization, x-api-key), ` +
+          `are forwarded to the external origin to match Next.js behavior. ` +
+          `If you do not want to forward credentials, use an API route or route handler where you control exactly which headers are sent.`,
+      );
+    }
+  }
+
   // Resolve headers
   let headers: NextHeader[] = [];
   if (config.headers) {
@@ -464,6 +534,22 @@ export async function resolveNextConfig(
   const serverActionsBodySizeLimit = parseBodySizeLimit(
     serverActionsConfig?.bodySizeLimit as string | number | undefined,
   );
+
+  // Resolve optimizePackageImports from experimental config
+  const rawOptimize = experimental?.optimizePackageImports;
+  const optimizePackageImports = Array.isArray(rawOptimize)
+    ? rawOptimize.filter((x): x is string => typeof x === "string")
+    : [];
+
+  // Resolve serverExternalPackages — support the current top-level key and the
+  // legacy experimental.serverComponentsExternalPackages name that Next.js still
+  // accepts (it moved out of experimental in Next.js 14.2).
+  const legacyServerComponentsExternal = experimental?.serverComponentsExternalPackages;
+  const serverExternalPackages: string[] = Array.isArray(config.serverExternalPackages)
+    ? (config.serverExternalPackages as string[])
+    : Array.isArray(legacyServerComponentsExternal)
+      ? (legacyServerComponentsExternal as string[])
+      : [];
 
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
@@ -518,7 +604,9 @@ export async function resolveNextConfig(
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    optimizePackageImports,
     serverActionsBodySizeLimit,
+    serverExternalPackages,
     buildId,
   };
 

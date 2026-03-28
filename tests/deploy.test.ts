@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -29,6 +29,7 @@ import {
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 import { mergeHeaders } from "../packages/vinext/src/server/worker-utils.js";
+import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -301,7 +302,11 @@ describe("generateWranglerConfig", () => {
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
     expect(parsed.main).toBe("./worker/index.ts");
-    expect(parsed.assets).toEqual({ not_found_handling: "none", binding: "ASSETS" });
+    expect(parsed.assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+    });
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
 
@@ -338,6 +343,17 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeUndefined();
+  });
+
+  it("includes assets.directory pointing to dist/client (required by wrangler 4.69+)", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    // Wrangler 4.69+ rejects assets blocks that lack `directory`.
+    // The @cloudflare/vite-plugin always writes static assets to dist/client/.
+    expect(parsed.assets.directory).toBe("dist/client");
   });
 
   it("includes Cloudflare Images binding for image optimization", () => {
@@ -482,6 +498,15 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(middlewarePos).toBeLessThan(apiRoutePos);
   });
 
+  it("applies next.config.js redirects before middleware", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const redirectPos = content.indexOf("matchRedirect(pathname, configRedirects, reqCtx)");
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+    expect(redirectPos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(redirectPos).toBeLessThan(middlewarePos);
+  });
+
   it("handles middleware redirects", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("result.redirectUrl");
@@ -514,7 +539,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js redirects", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configRedirects");
-    expect(content).toContain("matchRedirect(resolvedPathname");
+    expect(content).toContain("matchRedirect(pathname");
   });
 
   it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
@@ -528,7 +553,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js custom headers", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configHeaders");
-    expect(content).toContain("matchHeaders(resolvedPathname");
+    expect(content).toContain("matchHeaders(pathname");
   });
 
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
@@ -631,6 +656,134 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(merged.headers.get("x-custom")).toBe("from-middleware");
   });
 
+  it("mergeHeaders drops the body for no-body middleware rewrite statuses", async () => {
+    for (const status of [204, 205, 304]) {
+      const response = new Response("body", {
+        status: 200,
+        headers: { "content-type": "text/plain", "content-length": "4" },
+      });
+
+      const merged = mergeHeaders(response, { "x-custom": "from-middleware" }, status);
+
+      expect(merged.status).toBe(status);
+      expect(merged.headers.get("x-custom")).toBe("from-middleware");
+      expect(merged.headers.get("content-type")).toBeNull();
+      expect(merged.headers.get("content-length")).toBeNull();
+      expect(await merged.text()).toBe("");
+    }
+  });
+
+  it("mergeHeaders cancels discarded body streams for no-body statuses", async () => {
+    let started = false;
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          started = true;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (canceled) return;
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "5",
+        },
+      },
+    );
+
+    const merged = mergeHeaders(response, { "x-custom": "from-middleware" }, 204);
+
+    expect(merged.status).toBe(204);
+    expect(merged.headers.get("content-type")).toBeNull();
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(await merged.text()).toBe("");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(started).toBe(true);
+    expect(canceled).toBe(true);
+  });
+
+  it("mergeHeaders strips stale content-length only for tagged streamed Pages HTML", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": "1",
+        },
+      },
+    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    response.__vinextStreamedHtmlResponse = true;
+
+    const merged = mergeHeaders(response, { "x-custom": "from-middleware" });
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeHeaders strips middleware-provided content-length for untagged responses", async () => {
+    const response = new Response("body", {
+      status: 200,
+      headers: {
+        "content-type": "text/plain",
+      },
+    });
+
+    const merged = mergeHeaders(response, {
+      "content-length": "1",
+      "x-custom": "from-middleware",
+    });
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/plain");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    expect(await merged.text()).toBe("body");
+  });
+
+  it("mergeHeaders preserves response content-length over middleware content-length for untagged custom responses", async () => {
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeHeaders(response, {
+      "content-length": "1",
+      "x-custom": "from-middleware",
+    });
+
+    expect(merged.headers.get("content-length")).toBe("3");
+    expect(merged.headers.get("content-type")).toBe("application/octet-stream");
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("NO_BODY_RESPONSE_STATUSES");
+    expect(content).toContain("__vinextStreamedHtmlResponse");
+    expect(content).toContain('merged.delete("content-length")');
+    expect(content).toContain("if (isContentLengthHeader(k)) continue;");
+    expect(content).toContain("cancelResponseBody(response)");
+  });
+
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = generatePagesRouterWorkerEntry();
     // Worker entry must import applyMiddlewareRequestHeaders from config-matchers
@@ -709,6 +862,17 @@ describe("generatePagesRouterViteConfig", () => {
 // ─── getMissingDeps ──────────────────────────────────────────────────────────
 
 describe("getMissingDeps", () => {
+  it("reports missing @vitejs/plugin-react", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+
+    const notResolvable = () => false;
+    const missing = getMissingDeps(info, notResolvable);
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-react" }));
+  });
+
   it("reports missing @cloudflare/vite-plugin", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
@@ -1495,8 +1659,20 @@ describe("getMissingDeps — MDX", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
-    const missing = getMissingDeps(info);
+    const missing = getMissingDeps(info, (root, pkg) => pkg !== "@mdx-js/rollup");
     expect(missing).toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
+  });
+
+  it("does not report @mdx-js/rollup when it is resolvable", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    const missing = getMissingDeps(info, () => true);
+    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
   });
 });
 
@@ -2284,5 +2460,68 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
     // Only the workspace package should be modified
     expect(webPkg.type).toBe("module");
     expect(rootPkg.type).toBeUndefined();
+  });
+});
+
+// ─── domainCandidates ────────────────────────────────────────────────────────
+
+describe("domainCandidates", () => {
+  it("returns a single candidate for a bare domain", () => {
+    expect(domainCandidates("example.com")).toEqual(["example.com"]);
+  });
+
+  it("starts from the shortest suffix for a simple subdomain", () => {
+    expect(domainCandidates("shop.example.com")).toEqual(["example.com", "shop.example.com"]);
+  });
+
+  it("handles multi-part TLDs by trying progressively longer candidates", () => {
+    expect(domainCandidates("shop.example.co.uk")).toEqual([
+      "co.uk",
+      "example.co.uk",
+      "shop.example.co.uk",
+    ]);
+  });
+
+  it("handles deeply nested subdomains", () => {
+    expect(domainCandidates("a.b.c.example.com")).toEqual([
+      "example.com",
+      "c.example.com",
+      "b.c.example.com",
+      "a.b.c.example.com",
+    ]);
+  });
+});
+
+// ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
+
+describe("parseWranglerConfig — custom domain extraction", () => {
+  it("extracts custom domain from routes array (string form)", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("example.co.uk");
+  });
+
+  it("extracts custom domain from custom_domains array", () => {
+    writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("shop.example.com.au");
+  });
+
+  it("ignores workers.dev domains", () => {
+    writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBeUndefined();
+  });
+
+  it("extracts KV namespace ID for VINEXT_CACHE", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        kv_namespaces: [{ binding: "VINEXT_CACHE", id: "abc123" }],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.kvNamespaceId).toBe("abc123");
   });
 });

@@ -66,7 +66,10 @@ test.describe("headers() and cookies() in Server Components", () => {
   test("headers() available during browser client navigation", async ({ page }) => {
     // Start on the home page
     await page.goto(`${BASE}/`);
-    await page.waitForLoadState("networkidle");
+    // Visible home-page content is a more stable readiness signal than
+    // networkidle because Next Link prefetch can keep background requests alive.
+    await expect(page.getByRole("heading", { name: "Welcome to App Router" })).toBeVisible();
+    await expect(page.getByTestId("headers-test-link")).toBeVisible();
 
     // Navigate to headers-test via client-side navigation (Link click)
     await page.click('[data-testid="headers-test-link"]');

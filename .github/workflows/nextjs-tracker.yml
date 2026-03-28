@@ -1,0 +1,136 @@
+name: Next.js Tracker
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # daily at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      since_hours:
+        description: "How many hours back to look for commits (default: 24)"
+        required: false
+        default: "24"
+      dry_run:
+        description: "Dry run: print what issues would be opened without creating them"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: nextjs-tracker
+  cancel-in-progress: true
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+
+      - name: Fetch recent Next.js canary commits
+        id: commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HOURS="${{ github.event.inputs.since_hours || '24' }}"
+          SINCE=$(date -u -d "${HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "Fetching Next.js canary commits since $SINCE"
+
+          # Fetch commit list only (messages + metadata). The agent will fetch
+          # full diffs via gh api for any commits it finds potentially relevant,
+          # rather than us pre-fetching all of them upfront.
+          gh api \
+            "repos/vercel/next.js/commits?sha=canary&since=${SINCE}&per_page=100" \
+            --jq '[.[] | {
+              sha: .sha,
+              message: .commit.message,
+              author: .commit.author.name,
+              date: .commit.author.date,
+              url: .html_url
+            }]' > /tmp/nextjs-commits.json
+
+          COUNT=$(jq length /tmp/nextjs-commits.json)
+          echo "Found $COUNT commits"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_commits=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build tracker prompt
+        id: build_prompt
+        if: steps.commits.outputs.has_commits == 'true'
+        run: |
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          COMMITS=$(cat /tmp/nextjs-commits.json)
+
+          if [ "$DRY_RUN" = "true" ]; then
+            MODE_INSTRUCTION="You are running in DRY RUN mode. DO NOT create any GitHub issues. Instead, print a structured report to stdout."
+            ACTION_INSTRUCTION="Print each relevant change in this format:
+
+          ---
+          WOULD OPEN ISSUE: <title>
+          Priority: Breaking | Important | Minor
+          Commits: <sha(s)>
+          Summary: <2-3 sentences>
+          Files affected in vinext: <file paths>
+          ---
+
+          At the end, print: \"X relevant changes found out of Y total commits. Z issues would be opened.\""
+          else
+            MODE_INSTRUCTION="Create GitHub issues for relevant changes."
+            ACTION_INSTRUCTION="Follow your agent configuration exactly:
+          - Check for duplicate open issues before creating new ones
+          - Use the exact issue format specified in your config
+          - Apply the label nextjs-tracking to every issue
+          - If nothing is relevant, do nothing"
+          fi
+
+          {
+            echo 'prompt<<PROMPT_DELIM'
+            cat << PROMPT_EOF
+          ${MODE_INSTRUCTION}
+
+          HERE ARE THE COMMITS (already fetched, do not read any files):
+
+          ${COMMITS}
+
+          INSTRUCTIONS:
+          1. Triage each commit from its message. Skip obvious non-relevant commits (docs, turbopack, tests, version bumps, telemetry, CLI-only, lint/format).
+          2. For potentially relevant commits, fetch the full diff: gh api repos/vercel/next.js/commits/<sha>
+          3. Classify and act.
+
+          ${ACTION_INSTRUCTION}
+
+          IMPORTANT: Do NOT explore the local codebase. Do NOT read local files. Do NOT launch subagents. All context you need about vinext is in your agent configuration. Start classifying commits immediately.
+          PROMPT_EOF
+            echo 'PROMPT_DELIM'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Next.js Tracker
+        if: steps.commits.outputs.has_commits == 'true'
+        uses: ask-bonk/ask-bonk/github@main
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-6"
+          permissions: write
+          opencode_dev: false
+          agent: nextjs-tracker
+          prompt: ${{ steps.build_prompt.outputs.prompt }}
+
+      - name: Skip (no commits)
+        if: steps.commits.outputs.has_commits == 'false'
+        run: echo "No Next.js canary commits in the last ${{ github.event.inputs.since_hours || '24' }} hours. Nothing to do."

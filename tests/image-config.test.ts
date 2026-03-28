@@ -5,7 +5,7 @@
  * attacks via next/image. Covers hostname globs, pathname globs, protocol,
  * port, and search matching — mirroring Next.js's matchRemotePattern semantics.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import {
   matchRemotePattern,
   hasRemoteMatch,

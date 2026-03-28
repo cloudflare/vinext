@@ -94,6 +94,8 @@ Add `"type": "module"` to package.json. Rename any CJS config files:
 
 See [references/config-examples.md](references/config-examples.md) for config variants per router and deployment target.
 
+If the project already has custom Vite config, prefer Vite 8-native keys when editing it: `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions`. Older `esbuild` and `build.rollupOptions` settings still work for now but are migration targets.
+
 **Pages Router (minimal):**
 
 ```ts

@@ -170,4 +170,23 @@ test.describe("useActionState", () => {
       await expect(page.locator("#count")).toHaveText("Count: -1", { timeout: 3_000 });
     }).toPass({ timeout: 15_000 });
   });
+
+  test("useActionState: redirect does not cause undefined state (issue #589)", async ({ page }) => {
+    await page.goto(`${BASE}/action-state-redirect`);
+    await expect(page.locator("h1")).toHaveText("useActionState Redirect Test");
+    await waitForHydration(page);
+
+    // Initial state should be { success: false }
+    await expect(async () => {
+      const stateText = await page.locator("#state").textContent();
+      expect(stateText).toContain('"success":false');
+    }).toPass({ timeout: 5_000 });
+
+    // Click the redirect button — should navigate without state becoming undefined
+    await page.click("#redirect-btn");
+
+    // Should navigate to /action-state-test without crashing
+    await expect(page).toHaveURL(/\/action-state-test$/);
+    await expect(page.locator("h1")).toHaveText("useActionState Test");
+  });
 });

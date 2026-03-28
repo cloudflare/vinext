@@ -1,9 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import {
   runWithExecutionContext,
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function makeCtx(): ExecutionContextLike & { calls: Promise<unknown>[] } {
   const calls: Promise<unknown>[] = [];
@@ -25,7 +29,7 @@ describe("getRequestExecutionContext", () => {
 describe("runWithExecutionContext", () => {
   it("makes the context available inside the scope", () => {
     const ctx = makeCtx();
-    runWithExecutionContext(ctx, () => {
+    void runWithExecutionContext(ctx, () => {
       expect(getRequestExecutionContext()).toBe(ctx);
     });
   });
@@ -85,7 +89,7 @@ describe("runWithExecutionContext", () => {
     const ctx = makeCtx();
     const p = Promise.resolve("done");
 
-    runWithExecutionContext(ctx, () => {
+    void runWithExecutionContext(ctx, () => {
       const c = getRequestExecutionContext();
       c?.waitUntil(p);
     });
@@ -97,15 +101,32 @@ describe("runWithExecutionContext", () => {
     const outerCtx = makeCtx();
     const innerCtx = makeCtx();
 
-    runWithExecutionContext(outerCtx, () => {
+    void runWithExecutionContext(outerCtx, () => {
       expect(getRequestExecutionContext()).toBe(outerCtx);
 
-      runWithExecutionContext(innerCtx, () => {
+      void runWithExecutionContext(innerCtx, () => {
         expect(getRequestExecutionContext()).toBe(innerCtx);
       });
 
       // Outer scope is restored after inner exits
       expect(getRequestExecutionContext()).toBe(outerCtx);
+    });
+  });
+
+  it("restores the outer ctx when nested inside a unified request scope", () => {
+    const outerCtx = makeCtx();
+    const innerCtx = makeCtx();
+
+    void runWithExecutionContext(outerCtx, () => {
+      void runWithRequestContext(createRequestContext(), () => {
+        expect(getRequestExecutionContext()).toBe(outerCtx);
+
+        void runWithExecutionContext(innerCtx, () => {
+          expect(getRequestExecutionContext()).toBe(innerCtx);
+        });
+
+        expect(getRequestExecutionContext()).toBe(outerCtx);
+      });
     });
   });
 });

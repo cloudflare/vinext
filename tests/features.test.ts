@@ -1,10 +1,162 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from "vite-plus/test";
+import { createServer, type ViteDevServer } from "vite-plus";
 import path from "node:path";
+import { PassThrough, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
+import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
-import { PAGES_FIXTURE_DIR, APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  PAGES_FIXTURE_DIR,
+  PAGES_I18N_DOMAINS_BASEPATH_FIXTURE_DIR,
+  PAGES_I18N_DOMAINS_FIXTURE_DIR,
+  createIsolatedFixture,
+  requestNodeServerWithHost,
+  startFixtureServer,
+} from "./helpers.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+
+class CapturingNodeResponse extends PassThrough {
+  statusCode = 0;
+  headers: Record<string, string | string[]> = {};
+
+  writeHead(
+    statusCode: number,
+    headersOrStatusText: string | Record<string, string | string[]>,
+    maybeHeaders?: Record<string, string | string[]>,
+  ): this {
+    this.statusCode = statusCode;
+    this.headers =
+      typeof headersOrStatusText === "string" ? (maybeHeaders ?? {}) : headersOrStatusText;
+    return this;
+  }
+}
+
+class DisconnectingNodeResponse extends Writable {
+  statusCode = 0;
+  headers: Record<string, string | string[]> = {};
+  writeCount = 0;
+
+  writeHead(
+    statusCode: number,
+    headersOrStatusText: string | Record<string, string | string[]>,
+    maybeHeaders?: Record<string, string | string[]>,
+  ): this {
+    this.statusCode = statusCode;
+    this.headers =
+      typeof headersOrStatusText === "string" ? (maybeHeaders ?? {}) : headersOrStatusText;
+    return this;
+  }
+
+  override _write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error) => void) {
+    this.writeCount += 1;
+    const error = new Error("client disconnected");
+    callback(error);
+    this.destroy(error);
+  }
+}
+
+function createStreamingBody(
+  chunks: Array<{ text: string; delayMs?: number }>,
+  onCancel?: () => void,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let canceled = false;
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const { text, delayMs } of chunks) {
+        if (delayMs) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        if (canceled) return;
+        controller.enqueue(encoder.encode(text));
+      }
+      controller.close();
+    },
+    cancel() {
+      canceled = true;
+      onCancel?.();
+    },
+  });
+}
+
+async function captureCompressedWebResponse(encoding: "gzip" | "br"): Promise<{
+  body: string;
+  rawBody: Buffer;
+  headers: Record<string, string | string[]>;
+  statusCode: number;
+  firstDecodedMs: number;
+  endMs: number;
+}> {
+  const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+  // ReadableStream.start() begins running during construction, so start timing
+  // before creating the Response to include the full delayed chunk interval.
+  const startedAt = performance.now();
+
+  const response = new Response(
+    createStreamingBody([
+      { text: "<h1>Streaming SSR Test</h1><p>Loading delayed chunk...</p>" },
+      { text: "<p>Delayed stream content loaded</p>", delayMs: 250 },
+    ]),
+    {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    },
+  );
+
+  const req = {
+    method: "GET",
+    headers: { "accept-encoding": encoding },
+  };
+  const res = new CapturingNodeResponse();
+  const decoder = encoding === "br" ? zlib.createBrotliDecompress() : zlib.createGunzip();
+  const rawChunks: Buffer[] = [];
+  const decodedChunks: Buffer[] = [];
+  let firstDecodedMs = -1;
+
+  res.on("data", (chunk: Buffer) => {
+    rawChunks.push(Buffer.from(chunk));
+  });
+  res.on("error", () => {
+    /* ignore closed test stream noise */
+  });
+  decoder.on("data", (chunk: Buffer) => {
+    decodedChunks.push(Buffer.from(chunk));
+    if (firstDecodedMs === -1) {
+      firstDecodedMs = performance.now() - startedAt;
+    }
+  });
+  decoder.on("error", () => {
+    /* surfaced through finished(decoder) */
+  });
+  res.pipe(decoder);
+
+  await sendWebResponse(response, req as any, res as any, true);
+  await Promise.all([finished(res), finished(decoder)]);
+
+  return {
+    body: Buffer.concat(decodedChunks).toString("utf8"),
+    rawBody: Buffer.concat(rawChunks),
+    headers: res.headers,
+    statusCode: res.statusCode,
+    firstDecodedMs,
+    endMs: performance.now() - startedAt,
+  };
+}
 
 describe("parameterized redirects and rewrites", () => {
   let prServer: ViteDevServer;
@@ -489,6 +641,48 @@ describe("ISR (Pages Router)", () => {
     expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
+  it("background regeneration re-renders HTML with fresh props", async () => {
+    // Ensure cache is populated (may already be from prior tests)
+    await fetch(`${baseUrl}/isr-test`);
+
+    // Wait for TTL to expire (revalidate: 1 second)
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // Trigger background regeneration via STALE request and capture old HTML
+    const staleRes = await fetch(`${baseUrl}/isr-test`);
+    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
+    const staleHtml = await staleRes.text();
+    const staleTimestamp = staleHtml.match(/data-testid="timestamp">(\d+)</);
+    expect(staleTimestamp).toBeTruthy();
+    const oldTimestamp = Number(staleTimestamp![1]);
+
+    // Wait for background regeneration to complete
+    await new Promise((r) => setTimeout(r, 500));
+
+    // The regenerated HIT should have DIFFERENT HTML — the page must have been
+    // re-rendered with fresh getStaticProps data, not just the old HTML cached
+    // again with new pageData.
+    const hitRes = await fetch(`${baseUrl}/isr-test`);
+    expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
+    const hitHtml = await hitRes.text();
+    const hitTimestamp = hitHtml.match(/data-testid="timestamp">(\d+)</);
+    expect(hitTimestamp).toBeTruthy();
+    const newTimestamp = Number(hitTimestamp![1]);
+
+    // The HTML timestamp must have changed — proves the page was re-rendered,
+    // not just getStaticProps re-run with old HTML cached again.
+    expect(newTimestamp).toBeGreaterThan(oldTimestamp);
+
+    // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
+    // server-rendered HTML and the hydration data are in sync.
+    const nextDataMatch = hitHtml.match(
+      /window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<\/script>)/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]);
+    expect(nextData.props.pageProps.timestamp).toBe(newTimestamp);
+  });
+
   it("sets Cache-Control header for ISR pages", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
     const cacheControl = res.headers.get("cache-control");
@@ -593,7 +787,7 @@ describe("ISR cache internals", () => {
     // Set an entry with a very short TTL
     await handler.set(
       "test-stale",
-      { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 },
+      { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0.001 },
       { revalidate: 0.001 },
     );
 
@@ -632,7 +826,7 @@ describe("ISR cache internals", () => {
         kind: "FETCH",
         data: { headers: {}, body: "test", url: "" },
         tags: ["mytag"],
-        revalidate: 0,
+        revalidate: 60,
       },
       { revalidate: 60, tags: ["mytag"] },
     );
@@ -643,6 +837,52 @@ describe("ISR cache internals", () => {
     // Should return null (hard invalidation, not stale)
     const result = await handler.get("test-tag");
     expect(result).toBeNull();
+  });
+
+  it("MemoryCacheHandler skips storage when data.revalidate is 0", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+
+    // revalidate: 0 means "don't cache" — entry should not be stored at all
+    await handler.set(
+      "revalidate-zero-data",
+      { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 },
+      { tags: [] },
+    );
+
+    const result = await handler.get("revalidate-zero-data");
+    expect(result).toBeNull();
+  });
+
+  it("MemoryCacheHandler skips storage when ctx.revalidate is 0", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+
+    // revalidate: 0 via ctx should also skip storage
+    await handler.set(
+      "revalidate-zero-ctx",
+      { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: false },
+      { revalidate: 0 },
+    );
+
+    const result = await handler.get("revalidate-zero-ctx");
+    expect(result).toBeNull();
+  });
+
+  it("MemoryCacheHandler stores entry when ctx.revalidate is 0 but data.revalidate is positive", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+
+    // data.revalidate overrides ctx — positive value should store
+    await handler.set(
+      "ctx-zero-data-positive",
+      { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 60 },
+      { revalidate: 0 },
+    );
+
+    const result = await handler.get("ctx-zero-data-positive");
+    expect(result).not.toBeNull();
+    expect(result!.cacheState).toBeUndefined();
   });
 });
 
@@ -997,9 +1237,9 @@ export default function About({ locale, locales, defaultLocale }) {
       redirect: "manual",
       headers: { "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8" },
     });
-    // Should 307 redirect to /fr/about
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("/fr/about");
+    // Next.js only auto-detects locale on the application root.
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
   });
 
   it("redirects to /de for Accept-Language: de on root", async () => {
@@ -1049,6 +1289,165 @@ export default function About({ locale, locales, defaultLocale }) {
     // "es" is not in locales — should not match as a locale
     // The URL /es/about won't match any page
     expect(res.status).toBe(404);
+  });
+});
+
+async function startDomainFixtureServer(
+  fixtureDir: string,
+  prefix: string,
+): Promise<{
+  port: number;
+  server: ViteDevServer;
+  tmpDir: string;
+}> {
+  const tmpDir = await createIsolatedFixture(fixtureDir, prefix);
+  const { server } = await startFixtureServer(tmpDir, {
+    server: {
+      host: "127.0.0.1",
+      allowedHosts: ["example.com", "example.fr"],
+    },
+  });
+  const addr = server.httpServer?.address();
+  if (!addr || typeof addr === "string") {
+    throw new Error(`Failed to start dev server for fixture ${fixtureDir}`);
+  }
+  return { port: addr.port, server, tmpDir };
+}
+
+describe("i18n domain routing (Pages Router)", () => {
+  let domainServer: ViteDevServer;
+  let domainTmpDir: string;
+  let domainPort: number;
+
+  beforeAll(async () => {
+    ({
+      server: domainServer,
+      tmpDir: domainTmpDir,
+      port: domainPort,
+    } = await startDomainFixtureServer(PAGES_I18N_DOMAINS_FIXTURE_DIR, "vinext-i18n-domain-"));
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (domainServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        domainServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch {
+      /* ignore */
+    }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(domainTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("redirects the root path to the preferred locale domain", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/", "example.com", {
+      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.location).toBe("http://example.fr/");
+  });
+
+  it("uses Accept-Language rather than NEXT_LOCALE to pick the preferred domain", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/", "example.com", {
+      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      Cookie: "NEXT_LOCALE=en",
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.location).toBe("http://example.fr/");
+  });
+
+  it("preserves the search string on root locale redirects", async () => {
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/?utm=campaign&next=%2Fcheckout",
+      "example.com",
+      {
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      },
+    );
+
+    expect(res.status).toBe(307);
+    expect(res.headers.location).toBe("http://example.fr/?utm=campaign&next=%2Fcheckout");
+  });
+
+  it("does not redirect unprefixed non-root paths for locale detection", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/about", "example.com", {
+      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.location).toBeUndefined();
+  });
+
+  it("renders locale-switcher links with the target locale domain during SSR", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/about", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('href="http://example.fr/about" id="switch-locale"');
+  });
+
+  it("uses the matched domain default locale in request context and __NEXT_DATA__", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/about", "example.fr");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('<p id="locale">fr</p>');
+    expect(res.body).toContain('<p id="defaultLocale">fr</p>');
+    expect(res.body).toContain('href="/about" id="switch-locale"');
+    expect(res.body).toContain('"defaultLocale":"fr"');
+    expect(res.body).toContain(
+      '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
+    );
+  });
+});
+
+describe("i18n domain routing with basePath (Pages Router)", () => {
+  let domainServer: ViteDevServer;
+  let domainTmpDir: string;
+  let domainPort: number;
+
+  beforeAll(async () => {
+    ({
+      server: domainServer,
+      tmpDir: domainTmpDir,
+      port: domainPort,
+    } = await startDomainFixtureServer(
+      PAGES_I18N_DOMAINS_BASEPATH_FIXTURE_DIR,
+      "vinext-i18n-domain-basepath-",
+    ));
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (domainServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        domainServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch {
+      /* ignore */
+    }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(domainTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("preserves basePath and trailingSlash in root locale redirects", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/app/?utm=campaign", "example.com", {
+      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.location).toBe("http://example.fr/app/?utm=campaign");
+  });
+
+  it("renders locale-switcher links with basePath on cross-domain hrefs", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/app/about/", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
   });
 });
 
@@ -1964,6 +2363,20 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('content="https://acme.com/og.png"');
   });
 
+  it("accepts URL objects for canonical and openGraph.url", () => {
+    // Next.js allows string | URL for URL fields; passing a URL object must not throw
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          alternates: { canonical: new URL("https://example.com/page") },
+          openGraph: { url: new URL("https://example.com/og") },
+        },
+      }),
+    );
+    expect(html).toContain('href="https://example.com/page"');
+    expect(html).toContain('content="https://example.com/og"');
+  });
+
   it("renders OG video and audio tags", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
@@ -2539,7 +2952,7 @@ describe("instrumentation.ts support", () => {
   it("findInstrumentationFile returns null when no file exists", async () => {
     const { findInstrumentationFile } =
       await import("../packages/vinext/src/server/instrumentation.js");
-    const result = findInstrumentationFile("/nonexistent/path");
+    const result = findInstrumentationFile("/nonexistent/path", createValidFileMatcher());
     expect(result).toBeNull();
   });
 
@@ -2557,7 +2970,7 @@ describe("instrumentation.ts support", () => {
       'export function register() { console.log("registered"); }',
     );
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
 
     // Cleanup
@@ -2578,7 +2991,7 @@ describe("instrumentation.ts support", () => {
       "export function register() {}",
     );
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
     expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
 
     fs.rmSync(tmpDir, { recursive: true });
@@ -2901,6 +3314,244 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(merged["x-custom"]).toBe("from-response");
   });
 
+  it("mergeWebResponse preserves the original body stream while applying header overrides", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello"));
+        controller.close();
+      },
+    });
+    const response = new Response(stream, {
+      status: 200,
+      headers: {
+        "content-type": "text/plain",
+        "x-custom": "from-response",
+      },
+    });
+
+    const merged = mergeWebResponse({ "x-custom": "from-middleware" }, response, 201);
+
+    expect(merged.status).toBe(201);
+    expect(merged.headers.get("x-custom")).toBe("from-response");
+    expect(merged.headers.get("content-type")).toBe("text/plain");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeWebResponse cancels discarded body streams for no-body statuses", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let started = false;
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          started = true;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (canceled) return;
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "5",
+        },
+      },
+    );
+
+    const merged = mergeWebResponse({}, response, 204);
+
+    expect(merged.status).toBe(204);
+    expect(merged.headers.get("content-type")).toBeNull();
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(await merged.text()).toBe("");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(started).toBe(true);
+    expect(canceled).toBe(true);
+  });
+
+  it("mergeWebResponse strips stale content-length only for tagged streamed Pages HTML", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": "1",
+        },
+      },
+    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    response.__vinextStreamedHtmlResponse = true;
+
+    const merged = mergeWebResponse({}, response);
+
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await merged.text()).toBe("hello");
+  });
+
+  it("mergeWebResponse preserves content-length for untagged custom responses", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeWebResponse({ "x-custom-middleware": "active" }, response);
+
+    expect(merged.headers.get("content-length")).toBe("3");
+    expect(merged.headers.get("content-type")).toBe("application/octet-stream");
+    expect(merged.headers.get("x-custom-middleware")).toBe("active");
+
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  it("mergeWebResponse ignores middleware-only content-length overrides", async () => {
+    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const response = new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "3",
+      },
+    });
+
+    const merged = mergeWebResponse({ "content-length": "1" }, response);
+
+    expect(merged).toBe(response);
+    expect(merged.headers.get("content-length")).toBe("3");
+    const body = Buffer.from(await merged.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  for (const encoding of ["gzip", "br"] as const) {
+    it(`sendWebResponse streams ${encoding}-compressed HTML progressively`, async () => {
+      const result = await captureCompressedWebResponse(encoding);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.headers["Content-Encoding"]).toBe(encoding);
+      expect(String(result.headers["Vary"])).toContain("Accept-Encoding");
+      expect(result.headers["content-length"]).toBeUndefined();
+      expect(result.firstDecodedMs).toBeGreaterThanOrEqual(0);
+      expect(result.firstDecodedMs).toBeLessThan(250);
+      // The delayed chunk uses setTimeout(250ms); allow 50ms slack for JS timer imprecision in CI.
+      expect(result.endMs).toBeGreaterThanOrEqual(200);
+      expect(result.rawBody.byteLength).toBeGreaterThan(0);
+      expect(result.body).toContain("Streaming SSR Test");
+      expect(result.body).toContain("Loading delayed chunk...");
+      expect(result.body).toContain("Delayed stream content loaded");
+    });
+  }
+
+  it("sendWebResponse cancels streamed bodies for HEAD requests", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let canceled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+        },
+      },
+    );
+
+    let status = 0;
+    let writtenHeaders: Record<string, string | string[]> = {};
+    let ended = false;
+    const req = {
+      method: "HEAD",
+      headers: { "accept-encoding": "br" },
+    };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk));
+    });
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+    status = res.statusCode;
+    writtenHeaders = res.headers;
+    ended = res.writableEnded;
+
+    expect(status).toBe(200);
+    expect(writtenHeaders["content-type"]).toBe("text/html; charset=utf-8");
+    expect(writtenHeaders["Content-Encoding"]).toBe("br");
+    expect(writtenHeaders["Vary"]).toContain("Accept-Encoding");
+    expect(ended).toBe(true);
+    expect(chunks).toEqual([]);
+    expect(canceled).toBe(true);
+  });
+
+  it("sendWebResponse cancels compressed streams on client disconnect", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let canceled = false;
+    const response = new Response(
+      createStreamingBody(
+        [
+          { text: "<h1>Streaming SSR Test</h1>" },
+          { text: "<p>Delayed stream content loaded</p>", delayMs: 150 },
+        ],
+        () => {
+          canceled = true;
+        },
+      ),
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+        },
+      },
+    );
+
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "br" },
+    };
+    const res = new DisconnectingNodeResponse();
+    res.on("error", () => {
+      /* expected client disconnect */
+    });
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Content-Encoding"]).toBe("br");
+    expect(res.writeCount).toBeGreaterThan(0);
+    expect(canceled).toBe(true);
+  });
+
   it("sendCompressed passes array-valued Set-Cookie to writeHead", async () => {
     const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
 
@@ -2919,6 +3570,39 @@ describe("Set-Cookie header preservation in prod-server", () => {
 
     sendCompressed(req as any, res as any, "small body", "text/html", 200, extraHeaders, false);
     expect(writtenHeaders["set-cookie"]).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
+  it("sendCompressed replaces any existing content-type and content-length headers", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+
+    let writtenHeaders: Record<string, string | string[]> = {};
+    const req = { headers: {} };
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string | string[]>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(
+      req as any,
+      res as any,
+      "hello",
+      "application/json",
+      200,
+      {
+        "content-type": "text/plain",
+        "content-length": "999",
+        "x-custom": "active",
+      },
+      false,
+    );
+
+    expect(writtenHeaders["Content-Type"]).toBe("application/json");
+    expect(writtenHeaders["Content-Length"]).toBe("5");
+    expect(writtenHeaders["content-type"]).toBeUndefined();
+    expect(writtenHeaders["content-length"]).toBeUndefined();
+    expect(writtenHeaders["x-custom"]).toBe("active");
   });
 });
 
@@ -3435,10 +4119,13 @@ describe("applyNavigationLocale", () => {
     // Set up window globals that applyNavigationLocale reads
     (globalThis as any).window = globalThis;
     (globalThis as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).__NEXT_DATA__ = undefined;
   });
 
   afterEach(() => {
     delete (globalThis as any).__VINEXT_DEFAULT_LOCALE__;
+    delete (globalThis as any).__NEXT_DATA__;
+    delete (globalThis as any).location;
     delete (globalThis as any).window;
   });
 
@@ -3484,6 +4171,57 @@ describe("applyNavigationLocale", () => {
 
   it("preserves hash when prefixing locale", () => {
     expect(applyNavigationLocale("/docs#intro", "de")).toBe("/de/docs#intro");
+  });
+
+  it("returns an absolute cross-domain URL when the locale belongs to another domain", () => {
+    (globalThis as any).__NEXT_DATA__ = {
+      domainLocales: [
+        { domain: "example.com", defaultLocale: "en" },
+        { domain: "example.fr", defaultLocale: "fr", http: true },
+      ],
+    };
+    (globalThis as any).location = {
+      protocol: "https:",
+      hostname: "example.com",
+      host: "example.com",
+    };
+
+    expect(applyNavigationLocale("/about", "fr")).toBe("http://example.fr/about");
+  });
+
+  it("includes basePath in cross-domain locale navigation URLs", async () => {
+    const originalBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/app";
+    vi.resetModules();
+
+    try {
+      (globalThis as any).window = {
+        __NEXT_DATA__: {
+          domainLocales: [
+            { domain: "example.com", defaultLocale: "en" },
+            { domain: "example.fr", defaultLocale: "fr", http: true },
+          ],
+        },
+        __VINEXT_DEFAULT_LOCALE__: "en",
+        location: {
+          hostname: "example.com",
+          pathname: "/app/about",
+          search: "",
+        },
+        addEventListener() {},
+        removeEventListener() {},
+      };
+      const mod = await import("../packages/vinext/src/shims/router.js");
+
+      expect(mod.applyNavigationLocale("/about", "fr")).toBe("http://example.fr/app/about");
+    } finally {
+      if (originalBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = originalBasePath;
+      }
+      vi.resetModules();
+    }
   });
 });
 
@@ -3617,8 +4355,8 @@ describe("NEXT_LOCALE cookie redirect behavior", () => {
       redirect: "manual",
       headers: { Cookie: "NEXT_LOCALE=de" },
     });
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("/de/about");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
   });
 
   it("NEXT_LOCALE cookie matching default locale does NOT redirect", async () => {

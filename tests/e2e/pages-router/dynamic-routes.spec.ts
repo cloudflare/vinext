@@ -6,8 +6,8 @@ test.describe("Dynamic routes with getServerSideProps", () => {
   test("renders post page with dynamic id from GSSP", async ({ page }) => {
     await page.goto(`${BASE}/posts/123`);
     await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 123");
-    // vinext returns the resolved pathname (not the route pattern)
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("Pathname: /posts/123");
+    // router.pathname returns the route pattern, not the resolved path
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("Pathname: /posts/[id]");
     await expect(page.locator('[data-testid="query"]')).toHaveText("Query ID: 123");
   });
 

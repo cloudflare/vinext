@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,31 @@ import {
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
 }
+
+describe("invalid config files", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should throw an error when loading a config fails", async () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }`);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `const path = require('path');\n module.exports = {};\n`,
+    );
+
+    await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
 
 describe("loadNextConfig phase argument", () => {
   let tmpDir: string;
@@ -266,6 +291,9 @@ describe("parseBodySizeLimit", () => {
 
   it("returns default 1MB and warns for invalid strings", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // In Vitest 4, spyOn on an already-intercepted console returns the same mock,
+    // which may have accumulated calls from earlier tests. Clear before asserting.
+    warn.mockClear();
     expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
     expect(parseBodySizeLimit("10mbb")).toBe(1 * 1024 * 1024);
     expect(warn).toHaveBeenCalledTimes(2);
@@ -273,6 +301,7 @@ describe("parseBodySizeLimit", () => {
     warn.mockRestore();
     // empty string also falls through to the regex (no match), so it warns too
     const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn2.mockClear();
     expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
     expect(warn2).toHaveBeenCalledTimes(1);
     warn2.mockRestore();
@@ -294,6 +323,44 @@ describe("parseBodySizeLimit", () => {
   it("throws for zero or negative numeric values", () => {
     expect(() => parseBodySizeLimit(0)).toThrow();
     expect(() => parseBodySizeLimit(-1)).toThrow();
+  });
+});
+
+describe("resolveNextConfig serverExternalPackages", () => {
+  it("defaults to empty array when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.serverExternalPackages).toEqual([]);
+  });
+
+  it("defaults to empty array when not configured", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.serverExternalPackages).toEqual([]);
+  });
+
+  it("reads top-level serverExternalPackages", async () => {
+    const resolved = await resolveNextConfig({
+      serverExternalPackages: ["payload", "graphql"],
+    });
+    expect(resolved.serverExternalPackages).toEqual(["payload", "graphql"]);
+  });
+
+  it("falls back to experimental.serverComponentsExternalPackages (legacy name)", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        serverComponentsExternalPackages: ["jose", "pg-cloudflare"],
+      },
+    });
+    expect(resolved.serverExternalPackages).toEqual(["jose", "pg-cloudflare"]);
+  });
+
+  it("prefers top-level serverExternalPackages over legacy experimental key", async () => {
+    const resolved = await resolveNextConfig({
+      serverExternalPackages: ["payload"],
+      experimental: {
+        serverComponentsExternalPackages: ["jose"],
+      },
+    });
+    expect(resolved.serverExternalPackages).toEqual(["payload"]);
   });
 });
 
@@ -357,22 +424,25 @@ describe("detectNextIntlConfig", () => {
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverExternalPackages: [],
       buildId: "test-build-id",
       ...overrides,
     };
   }
 
-  /** Create a tmpdir with a fake next-intl package so createRequire can resolve it */
+  /** Create a tmpdir with a fake next-intl package so require.resolve("next-intl") works */
   function setupWithNextIntl(i18nFile?: string) {
     tmpDir = makeTempDir();
-    // Create a resolvable next-intl/package.json
+    // Create a resolvable next-intl package with an entry file.
     const nextIntlDir = path.join(tmpDir, "node_modules", "next-intl");
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     // Create root package.json so createRequire works
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
 
@@ -487,8 +557,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
@@ -504,8 +575,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
@@ -594,5 +666,87 @@ describe("generateBuildId", () => {
     const b = await resolveNextConfig({ generateBuildId: fn });
     expect(a.buildId).toBe("stable-id");
     expect(b.buildId).toBe("stable-id");
+  });
+});
+
+describe("resolveNextConfig external rewrite warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when rewrites contain external destinations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => [
+        { source: "/api/:path*", destination: "https://api.example.com/:path*" },
+        { source: "/internal", destination: "/other" },
+      ],
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+
+    expect(externalWarning).toBeDefined();
+    expect(externalWarning![0]).toContain("1 external rewrite that");
+    expect(externalWarning![0]).toContain("https://api.example.com/:path*");
+    expect(externalWarning![0]).toContain("/api/:path*");
+    expect(externalWarning![0]).toContain("→");
+    expect(externalWarning![0]).toContain("credential headers");
+    expect(externalWarning![0]).toContain("forwarded");
+    expect(externalWarning![0]).toContain("match Next.js behavior");
+    expect(externalWarning![0]).not.toContain("/other");
+  });
+
+  it("does not warn when all rewrites are internal", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => [
+        { source: "/old", destination: "/new" },
+        { source: "/a", destination: "/b" },
+      ],
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeUndefined();
+  });
+
+  it("warns about multiple external rewrites across beforeFiles, afterFiles, and fallback", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => ({
+        beforeFiles: [{ source: "/proxy1", destination: "https://one.example.com/api" }],
+        afterFiles: [{ source: "/proxy2", destination: "https://two.example.com/api" }],
+        fallback: [{ source: "/proxy3", destination: "https://three.example.com/api" }],
+      }),
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeDefined();
+    expect(externalWarning![0]).toContain("3 external rewrites");
+    expect(externalWarning![0]).toContain("https://one.example.com/api");
+    expect(externalWarning![0]).toContain("https://two.example.com/api");
+    expect(externalWarning![0]).toContain("https://three.example.com/api");
+    expect(externalWarning![0]).toContain("/proxy1");
+    expect(externalWarning![0]).toContain("/proxy2");
+    expect(externalWarning![0]).toContain("/proxy3");
+  });
+
+  it("does not warn when no rewrites are configured", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({ env: {} });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeUndefined();
   });
 });

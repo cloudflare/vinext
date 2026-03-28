@@ -1,4 +1,43 @@
 /**
+ * Re-encode path delimiter characters that were decoded by decodeURIComponent.
+ * After decoding a URL segment, characters like / # ? \ need to be re-encoded
+ * so they don't change the path structure.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
+ */
+export function escapePathDelimiters(segment: string, escapeEncoded?: boolean): string {
+  return segment.replace(
+    new RegExp(`([/#?]${escapeEncoded ? "|%(2f|23|3f|5c)" : ""})`, "gi"),
+    (char: string) => encodeURIComponent(char),
+  );
+}
+
+/**
+ * Decode a URL pathname segment-by-segment, preserving encoded path delimiters.
+ * Non-ASCII characters (e.g. %C3%A9 -> e) are decoded, but structural characters
+ * like %2F (/) %23 (#) %3F (?) %5C (\) are re-encoded after decoding.
+ *
+ * This prevents encoded slashes from changing the path structure (e.g.
+ * /admin%2Fpanel stays as a single segment, not /admin/panel).
+ *
+ * Ported from Next.js: packages/next/src/server/lib/router-utils/decode-path-params.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/decode-path-params.ts
+ */
+export function decodePathParams(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((seg) => {
+      try {
+        return escapePathDelimiters(decodeURIComponent(seg), true);
+      } catch {
+        return seg;
+      }
+    })
+    .join("/");
+}
+
+/**
  * Path normalization utility for request handling.
  *
  * Normalizes URL pathnames to a canonical form BEFORE any matching occurs

@@ -20,7 +20,13 @@
  */
 
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getRequestExecutionContext } from "./request-context.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -48,6 +54,17 @@ class SkipCacheKeyGenerationError extends Error {
     super("Fetch body could not be serialized for cache key generation");
   }
 }
+
+/**
+ * Extended RequestInit that carries vinext-internal fields alongside standard fetch options.
+ * - `_ogBody`: the original (unconsumed) body, stashed after stream tee so the real fetch
+ *   can still send it after the body was consumed for cache-key generation.
+ * - `next`: Next.js-specific fetch options (revalidate, tags, etc.).
+ */
+type ExtendedRequestInit = RequestInit & {
+  _ogBody?: BodyInit;
+  next?: unknown;
+};
 
 /**
  * Collect all headers from the request, excluding the blocklist.
@@ -227,12 +244,12 @@ async function serializeBody(
       throw new BodyTooLargeForCacheKeyError();
     }
     pushBodyChunk(decoder.decode(init.body));
-    (init as any)._ogBody = init.body;
-  } else if (init?.body && typeof (init.body as any).getReader === "function") {
+    (init as ExtendedRequestInit)._ogBody = init.body;
+  } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
     const readableBody = init.body as ReadableStream<Uint8Array | string>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
-    (init as any)._ogBody = bodyForFetch;
+    (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
 
     try {
@@ -264,14 +281,17 @@ async function serializeBody(
     }
   } else if (init?.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
     pushBodyChunk(init.body.toString());
-  } else if (init?.body && typeof (init.body as any).keys === "function") {
+  } else if (init?.body && typeof (init.body as { keys?: unknown }).keys === "function") {
     // FormData
     const formData = init.body as FormData;
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
     await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
-  } else if (init?.body && typeof (init.body as any).arrayBuffer === "function") {
+  } else if (
+    init?.body &&
+    typeof (init.body as { arrayBuffer?: unknown }).arrayBuffer === "function"
+  ) {
     // Blob
     const blob = init.body as Blob;
     if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
@@ -279,7 +299,7 @@ async function serializeBody(
     }
     pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
-    (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+    (init as ExtendedRequestInit)._ogBody = new Blob([arrayBuffer], { type: blob.type });
   } else if (typeof init?.body === "string") {
     // String length is always <= UTF-8 byte length, so this is a
     // cheap lower-bound check that avoids encoder.encode() for huge strings.
@@ -287,7 +307,7 @@ async function serializeBody(
       throw new BodyTooLargeForCacheKeyError();
     }
     pushBodyChunk(init.body);
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (input instanceof Request && input.body) {
     let chunks: Uint8Array[];
     let contentType: string | undefined;
@@ -306,7 +326,7 @@ async function serializeBody(
         const boundedRequest = new Request(input.url, {
           method: input.method,
           headers: contentType ? { "content-type": contentType } : undefined,
-          body: new Blob(chunks as unknown as BlobPart[]),
+          body: new Blob(chunks as Uint8Array<ArrayBuffer>[]),
         });
         const formData = await boundedRequest.formData();
         await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
@@ -407,6 +427,29 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
+// Background revalidation dedup — one in-flight refetch per cache key.
+// Uses Symbol.for() on globalThis so the map is shared across Vite's
+// separate RSC and SSR module instances.
+// ---------------------------------------------------------------------------
+
+const _PENDING_KEY = Symbol.for("vinext.fetchCache.pendingRefetches");
+const _gPending = globalThis as unknown as Record<PropertyKey, unknown>;
+const pendingRefetches = (_gPending[_PENDING_KEY] ??= new Map<string, Promise<void>>()) as Map<
+  string,
+  Promise<void>
+>;
+
+// Maximum time a dedup entry can live before being force-cleaned.
+// Guards against hung upstream fetches that never settle, which would
+// permanently suppress background refetches for that cache key.
+const DEDUP_TIMEOUT_MS = 60_000;
+
+/** @internal Reset dedup state — exposed for test isolation only. */
+export function _resetPendingRefetches(): void {
+  pendingRefetches.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Patching
 // ---------------------------------------------------------------------------
 
@@ -422,7 +465,7 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // Uses Symbol.for() on globalThis so the storage is shared across Vite's
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
-interface FetchCacheState {
+export interface FetchCacheState {
   currentRequestTags: string[];
 }
 
@@ -437,6 +480,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -472,7 +518,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> {
-    const nextOpts = init?.next as NextFetchOptions | undefined;
+    const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
+      | NextFetchOptions
+      | undefined;
     const cacheDirective = init?.cache;
 
     // Determine caching behavior:
@@ -580,41 +628,79 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         const staleData = cached.value.data;
 
-        // Background refetch
-        const cleanInit = stripNextFromInit(init);
-        originalFetch(input, cleanInit)
-          .then(async (freshResp) => {
-            const freshBody = await freshResp.text();
-            const freshHeaders: Record<string, string> = {};
-            freshResp.headers.forEach((v, k) => {
-              freshHeaders[k] = v;
+        // Background refetch — deduped so only one in-flight refetch runs
+        // per cache key, preventing thundering herd on popular endpoints.
+        if (!pendingRefetches.has(cacheKey)) {
+          const cleanInit = stripNextFromInit(init);
+          const refetchPromise = originalFetch(input, cleanInit)
+            .then(async (freshResp) => {
+              // Only cache 200 responses — a transient error or unexpected
+              // status must not overwrite previously-good cached data.
+              if (freshResp.status !== 200) return;
+
+              const freshBody = await freshResp.text();
+              const freshHeaders: Record<string, string> = {};
+              freshResp.headers.forEach((v, k) => {
+                if (k.toLowerCase() === "set-cookie") return;
+                freshHeaders[k] = v;
+              });
+
+              const freshValue: CachedFetchValue = {
+                kind: "FETCH",
+                data: {
+                  headers: freshHeaders,
+                  body: freshBody,
+                  url:
+                    typeof input === "string"
+                      ? input
+                      : input instanceof URL
+                        ? input.toString()
+                        : input.url,
+                  status: freshResp.status,
+                },
+                tags,
+                revalidate: revalidateSeconds,
+              };
+              await handler.set(cacheKey, freshValue, {
+                fetchCache: true,
+                tags,
+                revalidate: revalidateSeconds,
+              });
+            })
+            .catch((err) => {
+              const url =
+                typeof input === "string"
+                  ? input
+                  : input instanceof URL
+                    ? input.toString()
+                    : input.url;
+              console.error(
+                `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
+                err,
+              );
+            })
+            .finally(() => {
+              // Only clear if we still own the slot — the timeout may have
+              // already replaced it with a newer refetch promise.
+              if (pendingRefetches.get(cacheKey) === refetchPromise) {
+                pendingRefetches.delete(cacheKey);
+              }
+              clearTimeout(timeoutId);
             });
 
-            const freshValue: CachedFetchValue = {
-              kind: "FETCH",
-              data: {
-                headers: freshHeaders,
-                body: freshBody,
-                url:
-                  typeof input === "string"
-                    ? input
-                    : input instanceof URL
-                      ? input.toString()
-                      : input.url,
-                status: freshResp.status,
-              },
-              tags,
-              revalidate: revalidateSeconds,
-            };
-            await handler.set(cacheKey, freshValue, {
-              fetchCache: true,
-              tags,
-              revalidate: revalidateSeconds,
-            });
-          })
-          .catch((err) => {
-            console.error("[vinext] fetch cache background revalidation failed:", err);
-          });
+          pendingRefetches.set(cacheKey, refetchPromise);
+
+          // Safety net: if the upstream fetch hangs forever, force-clean the
+          // dedup entry so future stale hits can retry instead of being
+          // permanently suppressed.
+          const timeoutId = setTimeout(() => {
+            if (pendingRefetches.get(cacheKey) === refetchPromise) {
+              pendingRefetches.delete(cacheKey);
+            }
+          }, DEDUP_TIMEOUT_MS);
+
+          getRequestExecutionContext()?.waitUntil(refetchPromise);
+        }
 
         // Return stale data immediately
         return new Response(staleData.body, {
@@ -631,13 +717,16 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const cleanInit = stripNextFromInit(init);
     const response = await originalFetch(input, cleanInit);
 
-    // Only cache successful responses (2xx)
-    if (response.ok) {
+    // Only cache 200 responses
+    if (response.status === 200) {
       // Clone before reading body
       const cloned = response.clone();
       const body = await cloned.text();
       const headers: Record<string, string> = {};
       cloned.headers.forEach((v, k) => {
+        // Never cache Set-Cookie headers — they are per-user and must not
+        // be replayed to subsequent requests from different users.
+        if (k.toLowerCase() === "set-cookie") return;
         headers[k] = v;
       });
 
@@ -677,7 +766,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
  */
 function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
   if (!init) return init;
-  const castInit = init as RequestInit & { next?: unknown; _ogBody?: BodyInit };
+  const castInit = init as ExtendedRequestInit;
   const { next: _next, _ogBody, ...rest } = castInit;
   // Restore the original body if it was stashed by serializeBody (e.g. after
   // consuming a ReadableStream for cache key generation).
@@ -733,7 +822,24 @@ export function withFetchCache(): () => void {
  */
 export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
+  if (isInsideUnifiedScope()) {
+    return await runWithUnifiedStateMutation((uCtx) => {
+      uCtx.currentRequestTags = [];
+    }, fn);
+  }
   return _als.run({ currentRequestTags: [] }, fn);
+}
+
+/**
+ * Install the patched fetch without creating a standalone ALS scope.
+ *
+ * `runWithFetchCache()` is the standalone helper: it installs the patch and
+ * creates an isolated per-request tag store. The unified request context owns
+ * that isolation itself via `currentRequestTags`, so callers inside
+ * `runWithRequestContext()` only need the process-global fetch monkey-patch.
+ */
+export function ensureFetchPatch(): void {
+  _ensurePatchInstalled();
 }
 
 /**

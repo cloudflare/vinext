@@ -171,7 +171,18 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
     config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
   );
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
+  headers.set(
+    "Content-Disposition",
+    config?.contentDispositionType === "attachment" ? "attachment" : "inline",
+  );
+}
+
+function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+  const headers = new Headers(source.headers);
+  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+  headers.set("Vary", "Accept");
+  setImageSecurityHeaders(headers, config);
+  return new Response(source.body, { status: 200, headers });
 }
 
 /**
@@ -232,11 +243,7 @@ export async function handleImageOptimization(
   // This matches Next.js behavior where SVG is a "bypass type".
   const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
   if (sourceMediaType === "image/svg+xml") {
-    const headers = new Headers(source.headers);
-    headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-    headers.set("Vary", "Accept");
-    setImageSecurityHeaders(headers, imageConfig);
-    return new Response(source.body, { status: 200, headers });
+    return createPassthroughImageResponse(source, imageConfig);
   }
 
   // Transform if handler provided, otherwise serve original
@@ -261,14 +268,24 @@ export async function handleImageOptimization(
       return new Response(transformed.body, { status: 200, headers });
     } catch (e) {
       console.error("[vinext] Image optimization error:", e);
-      // Fall through to serve original
     }
   }
 
   // Fallback: serve original image with cache headers
-  const headers = new Headers(source.headers);
-  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-  headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers, imageConfig);
-  return new Response(source.body, { status: 200, headers });
+  try {
+    return createPassthroughImageResponse(source, imageConfig);
+  } catch (e) {
+    console.error("[vinext] Image fallback error, refetching source image:", e);
+    const refetchedSource = await handlers.fetchAsset(imageUrl, request);
+    if (!refetchedSource.ok || !refetchedSource.body) {
+      return new Response("Image not found", { status: 404 });
+    }
+
+    const refetchedContentType = refetchedSource.headers.get("Content-Type");
+    if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
+      return new Response("The requested resource is not an allowed image type", { status: 400 });
+    }
+
+    return createPassthroughImageResponse(refetchedSource, imageConfig);
+  }
 }

@@ -22,4 +22,31 @@ test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
     const html = await res.text();
     expect(html).toContain("Cloudflare-Workers");
   });
+
+  test("config headers still match the pre-middleware pathname after a rewrite", async ({
+    request,
+  }) => {
+    const res = await request.get(`${BASE}/headers-before-middleware-rewrite`);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["x-rewrite-source-header"]).toBe("1");
+
+    const html = await res.text();
+    expect(html).toContain("Server-Side Rendered on Workers");
+  });
+
+  test("config redirects still win before middleware responses", async ({ request }) => {
+    const res = await request.get(`${BASE}/redirect-before-middleware-response`, {
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    expect(res.headers()["location"]).toContain("/about");
+  });
+
+  test("config redirects still win before middleware rewrites", async ({ request }) => {
+    const res = await request.get(`${BASE}/redirect-before-middleware-rewrite`, {
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    expect(res.headers()["location"]).toContain("/about");
+  });
 });

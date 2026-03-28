@@ -168,3 +168,37 @@ test.describe("Client navigation hooks SSR", () => {
     await expect(page.locator('[data-testid="client-search-q"]')).toHaveText("");
   });
 });
+
+test.describe('"use client" page component with usePathname (issue #688)', () => {
+  test("usePathname renders correct pathname when page itself is use client", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+
+    await page.goto(`${BASE}/use-client-page-pathname`);
+    await waitForHydration(page);
+
+    await expect(page.locator("#client-page-pathname")).toHaveText("/use-client-page-pathname");
+    expect(errors.filter((e) => e.includes("Hydration"))).toHaveLength(0);
+  });
+
+  test("useSearchParams works on use client page with query string", async ({ page }) => {
+    await page.goto(`${BASE}/use-client-page-pathname?q=test`);
+    await waitForHydration(page);
+
+    await expect(page.locator("#client-page-search-q")).toHaveText("test");
+  });
+
+  test("usePathname + useParams on dynamic use client page", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+
+    await page.goto(`${BASE}/use-client-page-pathname/my-slug`);
+    await waitForHydration(page);
+
+    await expect(page.locator("#client-page-dynamic-pathname")).toHaveText(
+      "/use-client-page-pathname/my-slug",
+    );
+    await expect(page.locator("#client-page-dynamic-slug")).toHaveText("my-slug");
+    expect(errors.filter((e) => e.includes("Hydration"))).toHaveLength(0);
+  });
+});

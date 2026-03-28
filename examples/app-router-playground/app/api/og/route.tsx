@@ -66,8 +66,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 }
 
-function LightSvg(): ReactElement {
-  return (
+const LIGHT_SVG: ReactElement = (
     <svg
       fill="none"
       height="441"
@@ -229,7 +228,7 @@ function LightSvg(): ReactElement {
           height="88.5"
           rx="13.8"
           stroke="url(#paint1_radial_5_3)"
-          stroke-opacity="0.15"
+          strokeOpacity="0.15"
           strokeWidth="1.5"
           transform="rotate(-180 465.75 197.75)"
           width="88.5"
@@ -240,7 +239,7 @@ function LightSvg(): ReactElement {
           height="88.5"
           rx="13.8"
           stroke="url(#paint2_linear_5_3)"
-          stroke-opacity="0.5"
+          strokeOpacity="0.5"
           strokeWidth="1.5"
           transform="rotate(-180 465.75 197.75)"
           width="88.5"
@@ -368,7 +367,10 @@ function LightSvg(): ReactElement {
         </clipPath>
       </defs>
     </svg>
-  );
+);
+
+function LightSvg(): ReactElement {
+  return LIGHT_SVG;
 }
 
 function DarkSvg(): ReactElement {
@@ -534,7 +536,7 @@ function DarkSvg(): ReactElement {
           height="88.0875"
           rx="13.5937"
           stroke="url(#paint1_radial_1_4)"
-          stroke-opacity="0.15"
+          strokeOpacity="0.15"
           strokeWidth="1.0875"
           width="88.0875"
           x="377.456"
@@ -544,7 +546,7 @@ function DarkSvg(): ReactElement {
           height="88.0875"
           rx="13.5937"
           stroke="url(#paint2_linear_1_4)"
-          stroke-opacity="0.5"
+          strokeOpacity="0.5"
           strokeWidth="1.0875"
           width="88.0875"
           x="377.456"

@@ -7,7 +7,7 @@
  *
  * Tests revalidatePath and revalidateTag via route handler API endpoints.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import {
   startFixtureServer,
   APP_FIXTURE_DIR,

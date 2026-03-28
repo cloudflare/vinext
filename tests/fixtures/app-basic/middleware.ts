@@ -49,6 +49,14 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/", request.url));
   }
 
+  // Rewrite with query params — the rewrite URL's query string should be
+  // visible to the target page via searchParams props and useSearchParams().
+  if (pathname === "/middleware-rewrite-query") {
+    return NextResponse.rewrite(
+      new URL("/search-query?searchParams=from-rewrite&extra=injected", request.url),
+    );
+  }
+
   // Rewrite with custom status code
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite with status
   if (pathname === "/middleware-rewrite-status") {
@@ -149,6 +157,7 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
+    "/middleware-rewrite-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/middleware-throw",

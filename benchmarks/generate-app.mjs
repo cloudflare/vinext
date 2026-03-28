@@ -577,7 +577,7 @@ console.log(
 // Copy to each benchmark project (symlinks don't work with Turbopack)
 import { cpSync } from "node:fs";
 const BASE = dirname(new URL(import.meta.url).pathname);
-for (const project of ["nextjs", "vinext", "vinext-rolldown"]) {
+for (const project of ["nextjs", "vinext"]) {
   const dest = join(BASE, project, "app");
   rmSync(dest, { recursive: true, force: true });
   cpSync(APP, dest, { recursive: true });

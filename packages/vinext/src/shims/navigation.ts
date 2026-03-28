@@ -11,7 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
-import { toSameOriginPath } from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 
@@ -21,8 +21,16 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 // (including route groups, with dynamic params resolved to actual values).
 // Created lazily because `React.createContext` is NOT available in the
 // react-server condition of React. In the RSC environment, this remains null.
-
-let _LayoutSegmentCtx: React.Context<string[]> | null = null;
+// The shared context lives behind a global singleton so provider/hook pairs
+// still line up if Vite loads this shim through multiple resolved module IDs.
+const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
+const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+type _LayoutSegmentGlobal = typeof globalThis & {
+  [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<string[]> | null;
+  [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
+    ((callback: () => unknown) => void) | null
+  > | null;
+};
 
 // ─── ServerInsertedHTML context ────────────────────────────────────────────────
 // Used by CSS-in-JS libraries (Apollo Client, styled-components, emotion) to
@@ -38,22 +46,38 @@ let _LayoutSegmentCtx: React.Context<string[]> | null = null;
 // Created eagerly at module load time. In the RSC environment (react-server
 // condition), createContext isn't available so this will be null.
 
+function getServerInsertedHTMLContext(): React.Context<
+  ((callback: () => unknown) => void) | null
+> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_SERVER_INSERTED_HTML_CTX_KEY]) {
+    globalState[_SERVER_INSERTED_HTML_CTX_KEY] = React.createContext<
+      ((callback: () => unknown) => void) | null
+    >(null);
+  }
+
+  return globalState[_SERVER_INSERTED_HTML_CTX_KEY] ?? null;
+}
+
 export const ServerInsertedHTMLContext: React.Context<
   ((callback: () => unknown) => void) | null
-> | null =
-  typeof React.createContext === "function"
-    ? React.createContext<((callback: () => unknown) => void) | null>(null)
-    : null;
+> | null = getServerInsertedHTMLContext();
 
 /**
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).
  */
 export function getLayoutSegmentContext(): React.Context<string[]> | null {
-  if (_LayoutSegmentCtx === null && typeof React.createContext === "function") {
-    _LayoutSegmentCtx = React.createContext<string[]>([]);
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_LAYOUT_SEGMENT_CTX_KEY]) {
+    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<string[]>([]);
   }
-  return _LayoutSegmentCtx;
+
+  return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
 }
 
 /**
@@ -98,31 +122,69 @@ type NavigationContextWithReadonlyCache = NavigationContext & {
 //
 // On the server: state functions are set by navigation-state.ts at import time.
 // On the client: _serverContext falls back to null (hooks use window instead).
+//
+// Global accessor pattern (issue #688):
+// Vite's multi-environment dev mode can create separate module instances of
+// this file for the SSR entry vs "use client" components. When that happens,
+// _registerStateAccessors only updates the SSR entry's instance, leaving the
+// "use client" instance with the default (null) fallbacks.
+//
+// To fix this, navigation-state.ts also stores the accessors on globalThis
+// via Symbol.for, and the defaults here check for that global before falling
+// back to module-level state. This ensures all module instances can reach the
+// ALS-backed state regardless of which instance was registered.
 // ---------------------------------------------------------------------------
+
+interface _StateAccessors {
+  getServerContext: () => NavigationContext | null;
+  setServerContext: (ctx: NavigationContext | null) => void;
+  getInsertedHTMLCallbacks: () => Array<() => unknown>;
+  clearInsertedHTMLCallbacks: () => void;
+}
+
+export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
+type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
+
+function _getGlobalAccessors(): _StateAccessors | undefined {
+  return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
+}
 
 let _serverContext: NavigationContext | null = null;
 let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
 
 // These are overridden by navigation-state.ts on the server to use ALS.
-let _getServerContext = (): NavigationContext | null => _serverContext;
-let _setServerContext = (ctx: NavigationContext | null): void => {
-  _serverContext = ctx;
+// The defaults check globalThis for cross-module-instance access (issue #688).
+let _getServerContext = (): NavigationContext | null => {
+  const g = _getGlobalAccessors();
+  return g ? g.getServerContext() : _serverContext;
 };
-let _getInsertedHTMLCallbacks = (): Array<() => unknown> => _serverInsertedHTMLCallbacks;
+let _setServerContext = (ctx: NavigationContext | null): void => {
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.setServerContext(ctx);
+  } else {
+    _serverContext = ctx;
+  }
+};
+let _getInsertedHTMLCallbacks = (): Array<() => unknown> => {
+  const g = _getGlobalAccessors();
+  return g ? g.getInsertedHTMLCallbacks() : _serverInsertedHTMLCallbacks;
+};
 let _clearInsertedHTMLCallbacks = (): void => {
-  _serverInsertedHTMLCallbacks = [];
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.clearInsertedHTMLCallbacks();
+  } else {
+    _serverInsertedHTMLCallbacks = [];
+  }
 };
 
 /**
  * Register ALS-backed state accessors. Called by navigation-state.ts on import.
  * @internal
  */
-export function _registerStateAccessors(accessors: {
-  getServerContext: () => NavigationContext | null;
-  setServerContext: (ctx: NavigationContext | null) => void;
-  getInsertedHTMLCallbacks: () => Array<() => unknown>;
-  clearInsertedHTMLCallbacks: () => void;
-}): void {
+export function _registerStateAccessors(accessors: _StateAccessors): void {
   _getServerContext = accessors.getServerContext;
   _setServerContext = accessors.setServerContext;
   _getInsertedHTMLCallbacks = accessors.getInsertedHTMLCallbacks;
@@ -155,18 +217,12 @@ const isServer = typeof window === "undefined";
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
-/** Prepend basePath to a path for browser URLs / fetches */
-function withBasePath(p: string): string {
-  if (!__basePath) return p;
-  return __basePath + p;
-}
-
 // ---------------------------------------------------------------------------
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
 // ---------------------------------------------------------------------------
 
 /** Maximum number of entries in the RSC prefetch cache. */
-const MAX_PREFETCH_CACHE_SIZE = 50;
+export const MAX_PREFETCH_CACHE_SIZE = 50;
 
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
@@ -220,12 +276,29 @@ export function getPrefetchedUrls(): Set<string> {
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
   const cache = getPrefetchCache();
-  // Evict oldest entry if at capacity (Map iterates in insertion order)
+  const now = Date.now();
+
+  // Sweep expired entries before resorting to FIFO eviction
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    const prefetched = getPrefetchedUrls();
+    for (const [key, entry] of cache) {
+      if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
+        cache.delete(key);
+        prefetched.delete(key);
+      }
+    }
+  }
+
+  // FIFO fallback if still at capacity after sweep
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      getPrefetchedUrls().delete(oldest);
+    }
   }
-  cache.set(rscUrl, { response, timestamp: Date.now() });
+
+  cache.set(rscUrl, { response, timestamp: now });
 }
 
 // Client navigation listeners
@@ -280,7 +353,8 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
-let _clientParams: Record<string, string | string[]> = {};
+const _EMPTY_PARAMS: Record<string, string | string[]> = {};
+let _clientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
 let _clientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
@@ -288,12 +362,29 @@ export function setClientParams(params: Record<string, string | string[]>): void
   if (json !== _clientParamsJson) {
     _clientParams = params;
     _clientParamsJson = json;
+    // Notify useSyncExternalStore subscribers so useParams() re-renders.
+    notifyListeners();
   }
 }
 
 /** Get the current client params (for testing referential stability). */
 export function getClientParams(): Record<string, string | string[]> {
   return _clientParams;
+}
+
+function getClientParamsSnapshot(): Record<string, string | string[]> {
+  return _clientParams;
+}
+
+function getServerParamsSnapshot(): Record<string, string | string[]> {
+  return _getServerContext()?.params ?? _EMPTY_PARAMS;
+}
+
+function subscribeToNavigation(cb: () => void): () => void {
+  _listeners.add(cb);
+  return () => {
+    _listeners.delete(cb);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -312,12 +403,7 @@ export function usePathname(): string {
   }
   // Client-side: use the hook system for reactivity
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
@@ -333,12 +419,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     return getServerSearchParamsSnapshot();
   }
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
@@ -352,9 +433,13 @@ export function useParams<
 >(): T {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
-    return (_getServerContext()?.params ?? {}) as T;
+    return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
-  return _clientParams as T;
+  return React.useSyncExternalStore(
+    subscribeToNavigation,
+    getClientParamsSnapshot as () => T,
+    getServerParamsSnapshot as () => T,
+  );
 }
 
 /**
@@ -400,9 +485,9 @@ function scrollToHash(hash: string): void {
  * (e.g. saving scroll position shouldn't cause re-renders).
  * Captured before the history method patching at the bottom of this module.
  */
-const _nativeReplaceState = !isServer
+const _nativeReplaceState: typeof window.history.replaceState | null = !isServer
   ? window.history.replaceState.bind(window.history)
-  : (null as unknown as typeof window.history.replaceState);
+  : null;
 
 /**
  * Save the current scroll position into the current history state.
@@ -412,6 +497,7 @@ const _nativeReplaceState = !isServer
  * interception (which would cause spurious re-renders from notifyListeners).
  */
 function saveScrollPosition(): void {
+  if (!_nativeReplaceState) return;
   const state = window.history.state ?? {};
   _nativeReplaceState.call(
     window.history,
@@ -475,7 +561,7 @@ async function navigateImpl(
   // Normalize same-origin absolute URLs to local paths for SPA navigation
   let normalizedHref = href;
   if (isExternalUrl(href)) {
-    const localPath = toSameOriginPath(href);
+    const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
       // Truly external: use full page navigation
       if (mode === "replace") {
@@ -488,7 +574,7 @@ async function navigateImpl(
     normalizedHref = localPath;
   }
 
-  const fullHref = withBasePath(normalizedHref);
+  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {
@@ -568,13 +654,13 @@ const _appRouter = {
     if (isServer) return;
     // Re-fetch the current page's RSC stream
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      window.__VINEXT_RSC_NAVIGATE__(window.location.href);
+      void window.__VINEXT_RSC_NAVIGATE__(window.location.href);
     }
   },
   prefetch(href: string): void {
     if (isServer) return;
     // Prefetch the RSC payload for the target route and store in cache
-    const fullHref = withBasePath(href);
+    const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
     const prefetched = getPrefetchedUrls();
     if (prefetched.has(rscUrl)) return;
@@ -720,7 +806,7 @@ export const HTTP_ERROR_FALLBACK_ERROR_CODE = "NEXT_HTTP_ERROR_FALLBACK";
  */
 export function isHTTPAccessFallbackError(error: unknown): boolean {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     return (
       digest === "NEXT_NOT_FOUND" || // legacy compat
       digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)
@@ -735,7 +821,7 @@ export function isHTTPAccessFallbackError(error: unknown): boolean {
  */
 export function getAccessFallbackHTTPStatus(error: unknown): number {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     if (digest === "NEXT_NOT_FOUND") return 404;
     if (digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)) {
       return parseInt(digest.split(";")[1], 10);
@@ -753,30 +839,43 @@ export enum RedirectType {
 }
 
 /**
+ * Internal error class used by redirect/notFound/forbidden/unauthorized.
+ * The `digest` field is the serialised control-flow signal read by the
+ * framework's error boundary and server-side request handlers.
+ */
+class VinextNavigationError extends Error {
+  readonly digest: string;
+  constructor(message: string, digest: string) {
+    super(message);
+    this.digest = digest;
+  }
+}
+
+/**
  * Throw a redirect. Caught by the framework to send a redirect response.
  */
 export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`,
+  );
 }
 
 /**
  * Trigger a permanent redirect (308).
  */
 export function permanentRedirect(url: string): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`,
+  );
 }
 
 /**
  * Trigger a not-found response (404). Caught by the framework.
  */
 export function notFound(): never {
-  const error = new Error("NEXT_NOT_FOUND");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`;
-  throw error;
+  throw new VinextNavigationError("NEXT_NOT_FOUND", `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`);
 }
 
 /**
@@ -785,9 +884,7 @@ export function notFound(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function forbidden(): never {
-  const error = new Error("NEXT_FORBIDDEN");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`;
-  throw error;
+  throw new VinextNavigationError("NEXT_FORBIDDEN", `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`);
 }
 
 /**
@@ -796,9 +893,7 @@ export function forbidden(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function unauthorized(): never {
-  const error = new Error("NEXT_UNAUTHORIZED");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`;
-  throw error;
+  throw new VinextNavigationError("NEXT_UNAUTHORIZED", `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`);
 }
 
 // ---------------------------------------------------------------------------

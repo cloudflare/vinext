@@ -8,8 +8,8 @@
  * Relates to: https://github.com/cloudflare/vinext/issues/270
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { createServer, type ViteDevServer } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 import fs from "node:fs/promises";

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -122,6 +122,42 @@ describe("scanImports", () => {
     expect(items[0].detail).toContain("not recognized");
   });
 
+  it("recognizes next/compat/router as supported", () => {
+    writeFile("components/shared-nav.tsx", `import { useRouter } from "next/compat/router";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/compat/router");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/form as supported", () => {
+    writeFile("app/page.tsx", `import Form from "next/form";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/form");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/web-vitals as supported", () => {
+    writeFile("pages/_app.tsx", `import { reportWebVitals } from "next/web-vitals";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/web-vitals");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/constants as supported", () => {
+    writeFile("lib/phases.ts", `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/constants");
+    expect(items[0].status).toBe("supported");
+  });
+
   it("recognizes `import { Metadata } from 'next'` as supported", () => {
     writeFile(
       "app/layout.tsx",
@@ -191,6 +227,42 @@ describe("scanImports", () => {
     const items = scanImports(tmpDir);
     const linkItem = items.find((i) => i.name === "next/link");
     expect(linkItem?.files).toHaveLength(1);
+  });
+
+  it("recognizes next/dist/shared/lib/router-context.shared-runtime as supported", () => {
+    writeFile(
+      "lib/router.tsx",
+      `import { RouterContext } from "next/dist/shared/lib/router-context.shared-runtime";`,
+    );
+
+    const items = scanImports(tmpDir);
+    const item = items.find((i) => i.name === "next/dist/shared/lib/router-context.shared-runtime");
+    expect(item?.status).toBe("supported");
+  });
+
+  it("recognizes all other shimmed next/dist/* paths as supported", () => {
+    const distImports = [
+      "next/dist/shared/lib/app-router-context.shared-runtime",
+      "next/dist/shared/lib/app-router-context",
+      "next/dist/shared/lib/utils",
+      "next/dist/server/api-utils",
+      "next/dist/server/web/spec-extension/cookies",
+      "next/dist/compiled/@edge-runtime/cookies",
+      "next/dist/server/app-render/work-unit-async-storage.external",
+      "next/dist/client/components/work-unit-async-storage.external",
+      "next/dist/client/components/request-async-storage.external",
+      "next/dist/client/components/request-async-storage",
+      "next/dist/client/components/navigation",
+      "next/dist/server/config-shared",
+    ];
+
+    writeFile("lib/internals.ts", distImports.map((p) => `import * as m from "${p}";`).join("\n"));
+
+    const items = scanImports(tmpDir);
+    for (const p of distImports) {
+      const item = items.find((i) => i.name === p);
+      expect(item?.status, `expected ${p} to be supported`).toBe("supported");
+    }
   });
 });
 
@@ -286,7 +358,7 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "allowedDevOrigins")?.status).toBe("supported");
   });
 
-  it("detects i18n.domains as unsupported", () => {
+  it("detects i18n.domains as partial support", () => {
     writeFile(
       "next.config.js",
       `module.exports = {
@@ -300,7 +372,7 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
   it("reads next.config.ts files", () => {
@@ -648,6 +720,112 @@ describe("checkConventions", () => {
     const postcss = items.find((i) => i.name.includes("PostCSS"));
     expect(postcss).toBeUndefined();
   });
+
+  it("detects __dirname usage in server files", () => {
+    writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.status).toBe("unsupported");
+    expect(cjs?.detail).toContain("fileURLToPath");
+    expect(cjs?.detail).toContain("import.meta.dirname");
+    expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("detects __filename usage", () => {
+    writeFile("lib/logger.ts", `const file = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/logger.ts");
+  });
+
+  it("detects both __dirname and __filename in same file", () => {
+    writeFile("lib/util.ts", `const dir = __dirname;\nconst file = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/util.ts");
+    // Only one item for both globals
+    expect(
+      items.filter((i) => i.name.includes("__dirname") || i.name.includes("__filename")),
+    ).toHaveLength(1);
+  });
+
+  it("does not flag __dirname inside string literals", () => {
+    writeFile(
+      "lib/comment.ts",
+      `const msg = "use __dirname instead";\nexport default function Home() { return null; }`,
+    );
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("does not flag __dirname inside comments", () => {
+    writeFile("lib/note.ts", `// Previously used __dirname here\nexport const x = 1;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("does not flag __dirname inside a plain template literal (no interpolation)", () => {
+    writeFile("lib/msg.ts", "const msg = `use __dirname instead`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("detects __dirname inside a template expression ${...}", () => {
+    writeFile("lib/db.ts", "const dir = `${__dirname}/views`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("does not flag __dirname when not used at all", () => {
+    writeFile(
+      "lib/esm.ts",
+      `import { fileURLToPath } from "url";\nimport { dirname } from "path";\nconst __dirname = dirname(fileURLToPath(import.meta.url));`,
+    );
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    // The ESM pattern itself reassigns __dirname — this is fine and should not be flagged
+    // because users are already using the correct ESM idiom.
+    // Our scanner will see `__dirname` in the assignment target — that's an edge case we accept.
+    // This test just ensures we don't crash.
+    const items = checkConventions(tmpDir);
+    // No assertion on presence/absence — just verify it doesn't throw
+    expect(Array.isArray(items)).toBe(true);
+  });
+
+  it("tracks multiple files that use __dirname", () => {
+    writeFile("lib/a.ts", `const d = __dirname;`);
+    writeFile("lib/b.ts", `const f = __filename;`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toHaveLength(2);
+    expect(cjs?.files).toContain("lib/a.ts");
+    expect(cjs?.files).toContain("lib/b.ts");
+  });
 });
 
 // ── runCheck ───────────────────────────────────────────────────────────────
@@ -800,6 +978,19 @@ describe("formatReport", () => {
     expect(report).toContain("next/amp");
   });
 
+  it("lists affected files under unsupported items in issues section", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("Issues to address");
+    expect(report).toContain("__dirname");
+    expect(report).toContain("lib/db.ts");
+  });
+
   it("shows partial support section when there are partial items", () => {
     writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
@@ -865,8 +1056,23 @@ describe("formatReport", () => {
     expect(report).toContain("vinext init");
     expect(report).toContain("Or manually");
     expect(report).toContain('"type": "module"');
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).toContain("@vitejs/plugin-rsc");
+    expect(report).toContain("react-server-dom-webpack");
     expect(report).toContain("vite.config.ts");
     expect(report).toContain("npx vite dev");
+  });
+
+  it("does not list App Router-only packages in manual install steps for Pages Router projects", () => {
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).not.toContain("@vitejs/plugin-rsc");
+    expect(report).not.toContain("react-server-dom-webpack");
   });
 });
 

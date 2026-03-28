@@ -7,19 +7,20 @@
  */
 import { useState, useEffect, useCallback, useMemo, createElement, type ReactElement } from "react";
 import { RouterContext } from "./internal/router-context.js";
+import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
-import { toSameOriginPath } from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { addQueryParam, appendSearchParamsToUrl } from "../utils/query.js";
+import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
+import {
+  addQueryParam,
+  appendSearchParamsToUrl,
+  type UrlQuery,
+  urlQueryToSearchParams,
+} from "../utils/query.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
-
-/** Prepend basePath to a path for browser URLs / fetches */
-function withBasePath(p: string): string {
-  if (!__basePath) return p;
-  return __basePath + p;
-}
 
 type BeforePopStateCallback = (state: {
   url: string;
@@ -27,7 +28,7 @@ type BeforePopStateCallback = (state: {
   options: { shallow: boolean };
 }) => boolean;
 
-interface NextRouter {
+export interface NextRouter {
   /** Current pathname */
   pathname: string;
   /** Current route pattern (e.g., "/posts/[id]") */
@@ -44,6 +45,8 @@ interface NextRouter {
   locales?: string[];
   /** Default locale */
   defaultLocale?: string;
+  /** Configured domain locales */
+  domainLocales?: VinextNextData["domainLocales"];
   /** Whether the router is ready */
   isReady: boolean;
   /** Whether this is a preview */
@@ -69,7 +72,7 @@ interface NextRouter {
 
 interface UrlObject {
   pathname?: string;
-  query?: Record<string, string>;
+  query?: UrlQuery;
 }
 
 interface TransitionOptions {
@@ -77,10 +80,6 @@ interface TransitionOptions {
   scroll?: boolean;
   locale?: string;
 }
-
-// Route event handler types (used by consumers via router.events)
-type _RouteChangeHandler = (url: string) => void;
-type _RouteErrorHandler = (err: Error, url: string) => void;
 
 interface RouterEvents {
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -94,7 +93,7 @@ function createRouterEvents(): RouterEvents {
   return {
     on(event: string, handler: (...args: unknown[]) => void) {
       if (!listeners.has(event)) listeners.set(event, new Set());
-      listeners.get(event)!.add(handler);
+      (listeners.get(event) as Set<(...args: unknown[]) => void>).add(handler);
     },
     off(event: string, handler: (...args: unknown[]) => void) {
       listeners.get(event)?.delete(handler);
@@ -112,10 +111,41 @@ function resolveUrl(url: string | UrlObject): string {
   if (typeof url === "string") return url;
   let result = url.pathname ?? "/";
   if (url.query) {
-    const params = new URLSearchParams(url.query);
+    const params = urlQueryToSearchParams(url.query);
     result = appendSearchParamsToUrl(result, params);
   }
   return result;
+}
+
+/**
+ * When `as` is provided, use it as the navigation target. This is a
+ * simplification: Next.js keeps `url` and `as` as separate values (url for
+ * data fetching, as for the browser URL). We collapse them because vinext's
+ * navigateClient() fetches HTML from the target URL, so `as` must be a
+ * server-resolvable path. Purely decorative `as` values are not supported.
+ */
+function resolveNavigationTarget(
+  url: string | UrlObject,
+  as: string | undefined,
+  locale: string | undefined,
+): string {
+  return applyNavigationLocale(as ?? resolveUrl(url), locale);
+}
+
+function getDomainLocales(): readonly DomainLocale[] | undefined {
+  return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
+}
+
+function getCurrentHostname(): string | undefined {
+  return window.location?.hostname;
+}
+
+function getDomainLocalePath(url: string, locale: string): string | undefined {
+  return getDomainLocaleUrl(url, locale, {
+    basePath: __basePath,
+    currentHostname: getCurrentHostname(),
+    domainItems: getDomainLocales(),
+  });
 }
 
 /**
@@ -124,17 +154,35 @@ function resolveUrl(url: string | UrlObject): string {
  */
 export function applyNavigationLocale(url: string, locale?: string): string {
   if (!locale || typeof window === "undefined") return url;
-  const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
-  // Default locale doesn't get a prefix
-  if (locale === defaultLocale) return url;
-  // Don't double-prefix
-  if (url.startsWith(`/${locale}/`) || url === `/${locale}`) return url;
-  return `/${locale}${url.startsWith("/") ? url : `/${url}`}`;
+  // Absolute and protocol-relative URLs must not be prefixed — locale
+  // only applies to local paths.
+  if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) {
+    return url;
+  }
+
+  const domainLocalePath = getDomainLocalePath(url, locale);
+  if (domainLocalePath) return domainLocalePath;
+
+  return addLocalePrefix(url, locale, window.__VINEXT_DEFAULT_LOCALE__ ?? "");
 }
 
 /** Check if a URL is external (any URL scheme per RFC 3986, or protocol-relative) */
 export function isExternalUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
+}
+
+/** Resolve a hash URL to a basePath-stripped app URL for event payloads */
+function resolveHashUrl(url: string): string {
+  if (typeof window === "undefined") return url;
+  if (url.startsWith("#"))
+    return stripBasePath(window.location.pathname, __basePath) + window.location.search + url;
+  // Full-path hash URL — strip basePath for consistency with other events
+  try {
+    const parsed = new URL(url, window.location.href);
+    return stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+  } catch {
+    return url;
+  }
 }
 
 /** Check if a href is only a hash change relative to the current URL */
@@ -190,6 +238,7 @@ interface SSRContext {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
+  domainLocales?: VinextNextData["domainLocales"];
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +308,11 @@ function getPathnameAndQuery(): {
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
-  const pathname = stripBasePath(window.location.pathname, __basePath);
+  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  // In Next.js, router.pathname is the route pattern (e.g., "/posts/[id]"),
+  // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
+  // pattern and is updated by navigateClient() on every client-side navigation.
+  const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
   const routeQuery: Record<string, string | string[]> = {};
   // Include dynamic route params from __NEXT_DATA__ (e.g., { id: "42" } from /posts/[id]).
   // Only include keys that are part of the route pattern (not stale query params).
@@ -282,7 +335,8 @@ function getPathnameAndQuery(): {
     addQueryParam(searchQuery, key, value);
   }
   const query = { ...searchQuery, ...routeQuery };
-  const asPath = pathname + window.location.search + window.location.hash;
+  // asPath uses the resolved browser path, not the route pattern
+  const asPath = resolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
 }
 
@@ -396,7 +450,7 @@ async function navigateClient(url: string): Promise<void> {
     root.render(element);
   } catch (err) {
     console.error("[vinext] Client navigation failed:", err);
-    routerEvents.emit("routeChangeError", err, url);
+    routerEvents.emit("routeChangeError", err, url, { shallow: false });
     window.location.href = url;
   } finally {
     _navInProgress = false;
@@ -423,12 +477,18 @@ function buildRouterValue(
   },
 ): NextRouter {
   const _ssrState = _getSSRContext();
+  const nextData =
+    typeof window !== "undefined"
+      ? (window.__NEXT_DATA__ as VinextNextData | undefined)
+      : undefined;
   const locale = typeof window === "undefined" ? _ssrState?.locale : window.__VINEXT_LOCALE__;
   const locales = typeof window === "undefined" ? _ssrState?.locales : window.__VINEXT_LOCALES__;
   const defaultLocale =
     typeof window === "undefined" ? _ssrState?.defaultLocale : window.__VINEXT_DEFAULT_LOCALE__;
+  const domainLocales =
+    typeof window === "undefined" ? _ssrState?.domainLocales : nextData?.domainLocales;
 
-  const route = typeof window !== "undefined" ? (window.__NEXT_DATA__?.page ?? pathname) : pathname;
+  const route = typeof window !== "undefined" ? (nextData?.page ?? pathname) : pathname;
 
   return {
     pathname,
@@ -439,9 +499,10 @@ function buildRouterValue(
     locale,
     locales,
     defaultLocale,
+    domainLocales,
     isReady: true,
     isPreview: false,
-    isFallback: typeof window !== "undefined" && window.__NEXT_DATA__?.isFallback === true,
+    isFallback: typeof window !== "undefined" && nextData?.isFallback === true,
     ...methods,
     events: routerEvents,
   };
@@ -464,16 +525,12 @@ export function useRouter(): NextRouter {
   }, []);
 
   const push = useCallback(
-    async (
-      url: string | UrlObject,
-      _as?: string,
-      options?: TransitionOptions,
-    ): Promise<boolean> => {
-      let resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+    async (url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> => {
+      let resolved = resolveNavigationTarget(url, as, options?.locale);
 
       // External URLs — delegate to browser (unless same-origin)
       if (isExternalUrl(resolved)) {
-        const localPath = toSameOriginPath(resolved);
+        const localPath = toSameOriginAppPath(resolved, __basePath);
         if (localPath == null) {
           window.location.assign(resolved);
           return true;
@@ -481,29 +538,36 @@ export function useRouter(): NextRouter {
         resolved = localPath;
       }
 
+      const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+
       // Hash-only change — no page fetch needed
       if (isHashOnlyChange(resolved)) {
+        const eventUrl = resolveHashUrl(resolved);
+        routerEvents.emit("hashChangeStart", eventUrl, {
+          shallow: options?.shallow ?? false,
+        });
         const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-        window.history.pushState(
-          {},
-          "",
-          resolved.startsWith("#") ? resolved : withBasePath(resolved),
-        );
+        window.history.pushState({}, "", resolved.startsWith("#") ? resolved : full);
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
         scrollToHash(hash);
         setState(getPathnameAndQuery());
+        routerEvents.emit("hashChangeComplete", eventUrl, {
+          shallow: options?.shallow ?? false,
+        });
         window.dispatchEvent(new CustomEvent("vinext:navigate"));
         return true;
       }
 
       saveScrollPosition();
-      const full = withBasePath(resolved);
-      routerEvents.emit("routeChangeStart", resolved);
+      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
       window.history.pushState({}, "", full);
+      _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
         await navigateClient(full);
       }
       setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved);
+      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -519,16 +583,12 @@ export function useRouter(): NextRouter {
   );
 
   const replace = useCallback(
-    async (
-      url: string | UrlObject,
-      _as?: string,
-      options?: TransitionOptions,
-    ): Promise<boolean> => {
-      let resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+    async (url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> => {
+      let resolved = resolveNavigationTarget(url, as, options?.locale);
 
       // External URLs — delegate to browser (unless same-origin)
       if (isExternalUrl(resolved)) {
-        const localPath = toSameOriginPath(resolved);
+        const localPath = toSameOriginAppPath(resolved, __basePath);
         if (localPath == null) {
           window.location.replace(resolved);
           return true;
@@ -536,28 +596,35 @@ export function useRouter(): NextRouter {
         resolved = localPath;
       }
 
+      const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+
       // Hash-only change — no page fetch needed
       if (isHashOnlyChange(resolved)) {
+        const eventUrl = resolveHashUrl(resolved);
+        routerEvents.emit("hashChangeStart", eventUrl, {
+          shallow: options?.shallow ?? false,
+        });
         const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-        window.history.replaceState(
-          {},
-          "",
-          resolved.startsWith("#") ? resolved : withBasePath(resolved),
-        );
+        window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : full);
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
         scrollToHash(hash);
         setState(getPathnameAndQuery());
+        routerEvents.emit("hashChangeComplete", eventUrl, {
+          shallow: options?.shallow ?? false,
+        });
         window.dispatchEvent(new CustomEvent("vinext:navigate"));
         return true;
       }
 
-      const full = withBasePath(resolved);
-      routerEvents.emit("routeChangeStart", resolved);
+      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
       window.history.replaceState({}, "", full);
+      _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
         await navigateClient(full);
       }
       setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved);
+      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -613,6 +680,12 @@ export function useRouter(): NextRouter {
 // If it returns false, the navigation is cancelled.
 let _beforePopStateCb: BeforePopStateCallback | undefined;
 
+// Track pathname+search for detecting hash-only back/forward in the popstate
+// handler. Updated after every pushState/replaceState so that popstate can
+// compare the previous value with the (already-changed) window.location.
+let _lastPathnameAndSearch =
+  typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
+
 // Module-level popstate listener: handles browser back/forward by re-rendering
 // the React root with the page at the new URL. This runs regardless of whether
 // any component calls useRouter().
@@ -620,6 +693,9 @@ if (typeof window !== "undefined") {
   window.addEventListener("popstate", (e: PopStateEvent) => {
     const browserUrl = window.location.pathname + window.location.search;
     const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+
+    // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
+    const isHashOnly = browserUrl === _lastPathnameAndSearch;
 
     // Check beforePopState callback
     if (_beforePopStateCb !== undefined) {
@@ -631,9 +707,31 @@ if (typeof window !== "undefined") {
       if (!shouldContinue) return;
     }
 
-    routerEvents.emit("routeChangeStart", appUrl);
+    // Update tracker only after beforePopState confirms navigation proceeds.
+    // If beforePopState cancels, the tracker must retain the previous value
+    // so the next popstate compares against the correct baseline.
+    _lastPathnameAndSearch = browserUrl;
+
+    if (isHashOnly) {
+      // Hash-only back/forward — no page fetch needed
+      const hashUrl = appUrl + window.location.hash;
+      routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
+      scrollToHash(window.location.hash);
+      routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
+      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      return;
+    }
+
+    const fullAppUrl = appUrl + window.location.hash;
+    routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
+    // Note: The browser has already updated window.location by the time popstate
+    // fires, so this is not truly "before" the URL change. In Next.js the popstate
+    // handler calls replaceState to store history metadata — beforeHistoryChange
+    // precedes that call, not the URL change itself. We emit it here for API
+    // compatibility.
+    routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
     void navigateClient(browserUrl).then(() => {
-      routerEvents.emit("routeChangeComplete", appUrl);
+      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
       restoreScrollPosition(e.state);
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
     });
@@ -666,12 +764,12 @@ export function wrapWithRouterContext(element: ReactElement): ReactElement {
 
 // Also export a default Router singleton for `import Router from 'next/router'`
 const Router = {
-  push: async (url: string | UrlObject, _as?: string, options?: TransitionOptions) => {
-    let resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+  push: async (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    let resolved = resolveNavigationTarget(url, as, options?.locale);
 
     // External URLs (unless same-origin)
     if (isExternalUrl(resolved)) {
-      const localPath = toSameOriginPath(resolved);
+      const localPath = toSameOriginAppPath(resolved, __basePath);
       if (localPath == null) {
         window.location.assign(resolved);
         return true;
@@ -679,27 +777,34 @@ const Router = {
       resolved = localPath;
     }
 
+    const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+
     // Hash-only change
     if (isHashOnlyChange(resolved)) {
+      const eventUrl = resolveHashUrl(resolved);
+      routerEvents.emit("hashChangeStart", eventUrl, {
+        shallow: options?.shallow ?? false,
+      });
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.pushState(
-        {},
-        "",
-        resolved.startsWith("#") ? resolved : withBasePath(resolved),
-      );
+      window.history.pushState({}, "", resolved.startsWith("#") ? resolved : full);
+      _lastPathnameAndSearch = window.location.pathname + window.location.search;
       scrollToHash(hash);
+      routerEvents.emit("hashChangeComplete", eventUrl, {
+        shallow: options?.shallow ?? false,
+      });
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
       return true;
     }
 
     saveScrollPosition();
-    const full = withBasePath(resolved);
-    routerEvents.emit("routeChangeStart", resolved);
+    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
     window.history.pushState({}, "", full);
+    _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
       await navigateClient(full);
     }
-    routerEvents.emit("routeChangeComplete", resolved);
+    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {
@@ -710,12 +815,12 @@ const Router = {
     window.dispatchEvent(new CustomEvent("vinext:navigate"));
     return true;
   },
-  replace: async (url: string | UrlObject, _as?: string, options?: TransitionOptions) => {
-    let resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+  replace: async (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    let resolved = resolveNavigationTarget(url, as, options?.locale);
 
     // External URLs (unless same-origin)
     if (isExternalUrl(resolved)) {
-      const localPath = toSameOriginPath(resolved);
+      const localPath = toSameOriginAppPath(resolved, __basePath);
       if (localPath == null) {
         window.location.replace(resolved);
         return true;
@@ -723,26 +828,33 @@ const Router = {
       resolved = localPath;
     }
 
+    const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+
     // Hash-only change
     if (isHashOnlyChange(resolved)) {
+      const eventUrl = resolveHashUrl(resolved);
+      routerEvents.emit("hashChangeStart", eventUrl, {
+        shallow: options?.shallow ?? false,
+      });
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.replaceState(
-        {},
-        "",
-        resolved.startsWith("#") ? resolved : withBasePath(resolved),
-      );
+      window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : full);
+      _lastPathnameAndSearch = window.location.pathname + window.location.search;
       scrollToHash(hash);
+      routerEvents.emit("hashChangeComplete", eventUrl, {
+        shallow: options?.shallow ?? false,
+      });
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
       return true;
     }
 
-    const full = withBasePath(resolved);
-    routerEvents.emit("routeChangeStart", resolved);
+    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
     window.history.replaceState({}, "", full);
+    _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
       await navigateClient(full);
     }
-    routerEvents.emit("routeChangeComplete", resolved);
+    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {

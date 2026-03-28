@@ -48,7 +48,7 @@ export default {
     // Delegate to RSC handler (which decodes + normalizes the pathname itself),
     // wrapping in the ExecutionContext ALS scope so downstream code can reach
     // ctx.waitUntil() without having ctx threaded through every call site.
-    const handleFn = () => rscHandler(request);
+    const handleFn = () => rscHandler(request, ctx);
     const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     if (result instanceof Response) {
