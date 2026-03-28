@@ -59,6 +59,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { fixUseServerClosureCollisionPlugin } from "./plugins/fix-use-server-closure-collision.js";
+import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -914,12 +915,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
-
-  // Build-only cache for og-inline-fetch-assets to avoid repeated file reads
-  // during a single production build. Dev mode skips the cache so asset edits
-  // are picked up without restarting the Vite server.
-  const _ogInlineCache = new Map<string, string>();
-  let _ogInlineIsBuild = false;
 
   /**
    * Generate the virtual SSR server entry module.
@@ -3095,188 +3090,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))`.
-    //
-    // Some bundled libraries (notably @vercel/og) load assets at module init time
-    // with the pattern:
-    //
-    //   fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
-    //
-    // This works in browser and standard Node.js because import.meta.url is a real
-    // file:// URL. In Cloudflare Workers (both wrangler dev and production), however,
-    // import.meta.url is the string "worker" — not a URL — so new URL(...) throws
-    // "TypeError: Invalid URL string" and the Worker fails to start.
-    //
-    // Fix: at Vite transform time, find every such pattern, resolve the referenced
-    // file relative to the module's actual path on disk (available as `id`), read it,
-    // and replace the entire fetch(new URL(...)) expression with an inline base64 IIFE
-    // that resolves synchronously. This eliminates the runtime fetch entirely and works
-    // in all environments (workerd, Node.js, browser).
-    //
-    // Note: WASM files imported via `import ... from "./foo.wasm?module"` are handled
-    // by the bundler/Vite directly and do not need this treatment. Only assets that
-    // are runtime-fetched (not statically imported) need to be inlined here.
-    {
-      name: "vinext:og-inline-fetch-assets",
-      enforce: "pre",
-      configResolved(config) {
-        _ogInlineIsBuild = config.command === "build";
-      },
-      buildStart() {
-        if (_ogInlineIsBuild) {
-          _ogInlineCache.clear();
-        }
-      },
-      async transform(code, id) {
-        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
-        if (!code.includes("import.meta.url")) {
-          return null;
-        }
-
-        const useCache = _ogInlineIsBuild;
-        const moduleDir = path.dirname(id);
-        let newCode = code;
-        let didReplace = false;
-
-        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
-        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
-        if (code.includes("fetch(")) {
-          const fetchPattern =
-            /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
-
-          for (const match of code.matchAll(fetchPattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
-
-            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
-            if (fileBase64 === undefined) {
-              try {
-                const buf = await fs.promises.readFile(absPath);
-                fileBase64 = buf.toString("base64");
-                if (useCache) {
-                  _ogInlineCache.set(absPath, fileBase64);
-                }
-              } catch {
-                // File not found on disk — skip (may be a runtime-only asset)
-                continue;
-              }
-            }
-
-            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
-            const inlined = [
-              `(function(){`,
-              `var b=${JSON.stringify(fileBase64)};`,
-              `var r=atob(b);`,
-              `var a=new Uint8Array(r.length);`,
-              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-              `return Promise.resolve(a.buffer);`,
-              `})()`,
-            ].join("");
-
-            newCode = newCode.replaceAll(fullMatch, inlined);
-            didReplace = true;
-          }
-        }
-
-        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
-        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
-        // both font data passed to satori and WASM bytes passed to initWasm).
-        if (code.includes("readFileSync(")) {
-          const readFilePattern =
-            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
-
-          for (const match of newCode.matchAll(readFilePattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
-
-            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
-            if (fileBase64 === undefined) {
-              try {
-                const buf = await fs.promises.readFile(absPath);
-                fileBase64 = buf.toString("base64");
-                if (useCache) {
-                  _ogInlineCache.set(absPath, fileBase64);
-                }
-              } catch {
-                // File not found on disk — skip
-                continue;
-              }
-            }
-
-            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
-            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
-            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
-
-            newCode = newCode.replaceAll(fullMatch, inlined);
-            didReplace = true;
-          }
-        }
-
-        if (!didReplace) return null;
-        return { code: newCode, map: null };
-      },
-    },
-    // Copy @vercel/og binary assets to the RSC output directory for production builds.
-    //
-    // The edge build (dist/index.edge.js) uses:
-    //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
-    //   - resvg.wasm via dynamic import (og-font-patch rewrites the static import)
-    //
-    // The node build (dist/index.node.js) uses:
-    //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
-    //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
-    //
-    // The og-font-patch plugin's resvg fallback uses new URL("./resvg.wasm", import.meta.url)
-    // which the bundler should emit as an asset. This plugin is kept as a safety net to ensure
-    // the resvg.wasm file exists in the output directory for the Node.js disk-read fallback.
-    {
-      name: "vinext:og-assets",
-      apply: "build",
-      enforce: "post",
-      writeBundle: {
-        sequential: true,
-        order: "post",
-        async handler(options) {
-          const envName = this.environment?.name;
-          if (envName !== "rsc") return;
-
-          const outDir = options.dir;
-          if (!outDir) return;
-
-          // Check if the bundle references @vercel/og assets
-          const indexPath = path.join(outDir, "index.js");
-          if (!fs.existsSync(indexPath)) return;
-
-          const content = fs.readFileSync(indexPath, "utf-8");
-          // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
-          // the WASM needs to be present as a file alongside the bundle.
-          const ogAssets = ["resvg.wasm"];
-
-          // Only copy if the bundle actually references these files
-          const referencedAssets = ogAssets.filter((asset) => content.includes(asset));
-          if (referencedAssets.length === 0) return;
-
-          // Find @vercel/og in node_modules
-          try {
-            const require = createRequire(import.meta.url);
-            const ogPkgPath = require.resolve("@vercel/og/package.json");
-            const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
-
-            for (const asset of referencedAssets) {
-              const src = path.join(ogDistDir, asset);
-              const dest = path.join(outDir, asset);
-              if (fs.existsSync(src) && !fs.existsSync(dest)) {
-                fs.copyFileSync(src, dest);
-              }
-            }
-          } catch {
-            // @vercel/og not installed — nothing to copy
-          }
-        },
-      },
-    },
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
+    // see src/plugins/og-assets.ts
+    createOgInlineFetchAssetsPlugin(),
+    // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
+    ogAssetsPlugin,
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
