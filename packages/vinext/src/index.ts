@@ -2467,6 +2467,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   nextConfig?.basePath,
                 );
 
+                // Settle waitUntil promises — no ctx.waitUntil() in dev, but
+                // promises must still run for parity with prod (session sync, telemetry, etc.)
+                if (result.waitUntilPromises?.length) {
+                  void Promise.allSettled(result.waitUntilPromises);
+                }
+
                 if (!result.continue) {
                   if (result.redirectUrl) {
                     const redirectHeaders: Record<string, string | string[]> = {
