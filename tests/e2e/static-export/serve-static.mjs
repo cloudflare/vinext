@@ -77,7 +77,7 @@ function isInsideRoot(filePath) {
 const server = createServer(async (req, res) => {
   try {
     const parsed = new URL(req.url ?? "/", "http://localhost");
-    let pathname = parsed.pathname;
+    let pathname = decodeURIComponent(parsed.pathname);
 
     // Directory index
     if (pathname.endsWith("/")) pathname += "index.html";
