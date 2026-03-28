@@ -11,50 +11,68 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install
-      - run: pnpm run lint
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - name: Build plugin (needed for benchmark workspace type resolution)
+        run: vp run build
+      - run: vp run check
 
-  typecheck:
-    name: Typecheck
+  test-unit:
+    name: Vitest (unit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install
-      - run: pnpm run typecheck
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - run: vp test run --project unit
 
-  test:
-    name: Vitest
+  test-integration:
+    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3]
+        shardTotal: [3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
+        run: vp run build
+      - run: vp test run --project integration --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+        env:
+          CI: true
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: .vitest-reports/*
+          include-hidden-files: true
+          retention-days: 1
+
+  test-integration-merge:
+    name: Vitest (integration report)
+    if: ${{ !cancelled() }}
+    needs: [test-integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/download-artifact@v7
         with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install
-      - name: Build plugin (needed by ecosystem fixtures)
-        run: pnpm run build
-      - run: pnpm test
+          path: .vitest-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      - run: vp test run --merge-reports
+        env:
+          CI: true
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
@@ -64,68 +82,47 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
-        run: pnpm run build
+        run: vp run build
+
       - name: Pack vinext for local install
-        run: npm pack --pack-destination "${{ runner.temp }}"
+        run: vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
+
       - name: Scaffold a fresh create-next-app project
-        run: npx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
-        run: npm install "${{ runner.temp }}"/vinext-*.tgz
+        run: vp add "${{ runner.temp }}"/vinext-*.tgz
+
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
-        run: npx vinext init --skip-check
+        run: vp exec vinext init --skip-check
+
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
-        shell: node {0}
+        shell: bash
         run: |
-          const { spawn } = require("child_process");
-          const http = require("http");
+          vp exec vite dev --port 3099 &
+          SERVER_PID=$!
 
-          const isWin = process.platform === "win32";
-          const server = spawn("npx", ["vite", "dev", "--port", "3099"], {
-            cwd: process.cwd(),
-            stdio: "inherit",
-            shell: true,
-          });
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3099/ || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Server responded with HTTP 200 (attempt $i)"
+              kill "$SERVER_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
 
-          let attempts = 0;
-          const maxAttempts = 30;
-          const interval = setInterval(() => {
-            attempts++;
-            http.get("http://localhost:3099/", (res) => {
-              if (res.statusCode === 200) {
-                console.log(`Server responded with HTTP 200 (attempt ${attempts})`);
-                clearInterval(interval);
-                if (isWin) {
-                  spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
-                } else {
-                  server.kill("SIGTERM");
-                }
-                process.exit(0);
-              }
-            }).on("error", () => {});
-            if (attempts >= maxAttempts) {
-              console.error("Server did not respond with HTTP 200 within 30 seconds");
-              clearInterval(interval);
-              if (isWin) {
-                spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
-              } else {
-                server.kill("SIGTERM");
-              }
-              process.exit(1);
-            }
-          }, 1000);
+          echo "Server did not respond with HTTP 200 within 30 seconds"
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit 1
 
   e2e:
     name: E2E (${{ matrix.project }})
@@ -139,24 +136,45 @@ jobs:
           - cloudflare-pages-router
           - pages-router-prod
           - cloudflare-workers
+          - cloudflare-dev
+          - cloudflare-pages-router-dev
+          - static-export
+          - app-with-src
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
-        run: pnpm run build
-      - run: pnpm exec playwright install chromium
-      - run: pnpm exec playwright test
+        run: vp run build
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
+
+      - run: vp exec playwright install chromium
+
+      - run: vp run test:e2e
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
-      - uses: actions/upload-artifact@v4
+
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}
           path: playwright-report/
           retention-days: 7
+
+  ci:
+    name: CI
+    if: ${{ always() }}
+    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: echo "All checks passed"
+      - name: Some checks failed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

@@ -10,12 +10,17 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerRouterStateAccessors } from "./router.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface SSRContext {
+export interface SSRContext {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
@@ -24,34 +29,43 @@ interface SSRContext {
   defaultLocale?: string;
 }
 
-interface RouterState {
+export interface RouterState {
   ssrContext: SSRContext | null;
 }
 
 const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,
 } satisfies RouterState) as RouterState;
 
-function _enterWith(state: RouterState): void {
-  const enterWith = (_als as any).enterWith;
-  if (typeof enterWith === "function") {
-    try {
-      enterWith.call(_als, state);
-      return;
-    } catch {
-      // Fall through to best-effort fallback.
-    }
+function _getState(): RouterState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
   }
-  _fallbackState.ssrContext = state.ssrContext;
+  return _als.getStore() ?? _fallbackState;
 }
 
-function _getState(): RouterState {
-  return _als.getStore() ?? _fallbackState;
+/**
+ * Run a function within a router state ALS scope.
+ * Ensures per-request isolation for Pages Router SSR context
+ * on concurrent runtimes.
+ */
+export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.ssrContext = null;
+    }, fn);
+  }
+
+  const state: RouterState = {
+    ssrContext: null,
+  };
+  return _als.run(state, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -64,16 +78,6 @@ _registerRouterStateAccessors({
   },
 
   setSSRContext(ctx: SSRContext | null): void {
-    if (ctx !== null) {
-      _enterWith({ ssrContext: ctx });
-      _fallbackState.ssrContext = ctx;
-      return;
-    }
-    // Clear in both ALS store and fallback to prevent leaks.
-    const state = _als.getStore();
-    if (state) {
-      state.ssrContext = null;
-    }
-    _fallbackState.ssrContext = null;
+    _getState().ssrContext = ctx;
   },
 });

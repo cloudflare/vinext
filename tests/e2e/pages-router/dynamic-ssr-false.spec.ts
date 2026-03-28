@@ -3,9 +3,7 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4173";
 
 test.describe("next/dynamic with ssr: false (Pages Router)", () => {
-  test("SSR HTML does not contain client-only component content", async ({
-    page,
-  }) => {
+  test("SSR HTML does not contain client-only component content", async ({ page }) => {
     // Disable JavaScript so we see only SSR HTML
     await page.route("**/*.js", (route) => route.abort());
 
@@ -19,9 +17,7 @@ test.describe("next/dynamic with ssr: false (Pages Router)", () => {
     await expect(clientOnly).toHaveCount(0);
   });
 
-  test("loading component is shown in SSR HTML when provided", async ({
-    page,
-  }) => {
+  test("loading component is shown in SSR HTML when provided", async ({ page }) => {
     // Disable JavaScript so we see only SSR HTML
     await page.route("**/*.js", (route) => route.abort());
 
@@ -40,9 +36,7 @@ test.describe("next/dynamic with ssr: false (Pages Router)", () => {
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     // The client-only component should now be visible in both containers
-    const withLoading = page.locator(
-      '[data-testid="with-loading"] [data-testid="client-only"]',
-    );
+    const withLoading = page.locator('[data-testid="with-loading"] [data-testid="client-only"]');
     await expect(withLoading).toBeVisible();
 
     const withoutLoading = page.locator(
@@ -55,9 +49,7 @@ test.describe("next/dynamic with ssr: false (Pages Router)", () => {
     await expect(loading).toHaveCount(0);
   });
 
-  test("client-only component is interactive after hydration", async ({
-    page,
-  }) => {
+  test("client-only component is interactive after hydration", async ({ page }) => {
     await page.goto(`${BASE}/dynamic-ssr-false`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 

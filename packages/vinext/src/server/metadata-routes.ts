@@ -25,14 +25,7 @@ import path from "node:path";
 export interface SitemapEntry {
   url: string;
   lastModified?: string | Date;
-  changeFrequency?:
-    | "always"
-    | "hourly"
-    | "daily"
-    | "weekly"
-    | "monthly"
-    | "yearly"
-    | "never";
+  changeFrequency?: "always" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "never";
   priority?: number;
   alternates?: {
     languages?: Record<string, string>;
@@ -45,14 +38,20 @@ export interface SitemapEntry {
     content_loc?: string;
     player_loc?: string;
     duration?: number;
-    expiration_date?: string;
+    expiration_date?: string | Date;
     rating?: number;
     view_count?: number;
-    publication_date?: string;
+    publication_date?: string | Date;
     family_friendly?: "yes" | "no";
     restriction?: { relationship: "allow" | "deny"; content: string };
     platform?: { relationship: "allow" | "deny"; content: string };
+    requires_subscription?: "yes" | "no";
+    uploader?: {
+      info?: string;
+      content?: string;
+    };
     live?: "yes" | "no";
+    tag?: string;
   }>;
 }
 
@@ -178,50 +177,106 @@ export const METADATA_FILE_MAP: Record<
 // Serializers
 // -------------------------------------------------------------------
 
+/** Escape the five XML special characters in text content and attribute values. */
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 /**
  * Convert a sitemap array to XML string.
  */
 export function sitemapToXml(entries: SitemapEntry[]): string {
-  const lines = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-  ];
+  const hasAlternates = entries.some((entry) => Object.keys(entry.alternates ?? {}).length > 0);
+  const hasImages = entries.some((entry) => Boolean(entry.images?.length));
+  const hasVideos = entries.some((entry) => Boolean(entry.videos?.length));
+  let content = "";
+
+  content += '<?xml version="1.0" encoding="UTF-8"?>\n';
+  content += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"';
+  if (hasImages) {
+    content += ' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"';
+  }
+  if (hasVideos) {
+    content += ' xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"';
+  }
+  if (hasAlternates) {
+    content += ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n';
+  } else {
+    content += ">\n";
+  }
 
   for (const entry of entries) {
-    lines.push("  <url>");
-    lines.push(`    <loc>${escapeXml(entry.url)}</loc>`);
+    content += "<url>\n";
+    content += `<loc>${escapeXml(entry.url)}</loc>\n`;
 
-    if (entry.lastModified) {
-      const date =
-        entry.lastModified instanceof Date
-          ? entry.lastModified.toISOString()
-          : entry.lastModified;
-      lines.push(`    <lastmod>${escapeXml(date)}</lastmod>`);
-    }
-
-    if (entry.changeFrequency) {
-      lines.push(
-        `    <changefreq>${escapeXml(entry.changeFrequency)}</changefreq>`,
-      );
-    }
-
-    if (entry.priority !== undefined) {
-      lines.push(`    <priority>${entry.priority}</priority>`);
-    }
-
-    if (entry.images) {
-      for (const image of entry.images) {
-        lines.push("    <image:image>");
-        lines.push(`      <image:loc>${escapeXml(image)}</image:loc>`);
-        lines.push("    </image:image>");
+    const languages = entry.alternates?.languages;
+    if (languages && Object.keys(languages).length) {
+      for (const language in languages) {
+        content += `<xhtml:link rel="alternate" hreflang="${escapeXml(language)}" href="${escapeXml(languages[language])}" />\n`;
       }
     }
 
-    lines.push("  </url>");
+    if (entry.images?.length) {
+      for (const image of entry.images) {
+        content += `<image:image>\n<image:loc>${escapeXml(image)}</image:loc>\n</image:image>\n`;
+      }
+    }
+
+    if (entry.videos?.length) {
+      for (const video of entry.videos) {
+        const videoFields = [
+          "<video:video>",
+          `<video:title>${escapeXml(String(video.title))}</video:title>`,
+          `<video:thumbnail_loc>${escapeXml(String(video.thumbnail_loc))}</video:thumbnail_loc>`,
+          `<video:description>${escapeXml(String(video.description))}</video:description>`,
+          video.content_loc &&
+            `<video:content_loc>${escapeXml(String(video.content_loc))}</video:content_loc>`,
+          video.player_loc &&
+            `<video:player_loc>${escapeXml(String(video.player_loc))}</video:player_loc>`,
+          video.duration && `<video:duration>${video.duration}</video:duration>`,
+          video.view_count && `<video:view_count>${video.view_count}</video:view_count>`,
+          video.tag && `<video:tag>${escapeXml(String(video.tag))}</video:tag>`,
+          video.rating && `<video:rating>${video.rating}</video:rating>`,
+          video.expiration_date &&
+            `<video:expiration_date>${escapeXml(String(video.expiration_date))}</video:expiration_date>`,
+          video.publication_date &&
+            `<video:publication_date>${escapeXml(String(video.publication_date))}</video:publication_date>`,
+          video.family_friendly &&
+            `<video:family_friendly>${video.family_friendly}</video:family_friendly>`,
+          video.requires_subscription &&
+            `<video:requires_subscription>${video.requires_subscription}</video:requires_subscription>`,
+          video.live && `<video:live>${video.live}</video:live>`,
+          video.restriction &&
+            `<video:restriction relationship="${escapeXml(String(video.restriction.relationship))}">${escapeXml(String(video.restriction.content))}</video:restriction>`,
+          video.platform &&
+            `<video:platform relationship="${escapeXml(String(video.platform.relationship))}">${escapeXml(String(video.platform.content))}</video:platform>`,
+          video.uploader &&
+            `<video:uploader${video.uploader.info ? ` info="${escapeXml(String(video.uploader.info))}"` : ""}>${escapeXml(String(video.uploader.content))}</video:uploader>`,
+          "</video:video>\n",
+        ].filter(Boolean);
+        content += videoFields.join("\n");
+      }
+    }
+
+    if (entry.lastModified) {
+      content += `<lastmod>${serializeDate(entry.lastModified)}</lastmod>\n`;
+    }
+    if (entry.changeFrequency) {
+      content += `<changefreq>${entry.changeFrequency}</changefreq>\n`;
+    }
+    if (typeof entry.priority === "number") {
+      content += `<priority>${entry.priority}</priority>\n`;
+    }
+    content += "</url>\n";
   }
 
-  lines.push("</urlset>");
-  return lines.join("\n");
+  content += "</urlset>\n";
+  return content;
 }
 
 /**
@@ -232,9 +287,7 @@ export function robotsToText(config: RobotsConfig): string {
   const rules = Array.isArray(config.rules) ? config.rules : [config.rules];
 
   for (const rule of rules) {
-    const agents = Array.isArray(rule.userAgent)
-      ? rule.userAgent
-      : [rule.userAgent ?? "*"];
+    const agents = Array.isArray(rule.userAgent) ? rule.userAgent : [rule.userAgent ?? "*"];
 
     for (const agent of agents) {
       lines.push(`User-Agent: ${agent}`);
@@ -248,9 +301,7 @@ export function robotsToText(config: RobotsConfig): string {
     }
 
     if (rule.disallow) {
-      const disallows = Array.isArray(rule.disallow)
-        ? rule.disallow
-        : [rule.disallow];
+      const disallows = Array.isArray(rule.disallow) ? rule.disallow : [rule.disallow];
       for (const disallow of disallows) {
         lines.push(`Disallow: ${disallow}`);
       }
@@ -264,9 +315,7 @@ export function robotsToText(config: RobotsConfig): string {
   }
 
   if (config.sitemap) {
-    const sitemaps = Array.isArray(config.sitemap)
-      ? config.sitemap
-      : [config.sitemap];
+    const sitemaps = Array.isArray(config.sitemap) ? config.sitemap : [config.sitemap];
     for (const sitemap of sitemaps) {
       lines.push(`Sitemap: ${sitemap}`);
     }
@@ -286,13 +335,8 @@ export function manifestToJson(config: ManifestConfig): string {
   return JSON.stringify(config, null, 2);
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+function serializeDate(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 // -------------------------------------------------------------------
@@ -312,6 +356,34 @@ export interface MetadataFileRoute {
   contentType: string;
 }
 
+function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
+  if (metaType === "sitemap" || metaType === "robots" || metaType === "manifest") {
+    // Sitemap is exempt per Next.js. Robots and manifest are also safe to
+    // exempt because they are root-only in vinext, so invisible parents never apply.
+    return "";
+  }
+
+  const hasInvisibleParent = parentSegments.some(
+    (segment) =>
+      (segment.startsWith("(") && segment.endsWith(")")) ||
+      (segment.startsWith("@") && segment !== "@children"),
+  );
+  if (!hasInvisibleParent) return "";
+
+  const parentPath = `/${parentSegments.join("/")}`;
+  let hash = 5381;
+  for (let i = 0; i < parentPath.length; i++) {
+    hash = ((hash << 5) + hash + parentPath.charCodeAt(i)) & 0xffffffff;
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
+function withMetadataSuffix(urlPath: string, suffix: string): string {
+  if (!suffix) return urlPath;
+  const parsed = path.posix.parse(urlPath);
+  return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+}
+
 /**
  * Scan an app directory for metadata files.
  */
@@ -319,19 +391,20 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
   const routes: MetadataFileRoute[] = [];
 
   // Scan the app directory recursively
-  function scan(dir: string, urlPrefix: string): void {
+  function scan(dir: string, urlPrefix: string, parentSegments: string[]): void {
     if (!fs.existsSync(dir)) return;
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        // Skip route group parentheses from URL
         const dirName = entry.name;
+        if (dirName.startsWith("_")) continue;
+
         const isRouteGroup = dirName.startsWith("(") && dirName.endsWith(")");
-        const nextUrlPrefix = isRouteGroup
-          ? urlPrefix
-          : `${urlPrefix}/${dirName}`;
-        scan(path.join(dir, dirName), nextUrlPrefix);
+        const isParallelRoute = dirName.startsWith("@");
+        const nextUrlPrefix =
+          isRouteGroup || isParallelRoute ? urlPrefix : `${urlPrefix}/${dirName}`;
+        scan(path.join(dir, dirName), nextUrlPrefix, [...parentSegments, dirName]);
         continue;
       }
 
@@ -352,15 +425,14 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const isDynamic = config.dynamicExtensions.includes(ext);
 
         if (!isStatic && !isDynamic) continue;
+        const suffix = metadataRouteSuffix(parentSegments, metaType);
+        const urlPath = withMetadataSuffix(config.urlPath, suffix);
 
         routes.push({
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
-          servedUrl:
-            urlPrefix === ""
-              ? config.urlPath
-              : `${urlPrefix}${config.urlPath}`,
+          servedUrl: urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`,
           contentType: isStatic
             ? getStaticContentType(ext, config.contentType)
             : config.contentType,
@@ -369,7 +441,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
   }
 
-  scan(appDir, "");
+  scan(appDir, "", []);
 
   // Deduplicate: if both dynamic and static variants exist at the same URL,
   // keep only the dynamic one (matches Next.js behavior).

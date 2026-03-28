@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { RelativeQueryLink } from "./relative-query-link";
 
 export default function Page() {
   return (
@@ -21,6 +22,7 @@ export default function Page() {
           Go to notFound() Page
         </Link>
       </nav>
+      <RelativeQueryLink />
     </div>
   );
 }

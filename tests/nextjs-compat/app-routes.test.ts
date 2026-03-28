@@ -24,8 +24,8 @@
  * - fixtures/app-basic/app/api/* (pre-existing, referenced for some tests)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 describe("Next.js compat: app-routes", () => {
@@ -48,28 +48,23 @@ describe("Next.js compat: app-routes", () => {
   // Next.js: describe.each(['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L30-L47
 
-  describe.each(["GET", "POST", "PUT", "DELETE", "PATCH"])(
-    "%s method",
-    (method) => {
-      it("responds with 200 and correct content", async () => {
-        const res = await fetch(`${baseUrl}/nextjs-compat/api/methods`, {
-          method,
-        });
-        expect(res.status).toBe(200);
-        expect(await res.text()).toContain("hello, world");
-        expect(res.headers.get("x-method")).toBe(method);
+  describe.each(["GET", "POST", "PUT", "DELETE", "PATCH"])("%s method", (method) => {
+    it("responds with 200 and correct content", async () => {
+      const res = await fetch(`${baseUrl}/nextjs-compat/api/methods`, {
+        method,
       });
-    },
-  );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("hello, world");
+      expect(res.headers.get("x-method")).toBe(method);
+    });
+  });
 
   // ── Query parameters ─────────────────────────────────────────
   // Next.js: 'can read query parameters'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L69-L77
 
   it("can read query parameters", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/query?ping=pong`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/query?ping=pong`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -80,12 +75,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L121-L131
 
   it("can read request headers via headers()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/headers-read`,
-      {
-        headers: { "x-test-ping": "pong" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/headers-read`, {
+      headers: { "x-test-ping": "pong" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -96,12 +88,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L134-L144
 
   it("can read cookies via cookies()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/cookies-read`,
-      {
-        headers: { cookie: "ping=pong" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/cookies-read`, {
+      headers: { cookie: "ping=pong" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -113,14 +102,11 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read a JSON encoded body", async () => {
     const body = { ping: "pong" };
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-json`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-json`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.body).toEqual(body);
@@ -131,14 +117,11 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read a JSON encoded body for DELETE requests", async () => {
     const body = { name: "foo" };
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-json`,
-      {
-        method: "DELETE",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-json`, {
+      method: "DELETE",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("delete foo");
   });
@@ -149,13 +132,10 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read the text body", async () => {
     const body = "hello, world";
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-text`,
-      {
-        method: "POST",
-        body,
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-text`, {
+      method: "POST",
+      body,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.body).toBe(body);
@@ -166,10 +146,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L94-L104
 
   it("supports NextResponse.redirect()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/redirect-response`,
-      { redirect: "manual" },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/redirect-response`, {
+      redirect: "manual",
+    });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("https://nextjs.org/");
   });
@@ -179,9 +158,7 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L106-L115
 
   it("supports NextResponse.json()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/json-response?ping=hello`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/json-response?ping=hello`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     const data = await res.json();
@@ -274,25 +251,21 @@ describe("Next.js compat: app-routes", () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`);
     expect(res.status).toBe(200);
     const setCookies = res.headers.getSetCookie();
-    const sessionCookie = setCookies.find((c: string) =>
-      c.startsWith("session="),
-    );
+    const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
     expect(sessionCookie).toContain("abc123");
   });
 
   // ── cookies().delete() ───────────────────────────────────────
-  it("cookies().delete() produces Set-Cookie with Max-Age=0", async () => {
+  it("cookies().delete() produces an expired Set-Cookie header", async () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`, {
       method: "POST",
     });
     expect(res.status).toBe(200);
     const setCookies = res.headers.getSetCookie();
-    const sessionCookie = setCookies.find((c: string) =>
-      c.startsWith("session="),
-    );
+    const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
-    expect(sessionCookie).toContain("Max-Age=0");
+    expect(sessionCookie).toContain("Expires=");
   });
 
   // ── Dynamic params ───────────────────────────────────────────
@@ -318,6 +291,81 @@ describe("Next.js compat: app-routes", () => {
     const data = await res.json();
     expect(data.id).toBe("99");
     expect(data.name).toBe("Widget");
+  });
+
+  // ── Route segment config: revalidate ────────────────────────
+  // Next.js: GET-only route handlers with `export const revalidate = N`
+  // get Cache-Control: s-maxage=N, stale-while-revalidate
+  // Fixture: /api/static-data exports revalidate = 1
+
+  it("sets Cache-Control s-maxage from route handler revalidate config", async () => {
+    const res = await fetch(`${baseUrl}/api/static-data`);
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("s-maxage=1");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("does not set s-maxage when revalidate is 0", async () => {
+    // revalidate=0 means "never cache" in Next.js — no s-maxage header
+    const res = await fetch(`${baseUrl}/api/no-cache`);
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers.get("cache-control");
+    // Should either be null or not contain s-maxage
+    if (cacheControl) {
+      expect(cacheControl).not.toContain("s-maxage");
+    }
+  });
+
+  it("does not override handler-set Cache-Control with revalidate config", async () => {
+    // Fixture: /api/custom-cache exports revalidate=60 but sets its own Cache-Control
+    const res = await fetch(`${baseUrl}/api/custom-cache`);
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toBe("public, max-age=300");
+  });
+
+  it("does not set s-maxage when a revalidated GET handler reads request-specific data", async () => {
+    const res = await fetch(`${baseUrl}/api/dynamic-request-data`, {
+      headers: {
+        "x-test-ping": "pong",
+        cookie: "ping=cookie-pong",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ping: "pong",
+      cookie: "cookie-pong",
+    });
+
+    const cacheControl = res.headers.get("cache-control");
+    if (cacheControl) {
+      expect(cacheControl).not.toContain("s-maxage");
+      expect(cacheControl).not.toContain("stale-while-revalidate");
+    }
+  });
+
+  // ── Catch-all dynamic params (Next.js 15 async params) ──────
+  // Regression test for: https://github.com/cloudflare/vinext/pull/466
+  // Route handlers must support `await params` (Promise<{ ... }> pattern).
+  // Fixture: /api/catch-all/[...slugs]/route.ts uses `await params`
+  //
+  // Next.js: 'provides params to routes with dynamic parameters'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L84-L92
+
+  it("catch-all route handler supports await params (Next.js 15 async params)", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/a/b/c`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["a", "b", "c"]);
+  });
+
+  it("catch-all route handler with hyphenated segments", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/foo-bar/baz-qux`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["foo-bar", "baz-qux"]);
   });
 
   // ── Documented skips ─────────────────────────────────────────
@@ -353,6 +401,16 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'no response returned' — Tests console error inspection
   //
   // N/A: 'permanentRedirect' — Would need fixture, minor variant of redirect
-  //
-  // N/A: 'catch-all routes' — Would need fixture with [...slug] route handler
+
+  // ── ISR caching (dev mode) ─────────────────────────────────
+  // In dev mode, ISR caching is disabled. Route handlers should NOT emit
+  // X-Vinext-Cache headers — every request re-executes the handler fresh.
+  // Production ISR behavioral tests are in app-router.test.ts's production server section.
+
+  it("dev mode: route handler with revalidate does not emit X-Vinext-Cache header", async () => {
+    const res = await fetch(`${baseUrl}/api/static-data`);
+    expect(res.status).toBe(200);
+    // Dev mode should not set X-Vinext-Cache (ISR is production-only)
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+  });
 });

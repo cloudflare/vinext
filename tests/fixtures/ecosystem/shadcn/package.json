@@ -1,0 +1,22 @@
+{
+  "name": "ecosystem-shadcn",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "@radix-ui/react-slot": "catalog:",
+    "@radix-ui/react-dialog": "catalog:",
+    "@radix-ui/react-dropdown-menu": "catalog:",
+    "class-variance-authority": "catalog:",
+    "clsx": "catalog:",
+    "tailwind-merge": "catalog:",
+    "vinext": "workspace:*",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:"
+  },
+  "devDependencies": {
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

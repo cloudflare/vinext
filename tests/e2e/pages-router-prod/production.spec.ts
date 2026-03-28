@@ -14,9 +14,7 @@ test.describe("Pages Router Production Build", () => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
-    await expect(page.locator("body")).toContainText(
-      "This is a Pages Router app running on Vite.",
-    );
+    await expect(page.locator("body")).toContainText("This is a Pages Router app running on Vite.");
   });
 
   test("about page renders", async ({ page }) => {
@@ -36,14 +34,10 @@ test.describe("Pages Router Production Build", () => {
 
   test("__NEXT_DATA__ is present with page props", async ({ page }) => {
     await page.goto(`${BASE}/ssr`);
-    const nextData = await page.evaluate(
-      () => (window as any).__NEXT_DATA__,
-    );
+    const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);
     expect(nextData).toBeDefined();
     expect(nextData.props.pageProps).toBeDefined();
-    expect(nextData.props.pageProps.message).toBe(
-      "Hello from getServerSideProps",
-    );
+    expect(nextData.props.pageProps.message).toBe("Hello from getServerSideProps");
   });
 
   test("API route returns JSON", async ({ request }) => {

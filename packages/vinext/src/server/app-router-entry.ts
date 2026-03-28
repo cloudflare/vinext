@@ -6,7 +6,7 @@
  *
  * Or import and delegate to it from a custom worker:
  *   import handler from "vinext/server/app-router-entry";
- *   return handler.fetch(request);
+ *   return handler.fetch(request, env, ctx);
  *
  * This file runs in the RSC environment. Configure the Cloudflare plugin with:
  *   cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
@@ -14,18 +14,42 @@
 
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
+import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
     const url = new URL(request.url);
 
-    // Block protocol-relative URL open redirect attacks (//evil.com/).
-    if (url.pathname.startsWith("//")) {
+    // Normalize backslashes (browsers treat /\ as //) before any other checks.
+    const rawPathname = url.pathname.replaceAll("\\", "/");
+
+    // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+    // Check rawPathname BEFORE decode so the guard fires before normalization.
+    if (rawPathname.startsWith("//")) {
       return new Response("404 Not Found", { status: 404 });
     }
 
-    // Delegate to RSC handler
-    const result = await rscHandler(request);
+    // Validate that percent-encoding is well-formed. The RSC handler performs
+    // the actual decode + normalize; we only check here to return a clean 400
+    // instead of letting a malformed sequence crash downstream.
+    try {
+      decodeURIComponent(rawPathname);
+    } catch {
+      // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
+      return new Response("Bad Request", { status: 400 });
+    }
+
+    // Do NOT decode/normalize the pathname here. The RSC handler
+    // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
+    // decodeURIComponent + normalizePath on the incoming URL. Decoding here
+    // AND in the handler would double-decode, causing inconsistent path
+    // matching between middleware and routing.
+
+    // Delegate to RSC handler (which decodes + normalizes the pathname itself),
+    // wrapping in the ExecutionContext ALS scope so downstream code can reach
+    // ctx.waitUntil() without having ctx threaded through every call site.
+    const handleFn = () => rscHandler(request, ctx);
+    const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     if (result instanceof Response) {
       return result;

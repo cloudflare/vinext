@@ -5,7 +5,7 @@
  * JSON data inside <script> tags during SSR. Every test here represents
  * a real attack vector that has been exploited in production SSR frameworks.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,14 @@ describe("safeJsonStringify", () => {
     it("serializes objects and arrays", () => {
       const result = safeJsonStringify({ a: 1, b: [2, 3] });
       // Should be valid JSON when unescaped
-      expect(JSON.parse(result.replace(/\\u003c/g, "<").replace(/\\u003e/g, ">").replace(/\\u0026/g, "&"))).toEqual({
+      expect(
+        JSON.parse(
+          result
+            .replace(/\\u003c/g, "<")
+            .replace(/\\u003e/g, ">")
+            .replace(/\\u0026/g, "&"),
+        ),
+      ).toEqual({
         a: 1,
         b: [2, 3],
       });
@@ -65,11 +72,7 @@ describe("safeJsonStringify", () => {
     });
 
     it("escapes </SCRIPT> (case variations)", () => {
-      const payloads = [
-        "</SCRIPT>",
-        "</Script>",
-        "</ScRiPt>",
-      ];
+      const payloads = ["</SCRIPT>", "</Script>", "</ScRiPt>"];
       for (const payload of payloads) {
         const result = safeJsonStringify(payload);
         // All < and > should be escaped regardless of case
@@ -152,7 +155,7 @@ describe("safeJsonStringify", () => {
     });
 
     it("blocks payload with multiple closing tags", () => {
-      const payload = '</script></script></script><script>alert(1)//';
+      const payload = "</script></script></script><script>alert(1)//";
       const result = safeJsonStringify(payload);
       expect(result).not.toContain("</script>");
     });
@@ -192,11 +195,7 @@ describe("safeJsonStringify", () => {
 
     it("handles array values with XSS payloads", () => {
       const data = {
-        items: [
-          "safe",
-          '</script><script>alert(1)</script>',
-          "also safe",
-        ],
+        items: ["safe", "</script><script>alert(1)</script>", "also safe"],
       };
       const result = safeJsonStringify(data);
       expect(result).not.toContain("</script>");
@@ -220,7 +219,7 @@ describe("safeJsonStringify", () => {
       // We use Function() here intentionally in the test to verify the output
       // is valid JS — this is the exact context where it will be used (inside
       // a <script> tag).
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -242,7 +241,7 @@ describe("safeJsonStringify", () => {
       const result = safeJsonStringify(data);
 
       // Must be valid JS
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -264,7 +263,7 @@ describe("safeJsonStringify", () => {
         emoji: "\uD83D\uDE00", // grinning face
       };
       const result = safeJsonStringify(data);
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -290,7 +289,7 @@ describe("safeJsonStringify", () => {
       const long = "x".repeat(100000) + "</script>" + "y".repeat(100000);
       const result = safeJsonStringify(long);
       expect(result).not.toContain("</script>");
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toBe(long);
     });
@@ -301,7 +300,7 @@ describe("safeJsonStringify", () => {
       // should remain as-is in the JSON (JSON.stringify already escapes the backslash).
       const input = "already escaped: \\u003c";
       const result = safeJsonStringify(input);
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toBe(input);
     });
@@ -313,7 +312,7 @@ describe("safeJsonStringify", () => {
         count: 42,
       };
       const result = safeJsonStringify(data);
-      // eslint-disable-next-line no-new-func
+      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -342,7 +341,8 @@ describe("safeJsonStringify", () => {
 
       const scriptContent = `<script>window.__NEXT_DATA__ = ${safeJsonStringify(nextData)}</script>`;
 
-      // Count script tags — there should be exactly one open and one close
+      // Count script tags — there should be exactly one open and one close.
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = scriptContent.match(/<script>/g);
       const closeTags = scriptContent.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);
@@ -351,12 +351,13 @@ describe("safeJsonStringify", () => {
 
     it("produces safe output for RSC embed data", () => {
       const embedData = {
-        rsc: ['chunk with </script> in it', '<script>alert(1)</script>'],
+        rsc: ["chunk with </script> in it", "<script>alert(1)</script>"],
         params: { id: "123" },
       };
 
       const scriptContent = `<script>self.__VINEXT_RSC__=${safeJsonStringify(embedData)}</script>`;
 
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = scriptContent.match(/<script>/g);
       const closeTags = scriptContent.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);
@@ -369,6 +370,7 @@ describe("safeJsonStringify", () => {
 
       const script = `<script>window.__VINEXT_LOCALE__=${safeJsonStringify(locale)};window.__VINEXT_LOCALES__=${safeJsonStringify(locales)}</script>`;
 
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = script.match(/<script>/g);
       const closeTags = script.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);

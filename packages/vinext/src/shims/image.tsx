@@ -41,7 +41,23 @@ const __imageDomains: string[] = (() => {
 })();
 const __hasImageConfig = __imageRemotePatterns.length > 0 || __imageDomains.length > 0;
 const __isDev = process.env.NODE_ENV !== "production";
-
+const __imageDeviceSizes: number[] = (() => {
+  try {
+    return JSON.parse(
+      process.env.__VINEXT_IMAGE_DEVICE_SIZES ?? "[640,750,828,1080,1200,1920,2048,3840]",
+    );
+  } catch {
+    return [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+  }
+})();
+/**
+ * Whether dangerouslyAllowSVG is enabled in next.config.js.
+ * When false (default), .svg sources auto-skip the optimization endpoint
+ * and are served directly, matching Next.js behavior.
+ * When true, .svg sources are routed through the optimizer (served as-is
+ * with security headers).
+ */
+const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true";
 /**
  * Validate that a remote URL is allowed by the configured remote patterns.
  * Returns true if the URL is allowed, false otherwise.
@@ -91,6 +107,8 @@ interface ImageProps {
   className?: string;
   style?: React.CSSProperties;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
+  /** @deprecated Use onLoad instead. Still supported for migration compat. */
+  onLoadingComplete?: (img: HTMLImageElement) => void;
   onError?: React.ReactEventHandler<HTMLImageElement>;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
   id?: string;
@@ -148,15 +166,17 @@ function resolveImageSource(props: {
   const src = typeof srcProp === "string" ? srcProp : srcProp.src;
   const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
   const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
-  const imgBlurDataURL = blurDataURL ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+  const imgBlurDataURL =
+    blurDataURL ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
   return { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL };
 }
 
 /**
- * Common responsive image widths matching Next.js's default device sizes + image sizes.
+ * Responsive image widths matching Next.js's device sizes config.
  * These are the breakpoints used for srcSet generation.
+ * Configurable via `images.deviceSizes` in next.config.js.
  */
-const RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+const RESPONSIVE_WIDTHS = __imageDeviceSizes;
 
 /**
  * Build a `/_vinext/image` optimization URL.
@@ -178,7 +198,8 @@ export function imageOptimizationUrl(src: string, width: number, quality: number
  */
 function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
   const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
-  if (widths.length === 0) return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
+  if (widths.length === 0)
+    return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
   return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
 }
 
@@ -197,6 +218,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     sizes,
     className,
     style,
+    onLoad,
+    onLoadingComplete,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
@@ -204,7 +227,21 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   },
   ref,
 ) {
-  const { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL } = resolveImageSource({
+  // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
+  // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
+  const handleLoad = onLoadingComplete
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        onLoad?.(e);
+        onLoadingComplete(e.currentTarget);
+      }
+    : onLoad;
+
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({
     src: srcProp,
     width,
     height,
@@ -225,9 +262,17 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         decoding="async"
         sizes={sizes}
         className={className}
+        onLoad={handleLoad}
         style={
           fill
-            ? { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", ...style }
+            ? {
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                ...style,
+              }
             : style
         }
         {...rest}
@@ -250,10 +295,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     }
 
     const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-    const bg =
-      placeholder === "blur" && sanitizedBlur
-        ? `url(${sanitizedBlur})`
-        : undefined;
+    const bg = placeholder === "blur" && sanitizedBlur ? `url(${sanitizedBlur})` : undefined;
 
     if (fill) {
       return (
@@ -261,10 +303,16 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           src={src}
           alt={alt}
           layout="fullWidth"
-          priority={priority}
+          // `priority` is a Next.js concept — translate it to HTML attributes so
+          // it is never forwarded to the DOM as a non-boolean attribute, which
+          // would trigger React's "Received `true` for a non-boolean attribute"
+          // warning.
+          loading={priority ? "eager" : (loading ?? "lazy")}
+          fetchPriority={priority ? "high" : undefined}
           sizes={sizes}
           className={className}
           background={bg}
+          onLoad={handleLoad}
         />
       );
     }
@@ -277,10 +325,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           width={imgWidth}
           height={imgHeight}
           layout="constrained"
-          priority={priority}
+          // Same translation as above — never pass `priority` to the DOM.
+          loading={priority ? "eager" : (loading ?? "lazy")}
+          fetchPriority={priority ? "high" : undefined}
           sizes={sizes}
           className={className}
           background={bg}
+          onLoad={handleLoad}
         />
       );
     }
@@ -292,15 +343,22 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // In production on Cloudflare Workers, this resizes and transcodes via
   // the Images binding. In dev, it serves the original file as a passthrough.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
+  // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
+  // Next.js behavior where .svg triggers unoptimized=true by default.
   const imgQuality = quality ?? 75;
-  const skipOptimization = _unoptimized === true;
+  const isSvg = src.endsWith(".svg");
+  const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_vinext/image with the appropriate width.
-  // When unoptimized, omit srcSet — the same raw URL with different w descriptors would be meaningless.
-  const srcSet = imgWidth && !fill && !skipOptimization
-    ? generateSrcSet(src, imgWidth, imgQuality)
-    : undefined;
+  const srcSet =
+    imgWidth && !fill && !skipOptimization
+      ? generateSrcSet(src, imgWidth, imgQuality)
+      : imgWidth && !fill
+        ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2)
+            .map((w) => `${src} ${w}w`)
+            .join(", ") || `${src} ${imgWidth}w`
+        : undefined;
 
   // The main `src` also goes through the optimization endpoint. Use the
   // declared width (or the first responsive width as fallback).
@@ -313,14 +371,15 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Blur placeholder: show a low-quality background while the image loads.
   // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
   const sanitizedLocalBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle = placeholder === "blur" && sanitizedLocalBlur
-    ? {
-        backgroundImage: `url(${sanitizedLocalBlur})`,
-        backgroundSize: "cover",
-        backgroundRepeat: "no-repeat",
-        backgroundPosition: "center",
-      }
-    : undefined;
+  const blurStyle =
+    placeholder === "blur" && sanitizedLocalBlur
+      ? {
+          backgroundImage: `url(${sanitizedLocalBlur})`,
+          backgroundSize: "cover",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+        }
+      : undefined;
 
   // For local images, render a standard <img> tag with srcSet and blur support.
   // The src and srcSet point to the /_vinext/image optimization endpoint.
@@ -338,9 +397,18 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       sizes={sizes ?? (fill ? "100vw" : undefined)}
       className={className}
       data-nimg={fill ? "fill" : "1"}
+      onLoad={handleLoad}
       style={
         fill
-          ? { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", ...blurStyle, ...style }
+          ? {
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              ...blurStyle,
+              ...style,
+            }
           : { ...blurStyle, ...style }
       }
       {...rest}
@@ -369,13 +437,20 @@ export function getImageProps(props: ImageProps): {
     sizes,
     className,
     style,
+    onLoad: _onLoad,
+    onLoadingComplete: _onLoadingComplete,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
     ...rest
   } = props;
 
-  const { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL } = resolveImageSource({
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({
     src: srcProp,
     width,
     height,
@@ -406,7 +481,14 @@ export function getImageProps(props: ImageProps): {
 
   // For local images (no loader, not remote), route through optimization endpoint.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
-  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
+  const isSvg = resolvedSrc.endsWith(".svg");
+  const skipOpt =
+    _unoptimized === true ||
+    (isSvg && !__dangerouslyAllowSVG) ||
+    blockedInProd ||
+    !!loader ||
+    isRemoteUrl(resolvedSrc);
   const optimizedSrc = skipOpt
     ? resolvedSrc
     : imgWidth
@@ -414,20 +496,22 @@ export function getImageProps(props: ImageProps): {
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Build srcSet for local images — each width points to /_vinext/image
-  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !_unoptimized
-    ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
-    : undefined;
+  const srcSet =
+    imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
+      ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
+      : undefined;
 
   // Blur placeholder styles — sanitize to prevent CSS injection
   const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle = placeholder === "blur" && sanitizedBlurURL
-    ? {
-        backgroundImage: `url(${sanitizedBlurURL})`,
-        backgroundSize: "cover",
-        backgroundRepeat: "no-repeat" as const,
-        backgroundPosition: "center" as const,
-      }
-    : undefined;
+  const blurStyle =
+    placeholder === "blur" && sanitizedBlurURL
+      ? {
+          backgroundImage: `url(${sanitizedBlurURL})`,
+          backgroundSize: "cover",
+          backgroundRepeat: "no-repeat" as const,
+          backgroundPosition: "center" as const,
+        }
+      : undefined;
 
   return {
     props: {
@@ -443,7 +527,15 @@ export function getImageProps(props: ImageProps): {
       className,
       "data-nimg": fill ? "fill" : "1",
       style: fill
-        ? { position: "absolute" as const, inset: 0, width: "100%", height: "100%", objectFit: "cover" as const, ...blurStyle, ...style }
+        ? {
+            position: "absolute" as const,
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover" as const,
+            ...blurStyle,
+            ...style,
+          }
         : { ...blurStyle, ...style },
       ...rest,
     } as React.ImgHTMLAttributes<HTMLImageElement>,

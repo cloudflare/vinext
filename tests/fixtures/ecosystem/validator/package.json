@@ -1,0 +1,15 @@
+{
+  "name": "test-validator",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "validator": "catalog:"
+  },
+  "devDependencies": {
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

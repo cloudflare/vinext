@@ -17,10 +17,9 @@ test.describe("Next.js compat: streaming / loading.tsx (browser)", () => {
     });
 
     // Streamed content resolves asynchronously
-    await expect(page.locator("#streamed-content")).toHaveText(
-      "Streamed content loaded",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#streamed-content")).toHaveText("Streamed content loaded", {
+      timeout: 10_000,
+    });
   });
 
   // Nested streaming resolves all boundaries

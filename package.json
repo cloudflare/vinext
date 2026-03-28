@@ -1,47 +1,39 @@
 {
   "name": "vinext-monorepo",
   "private": true,
-  "packageManager": "pnpm@10.30.0",
   "scripts": {
-    "build": "pnpm --filter vinext run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsgo --noEmit",
-    "lint": "oxlint --deny-warnings",
-    "test:e2e": "playwright test"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "@types/node": "^25.2.3",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@typescript/native-preview": "^7.0.0-dev.20260213.1",
-    "@vitejs/plugin-rsc": "^0.5.19",
-    "image-size": "2.0.2",
-    "oxlint": "^1.47.0",
-    "playwright": "^1.52.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "typescript": "^5.7.0",
-    "vite": "^7.3.1",
-    "vitest": "^4.0.0"
+    "build": "vp run vinext#build",
+    "check": "vp check",
+    "test": "vp test run",
+    "test:watch": "vp test",
+    "generate:google-fonts": "node scripts/generate-google-fonts.js",
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check",
+    "lint": "vp lint",
+    "test:e2e": "playwright test",
+    "prepare": "vp config"
   },
   "dependencies": {
-    "@mdx-js/react": "^3.1.1",
-    "@mdx-js/rollup": "^3.1.1",
-    "@unpic/react": "^1.0.2"
+    "@mdx-js/react": "catalog:",
+    "@mdx-js/rollup": "catalog:",
+    "@unpic/react": "catalog:"
   },
-  "pnpm": {
-    "peerDependencyRules": {
-      "ignoreMissing": ["next", "webpack"]
-    },
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "sharp",
-      "workerd",
-      "@parcel/watcher",
-      "@swc/core"
-    ]
-  }
+  "devDependencies": {
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "image-size": "catalog:",
+    "next": "catalog:",
+    "playwright": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "packageManager": "pnpm@10.32.1"
 }

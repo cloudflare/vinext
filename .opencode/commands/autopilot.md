@@ -20,15 +20,17 @@ Run the full issue-to-merge workflow for GitHub issue #$ARGUMENTS on cloudflare/
 7. Commit: `fix: <description> (#$ARGUMENTS)`
 8. Push: `git push -u origin fix/$ARGUMENTS-<slug>`
 9. Create the PR:
+
    ```
    gh pr create --title "fix: <description>" --body "Fixes #$ARGUMENTS
-   
+
    ## Summary
    <what changed and why>
-   
+
    ## Test plan
    <what tests were added/updated>"
    ```
+
 10. Note the PR number — you need it for Phase 2.
 
 ## Phase 2: Independent review
@@ -50,6 +52,7 @@ Wait for the reviewer to finish before proceeding.
 ## Phase 3: Address review feedback
 
 1. Read all review comments:
+
    ```
    gh pr view <PR_NUMBER> --comments
    gh api repos/cloudflare/vinext/pulls/<PR_NUMBER>/reviews
@@ -75,6 +78,7 @@ Wait for the reviewer to finish before proceeding.
 ## Final output
 
 Print a summary:
+
 - PR URL
 - What was fixed
 - Review comments addressed (count)

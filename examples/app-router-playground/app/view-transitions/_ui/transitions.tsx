@@ -201,7 +201,7 @@ type TransitionLinkProps = Omit<React.ComponentProps<typeof Link>, 'href'> & {
   type: TransitionType;
   /**
    * Target URL for navigation
-   * Overwite Next's href that can also be an object
+   * Overwrite Next's href that can also be an object
    */
   href: string;
 };

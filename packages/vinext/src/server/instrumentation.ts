@@ -11,34 +11,95 @@
  *
  * References:
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
+ *
+ * ## App Router
+ *
+ * For App Router, `register()` is baked directly into the generated RSC entry
+ * as a top-level `await` at module evaluation time (see `entries/app-rsc-entry.ts`
+ * `generateRscEntry`). This means it runs inside the Worker process (or RSC
+ * Vite environment) — the same process that handles requests — before any
+ * request is served. `runInstrumentation()` is NOT called from `configureServer`
+ * for App Router.
+ *
+ * The `onRequestError` handler is stored on `globalThis` so it is visible across
+ * the RSC and SSR Vite environments (separate module graphs, same Node.js process).
+ * With `@cloudflare/vite-plugin` it runs entirely inside the Worker, so
+ * `globalThis` is the Worker's global — also correct.
+ *
+ * ## Pages Router
+ *
+ * Pages Router has no RSC entry, so `configureServer()` is the right place to
+ * call `register()`. `runInstrumentation()` accepts a `ModuleRunner` (created
+ * via `createDirectRunner()`) rather than `server.ssrLoadModule()` so it is
+ * safe when `@cloudflare/vite-plugin` is present — that plugin replaces the
+ * SSR environment's hot channel, causing `ssrLoadModule()` to crash with
+ * `TypeError: Cannot read properties of undefined (reading 'outsideEmitter')`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { getRequestExecutionContext } from "../shims/request-context.js";
+import { ValidFileMatcher } from "../routing/file-matcher.js";
+/**
+ * Minimal duck-typed interface for the module runner passed to
+ * `runInstrumentation`. Only `.import()` is used — this avoids requiring
+ * callers (including tests) to provide a full `ModuleRunner` instance.
+ */
+export interface ModuleImporter {
+  import(id: string): Promise<unknown>;
+}
 
-/** Possible instrumentation file names. */
-const INSTRUMENTATION_FILES = [
-  "instrumentation.ts",
-  "instrumentation.tsx",
-  "instrumentation.js",
-  "instrumentation.mjs",
-  "src/instrumentation.ts",
-  "src/instrumentation.tsx",
-  "src/instrumentation.js",
-  "src/instrumentation.mjs",
-];
+/**
+ * Import a module via the runner and cast the result to `Record<string, any>`.
+ *
+ * Centralises the `as Record<string, any>` cast so callers don't need
+ * per-call eslint-disable comments.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function importModule(
+  runner: ModuleImporter,
+  id: string,
+): Promise<Record<string, any>> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (await runner.import(id)) as Record<string, any>;
+}
+
+const INSTRUMENTATION_LOCATIONS = ["", "src/"];
+
+function findInstrumentationHookFile(
+  root: string,
+  basename: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  for (const dir of INSTRUMENTATION_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `${basename}${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Find the instrumentation file in the project root.
  */
-export function findInstrumentationFile(root: string): string | null {
-  for (const file of INSTRUMENTATION_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
-    }
-  }
-  return null;
+export function findInstrumentationFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation", fileMatcher);
+}
+
+/**
+ * Find the instrumentation-client file in the project root.
+ */
+export function findInstrumentationClientFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation-client", fileMatcher);
 }
 
 /**
@@ -64,42 +125,51 @@ export type OnRequestErrorHandler = (
   context: OnRequestErrorContext,
 ) => void | Promise<void>;
 
-/** Module-level reference to the onRequestError handler. */
-let _onRequestError: OnRequestErrorHandler | null = null;
-
 /**
  * Get the registered onRequestError handler (if any).
+ *
+ * Reads from globalThis so it works across Vite environment boundaries.
  */
 export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
-  return _onRequestError;
+  return globalThis.__VINEXT_onRequestErrorHandler__ ?? null;
 }
 
 /**
- * Load and execute the instrumentation file.
+ * Load and execute the instrumentation file via a ModuleRunner.
  *
- * This should be called once during server startup. It:
- * 1. Loads the instrumentation module via Vite's SSR module loader
- * 2. Calls the `register()` function if exported
- * 3. Stores the `onRequestError()` handler if exported
+ * Called once during Pages Router server startup (`configureServer`). It:
+ * 1. Loads the instrumentation module via `runner.import()`.
+ * 2. Calls the `register()` function if exported.
+ * 3. Stores the `onRequestError()` handler on `globalThis` so it is visible
+ *    to all Vite environment module graphs (SSR and the host process share
+ *    the same Node.js `globalThis`).
  *
- * @param server - Vite dev server (for SSR module loading)
+ * **App Router** does not use this function. For App Router, `register()` is
+ * emitted as a top-level `await` inside the generated RSC entry module so it
+ * runs in the same Worker/environment as request handling.
+ *
+ * @param runner - A ModuleRunner created via `createDirectRunner()`. Must be
+ *   the same long-lived runner used for middleware and SSR so the module graph
+ *   is shared. Safe with all Vite plugin combinations, including
+ *   `@cloudflare/vite-plugin`, because it never touches the hot channel.
  * @param instrumentationPath - Absolute path to the instrumentation file
  */
 export async function runInstrumentation(
-  server: { ssrLoadModule: (id: string) => Promise<Record<string, unknown>> },
+  runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
   try {
-    const mod = await server.ssrLoadModule(instrumentationPath);
+    const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
 
     // Call register() if exported
     if (typeof mod.register === "function") {
       await mod.register();
     }
 
-    // Store onRequestError handler if exported
+    // Store onRequestError handler on globalThis so environments can reach the
+    // same handler.
     if (typeof mod.onRequestError === "function") {
-      _onRequestError = mod.onRequestError as OnRequestErrorHandler;
+      globalThis.__VINEXT_onRequestErrorHandler__ = mod.onRequestError as OnRequestErrorHandler;
     }
   } catch (err) {
     console.error(
@@ -113,19 +183,34 @@ export async function runInstrumentation(
  * Report a request error via the instrumentation handler.
  *
  * No-op if no onRequestError handler is registered.
+ *
+ * Reads the handler from globalThis so this function works correctly regardless
+ * of which environment it is called from.
  */
-export async function reportRequestError(
+export function reportRequestError(
   error: Error,
   request: { path: string; method: string; headers: Record<string, string> },
   context: OnRequestErrorContext,
 ): Promise<void> {
-  if (!_onRequestError) return;
-  try {
-    await _onRequestError(error, request, context);
-  } catch (reportErr) {
-    console.error(
-      "[vinext] onRequestError handler threw:",
-      reportErr instanceof Error ? reportErr.message : String(reportErr),
-    );
-  }
+  const handler = getOnRequestErrorHandler();
+  if (!handler) return Promise.resolve();
+
+  const promise = (async () => {
+    try {
+      await handler(error, request, context);
+    } catch (reportErr) {
+      console.error(
+        "[vinext] onRequestError handler threw:",
+        reportErr instanceof Error ? reportErr.message : String(reportErr),
+      );
+    }
+  })();
+
+  // On Cloudflare Workers, register with ctx.waitUntil() so the isolate
+  // stays alive until the report completes (e.g. Sentry HTTP request).
+  // On Node.js (dev or vinext start), getRequestExecutionContext() returns
+  // null — fire-and-forget is fine because the process doesn't die.
+  getRequestExecutionContext()?.waitUntil(promise);
+
+  return promise;
 }

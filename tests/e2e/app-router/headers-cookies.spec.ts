@@ -30,9 +30,7 @@ test.describe("headers() and cookies() in Server Components", () => {
     expect(html).toMatch(/Cookies:.*2/s);
   });
 
-  test("headers() works on RSC client navigation (.rsc request)", async ({
-    request,
-  }) => {
+  test("headers() works on RSC client navigation (.rsc request)", async ({ request }) => {
     // Simulate an RSC request (what happens during client-side navigation)
     const res = await request.get(`${BASE}/headers-test.rsc`, {
       headers: {
@@ -50,9 +48,7 @@ test.describe("headers() and cookies() in Server Components", () => {
     expect(rscPayload).toContain("RSCNavigationAgent");
   });
 
-  test("cookies() works on RSC client navigation (.rsc request)", async ({
-    request,
-  }) => {
+  test("cookies() works on RSC client navigation (.rsc request)", async ({ request }) => {
     const res = await request.get(`${BASE}/headers-test.rsc`, {
       headers: {
         Accept: "text/x-component",
@@ -67,12 +63,13 @@ test.describe("headers() and cookies() in Server Components", () => {
     expect(rscPayload).toMatch(/Cookies.*1/);
   });
 
-  test("headers() available during browser client navigation", async ({
-    page,
-  }) => {
+  test("headers() available during browser client navigation", async ({ page }) => {
     // Start on the home page
     await page.goto(`${BASE}/`);
-    await page.waitForLoadState("networkidle");
+    // Visible home-page content is a more stable readiness signal than
+    // networkidle because Next Link prefetch can keep background requests alive.
+    await expect(page.getByRole("heading", { name: "Welcome to App Router" })).toBeVisible();
+    await expect(page.getByTestId("headers-test-link")).toBeVisible();
 
     // Navigate to headers-test via client-side navigation (Link click)
     await page.click('[data-testid="headers-test-link"]');
@@ -109,22 +106,18 @@ test.describe("headers() and cookies() in Server Components", () => {
  * cookies are readable by server components via cookies().get().
  */
 test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
-  test("middleware sets custom headers on matched routes", async ({
-    request,
-  }) => {
+  test("middleware sets custom headers on matched routes", async ({ request }) => {
     // Ref: opennextjs-cloudflare headers.test.ts "Headers"
-    // The app-basic middleware sets x-middleware-pathname and x-middleware-ran
+    // The app-basic middleware sets x-mw-pathname and x-mw-ran
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
 
     const headers = res.headers();
-    expect(headers["x-middleware-ran"]).toBe("true");
-    expect(headers["x-middleware-pathname"]).toBe("/");
+    expect(headers["x-mw-ran"]).toBe("true");
+    expect(headers["x-mw-pathname"]).toBe("/");
   });
 
-  test("internal x-middleware-next header is NOT in response", async ({
-    request,
-  }) => {
+  test("internal x-middleware-next header is NOT in response", async ({ request }) => {
     // Ref: opennextjs-cloudflare middleware.cookies.test.ts
     // "should not expose internal Next headers in response"
     const res = await request.get(`${BASE}/about`);
@@ -135,9 +128,7 @@ test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
     expect(headers["x-middleware-next"]).toBeUndefined();
   });
 
-  test("internal x-middleware-set-cookie header is NOT in response", async ({
-    request,
-  }) => {
+  test("internal x-middleware-set-cookie header is NOT in response", async ({ request }) => {
     // Ref: opennextjs-cloudflare middleware.cookies.test.ts
     // "should not expose internal Next headers in response"
     const res = await request.get(`${BASE}/about`);
@@ -148,22 +139,18 @@ test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
     expect(headers["x-middleware-set-cookie"]).toBeUndefined();
   });
 
-  test("middleware headers available on matched pages only", async ({
-    request,
-  }) => {
+  test("middleware headers available on matched pages only", async ({ request }) => {
     // Ref: opennextjs-cloudflare headers.test.ts — headers should only be
     // set on routes that match the middleware config
     const matchedRes = await request.get(`${BASE}/about`);
-    expect(matchedRes.headers()["x-middleware-ran"]).toBe("true");
+    expect(matchedRes.headers()["x-mw-ran"]).toBe("true");
 
     // API routes are not in the middleware matcher
     const apiRes = await request.get(`${BASE}/api/hello`);
-    expect(apiRes.headers()["x-middleware-ran"]).toBeUndefined();
+    expect(apiRes.headers()["x-mw-ran"]).toBeUndefined();
   });
 
-  test("request headers available in server component RSC rendering", async ({
-    request,
-  }) => {
+  test("request headers available in server component RSC rendering", async ({ request }) => {
     // Ref: opennextjs-cloudflare headers.test.ts "Request header should be available in RSC"
     const res = await request.get(`${BASE}/headers-test`, {
       headers: { "x-custom-test": "opennext-compat" },

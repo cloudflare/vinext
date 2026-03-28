@@ -15,19 +15,24 @@ export function SkeletonText({
 }) {
   const words = Array.from({ length: count }, (_, i) => {
     const seed = _seed + count + i;
+    const width =
+      Math.floor(random(seed) * (maxLength - minLength + 1)) + minLength;
 
-    return Math.floor(random(seed) * (maxLength - minLength + 1)) + minLength;
+    return {
+      key: `skeleton-word-${seed}`,
+      width,
+    };
   });
 
   return (
     <div
       className={clsx('flex flex-wrap gap-x-[1ch] gap-y-[0.65em]', className)}
     >
-      {words.map((width, i) => (
+      {words.map((word) => (
         <div
-          key={i}
+          key={word.key}
           className="h-[0.6em] rounded-full bg-current"
-          style={{ width: `${width}ch` }}
+          style={{ width: `${word.width}ch` }}
         />
       ))}
     </div>

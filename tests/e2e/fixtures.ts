@@ -57,9 +57,7 @@ export const test = base.extend<{ consoleErrors: string[] }>({
     // After the test, fail if there were any console errors
     if (errors.length > 0) {
       const errorList = errors.map((e, i) => `  ${i + 1}. ${e}`).join("\n");
-      throw new Error(
-        `Test failed due to ${errors.length} console error(s):\n${errorList}`,
-      );
+      throw new Error(`Test failed due to ${errors.length} console error(s):\n${errorList}`);
     }
   },
 });

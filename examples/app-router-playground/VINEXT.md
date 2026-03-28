@@ -7,7 +7,7 @@ adapted to run on **vinext** (Vite) instead of Next.js.
 
 ```bash
 # From the monorepo root, build the plugin first:
-npx tsc -p packages/vinext/tsconfig.json
+vp run vinext#build
 
 # Install deps for this fixture:
 cd fixtures/ecosystem/app-router-playground

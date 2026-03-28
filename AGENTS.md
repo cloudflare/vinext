@@ -17,11 +17,15 @@ vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers 
 ### Commands
 
 ```bash
-pnpm test             # Vitest unit + integration tests
-pnpm run test:e2e     # Playwright E2E tests (5 projects)
-pnpm run typecheck    # TypeScript via tsgo (fast)
-pnpm run lint         # oxlint
-pnpm run build        # Build the vinext package
+pnpm test                                        # Vitest — full suite (~2 min, serial)
+pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
+pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
+pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
+pnpm run check                                   # Format, lint, and type checks
+pnpm run lint                                    # Lint only (type-aware oxlint)
+pnpm run fmt                                     # oxfmt (format)
+pnpm run fmt:check                               # oxfmt (check only, no writes)
+pnpm run build                                   # Build the vinext package (via vp pack)
 ```
 
 ### Project Structure
@@ -45,14 +49,14 @@ examples/               # User-facing demo apps
 
 ### Key Files
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Vite plugin — resolves `next/*` imports, generates virtual modules |
-| `shims/*.ts` | Reimplementations of `next/link`, `next/navigation`, etc. |
-| `server/dev-server.ts` | Pages Router SSR handler |
-| `server/app-dev-server.ts` | App Router RSC entry generator |
-| `routing/pages-router.ts` | Scans `pages/` directory |
-| `routing/app-router.ts` | Scans `app/` directory |
+| File                       | Purpose                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `index.ts`                 | Vite plugin — resolves `next/*` imports, generates virtual modules |
+| `shims/*.ts`               | Reimplementations of `next/link`, `next/navigation`, etc.          |
+| `server/dev-server.ts`     | Pages Router SSR handler                                           |
+| `entries/app-rsc-entry.ts` | App Router RSC entry generator                                     |
+| `routing/pages-router.ts`  | Scans `pages/` directory                                           |
+| `routing/app-router.ts`    | Scans `app/` directory                                             |
 
 ---
 
@@ -61,21 +65,129 @@ examples/               # User-facing demo apps
 ### Adding a New Feature
 
 1. **Check if Next.js has it** — look at Next.js source to understand expected behavior
-2. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
-3. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
-4. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
-5. **Run the full test suite** before committing
+2. **Search the Next.js test suite** — before writing code, search `test/e2e/` and `test/unit/` in the Next.js repo for related test files (see below)
+3. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
+4. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
+5. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
+6. **Run the relevant test file(s)** to verify your changes (see [Running Tests](#running-tests) below)
+
+### Searching the Next.js Test Suite
+
+**This is a required step for all feature work and bug fixes.** Before writing code, search the Next.js repo's `test/e2e/` and `test/unit/` directories for tests related to whatever you're working on. Search broadly, not just for exact feature names.
+
+For example, when working on middleware:
+
+- Search for `middleware` and `proxy` in test directory names
+- Search for error messages like `"must export"` to find validation tests
+- Check for edge cases like missing exports, misspelled names, invalid configs
+
+**Why this matters:** vinext aims to match Next.js behavior exactly. If Next.js has a test for it, we should have an equivalent test. Missing this step has caused silent behavioral differences, like middleware failing open on invalid exports instead of throwing an error (which Next.js tests explicitly).
+
+When you find relevant Next.js tests, port the test cases to our test suite and include a comment linking back to the original Next.js test file:
+
+```ts
+// Ported from Next.js: test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+```
+
+**Local Next.js clone for fast searching:**
+
+Keep a local clone of the Next.js repo for fast `rg` (ripgrep) searches. This is much faster and more reliable than `gh search code` for exploratory searches.
+
+```bash
+# First time: clone into .nextjs-ref (gitignored)
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+
+# Update periodically
+git -C .nextjs-ref pull --ff-only
+```
+
+The `.nextjs-ref` directory is gitignored. Use it for searching source, tests, and closed PR context:
+
+```bash
+# Search test suite for how Next.js handles a behavior
+rg -rn "javascript:" .nextjs-ref/test/ --include "*.test.*" -l
+rg -rn "router\.push" .nextjs-ref/test/e2e/ -l | head -20
+
+# Search source for implementation details
+rg -rn "x-middleware-override-headers" .nextjs-ref/packages/next/src/
+rg -rn "isExternalUrl" .nextjs-ref/packages/next/src/
+
+# Search for how config headers/redirects are ordered relative to middleware
+rg -rn "headers.*redirect.*middleware" .nextjs-ref/packages/next/src/server/
+```
+
+**Use `gh search code` when the local clone is not available:**
+
+```bash
+gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
+gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit 10
+```
+
+### Running Tests
+
+**Always run targeted tests, not the full suite.** The full Vitest suite takes ~2 minutes because test files run serially (to avoid Vite deps optimizer cache races). Running the full suite during development wastes time, especially when multiple agents are working on the repo simultaneously.
+
+**Prefer `vp` for day-to-day local work.** The `pnpm` scripts above still work, but current repo workflow and CI debugging usually use the direct Vite+ commands:
+
+```bash
+vp check tests/app-router.test.ts
+vp test run tests/app-router.test.ts
+vp test run tests/app-router.test.ts -t "route handler"
+vp run vinext#build
+```
+
+**During development**, run only the test file(s) relevant to your change:
+
+```bash
+# Run a single test file (fast — seconds, not minutes)
+pnpm test tests/routing.test.ts
+
+# Run a few related files
+pnpm test tests/shims.test.ts tests/link.test.ts
+
+# Run all nextjs-compat tests
+pnpm test tests/nextjs-compat/
+
+# Run tests matching a name pattern
+pnpm test -t "middleware"
+```
+
+**Which test files to run** depends on what you changed:
+
+| If you changed...                              | Run these tests                                                                          |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| A shim (`shims/*.ts`)                          | `tests/shims.test.ts` + the specific shim test (e.g., `tests/link.test.ts`)              |
+| Routing (`routing/*.ts`)                       | `tests/routing.test.ts`, `tests/route-sorting.test.ts`                                   |
+| App Router server (`entries/app-rsc-entry.ts`) | `tests/app-router.test.ts`, `tests/features.test.ts`                                     |
+| Pages Router server (`server/dev-server.ts`)   | `tests/pages-router.test.ts`                                                             |
+| Caching/ISR                                    | `tests/isr-cache.test.ts`, `tests/fetch-cache.test.ts`, `tests/kv-cache-handler.test.ts` |
+| Build/deploy                                   | `tests/deploy.test.ts`, `tests/build-optimization.test.ts`                               |
+| Next.js compat features                        | `tests/nextjs-compat/` (the relevant file)                                               |
+
+**Let CI run the full suite.** The full `pnpm test` and all 5 Playwright E2E projects run in CI on every PR. You do not need to run the full suite locally before pushing. CI will catch any cross-cutting regressions.
+
+**When to run the full suite locally:** Only if you're making a broad change that touches shared infrastructure (e.g., the Vite plugin's `resolveId` hook, virtual module generation, or the test helpers themselves). Even then, consider pushing and letting CI do it.
 
 ### Fixing Bugs
 
+**Always verify Next.js behavior first.** Before writing a fix, confirm how Next.js handles the same scenario. This applies to security fixes, bug reports, and behavioral changes. We have repeatedly shipped fixes that diverged from Next.js because this step was skipped. Specific things to check:
+
+1. **Search the Next.js test suite** (in `.nextjs-ref/test/`) for tests covering the behavior. If Next.js has a test, that is the authoritative answer for what the correct behavior is.
+2. **Search Next.js issues and PRs** for prior discussion. Many behaviors are intentional design choices (e.g., Next.js intentionally does not block `javascript:` URIs in `router.push()`, config headers intentionally run before middleware). Use `gh search code` or EXA web search for this.
+3. **Search Next.js source** (in `.nextjs-ref/packages/next/src/`) for the implementation. Understand what they do before deciding what we should do.
+4. **Document what you found.** When creating a PR or closing an issue, link to the Next.js test, issue, or docs that informed the decision.
+
+If Next.js and vinext should behave differently (defense-in-depth, Cloudflare-specific requirements), that is OK, but it must be a deliberate, documented decision, not an accidental divergence.
+
 **Always check dev and prod server parity.** Request handling logic exists in multiple places that must stay in sync:
 
-- `server/app-dev-server.ts` — App Router dev (generates the RSC entry)
+- `entries/app-rsc-entry.ts` — App Router dev (generates the RSC entry)
 - `server/dev-server.ts` — Pages Router dev
 - `server/prod-server.ts` — Pages Router production (handles middleware, routing, SSR directly)
 - `cloudflare/worker-entry.ts` — Cloudflare Workers entry
 
-The App Router production server delegates to the built RSC entry, so it inherits fixes from `app-dev-server.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
+The App Router production server delegates to the built RSC entry, so it inherits fixes from `entries/app-rsc-entry.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
 
 When fixing a bug in any of these files, check whether the same bug exists in the others. Do not leave known bugs as "follow-ups" — fix them in the same PR.
 
@@ -98,15 +210,15 @@ Add new test pages to fixtures, not to examples. Examples are for user-facing de
 
 The `examples/` directory contains real-world Next.js apps ported to run on vinext. These are deployed to Cloudflare Workers on every push to main (see `.github/workflows/deploy-examples.yml`).
 
-| Example | Type | URL |
-|---------|------|-----|
-| `app-router-cloudflare` | App Router basics | `app-router-cloudflare.vinext.workers.dev` |
-| `pages-router-cloudflare` | Pages Router basics | `pages-router-cloudflare.vinext.workers.dev` |
-| `app-router-playground` | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev` |
-| `realworld-api-rest` | RealWorld spec (Pages Router) | `realworld-api-rest.vinext.workers.dev` |
-| `nextra-docs-template` | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev` |
-| `benchmarks` | Performance benchmarks | `benchmarks.vinext.workers.dev` |
-| `hackernews` | HN clone (App Router, RSC) | `hackernews.vinext.workers.dev` |
+| Example                   | Type                               | URL                                          |
+| ------------------------- | ---------------------------------- | -------------------------------------------- |
+| `app-router-cloudflare`   | App Router basics                  | `app-router-cloudflare.vinext.workers.dev`   |
+| `pages-router-cloudflare` | Pages Router basics                | `pages-router-cloudflare.vinext.workers.dev` |
+| `app-router-playground`   | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev`   |
+| `realworld-api-rest`      | RealWorld spec (Pages Router)      | `realworld-api-rest.vinext.workers.dev`      |
+| `nextra-docs-template`    | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev`    |
+| `benchmarks`              | Performance benchmarks             | `benchmarks.vinext.workers.dev`              |
+| `hackernews`              | HN clone (App Router, RSC)         | `hackernews.vinext.workers.dev`              |
 
 #### Adding a New Example
 
@@ -132,9 +244,11 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 ```
 
 When adding a new example, always add a corresponding smoke test entry. The format is:
+
 ```
 "worker-name  /path  expected-text"
 ```
+
 where `expected-text` is a case-insensitive string that must appear in the response body.
 
 #### Porting Strategy
@@ -156,11 +270,13 @@ The examples in `.github/repos.json` are the ecosystem of Next.js apps we want t
 Context7 provides fast access to up-to-date documentation and source code for libraries. Use it liberally when researching how to implement something or debugging behavior.
 
 **Key library IDs for this project:**
+
 - `/vercel/next.js` — Next.js source code and docs
 - `/llmstxt/nextjs_llms_txt` — Extended Next.js documentation
 - `/vitejs/vite-plugin-react` — Vite RSC plugin docs
 
 **Example queries:**
+
 - How Next.js implements `headers()` and `cookies()` internally
 - AsyncLocalStorage patterns for request-scoped context
 - RSC streaming and rendering lifecycle
@@ -169,6 +285,7 @@ Context7 provides fast access to up-to-date documentation and source code for li
 ### EXA Search
 
 Use EXA for web search when you need to find recent discussions, blog posts, GitHub issues, or documentation that isn't in Context7. Particularly useful for:
+
 - Finding workarounds for edge cases
 - Understanding how other frameworks solved similar problems
 - Locating relevant GitHub issues and discussions
@@ -177,7 +294,13 @@ Use EXA for web search when you need to find recent discussions, blog posts, Git
 
 **When in doubt, look at how Next.js does it.** Vinext aims to replicate Next.js behavior, so their implementation is the authoritative reference.
 
-If you're trying to understand how something works under the hood — route matching, RSC streaming, caching behavior, API semantics — the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+If you're trying to understand how something works under the hood (route matching, RSC streaming, caching behavior, API semantics), the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+
+Use the local `.nextjs-ref` clone for fast searching. If the clone doesn't exist yet, create it:
+
+```bash
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+```
 
 ---
 
@@ -202,7 +325,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.
 
-- **Branch protection is enabled on main.** Required checks: Lint, Typecheck, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
+- **Branch protection is enabled on main.** Required checks: Check, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
 
 - **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
 
@@ -211,9 +334,45 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   2. Make changes and commit
   3. Push branch: `git push -u origin fix/descriptive-name`
   4. Open PR via `gh pr create`
-  5. Wait for CI to pass — all required checks (Lint, Typecheck, Vitest, Playwright E2E) must be green
+  5. Wait for CI to pass — all required checks (Check, Vitest, Playwright E2E) must be green
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
+
+- **For large refactors, prefer small stacked PRs.** When extracting logic out of generated entries or other high-risk files, do the work in reviewable slices:
+  1. Move one cohesive runtime seam into a typed helper
+  2. Add focused helper tests plus minimal generator assertion updates
+  3. Push, fix CI, and re-request review
+  4. Rebase the next stacked branch after each merge
+
+- **Use `/bigbonk` after meaningful updates on stacked refactor PRs.** That is the normal re-review loop for this repo once a PR has been rebased or a review comment has been addressed.
+
+### CI for External Contributors
+
+CI is split into safe checks (no secrets) and deploy previews (requires secrets). This lets external contributors get feedback on their PRs without exposing credentials.
+
+**Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
+
+- Check, Vitest, Playwright E2E
+- Uses zero secrets and read-only permissions
+- First-time contributors need one manual approval, then subsequent PRs run automatically
+
+**Deploy previews (`deploy-examples.yml`)** run automatically only for same-repo branches:
+
+- The entire workflow is skipped for fork PRs via a job-level `if` condition
+- Cloudflare employees should push branches to the main repo (not fork), so previews deploy automatically
+- For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy (see `deploy-preview-command.yml`)
+
+**`/deploy-preview` slash command** (`deploy-preview-command.yml`):
+
+- Triggered by commenting `/deploy-preview` on any PR
+- Restricted to org members, collaborators, and repo owners via `author_association`
+- Builds all examples, deploys previews, runs smoke tests, and posts preview URLs
+
+When modifying CI workflows, keep these rules in mind:
+
+- `ci.yml` must never use secrets. It runs untrusted code from forks.
+- `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
+- The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
 
 ---
 
@@ -232,6 +391,7 @@ Per-request state (pathname, searchParams, params, headers, cookies) must be **e
 ### What `@vitejs/plugin-rsc` Does vs What vinext Does
 
 The RSC plugin handles:
+
 - Bundler transforms for `"use client"` / `"use server"` directives
 - RSC stream serialization (wraps `react-server-dom-webpack`)
 - Multi-environment builds (RSC/SSR/Client)
@@ -240,6 +400,7 @@ The RSC plugin handles:
 - Bootstrap script injection for client hydration
 
 vinext handles everything else:
+
 - File-system routing (scanning `app/` and `pages/` directories)
 - Request lifecycle (middleware, headers, redirects, rewrites, then route handling)
 - Layout nesting and React tree construction
@@ -249,9 +410,49 @@ vinext handles everything else:
 
 The RSC entry's `default` export is the request handler. The plugin calls it for every request; vinext does route matching, builds the React tree, renders to RSC stream, and delegates to the SSR entry for HTML.
 
+### Generated Entry Modules Should Stay Thin
+
+The generated entry files under `packages/vinext/src/entries/*` are one of the easiest places for the codebase to become hard to maintain. Treat them as **codegen glue**, not as the home for large runtime subsystems.
+
+**Rule of thumb:** generated code may describe route-specific imports, manifests, and thin closures, but it should not own substantial request lifecycle logic.
+
+Move real behavior into normal typed modules under `packages/vinext/src/server/*` whenever the code involves:
+
+- request/response orchestration
+- streaming or teeing streams
+- ISR/cache policy or cache writes
+- route-handler method dispatch
+- redirect / not-found / access-fallback handling
+- response shaping, header merging, or middleware merge behavior
+- logic that needs direct unit tests
+
+**Preferred layering:**
+
+1. `entries/*` — generate route-specific imports, manifests, and thin wiring
+2. `server/*` — implement runtime behavior in importable typed modules
+3. `tests/*` — unit test the runtime helpers directly; keep generated-entry tests focused on delegation and wiring
+
+**Testing guidance for entry refactors:**
+
+- If you move behavior out of a template string, add a focused unit test for the new helper module
+- Update `tests/entry-templates.test.ts` or other generated-code assertions to check the new helper delegation, not the old inline implementation detail
+- Prefer verifying stream/cache/error behavior in helper tests instead of asserting on giant generated strings
+
+**App Router examples:** the long-term pattern is for files like `entries/app-rsc-entry.ts`, `entries/app-browser-entry.ts`, and `entries/app-ssr-entry.ts` to stay thin and delegate to `server/app-*.ts` helpers.
+
 ### Production Builds Require `createBuilder`
 
 You **must** use `createBuilder()` + `builder.buildApp()` for production builds, not `build()` directly. Calling `build()` from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. `buildApp()` runs the 5-step RSC/SSR/client build sequence in the correct order.
+
+### Vite 8 Defaults
+
+This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bundles Vite 8. Keep that in mind when touching Vite config or plugin integration code:
+
+- Prefer `oxc` over `esbuild` for new JavaScript transform config
+- Prefer `optimizeDeps.rolldownOptions` over `optimizeDeps.esbuildOptions`
+- Prefer `build.rolldownOptions` / `worker.rolldownOptions` over adding new `*.rollupOptions` config
+- When touching existing `build.rollupOptions` or `manualChunks`, treat them as migration targets to Rolldown equivalents, not patterns to copy forward
+- If something breaks only on Vite 8, check the newer `build.target` baseline and stricter CommonJS default import behavior first
 
 ### Virtual Module Resolution Quirks
 
@@ -264,7 +465,7 @@ You **must** use `createBuilder()` + `builder.buildApp()` for production builds,
 Next.js 15 changed `params` and `searchParams` to Promises. For backward compatibility with pre-15 code, vinext creates "thenable objects":
 
 ```js
-Object.assign(Promise.resolve(params), params)
+Object.assign(Promise.resolve(params), params);
 ```
 
 This works both as `await params` (new style) and `params.id` (old style). The same pattern applies to `generateMetadata` and `generateViewport`.
@@ -280,6 +481,27 @@ The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler`
 
 The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
 
+### Next.js Request Execution Order
+
+This is critical to get right. Many security reports and bug fixes depend on understanding which steps run before vs after middleware. The Next.js documented execution order is (source: [Next.js middleware docs](https://nextjs.org/docs/app/building-your-application/routing/middleware#matching-paths), [rewrites docs](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)):
+
+1. `headers` from next.config.js (has/missing conditions use the **original** request)
+2. `redirects` from next.config.js (has/missing conditions use the **original** request)
+3. **Middleware** (rewrites, redirects, header modifications, etc.)
+4. `beforeFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+5. Filesystem routes (`public/`, `_next/static/`, pages, app)
+6. `afterFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+7. Dynamic routes (`/blog/[slug]`)
+8. `fallback` rewrites from next.config.js
+
+**Key implications:**
+
+- Config headers and redirects run BEFORE middleware. Their `has`/`missing` conditions evaluate against the original incoming request, not middleware-modified state. If you need middleware-aware conditional headers, set them in middleware itself.
+- `_next/static/*` (build output) is served directly without middleware. But `public/` directory files go through middleware.
+- `beforeFiles`, `afterFiles`, and `fallback` rewrites run AFTER middleware and should see middleware-modified request state.
+
+**Current vinext gap:** vinext evaluates config headers at step 6 (after middleware) instead of step 1 (before middleware). The has/missing conditions correctly use the pre-middleware request context, but the timing of when headers are applied differs from Next.js. This is a known parity gap tracked for future work.
+
 ### Ecosystem Library Compatibility
 
 When adding support for third-party Next.js libraries:
@@ -288,3 +510,80 @@ When adding support for third-party Next.js libraries:
 - **next-themes:** Works out of the box. ThemeProvider, `useTheme`, SSR script injection all function correctly.
 - **next-intl:** Requires deep integration. It expects a plugin from `next.config.ts` (`createNextIntlPlugin`) that injects config at build time. Simply installing and importing doesn't work.
 - **General pattern:** Libraries that only import from `next/*` public APIs tend to work. Libraries that depend on Next.js build plugins or internal APIs need custom shimming.
+
+<!--VITE PLUS START-->
+
+# Using Vite+, the Unified Toolchain for the Web
+
+This project is using Vite+, a unified toolchain built on top of Vite, Rolldown, Vitest, tsdown, Oxlint, Oxfmt, and Vite Task. Vite+ wraps runtime management, package management, and frontend tooling in a single global CLI called `vp`. Vite+ is distinct from Vite, but it invokes Vite through `vp dev` and `vp build`.
+
+## Vite+ Workflow
+
+`vp` is a global binary that handles the full development lifecycle. Run `vp help` to print a list of commands and `vp <command> --help` for information about a specific command.
+
+### Start
+
+- create - Create a new project from a template
+- migrate - Migrate an existing project to Vite+
+- config - Configure hooks and agent integration
+- staged - Run linters on staged files
+- install (`i`) - Install dependencies
+- env - Manage Node.js versions
+
+### Develop
+
+- dev - Run the development server
+- check - Run format, lint, and TypeScript type checks
+- lint - Lint code
+- fmt - Format code
+- test - Run tests
+
+### Execute
+
+- run - Run monorepo tasks
+- exec - Execute a command from local `node_modules/.bin`
+- dlx - Execute a package binary without installing it as a dependency
+- cache - Manage the task cache
+
+### Build
+
+- build - Build for production
+- pack - Build libraries
+- preview - Preview production build
+
+### Manage Dependencies
+
+Vite+ automatically detects and wraps the underlying package manager such as pnpm, npm, or Yarn through the `packageManager` field in `package.json` or package manager-specific lockfiles.
+
+- add - Add packages to dependencies
+- remove (`rm`, `un`, `uninstall`) - Remove packages from dependencies
+- update (`up`) - Update packages to latest versions
+- dedupe - Deduplicate dependencies
+- outdated - Check for outdated packages
+- list (`ls`) - List installed packages
+- why (`explain`) - Show why a package is installed
+- info (`view`, `show`) - View package information from the registry
+- link (`ln`) / unlink - Manage local package links
+- pm - Forward a command to the package manager
+
+### Maintain
+
+- upgrade - Update `vp` itself to the latest version
+
+These commands map to their corresponding tools. For example, `vp dev --port 3000` runs Vite's dev server and works the same as Vite. `vp test` runs JavaScript tests through the bundled Vitest. The version of all tools can be checked using `vp --version`. This is useful when researching documentation, features, and bugs.
+
+## Common Pitfalls
+
+- **Using the package manager directly:** Do not use pnpm, npm, or Yarn directly. Vite+ can handle all package manager operations.
+- **Always use Vite commands to run tools:** Don't attempt to run `vp vitest` or `vp oxlint`. They do not exist. Use `vp test`, `vp lint`, and `vp check` instead.
+- **Running scripts:** Vite+ commands take precedence over `package.json` scripts. If there is a `test` script defined in `scripts` that conflicts with the built-in `vp test` command, run it using `vp run test`.
+- **Do not install Vitest, Oxlint, Oxfmt, or tsdown directly:** Vite+ wraps these tools. They must not be installed directly. You cannot upgrade these tools by installing their latest versions. Always use Vite+ commands.
+- **Use Vite+ wrappers for one-off binaries:** Use `vp dlx` instead of package-manager-specific `dlx`/`npx` commands.
+- **Import JavaScript modules from `vite-plus`:** Instead of importing from `vite` or `vitest`, all modules should be imported from the project's `vite-plus` dependency. For example, `import { defineConfig } from 'vite-plus';` or `import { expect, test, vi } from 'vite-plus/test';`. You must not install `vitest` to import test utilities.
+- **Static checks:** Prefer `vp check` as the default validation command. It runs formatting, linting, and type checks together, and `vp lint --type-aware` works when you need lint-only feedback.
+
+## Review Checklist for Agents
+
+- [ ] Run `vp install` after pulling remote changes and before getting started.
+- [ ] Run `vp check` and `vp test` to validate changes.
+<!--VITE PLUS END-->

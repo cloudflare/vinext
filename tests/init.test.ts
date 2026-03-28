@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -9,6 +9,7 @@ import {
   getInitDeps,
   isDepInstalled,
   getReactUpgradeDeps,
+  updateGitignore,
   type InitOptions,
 } from "../packages/vinext/src/init.js";
 
@@ -64,7 +65,7 @@ function setupProject(
 
   if (router === "app") {
     mkdir(dir, "app");
-    writeFile(dir, "app/page.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(dir, "app/page.tsx", "export default function Home() { return <div>hi</div> }");
     writeFile(
       dir,
       "app/layout.tsx",
@@ -72,7 +73,7 @@ function setupProject(
     );
   } else {
     mkdir(dir, "pages");
-    writeFile(dir, "pages/index.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(dir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
   }
 }
 
@@ -126,10 +127,7 @@ async function runInit(
 /**
  * Run init expecting it to fail (process.exit).
  */
-async function runInitExpectExit(
-  dir: string,
-  opts: Partial<InitOptions> = {},
-): Promise<string> {
+async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): Promise<string> {
   const { exec } = noopExec();
 
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -250,18 +248,20 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-rsc + react-server-dom-webpack for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react + App Router deps for App Router", () => {
     const deps = getInitDeps(true);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).toContain("@vitejs/plugin-rsc");
     expect(deps).toContain("react-server-dom-webpack");
   });
 
-  it("returns vinext + vite for Pages Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react for Pages Router", () => {
     const deps = getInitDeps(false);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
   });
@@ -466,7 +466,31 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
+  });
+
+  it("treats src/app projects as App Router", async () => {
+    setupProject(tmpDir);
+    fs.rmSync(path.join(tmpDir, "app"), { recursive: true, force: true });
+
+    mkdir(tmpDir, "src/app");
+    writeFile(
+      tmpDir,
+      "src/app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
+    writeFile(
+      tmpDir,
+      "src/app/layout.tsx",
+      "export default function Layout({ children }) { return <html><body>{children}</body></html> }",
+    );
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
+    expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
   it("detects missing react-server-dom-webpack for App Router", async () => {
@@ -474,6 +498,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
@@ -482,6 +507,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
@@ -490,6 +516,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
@@ -509,7 +536,10 @@ describe("init — dependency installation", () => {
 
     // The second exec call should be the dev deps install (with -D)
     const devDepsCall = execCalls.find(
-      (c) => c.cmd.includes("react-server-dom-webpack") && c.cmd.includes("-D"),
+      (c) =>
+        c.cmd.includes("@vitejs/plugin-react") &&
+        c.cmd.includes("react-server-dom-webpack") &&
+        c.cmd.includes("-D"),
     );
     expect(devDepsCall).toBeDefined();
 
@@ -526,11 +556,26 @@ describe("init — dependency installation", () => {
     const { execCalls } = await runInit(tmpDir);
 
     // No React upgrade call
-    const reactUpgradeCall = execCalls.find(
-      (c) => c.cmd.includes("react@latest"),
-    );
+    const reactUpgradeCall = execCalls.find((c) => c.cmd.includes("react@latest"));
     expect(reactUpgradeCall).toBeUndefined();
   });
+
+  function withUserAgent<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+    const previous = process.env.npm_config_user_agent;
+    if (value === undefined) {
+      delete process.env.npm_config_user_agent;
+    } else {
+      process.env.npm_config_user_agent = value;
+    }
+
+    return run().finally(() => {
+      if (previous === undefined) {
+        delete process.env.npm_config_user_agent;
+      } else {
+        process.env.npm_config_user_agent = previous;
+      }
+    });
+  }
 
   it("calls exec with correct package manager for pnpm", async () => {
     setupProject(tmpDir, { router: "pages" });
@@ -538,17 +583,63 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await runInit(tmpDir);
 
-    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^pnpm add -D/);
   });
 
-  it("calls exec with npm when no lock file exists", async () => {
+  it("calls exec with bun when bun.lock exists", async () => {
     setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "bun.lock", "# bun lockfile");
 
     const { execCalls } = await runInit(tmpDir);
 
-    const installCall = execCalls.find((c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"));
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("uses package.json#packageManager when lock files are missing", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { packageManager: "bun@1.2.3" },
+    });
+
+    const { execCalls } = await runInit(tmpDir);
+
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("uses invoking package manager from npm_config_user_agent when project has no PM hints", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { execCalls } = await withUserAgent("bun/1.2.3 npm/? node/v22.0.0", () =>
+      runInit(tmpDir),
+    );
+
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"),
+    );
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("falls back to npm when no lock file, no packageManager, and no user-agent hint", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { execCalls } = await withUserAgent(undefined, () => runInit(tmpDir));
+
+    const installCall = execCalls.find(
+      (c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"),
+    );
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^npm install -D/);
   });
@@ -646,5 +737,116 @@ describe("init — non-destructive", () => {
     await runInit(tmpDir);
 
     expect(readFile(tmpDir, "next.config.mjs")).toBe(originalConfig);
+  });
+});
+
+// ─── Unit Tests: updateGitignore ─────────────────────────────────────────────
+
+describe("updateGitignore", () => {
+  it("creates .gitignore with /dist/ when file does not exist", () => {
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("/dist/\n");
+  });
+
+  it("appends /dist/ to existing .gitignore", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n.env\n/dist/\n");
+  });
+
+  it("does not duplicate /dist/ when already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n");
+  });
+
+  it("handles .gitignore without trailing newline", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n");
+  });
+
+  it("handles /dist/ with surrounding whitespace in existing file", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n  /dist/  \n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+  });
+
+  it("does not add /dist/ when dist/ (without leading slash) is already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\ndist/\n");
+  });
+
+  it("does not add /dist/ when bare dist is already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\ndist\n");
+  });
+});
+
+// ─── Integration: init updates .gitignore ────────────────────────────────────
+
+describe("init — .gitignore", () => {
+  it("adds /dist/ to .gitignore during init", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toContain("/dist/");
+  });
+
+  it("does not duplicate /dist/ if already in .gitignore", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(false);
+    // Ensure no duplication
+    const content = readFile(tmpDir, ".gitignore");
+    const matches = content.split("\n").filter((l: string) => l.trim() === "/dist/");
+    expect(matches.length).toBe(1);
+  });
+
+  it("preserves existing .gitignore entries when adding /dist/", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n.next/\n");
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toContain("node_modules/");
+    expect(content).toContain(".env");
+    expect(content).toContain(".next/");
+    expect(content).toContain("/dist/");
   });
 });

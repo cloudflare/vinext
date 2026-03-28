@@ -13,18 +13,14 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
 
 test.describe("Next.js compat: search-params-react-key (browser)", () => {
   // Next.js: 'should keep the React router instance the same when changing the search params'
-  test("component state persists across search param changes via router.push", async ({
-    page,
-  }) => {
+  test("component state persists across search param changes via router.push", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/search-params-key`);
     await waitForHydration(page);
 

@@ -9,9 +9,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     await expect(page.locator("h1")).toHaveText("Slow Page", {
       timeout: 10_000,
     });
-    await expect(page.locator("main > p")).toHaveText(
-      "This page has a loading boundary.",
-    );
+    await expect(page.locator("main > p")).toHaveText("This page has a loading boundary.");
   });
 
   test("slow page serves HTML response", async ({ page }) => {
@@ -32,9 +30,7 @@ test.describe("Loading boundaries (loading.tsx)", () => {
    * The slow page has a 2s async delay. The loading.tsx fallback should appear in
    * the initial streamed HTML shell before the page component resolves.
    */
-  test("loading boundary is visible before content resolves", async ({
-    page,
-  }) => {
+  test("loading boundary is visible before content resolves", async ({ page }) => {
     // Ref: opennextjs-cloudflare ssr.test.ts "Server Side Render and loading.tsx"
 
     // Navigate to slow page — loading.tsx should show first due to 2s server delay

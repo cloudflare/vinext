@@ -10,10 +10,7 @@ export function ThrowingComponent() {
   }
 
   return (
-    <button
-      data-testid="trigger-error"
-      onClick={() => setShouldThrow(true)}
-    >
+    <button data-testid="trigger-error" onClick={() => setShouldThrow(true)}>
       Trigger Error
     </button>
   );

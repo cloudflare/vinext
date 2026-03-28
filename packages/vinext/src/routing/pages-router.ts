@@ -1,9 +1,18 @@
-import { glob } from "node:fs/promises";
 import path from "node:path";
+import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
+import {
+  createValidFileMatcher,
+  scanWithExtensions,
+  type ValidFileMatcher,
+} from "./file-matcher.js";
+import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
+import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
 export interface Route {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
   pattern: string;
+  /** Pre-split pattern segments (computed once at scan time, reused per request) */
+  patternParts: string[];
   /** Absolute file path to the page component */
   filePath: string;
   /** Whether this is a dynamic route */
@@ -20,8 +29,11 @@ const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> 
  * Called by the file watcher when pages are added/removed.
  */
 export function invalidateRouteCache(pagesDir: string): void {
-  routeCache.delete(`pages:${pagesDir}`);
-  routeCache.delete(`api:${pagesDir}`);
+  for (const key of routeCache.keys()) {
+    if (key.startsWith(`pages:${pagesDir}:`) || key.startsWith(`api:${pagesDir}:`)) {
+      routeCache.delete(key);
+    }
+  }
 }
 
 /**
@@ -36,31 +48,41 @@ export function invalidateRouteCache(pagesDir: string): void {
  * - Ignores _app.tsx, _document.tsx, _error.tsx, files starting with _
  * - Ignores pages/api/ (handled separately later)
  */
-export async function pagesRouter(pagesDir: string): Promise<Route[]> {
-  const cacheKey = `pages:${pagesDir}`;
+export async function pagesRouter(
+  pagesDir: string,
+  pageExtensions?: readonly string[],
+  matcher?: ValidFileMatcher,
+): Promise<Route[]> {
+  matcher ??= createValidFileMatcher(pageExtensions);
+  const cacheKey = `pages:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
   const cached = routeCache.get(cacheKey);
   if (cached) return cached.promise;
 
-  const promise = scanPageRoutes(pagesDir);
+  const promise = scanPageRoutes(pagesDir, matcher);
   routeCache.set(cacheKey, { routes: [], promise });
   const routes = await promise;
   routeCache.set(cacheKey, { routes, promise });
   return routes;
 }
 
-async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
+async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const routes: Route[] = [];
 
-  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: ["api", "**/_*"] })) {
-    const route = fileToRoute(file, pagesDir);
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  for await (const file of scanWithExtensions(
+    "**/*",
+    pagesDir,
+    matcher.extensions,
+    (name: string) => name === "api" || name.startsWith("_"),
+  )) {
+    const route = fileToRoute(file, pagesDir, matcher);
     if (route) routes.push(route);
   }
 
+  validateRoutePatterns(routes.map((route) => route.pattern));
+
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort((a, b) => {
-    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
-  });
+  routes.sort(compareRoutes);
 
   return routes;
 }
@@ -68,9 +90,10 @@ async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
 /**
  * Convert a file path relative to pages/ into a Route.
  */
-function fileToRoute(file: string, pagesDir: string): Route | null {
+function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher): Route | null {
   // Remove extension
-  const withoutExt = file.replace(/\.(tsx?|jsx?)$/, "");
+  const withoutExt = matcher.stripExtension(file);
+  if (withoutExt === file) return null;
 
   // Convert to URL segments
   const segments = withoutExt.split(path.sep);
@@ -84,69 +107,65 @@ function fileToRoute(file: string, pagesDir: string): Route | null {
   const params: string[] = [];
   let isDynamic = false;
 
-  // Convert Next.js dynamic segments to URL patterns
-  const urlSegments = segments.map((segment) => {
-    // Catch-all: [...slug] -> :slug+
-    const catchAllMatch = segment.match(/^\[\.\.\.(\w+)\]$/);
+  // Convert Next.js dynamic segments to URL patterns.
+  // Catch-all segments are only valid in terminal position.
+  const urlSegments: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+
+    // Catch-all: [...slug] -> :slug+ (param names may contain hyphens)
+    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
     if (catchAllMatch) {
+      if (i !== segments.length - 1) return null;
       isDynamic = true;
       params.push(catchAllMatch[1]);
-      return `:${catchAllMatch[1]}+`;
+      urlSegments.push(`:${catchAllMatch[1]}+`);
+      continue;
     }
 
-    // Optional catch-all: [[...slug]] -> :slug*
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.(\w+)\]\]$/);
+    // Optional catch-all: [[...slug]] -> :slug* (param names may contain hyphens)
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
     if (optionalCatchAllMatch) {
+      if (i !== segments.length - 1) return null;
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
-      return `:${optionalCatchAllMatch[1]}*`;
+      urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
+      continue;
     }
 
-    // Dynamic segment: [id] -> :id
-    const dynamicMatch = segment.match(/^\[(\w+)\]$/);
+    // Dynamic segment: [id] -> :id (param names may contain hyphens)
+    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
     if (dynamicMatch) {
       isDynamic = true;
       params.push(dynamicMatch[1]);
-      return `:${dynamicMatch[1]}`;
+      urlSegments.push(`:${dynamicMatch[1]}`);
+      continue;
     }
 
-    return segment;
-  });
+    urlSegments.push(decodeRouteSegment(segment));
+  }
 
   const pattern = "/" + urlSegments.join("/");
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
+    patternParts: urlSegments.filter(Boolean),
     filePath: path.join(pagesDir, file),
     isDynamic,
     params,
   };
 }
 
-/**
- * Route precedence — lower score is higher priority.
- * Matches Next.js specificity rules:
- * 1. Static routes first (scored by segment count, more = more specific)
- * 2. Dynamic segments penalized by position
- * 3. Catch-all comes after dynamic
- * 4. Optional catch-all last
- * 5. Lexicographic tiebreaker for determinism
- */
-function routePrecedence(pattern: string): number {
-  const parts = pattern.split("/").filter(Boolean);
-  let score = 0;
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p.endsWith("+")) {
-      score += 10000 + i; // catch-all: high penalty
-    } else if (p.endsWith("*")) {
-      score += 20000 + i; // optional catch-all: highest penalty
-    } else if (p.startsWith(":")) {
-      score += 100 + i; // dynamic: moderate penalty by position
-    }
-    // static segments contribute nothing (better specificity)
+// Trie cache — keyed by route array identity (same array = same trie)
+const trieCache = new WeakMap<Route[], TrieNode<Route>>();
+
+function getOrBuildTrie(routes: Route[]): TrieNode<Route> {
+  let trie = trieCache.get(routes);
+  if (!trie) {
+    trie = buildRouteTrie(routes);
+    trieCache.set(routes, trie);
   }
-  return score;
+  return trie;
 }
 
 /**
@@ -159,18 +178,13 @@ export function matchRoute(
 ): { route: Route; params: Record<string, string | string[]> } | null {
   // Normalize: strip query string and trailing slash
   const pathname = url.split("?")[0];
-  let normalizedUrl =
-    pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch { /* malformed percent-encoding — match as-is */ }
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
 
-  for (const route of routes) {
-    const params = matchPattern(normalizedUrl, route.pattern);
-    if (params !== null) {
-      return { route, params };
-    }
-  }
-
-  return null;
+  // Split URL once, look up via trie
+  const urlParts = normalizedUrl.split("/").filter(Boolean);
+  const trie = getOrBuildTrie(routes);
+  return trieMatch(trie, urlParts);
 }
 
 /**
@@ -181,24 +195,34 @@ export function matchRoute(
  * - pages/api/hello.ts -> /api/hello
  * - pages/api/users/[id].ts -> /api/users/:id
  */
-export async function apiRouter(pagesDir: string): Promise<Route[]> {
-  const cacheKey = `api:${pagesDir}`;
+export async function apiRouter(
+  pagesDir: string,
+  pageExtensions?: readonly string[],
+  matcher?: ValidFileMatcher,
+): Promise<Route[]> {
+  matcher ??= createValidFileMatcher(pageExtensions);
+  const cacheKey = `api:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
   const cached = routeCache.get(cacheKey);
   if (cached) return cached.promise;
 
-  const promise = scanApiRoutes(pagesDir);
+  const promise = scanApiRoutes(pagesDir, matcher);
   routeCache.set(cacheKey, { routes: [], promise });
   const routes = await promise;
   routeCache.set(cacheKey, { routes, promise });
   return routes;
 }
 
-async function scanApiRoutes(pagesDir: string): Promise<Route[]> {
+async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const apiDir = path.join(pagesDir, "api");
   let files: string[];
   try {
     files = [];
-    for await (const file of glob("**/*.{ts,tsx,js,jsx}", { cwd: apiDir })) {
+    for await (const file of scanWithExtensions(
+      "**/*",
+      apiDir,
+      matcher.extensions,
+      (name: string) => name.startsWith("_"),
+    )) {
       files.push(file);
     }
   } catch {
@@ -209,66 +233,18 @@ async function scanApiRoutes(pagesDir: string): Promise<Route[]> {
 
   for (const file of files) {
     // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix
-    const route = fileToRoute(path.join("api", file), pagesDir);
+    const route = fileToRoute(path.join("api", file), pagesDir, matcher);
     if (route) {
       routes.push(route);
     }
   }
 
+  validateRoutePatterns(routes.map((route) => route.pattern));
+
   // Sort same as page routes
-  routes.sort((a, b) => {
-    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
-  });
+  routes.sort(compareRoutes);
 
   return routes;
-}
-
-function matchPattern(
-  url: string,
-  pattern: string,
-): Record<string, string | string[]> | null {
-  const urlParts = url.split("/").filter(Boolean);
-  const patternParts = pattern.split("/").filter(Boolean);
-
-  const params: Record<string, string | string[]> = Object.create(null);
-
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-
-    // Catch-all: :slug+
-    if (pp.endsWith("+")) {
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-
-    // Optional catch-all: :slug*
-    if (pp.endsWith("*")) {
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      params[paramName] = remaining;
-      return params;
-    }
-
-    // Dynamic segment: :id
-    if (pp.startsWith(":")) {
-      const paramName = pp.slice(1);
-      if (i >= urlParts.length) return null;
-      params[paramName] = urlParts[i];
-      continue;
-    }
-
-    // Static segment
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-
-  // All pattern parts matched - check url doesn't have extra segments
-  if (urlParts.length !== patternParts.length) return null;
-
-  return params;
 }
 
 /**
@@ -276,9 +252,4 @@ function matchPattern(
  * to Next.js bracket format (e.g., "/posts/[id]", "/docs/[...slug]").
  * Used for __NEXT_DATA__.page which apps expect in Next.js format.
  */
-export function patternToNextFormat(pattern: string): string {
-  return pattern
-    .replace(/:(\w+)\*/g, "[[...$1]]")   // optional catch-all :slug* -> [[...slug]]
-    .replace(/:(\w+)\+/g, "[...$1]")     // catch-all :slug+ -> [...slug]
-    .replace(/:(\w+)/g, "[$1]");          // dynamic :id -> [id]
-}
+export { patternToNextFormat } from "./route-validation.js";

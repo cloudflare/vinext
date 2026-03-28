@@ -16,37 +16,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # Need full history for commit info
 
-      - uses: pnpm/action-setup@v4
+      - uses: voidzero-dev/setup-vp@v1
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+      - name: Build vinext plugin
+        run: vp run build
 
       - name: Install hyperfine
         run: |
           wget https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb
+          echo "5ffe6996aefbbf547f383116eea53569263cc7cf6598ee53f0081e37b702055d  hyperfine_1.19.0_amd64.deb" | sha256sum -c
           sudo dpkg -i hyperfine_1.19.0_amd64.deb
-
-      # Install monorepo deps (builds vinext plugin via pnpm run build)
-      - run: pnpm install
-      - name: Build vinext plugin
-        run: pnpm run build
 
       # Generate the shared benchmark app (copies app/ into each project dir)
       - name: Generate benchmark app
         run: node benchmarks/generate-app.mjs
 
-      # Install benchmark-specific deps (outside pnpm workspace)
-      - name: Install benchmark dependencies
-        run: |
-          cd benchmarks/nextjs && npm install
-          cd ../vinext && npm install
-          cd ../vinext-rolldown && npm install
+      - name: Install Next.js benchmark dependencies
+        working-directory: benchmarks/nextjs
+        run: npm install
 
       # Run the benchmarks
       - name: Run benchmarks
@@ -62,7 +53,7 @@ jobs:
 
       # Upload results as artifact (backup)
       - name: Upload results artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-${{ github.sha }}
           path: benchmarks/results/bench-*.json

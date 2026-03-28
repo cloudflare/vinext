@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import mdx from "@mdx-js/rollup";
 import { cloudflare } from "@cloudflare/vite-plugin";

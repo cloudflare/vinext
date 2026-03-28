@@ -1,6 +1,6 @@
 ---
 name: migrate-to-vinext
-description: Migrates Next.js projects to vinext (Vite-based Next.js reimplementation for Cloudflare Workers). Load when asked to migrate, convert, or switch from Next.js to vinext. Handles compatibility scanning, package replacement, Vite config generation, ESM conversion, and Cloudflare deployment setup.
+description: Migrates Next.js projects to vinext (Vite-based Next.js reimplementation). Load when asked to migrate, convert, or switch from Next.js to vinext. Handles compatibility scanning, package replacement, Vite config generation, ESM conversion, and deployment setup (Cloudflare Workers natively, other platforms via Nitro).
 ---
 
 # Migrate Next.js to vinext
@@ -13,25 +13,25 @@ Confirm `next` is in `dependencies` or `devDependencies` in `package.json`. If n
 
 Detect the package manager from the lockfile:
 
-| Lockfile | Manager | Install | Uninstall |
-|----------|---------|---------|-----------|
-| `pnpm-lock.yaml` | pnpm | `pnpm add` | `pnpm remove` |
-| `yarn.lock` | yarn | `yarn add` | `yarn remove` |
-| `bun.lockb` / `bun.lock` | bun | `bun add` | `bun remove` |
-| `package-lock.json` or none | npm | `npm install` | `npm uninstall` |
+| Lockfile                    | Manager | Install       | Uninstall       |
+| --------------------------- | ------- | ------------- | --------------- |
+| `pnpm-lock.yaml`            | pnpm    | `pnpm add`    | `pnpm remove`   |
+| `yarn.lock`                 | yarn    | `yarn add`    | `yarn remove`   |
+| `bun.lockb` / `bun.lock`    | bun     | `bun add`     | `bun remove`    |
+| `package-lock.json` or none | npm     | `npm install` | `npm uninstall` |
 
 Detect the router: if an `app/` directory exists at root or under `src/`, it's App Router. If only `pages/` exists, it's Pages Router. Both can coexist.
 
 ## Quick Reference
 
-| Command | Purpose |
-|---------|---------|
-| `vinext check` | Scan project for compatibility issues, produce scored report |
-| `vinext init` | Automated migration — installs deps, generates config, converts to ESM |
-| `vinext dev` | Development server with HMR |
-| `vinext build` | Production build (multi-environment for App Router) |
-| `vinext start` | Local production server |
-| `vinext deploy` | Build and deploy to Cloudflare Workers |
+| Command         | Purpose                                                                |
+| --------------- | ---------------------------------------------------------------------- |
+| `vinext check`  | Scan project for compatibility issues, produce scored report           |
+| `vinext init`   | Automated migration — installs deps, generates config, converts to ESM |
+| `vinext dev`    | Development server with HMR                                            |
+| `vinext build`  | Production build (multi-environment for App Router)                    |
+| `vinext start`  | Local production server                                                |
+| `vinext deploy` | Build and deploy to Cloudflare Workers                                 |
 
 ## Phase 1: Check Compatibility
 
@@ -73,12 +73,12 @@ npm install -D @vitejs/plugin-rsc
 
 Replace all `next` commands in `package.json` scripts:
 
-| Before | After | Notes |
-|--------|-------|-------|
-| `next dev` | `vinext dev` | Dev server with HMR |
-| `next build` | `vinext build` | Production build |
-| `next start` | `vinext start` | Local production server |
-| `next lint` | `vinext lint` | Delegates to eslint/oxlint |
+| Before       | After          | Notes                      |
+| ------------ | -------------- | -------------------------- |
+| `next dev`   | `vinext dev`   | Dev server with HMR        |
+| `next build` | `vinext build` | Production build           |
+| `next start` | `vinext start` | Local production server    |
+| `next lint`  | `vinext lint`  | Delegates to eslint/oxlint |
 
 Preserve flags: `next dev --port 3001` → `vinext dev --port 3001`.
 
@@ -94,7 +94,10 @@ Add `"type": "module"` to package.json. Rename any CJS config files:
 
 See [references/config-examples.md](references/config-examples.md) for config variants per router and deployment target.
 
+If the project already has custom Vite config, prefer Vite 8-native keys when editing it: `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions`. Older `esbuild` and `build.rollupOptions` settings still work for now but are migration targets.
+
 **Pages Router (minimal):**
+
 ```ts
 import vinext from "vinext";
 import { defineConfig } from "vite";
@@ -102,6 +105,7 @@ export default defineConfig({ plugins: [vinext()] });
 ```
 
 **App Router (minimal):**
+
 ```ts
 import vinext from "vinext";
 import { defineConfig } from "vite";
@@ -110,11 +114,64 @@ export default defineConfig({ plugins: [vinext()] });
 
 vinext auto-registers `@vitejs/plugin-rsc` for App Router when the `rsc` option is not explicitly `false`. No manual RSC plugin config needed for local development.
 
-## Phase 4: Cloudflare Deployment (Optional)
+## Phase 4: Deployment (Optional)
 
-If the user wants to deploy to Cloudflare Workers, the simplest path is `vinext deploy` — it auto-generates `wrangler.jsonc`, worker entry, and Vite config if missing, installs `@cloudflare/vite-plugin` and `wrangler`, then builds and deploys.
+### Option A: Cloudflare Workers (recommended for Cloudflare)
+
+If the user wants to deploy to Cloudflare Workers, use `vinext deploy`. It auto-generates `wrangler.jsonc`, worker entry, and Vite config if missing, installs `@cloudflare/vite-plugin` and `wrangler`, then builds and deploys.
 
 For manual setup or custom worker entries, see [references/config-examples.md](references/config-examples.md).
+
+#### Cloudflare Bindings (D1, R2, KV, AI, etc.)
+
+To access Cloudflare bindings (D1, R2, KV, AI, Queues, Durable Objects, etc.), use `import { env } from "cloudflare:workers"` in any server component, route handler, or server action:
+
+```tsx
+import { env } from "cloudflare:workers";
+
+export default async function Page() {
+  const result = await env.DB.prepare("SELECT * FROM posts").all();
+  return <div>{JSON.stringify(result)}</div>;
+}
+```
+
+This works because `@cloudflare/vite-plugin` runs server environments in workerd, where `cloudflare:workers` is a native module. No custom worker entry, no `getPlatformProxy()`, no special configuration needed. Just import and use.
+
+Bindings must be defined in `wrangler.jsonc`. For TypeScript types, run `wrangler types`.
+
+**IMPORTANT:** Do not use `getPlatformProxy()`, `getRequestContext()`, or custom worker entries with `fetch(request, env)` to access bindings. These are older patterns. `cloudflare:workers` is the recommended approach and works out of the box with vinext.
+
+### Option B: Other platforms (via Nitro)
+
+For deploying to Vercel, Netlify, AWS, Deno Deploy, or any other [Nitro-supported platform](https://v3.nitro.build/deploy), add the Nitro Vite plugin:
+
+```bash
+npm install nitro
+```
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { nitro } from "nitro/vite";
+
+export default defineConfig({
+  plugins: [vinext(), nitro()],
+});
+```
+
+Build and deploy:
+
+```bash
+NITRO_PRESET=vercel npx vite build    # Vercel
+NITRO_PRESET=netlify npx vite build   # Netlify
+NITRO_PRESET=deno_deploy npx vite build  # Deno Deploy
+NITRO_PRESET=node npx vite build      # Node.js server
+```
+
+Nitro auto-detects the platform in most CI/CD environments, so the preset is often unnecessary.
+
+**Note:** For Cloudflare Workers, Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best developer experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
 
 ## Phase 5: Verify
 
@@ -127,15 +184,15 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 
 ## Known Limitations
 
-| Feature | Status |
-|---------|--------|
-| `next/image` optimization | Remote images via @unpic; no build-time optimization |
-| `next/font/google` | CDN-loaded, not self-hosted |
-| Domain-based i18n | Not supported; path-prefix i18n works |
-| `next/jest` | Not supported; use Vitest |
-| Turbopack/webpack config | Ignored; use Vite plugins instead |
-| `runtime` / `preferredRegion` | Route segment configs ignored |
-| PPR (Partial Prerendering) | Use `"use cache"` directive instead (Next.js 16 approach) |
+| Feature                       | Status                                                    |
+| ----------------------------- | --------------------------------------------------------- |
+| `next/image` optimization     | Remote images via @unpic; no build-time optimization      |
+| `next/font/google`            | CDN-loaded, not self-hosted                               |
+| Domain-based i18n             | Not supported; path-prefix i18n works                     |
+| `next/jest`                   | Not supported; use Vitest                                 |
+| Turbopack/webpack config      | Ignored; use Vite plugins instead                         |
+| `runtime` / `preferredRegion` | Route segment configs ignored                             |
+| PPR (Partial Prerendering)    | Use `"use cache"` directive instead (Next.js 16 approach) |
 
 ## Anti-patterns
 
@@ -144,3 +201,5 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 - **Do not copy webpack/Turbopack config** into Vite config. Use Vite-native plugins instead.
 - **Do not skip the compatibility check.** Run `vinext check` before migration to surface issues early.
 - **Do not remove `next.config.js`** unless replacing it with `next.config.ts` or `.mjs`. vinext reads it for redirects, rewrites, headers, basePath, i18n, images, and env config.
+- **Do not use `getPlatformProxy()` or custom worker entries for bindings.** Use `import { env } from "cloudflare:workers"` instead. This is the modern pattern and works out of the box with vinext and `@cloudflare/vite-plugin`.
+- **For Cloudflare Workers, prefer the native integration over Nitro.** `vinext deploy` / `@cloudflare/vite-plugin` provides the best experience with `cloudflare:workers` bindings, KV caching, and image optimization. Nitro works for Cloudflare but the native setup is recommended.

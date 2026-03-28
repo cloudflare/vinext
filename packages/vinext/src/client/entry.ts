@@ -10,28 +10,19 @@
  */
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import "./instrumentation-client.js";
 // Eagerly import the router shim so its module-level popstate listener is
 // registered.  Without this, browser back/forward buttons do nothing because
 // navigateClient() is never invoked on history changes.
 import "next/router";
+import { isValidModulePath } from "./validate-module-path.js";
+import type { VinextNextData } from "./vinext-next-data.js";
 
 // Read the SSR data injected by the server
-const nextData = (window as any).__NEXT_DATA__;
-const { pageProps } = nextData?.props ?? { pageProps: {} };
+const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+const pageProps = (nextData?.props.pageProps ?? {}) as Record<string, unknown>;
 const pageModulePath = nextData?.__pageModule;
 const appModulePath = nextData?.__appModule;
-
-/** Defense-in-depth: validate module paths from __NEXT_DATA__. */
-function isValidModulePath(p: unknown): p is string {
-  if (typeof p !== "string" || p.length === 0) return false;
-  // Must start with / or ./ (relative Vite module paths)
-  if (!p.startsWith("/") && !p.startsWith("./")) return false;
-  // Must not contain protocol (prevents importing from external URLs)
-  if (p.includes("://")) return false;
-  // Must not traverse directories
-  if (p.includes("..")) return false;
-  return true;
-}
 
 async function hydrate() {
   if (!isValidModulePath(pageModulePath)) {
@@ -84,7 +75,8 @@ async function hydrate() {
   // Expose root on window so the router shim (a separate module) can
   // re-render the tree during client-side navigation. import.meta.hot.data
   // is module-scoped and cannot be read across module boundaries.
-  (window as any).__VINEXT_ROOT__ = root;
+  window.__VINEXT_ROOT__ = root;
+  window.__VINEXT_HYDRATED_AT = performance.now();
 }
 
-hydrate();
+void hydrate();

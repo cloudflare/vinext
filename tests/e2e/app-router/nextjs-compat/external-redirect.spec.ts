@@ -12,9 +12,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -25,7 +23,7 @@ test.describe("Next.js compat: external-redirect (browser)", () => {
     let externalRedirectUrl = "";
     await page.route("https://example.com/**", (route) => {
       externalRedirectUrl = route.request().url();
-      route.fulfill({
+      return route.fulfill({
         status: 200,
         contentType: "text/html",
         body: "<html><body>External page</body></html>",

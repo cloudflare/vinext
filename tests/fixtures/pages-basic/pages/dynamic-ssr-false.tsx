@@ -1,17 +1,13 @@
 import dynamic from "next/dynamic";
 
-const ClientOnly = dynamic(
-  () => import("../components/client-only-component"),
-  {
-    ssr: false,
-    loading: () => <p data-testid="loading">Loading client component...</p>,
-  },
-);
+const ClientOnly = dynamic(() => import("../components/client-only-component"), {
+  ssr: false,
+  loading: () => <p data-testid="loading">Loading client component...</p>,
+});
 
-const ClientOnlyNoLoading = dynamic(
-  () => import("../components/client-only-component"),
-  { ssr: false },
-);
+const ClientOnlyNoLoading = dynamic(() => import("../components/client-only-component"), {
+  ssr: false,
+});
 
 export default function DynamicSsrFalsePage() {
   return (

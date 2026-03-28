@@ -7,10 +7,32 @@
  * On click, prevents full page reload and triggers client-side
  * page swap via the router's navigation system.
  */
-import React, { forwardRef, useRef, useEffect, useCallback, useContext, createContext, useState, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import React, {
+  forwardRef,
+  useRef,
+  useEffect,
+  useCallback,
+  useContext,
+  createContext,
+  useState,
+  type AnchorHTMLAttributes,
+  type MouseEvent,
+} from "react";
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import { isDangerousScheme } from "./url-safety.js";
+import {
+  resolveRelativeHref,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+  withBasePath,
+} from "./url-utils.js";
+import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "../utils/query.js";
+import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
+import { getI18nContext } from "./i18n-context.js";
+import type { VinextNextData } from "../client/vinext-next-data.js";
 
 interface NavigateEvent {
   url: URL;
@@ -21,7 +43,7 @@ interface NavigateEvent {
 }
 
 interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
-  href: string | { pathname?: string; query?: Record<string, string> };
+  href: string | { pathname?: string; query?: UrlQuery };
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
   as?: string;
   /** Replace the current history entry instead of pushing */
@@ -65,18 +87,10 @@ function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
   let url = href.pathname ?? "/";
   if (href.query) {
-    const params = new URLSearchParams(href.query);
-    url += `?${params.toString()}`;
+    const params = urlQueryToSearchParams(href.query);
+    url = appendSearchParamsToUrl(url, params);
   }
   return url;
-}
-
-/** Prepend basePath to an internal path for browser URLs / fetches */
-function withBasePath(path: string): string {
-  if (!__basePath || path.startsWith("http://") || path.startsWith("https://") || path.startsWith("//")) {
-    return path;
-  }
-  return __basePath + path;
 }
 
 /**
@@ -91,25 +105,6 @@ function isHashOnlyChange(href: string): boolean {
     return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
   } catch {
     return false;
-  }
-}
-
-/**
- * Resolve a potentially relative href against the current URL.
- * Handles: "#hash", "?query", "?query#hash", relative paths.
- */
-function resolveRelativeHref(href: string): string {
-  if (typeof window === "undefined") return href;
-  // Already absolute
-  if (href.startsWith("/") || href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
-    return href;
-  }
-  // Relative: resolve against current location
-  try {
-    const resolved = new URL(href, window.location.href);
-    return resolved.pathname + resolved.search + resolved.hash;
-  } catch {
-    return href;
   }
 }
 
@@ -145,10 +140,15 @@ function scrollToHash(hash: string): void {
 function prefetchUrl(href: string): void {
   if (typeof window === "undefined") return;
 
-  const fullHref = withBasePath(href);
+  // Normalize same-origin absolute URLs to local paths before prefetching
+  let prefetchHref = href;
+  if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+    const localPath = toSameOriginAppPath(href, __basePath);
+    if (localPath == null) return; // truly external — don't prefetch
+    prefetchHref = localPath;
+  }
 
-  // Don't prefetch external URLs
-  if (fullHref.startsWith("http://") || fullHref.startsWith("https://") || fullHref.startsWith("//")) return;
+  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
 
   // Don't prefetch the same URL twice (keyed by rscUrl so the browser
   // entry can clear the key when a cache entry is consumed)
@@ -160,26 +160,28 @@ function prefetchUrl(href: string): void {
   const schedule = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: prefetch the RSC payload and store in cache
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
+        credentials: "include",
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
-      }).then((response) => {
-        if (response.ok) {
-          storePrefetchResponse(rscUrl, response);
-        } else {
-          // Non-ok response: allow retry on next viewport intersection
+      })
+        .then((response) => {
+          if (response.ok) {
+            storePrefetchResponse(rscUrl, response);
+          } else {
+            // Non-ok response: allow retry on next viewport intersection
+            prefetched.delete(rscUrl);
+          }
+        })
+        .catch(() => {
+          // Network error: allow retry on next viewport intersection
           prefetched.delete(rscUrl);
-        }
-      }).catch(() => {
-        // Network error: allow retry on next viewport intersection
-        prefetched.delete(rscUrl);
-      });
-    } else if (win.__NEXT_DATA__?.__vinext?.pageModuleUrl) {
+        });
+    } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module
       // We can't easily resolve the target page's module URL from the Link,
       // so we create a <link rel="prefetch"> for the HTML page which helps
@@ -230,9 +232,31 @@ function getSharedObserver(): IntersectionObserver | null {
 
 function getDefaultLocale(): string | undefined {
   if (typeof window !== "undefined") {
-    return (window as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+    return window.__VINEXT_DEFAULT_LOCALE__;
   }
-  return (globalThis as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+  return getI18nContext()?.defaultLocale;
+}
+
+function getDomainLocales(): readonly DomainLocale[] | undefined {
+  if (typeof window !== "undefined") {
+    return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
+  }
+  return getI18nContext()?.domainLocales;
+}
+
+function getCurrentHostname(): string | undefined {
+  if (typeof window !== "undefined") return window.location.hostname;
+  return getI18nContext()?.hostname;
+}
+
+function getDomainLocaleHref(href: string, locale: string): string | undefined {
+  // Only cross-domain locale switches need a special absolute URL here.
+  // Same-domain cases fall back to the standard locale-prefix logic below.
+  return getDomainLocaleUrl(href, locale, {
+    basePath: __basePath,
+    currentHostname: getCurrentHostname(),
+    domainItems: getDomainLocales(),
+  });
 }
 
 /**
@@ -252,23 +276,32 @@ function applyLocaleToHref(href: string, locale: string | false | undefined): st
     return href;
   }
 
-  // locale is a string: prepend the locale prefix if not already present
-  const defaultLocale = getDefaultLocale();
-  // For the default locale, Next.js doesn't add a prefix
-  if (locale === defaultLocale) {
+  // Absolute and protocol-relative URLs must not be prefixed — locale
+  // only applies to local paths.
+  if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
     return href;
   }
 
-  // Check if href already starts with the locale
-  if (href.startsWith(`/${locale}/`) || href === `/${locale}`) {
-    return href;
+  const domainLocaleHref = getDomainLocaleHref(href, locale);
+  if (domainLocaleHref) {
+    return domainLocaleHref;
   }
 
-  return `/${locale}${href.startsWith("/") ? href : `/${href}`}`;
+  return addLocalePrefix(href, locale, getDefaultLocale() ?? "");
 }
 
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
-  { href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, onNavigate, ...rest },
+  {
+    href,
+    as,
+    replace = false,
+    prefetch: prefetchProp,
+    scroll = true,
+    children,
+    onClick,
+    onNavigate,
+    ...rest
+  },
   forwardedRef,
 ) {
   // Extract locale from rest props
@@ -277,29 +310,36 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
-  // Apply locale prefix if specified
-  const localizedHref = applyLocaleToHref(resolvedHref, locale);
+
+  const isDangerous = typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
+
+  // Apply locale prefix if specified (safe even for dangerous hrefs since we
+  // won't use the result when isDangerous is true)
+  const localizedHref = applyLocaleToHref(isDangerous ? "/" : resolvedHref, locale);
   // Full href with basePath for browser URLs and fetches
-  const fullHref = withBasePath(localizedHref);
+  const fullHref = withBasePath(localizedHref, __basePath);
 
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const shouldPrefetch = prefetchProp !== false;
+  const shouldPrefetch = prefetchProp !== false && !isDangerous;
 
   const setRefs = useCallback(
     (node: HTMLAnchorElement | null) => {
       internalRef.current = node;
       if (typeof forwardedRef === "function") forwardedRef(node);
-      else if (forwardedRef) (forwardedRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+      else if (forwardedRef)
+        (forwardedRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
     },
     [forwardedRef],
   );
@@ -309,13 +349,22 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const node = internalRef.current;
     if (!node) return;
 
-    // Don't prefetch external URLs
-    if (localizedHref.startsWith("http://") || localizedHref.startsWith("https://") || localizedHref.startsWith("//")) return;
+    // Normalize same-origin absolute URLs; skip truly external ones
+    let hrefToPrefetch = localizedHref;
+    if (
+      localizedHref.startsWith("http://") ||
+      localizedHref.startsWith("https://") ||
+      localizedHref.startsWith("//")
+    ) {
+      const localPath = toSameOriginAppPath(localizedHref, __basePath);
+      if (localPath == null) return; // truly external
+      hrefToPrefetch = localPath;
+    }
 
     const observer = getSharedObserver();
     if (!observer) return;
 
-    observerCallbacks.set(node, () => prefetchUrl(localizedHref));
+    observerCallbacks.set(node, () => prefetchUrl(hrefToPrefetch));
     observer.observe(node);
 
     return () => {
@@ -329,13 +378,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (e.defaultPrevented) return;
 
     // Only intercept left clicks without modifiers (standard link behavior)
-    if (
-      e.button !== 0 ||
-      e.metaKey ||
-      e.ctrlKey ||
-      e.shiftKey ||
-      e.altKey
-    ) {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
       return;
     }
 
@@ -344,26 +387,44 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       return;
     }
 
-    // External links: let the browser handle it
+    // External links: let the browser handle it.
+    // Same-origin absolute URLs (e.g. http://localhost:3000/about) are
+    // normalized to local paths so they get client-side navigation.
+    let navigateHref = localizedHref;
     if (
       resolvedHref.startsWith("http://") ||
       resolvedHref.startsWith("https://") ||
       resolvedHref.startsWith("//")
     ) {
-      return;
+      const localPath = toSameOriginAppPath(resolvedHref, __basePath);
+      if (localPath == null) return; // truly external
+      navigateHref = localPath;
     }
 
     e.preventDefault();
 
+    // Resolve relative hrefs (#hash, ?query) against the current URL once so
+    // onNavigate and the actual navigation target stay in sync.
+    const absoluteHref = resolveRelativeHref(navigateHref, window.location.href, __basePath);
+    const absoluteFullHref = toBrowserNavigationHref(
+      navigateHref,
+      window.location.href,
+      __basePath,
+    );
+
     // Call onNavigate callback if provided (Next.js 16 View Transitions support)
     if (onNavigate) {
       try {
-        const navUrl = new URL(resolvedHref, window.location.origin);
+        const navUrl = new URL(absoluteFullHref, window.location.origin);
         let prevented = false;
         const navEvent: NavigateEvent = {
           url: navUrl,
-          preventDefault() { prevented = true; },
-          get defaultPrevented() { return prevented; },
+          preventDefault() {
+            prevented = true;
+          },
+          get defaultPrevented() {
+            return prevented;
+          },
         };
         onNavigate(navEvent);
         // If the callback called preventDefault(), skip Link's default navigation.
@@ -385,13 +446,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       );
     }
 
-    // Resolve relative hrefs (#hash, ?query) against current URL
-    const absoluteHref = resolveRelativeHref(resolvedHref);
-    const absoluteFullHref = withBasePath(absoluteHref);
-
     // Hash-only change: update URL and scroll to target, skip RSC fetch
     if (typeof window !== "undefined" && isHashOnlyChange(absoluteFullHref)) {
-      const hash = absoluteFullHref.includes("#") ? absoluteFullHref.slice(absoluteFullHref.indexOf("#")) : "";
+      const hash = absoluteFullHref.includes("#")
+        ? absoluteFullHref.slice(absoluteFullHref.indexOf("#"))
+        : "";
       if (replace) {
         window.history.replaceState(null, "", absoluteFullHref);
       } else {
@@ -408,11 +467,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const hash = hashIdx !== -1 ? absoluteFullHref.slice(hashIdx) : "";
 
     // Try RSC navigation first (App Router), then Pages Router
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: push/replace history state, then fetch RSC stream.
       // Await the RSC navigate so scroll-to-top happens after the new
       // content is committed to the DOM (prevents flash of old page at top).
+      notifyAppRouterTransitionStart(absoluteFullHref, replace ? "replace" : "push");
       if (replace) {
         window.history.replaceState(null, "", absoluteFullHref);
       } else {
@@ -420,11 +479,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
       setPending(true);
       try {
-        await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+        await window.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
       } finally {
         if (mountedRef.current) setPending(false);
       }
     } else {
+      // Next.js only consumes onRouterTransitionStart in the App Router.
+      // Pages Router still executes instrumentation-client side effects
+      // during startup, but it does not invoke the named export on navigation.
       // Pages Router: use the Router singleton
       try {
         const routerModule = await import("next/router");
@@ -459,6 +521,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
 
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:).
+  // Render an inert <a> without href to prevent XSS while preserving
+  // styling and attributes like className, id, aria-*.
+  // This check is placed after all hooks to satisfy the Rules of Hooks.
+  if (isDangerous) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
+    }
+    return <a {...anchorProps}>{children}</a>;
+  }
 
   return (
     <LinkStatusContext.Provider value={linkStatusValue}>
