@@ -27,9 +27,7 @@ export interface BuildManifestChunk {
  * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
  *   should be excluded from modulepreload hints.
  */
-export function computeLazyChunks(
-  buildManifest: Record<string, BuildManifestChunk>,
-): string[] {
+export function computeLazyChunks(buildManifest: Record<string, BuildManifestChunk>): string[] {
   // Collect all chunk files that are statically reachable from entries
   const eagerFiles = new Set<string>();
   const visited = new Set<string>();

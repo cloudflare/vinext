@@ -105,10 +105,7 @@ function collectServerExternalPackages(serverDir: string): string[] {
   return [...packages];
 }
 
-function resolvePackageJsonPath(
-  packageName: string,
-  resolver: NodeRequire,
-): string | null {
+function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): string | null {
   try {
     return resolver.resolve(`${packageName}/package.json`);
   } catch {
@@ -227,10 +224,14 @@ main().catch((error) => {
 function writeStandalonePackageJson(filePath: string): void {
   fs.writeFileSync(
     filePath,
-    JSON.stringify({
-      private: true,
-      type: "commonjs",
-    }, null, 2) + "\n",
+    JSON.stringify(
+      {
+        private: true,
+        type: "commonjs",
+      },
+      null,
+      2,
+    ) + "\n",
     "utf-8",
   );
 }
@@ -285,11 +286,7 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   const initialPackages = [...new Set([...appRuntimeDeps, ...serverRuntimeDeps])].filter(
     (name) => name !== "vinext",
   );
-  const copiedPackages = copyPackageAndRuntimeDeps(
-    root,
-    standaloneNodeModulesDir,
-    initialPackages,
-  );
+  const copiedPackages = copyPackageAndRuntimeDeps(root, standaloneNodeModulesDir, initialPackages);
 
   // Always embed the exact vinext runtime that produced this build.
   const vinextPackageRoot = resolveVinextPackageRoot(options.vinextPackageRoot);
