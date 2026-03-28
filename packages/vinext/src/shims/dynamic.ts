@@ -124,7 +124,11 @@ function dynamic<P extends object = object>(
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
         : null;
-      return React.createElement(React.Suspense, { fallback }, React.createElement(LazyComponent, props));
+      return React.createElement(
+        React.Suspense,
+        { fallback },
+        React.createElement(LazyComponent, props),
+      );
     };
 
     ClientSSRFalse.displayName = "DynamicClientSSRFalse";
@@ -140,9 +144,10 @@ function dynamic<P extends object = object>(
     if (typeof React.lazy !== "function") {
       const AsyncServerDynamic = async (props: P) => {
         const mod = await loader();
-        const Component = "default" in mod
-          ? (mod as { default: ComponentType<P> }).default
-          : mod as ComponentType<P>;
+        const Component =
+          "default" in mod
+            ? (mod as { default: ComponentType<P> }).default
+            : (mod as ComponentType<P>);
         return React.createElement(Component, props);
       };
       AsyncServerDynamic.displayName = "DynamicAsyncServer";
@@ -186,7 +191,11 @@ function dynamic<P extends object = object>(
     const fallback = LoadingComponent
       ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
       : null;
-    return React.createElement(React.Suspense, { fallback }, React.createElement(LazyComponent, props));
+    return React.createElement(
+      React.Suspense,
+      { fallback },
+      React.createElement(LazyComponent, props),
+    );
   };
 
   ClientDynamic.displayName = "DynamicClient";
