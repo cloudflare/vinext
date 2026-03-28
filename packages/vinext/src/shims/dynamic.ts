@@ -143,6 +143,10 @@ function dynamic<P extends object = object>(
     // natively supports async components.
     if (typeof React.lazy !== "function") {
       const AsyncServerDynamic = async (props: P) => {
+        // Note: LoadingComponent is not used here — in the RSC environment,
+        // async components suspend natively and parent <Suspense> boundaries
+        // provide loading states. Error handling also defers to the nearest
+        // error boundary in the component tree.
         const mod = await loader();
         const Component =
           "default" in mod
@@ -151,6 +155,8 @@ function dynamic<P extends object = object>(
         return React.createElement(Component, props);
       };
       AsyncServerDynamic.displayName = "DynamicAsyncServer";
+      // Cast is safe: async components are natively supported by the RSC renderer,
+      // but TypeScript's ComponentType<P> doesn't account for async return types.
       return AsyncServerDynamic as unknown as ComponentType<P>;
     }
 
