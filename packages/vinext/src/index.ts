@@ -1323,8 +1323,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // If user registered their own MDX plugin, don't interfere — their plugin
     // will handle .mdx transforms later in the pipeline.
     // Note: hasUserMdxPlugin is set during config() which always runs before transform().
-    // When true, we return null (mdxDelegate is null) and the caller silently
-    // returns undefined to let the user's plugin handle the file.
+    // When true and mdxDelegate is still null (no auto-injected delegate), the
+    // caller in transform() silently returns undefined to let the user's plugin handle the file.
     if (mdxDelegate || hasUserMdxPlugin) return mdxDelegate;
     if (!mdxDelegatePromise) {
       mdxDelegatePromise = (async () => {
@@ -4992,7 +4992,7 @@ function scanDirForMdx(dir: string): boolean {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (scanDirForMdx(full)) return true;
-      } else if (entry.isFile() && entry.name.endsWith(".mdx")) {
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".mdx")) {
         return true;
       }
     }

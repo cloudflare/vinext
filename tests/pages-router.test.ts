@@ -1359,6 +1359,13 @@ describe("Plugin config", () => {
     await expect(
       mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
     ).resolves.toBeUndefined();
+    // Additional query variations
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    // Edge case: query value contains .mdx but isn't the extension
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
+    ).resolves.toBeUndefined();
   });
 
   it("vinext:mdx lazily compiles plain .mdx imports that were not pre-detected", async () => {
@@ -1398,26 +1405,6 @@ export const marker = "mdx-evaluated";
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
-  });
-
-  it("skips MDX files with various query parameters", async () => {
-    const plugins = vinext() as any[];
-    const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
-
-    // All query variants should be skipped (return undefined)
-    await expect(
-      mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
-    ).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
-    await expect(
-      mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
-    ).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
-    // Edge case: query value contains .mdx but isn't the extension
-    await expect(
-      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
-    ).resolves.toBeUndefined();
   });
 
   it("vinext:mdx proxy logic — ?raw guard prevents delegate from compiling query imports", () => {
