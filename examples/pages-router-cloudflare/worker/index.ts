@@ -17,7 +17,9 @@ import {
   requestContextFromRequest,
   isExternalUrl,
   proxyExternalRequest,
+  sanitizeDestination,
 } from "vinext/config/config-matchers";
+import { mergeHeaders } from "vinext/server/worker-utils";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
@@ -72,12 +74,28 @@ export default {
         request = new Request(strippedUrl, request);
       }
 
-      // Build request context for has/missing condition matching
+      // Build request context for config matching that runs before middleware.
       const reqCtx = requestContextFromRequest(request);
+
+      // Apply redirects from next.config.js before middleware.
+      if (configRedirects.length) {
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        if (redirect) {
+          const dest = sanitizeDestination(
+            basePath && !isExternalUrl(redirect.destination) && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
+          return new Response(null, {
+            status: redirect.permanent ? 308 : 307,
+            headers: { Location: dest },
+          });
+        }
+      }
 
       // Run middleware
       let resolvedUrl = urlWithQuery;
-      const middlewareHeaders: Record<string, string> = {};
+      const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(request);
@@ -94,9 +112,22 @@ export default {
           }
         }
 
+        // Collect middleware response headers to merge into final response.
+        // Use an array for Set-Cookie to preserve multiple values.
         if (result.responseHeaders) {
           for (const [key, value] of result.responseHeaders) {
-            middlewareHeaders[key] = value;
+            if (key === "set-cookie") {
+              const existing = middlewareHeaders[key];
+              if (Array.isArray(existing)) {
+                existing.push(value);
+              } else if (existing) {
+                middlewareHeaders[key] = [existing as string, value];
+              } else {
+                middlewareHeaders[key] = [value];
+              }
+            } else {
+              middlewareHeaders[key] = value;
+            }
           }
         }
         if (result.rewriteUrl) {
@@ -110,7 +141,7 @@ export default {
       const mwReqHeaders: Record<string, string> = {};
       for (const key of Object.keys(middlewareHeaders)) {
         if (key.startsWith(mwReqPrefix)) {
-          mwReqHeaders[key.slice(mwReqPrefix.length)] = middlewareHeaders[key];
+          mwReqHeaders[key.slice(mwReqPrefix.length)] = middlewareHeaders[key] as string;
           delete middlewareHeaders[key];
         }
       }
@@ -128,33 +159,34 @@ export default {
         });
       }
 
+      const postMwReqCtx = requestContextFromRequest(request);
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // Apply custom headers from next.config.js
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders);
+        const matched = matchHeaders(pathname, configHeaders, reqCtx);
         for (const h of matched) {
-          middlewareHeaders[h.key.toLowerCase()] = h.value;
-        }
-      }
-
-      // Apply redirects from next.config.js
-      if (configRedirects.length) {
-        const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
-        if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
-          return new Response(null, {
-            status: redirect.permanent ? 308 : 307,
-            headers: { Location: dest },
-          });
+          const lk = h.key.toLowerCase();
+          if (lk === "set-cookie") {
+            const existing = middlewareHeaders[lk];
+            if (Array.isArray(existing)) {
+              existing.push(h.value);
+            } else if (existing) {
+              middlewareHeaders[lk] = [existing as string, h.value];
+            } else {
+              middlewareHeaders[lk] = [h.value];
+            }
+          } else if (lk === "vary" && middlewareHeaders[lk]) {
+            middlewareHeaders[lk] += ", " + h.value;
+          } else if (!(lk in middlewareHeaders)) {
+            middlewareHeaders[lk] = h.value;
+          }
         }
       }
 
       // Apply beforeFiles rewrites from next.config.js
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -174,7 +206,7 @@ export default {
 
       // Apply afterFiles rewrites
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -191,7 +223,7 @@ export default {
 
         // Fallback rewrites (if SSR returned 404)
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, reqCtx);
+          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
@@ -212,22 +244,3 @@ export default {
     }
   },
 };
-
-/**
- * Merge middleware/config headers into a response.
- * Response headers take precedence over middleware headers.
- */
-function mergeHeaders(
-  response: Response,
-  extraHeaders: Record<string, string>,
-  statusOverride?: number,
-): Response {
-  if (!Object.keys(extraHeaders).length && !statusOverride) return response;
-  const merged: Record<string, string> = { ...extraHeaders };
-  response.headers.forEach((v, k) => { merged[k] = v; });
-  return new Response(response.body, {
-    status: statusOverride ?? response.status,
-    statusText: response.statusText,
-    headers: merged,
-  });
-}

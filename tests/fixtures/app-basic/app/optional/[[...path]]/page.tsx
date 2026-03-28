@@ -1,8 +1,4 @@
-export default function OptionalCatchAll({
-  params,
-}: {
-  params: { path?: string[] };
-}) {
+export default function OptionalCatchAll({ params }: { params: { path?: string[] } }) {
   const segments = params.path ?? [];
   return (
     <main>

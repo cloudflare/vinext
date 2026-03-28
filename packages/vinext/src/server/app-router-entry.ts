@@ -6,7 +6,7 @@
  *
  * Or import and delegate to it from a custom worker:
  *   import handler from "vinext/server/app-router-entry";
- *   return handler.fetch(request);
+ *   return handler.fetch(request, env, ctx);
  *
  * This file runs in the RSC environment. Configure the Cloudflare plugin with:
  *   cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
@@ -14,14 +14,10 @@
 
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
-
-interface ExecutionContext {
-  waitUntil(promise: Promise<any>): void;
-  passThroughOnException(): void;
-}
+import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
@@ -43,18 +39,27 @@ export default {
       return new Response("Bad Request", { status: 400 });
     }
 
-     // Do NOT decode/normalize the pathname here. The RSC handler
-     // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
-     // decodeURIComponent + normalizePath on the incoming URL. Decoding here
-     // AND in the handler would double-decode, causing inconsistent path
-     // matching between middleware and routing.
+    // Do NOT decode/normalize the pathname here. The RSC handler
+    // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
+    // decodeURIComponent + normalizePath on the incoming URL. Decoding here
+    // AND in the handler would double-decode, causing inconsistent path
+    // matching between middleware and routing.
 
-    // Delegate to RSC handler (which decodes + normalizes the pathname itself)
-    const result = await rscHandler(request);
+    // Delegate to RSC handler (which decodes + normalizes the pathname itself),
+    // wrapping in the ExecutionContext ALS scope so downstream code can reach
+    // ctx.waitUntil() without having ctx threaded through every call site.
+    const handleFn = () => rscHandler(request, ctx);
+    const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     // Extract waitUntil promises BEFORE the instanceof check — the property is
     // non-enumerable on the Response and we need to hand it off to ctx before returning.
-    if (result && typeof result === "object" && "__vinextWaitUntil" in result && Array.isArray(result.__vinextWaitUntil)) {
+    if (
+      ctx &&
+      result &&
+      typeof result === "object" &&
+      "__vinextWaitUntil" in result &&
+      Array.isArray(result.__vinextWaitUntil)
+    ) {
       for (const p of result.__vinextWaitUntil) {
         ctx.waitUntil(p);
       }

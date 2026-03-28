@@ -4,12 +4,12 @@
  * Re-exports ImageResponse from @vercel/og which provides OG image generation
  * using Satori (SVG) + Resvg WASM (PNG).
  *
- * IMPORTANT: @vercel/og eagerly fetches a fallback font at module initialization
- * time using `import.meta.url`. In Cloudflare Workers, `import.meta.url` may not
- * be a valid fetchable URL, which can cause crashes at module load time.
- * 
- * If you encounter "Invalid URL string" errors, ensure your OG route uses
- * dynamic imports: `const { ImageResponse } = await import("next/og")`
+ * The vinext:og-inline-fetch-assets Vite plugin (in packages/vinext/src/index.ts)
+ * patches @vercel/og/dist/index.edge.js at transform time: any
+ * `fetch(new URL("./asset", import.meta.url)).then(res => res.arrayBuffer())`
+ * expression is replaced with an inline base64 IIFE so no runtime fetch is needed.
+ * This is required for Cloudflare Workers where import.meta.url is "worker" (not
+ * a real URL) and new URL(..., import.meta.url) would throw at module load time.
  *
  * Usage:
  *   import { ImageResponse } from "next/og";

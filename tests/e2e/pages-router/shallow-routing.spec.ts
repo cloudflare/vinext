@@ -7,9 +7,7 @@ const BASE = "http://localhost:4173";
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -143,6 +141,60 @@ test.describe("Shallow routing (Pages Router)", () => {
     await page.click('[data-testid="shallow-push"]');
 
     // asPath should update to include query
-    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/shallow-test?tab=settings");
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
+      "/shallow-test?tab=settings",
+    );
+  });
+
+  test("router.query preserves repeated search params and router.asPath preserves hash", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await waitForHydration(page);
+
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/shallow-test?tag=a&tag=b#frag");
+      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+    });
+
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"tag":["a","b"]}');
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
+      "/shallow-test?tag=a&tag=b#frag",
+    );
+  });
+
+  test("router.query preserves catch-all route params as arrays", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await waitForHydration(page);
+
+    await page.evaluate(() => {
+      (window as any).__NEXT_DATA__.page = "/docs/[...slug]";
+      (window as any).__NEXT_DATA__.query = { slug: ["a", "b"] };
+      window.history.pushState({}, "", "/docs/a/b#section");
+      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+    });
+
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"slug":["a","b"]}');
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/docs/a/b#section");
+  });
+
+  test("router.query prefers catch-all route params over same-key search params", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
+    await waitForHydration(page);
+
+    await page.evaluate(() => {
+      (window as any).__NEXT_DATA__.page = "/docs/[...slug]";
+      (window as any).__NEXT_DATA__.query = { slug: ["a", "b"] };
+      window.history.pushState({}, "", "/docs/a/b?slug=c");
+      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+    });
+
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"slug":["a","b"]}');
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/docs/a/b?slug=c");
   });
 });

@@ -65,3 +65,18 @@ export async function counterAction(
   }
   return prevState;
 }
+
+/**
+ * Server action for useActionState that calls redirect() on success.
+ * This tests issue #589 — redirect() should not cause state to become undefined.
+ */
+export async function redirectWithActionState(
+  _prevState: { success: boolean; error?: string },
+  formData: FormData,
+): Promise<{ success: boolean; error?: string }> {
+  const shouldRedirect = formData.get("redirect") === "true";
+  if (shouldRedirect) {
+    redirect("/action-state-test");
+  }
+  return { success: true };
+}

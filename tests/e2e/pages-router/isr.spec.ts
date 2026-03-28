@@ -6,9 +6,7 @@ test.describe("Pages Router ISR", () => {
   // ISR fixture uses getStaticProps with revalidate: 1 (1 second TTL).
   // The full lifecycle: MISS -> HIT -> (wait for TTL) -> STALE -> HIT (regenerated)
 
-  test("first request is a cache MISS with correct headers", async ({
-    request,
-  }) => {
+  test("first request is a cache MISS with correct headers", async ({ request }) => {
     // Use a unique query to avoid interference from other tests' cache state.
     // ISR caches by pathname, so /isr-test always goes through the same cache key.
     const res = await request.get(`${BASE}/isr-test`);
@@ -26,9 +24,7 @@ test.describe("Pages Router ISR", () => {
     expect(["MISS", "HIT", "STALE"]).toContain(cacheHeader);
   });
 
-  test("second request within TTL is a cache HIT with same timestamp", async ({
-    request,
-  }) => {
+  test("second request within TTL is a cache HIT with same timestamp", async ({ request }) => {
     // First request: populate cache
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
@@ -47,9 +43,7 @@ test.describe("Pages Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test("request after TTL expires returns STALE with same cached content", async ({
-    request,
-  }) => {
+  test("request after TTL expires returns STALE with same cached content", async ({ request }) => {
     // Populate cache
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
@@ -70,9 +64,7 @@ test.describe("Pages Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test("after STALE triggers regen, subsequent request is HIT", async ({
-    request,
-  }) => {
+  test("after STALE triggers regen, subsequent request is HIT", async ({ request }) => {
     // Populate cache
     await request.get(`${BASE}/isr-test`);
 
@@ -91,9 +83,7 @@ test.describe("Pages Router ISR", () => {
     expect(hitRes.headers()["x-vinext-cache"]).toBe("HIT");
   });
 
-  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({
-    request,
-  }) => {
+  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({ request }) => {
     const res = await request.get(`${BASE}/isr-test`);
     const cc = res.headers()["cache-control"];
 
@@ -109,9 +99,7 @@ test.describe("Pages Router ISR", () => {
     expect(cacheHeader).toBeUndefined();
   });
 
-  test("ISR page renders correctly in browser with timestamp", async ({
-    page,
-  }) => {
+  test("ISR page renders correctly in browser with timestamp", async ({ page }) => {
     await page.goto(`${BASE}/isr-test`);
 
     await expect(page.locator("h1")).toHaveText("ISR Page");

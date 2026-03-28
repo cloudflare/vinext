@@ -4,7 +4,7 @@
  * Automates the steps needed to run a Next.js app under vinext:
  *
  *   1. Run `vinext check` to show compatibility report
- *   2. Install dependencies (vite, @vitejs/plugin-rsc for App Router)
+ *   2. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   3. Add "type": "module" to package.json
  *   4. Rename CJS config files to .cjs
  *   5. Add vinext scripts to package.json
@@ -117,7 +117,7 @@ export function addScripts(root: string, port: number): string[] {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 export function getInitDeps(isAppRouter: boolean): string[] {
-  const deps = ["vinext", "vite"];
+  const deps = ["vinext", "vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
     deps.push("react-server-dom-webpack");
@@ -250,10 +250,12 @@ export function updateGitignore(root: string): boolean {
 export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
   const port = options.port ?? 3001;
-  const exec = options._exec ?? ((cmd: string, opts: { cwd: string; stdio: string }) => {
-    const [program, ...args] = cmd.split(" ");
-    execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
-  });
+  const exec =
+    options._exec ??
+    ((cmd: string, opts: { cwd: string; stdio: string }) => {
+      const [program, ...args] = cmd.split(" ");
+      execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
+    });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
 
@@ -292,7 +294,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (isApp && missingDeps.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
-      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      console.log(
+        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+      );
       installDeps(root, reactUpgrade, exec, { dev: false });
     }
   }

@@ -15,9 +15,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -25,9 +23,7 @@ async function waitForHydration(page: import("@playwright/test").Page) {
 test.describe("Next.js compat: actions-revalidate (browser)", () => {
   // Next.js: 'should not remount the page + loading component when revalidating'
   // Adapted: Verify that clicking revalidate button updates the timestamp
-  test("revalidatePath via server action updates page data", async ({
-    page,
-  }) => {
+  test("revalidatePath via server action updates page data", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/action-revalidate`);
     await waitForHydration(page);
 

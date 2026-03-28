@@ -10,9 +10,7 @@ test.describe("Route segment configs", () => {
     await expect(page.locator('[data-testid="timestamp"]')).not.toBeEmpty();
   });
 
-  test("config-test page renders with all configs recognized", async ({
-    page,
-  }) => {
+  test("config-test page renders with all configs recognized", async ({ page }) => {
     const response = await page.goto(`${BASE}/config-test`);
     expect(response?.status()).toBe(200);
     await expect(page.locator("h1")).toHaveText("Config Test Page");

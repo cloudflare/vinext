@@ -5,9 +5,7 @@ const BASE = "http://localhost:4176";
 test.describe("Cloudflare Workers Navigation", () => {
   test("navigating between pages via links", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     // Click About link
     await page.click('a[href="/about"]');
@@ -15,32 +13,24 @@ test.describe("Cloudflare Workers Navigation", () => {
 
     // Click back to home
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
   });
 
   test("browser back/forward works", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     await page.click('a[href="/about"]');
     await expect(page.locator("h1")).toHaveText("About");
 
     await page.goBack();
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
 
     await page.goForward();
     await expect(page.locator("h1")).toHaveText("About");
   });
 
-  test("RSC endpoint returns flight data for client navigation", async ({
-    request,
-  }) => {
+  test("RSC endpoint returns flight data for client navigation", async ({ request }) => {
     // The .rsc URL should return RSC flight payload (not HTML)
     const response = await request.get(`${BASE}/about`, {
       headers: { Accept: "text/x-component" },

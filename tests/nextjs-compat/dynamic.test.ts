@@ -17,8 +17,8 @@
  * - fixtures/app-basic/app/nextjs-compat/dynamic/ssr-false-only/ (isolated ssr:false test)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
 describe("Next.js compat: next/dynamic", () => {
@@ -93,10 +93,7 @@ describe("Next.js compat: next/dynamic", () => {
   // Uses dynamic(() => import('./client').then(mod => ({ default: mod.Button })))
 
   it("SSR: named export via dynamic() should render button content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/named-export",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/named-export");
     expect(html).toContain("this is a client button");
   });
 
@@ -106,19 +103,29 @@ describe("Next.js compat: next/dynamic", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L79-L96
 
   it("SSR: ssr:false page should contain static content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/ssr-false-only",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/ssr-false-only");
     expect(html).toContain("This is static content");
   });
 
   it("SSR: ssr:false page should NOT contain dynamic content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/ssr-false-only",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/ssr-false-only");
     expect(html).not.toContain("next-dynamic dynamic no ssr on client");
+  });
+
+  // ── RSC (pure server component) dynamic() ────────────────────
+
+  // Regression test for: https://github.com/cloudflare/vinext/pull/466
+  //
+  // Verifies that dynamic() works when called from a pure server component.
+  // In React 19.x, React.lazy IS available in the react-server condition,
+  // so this exercises the standard LazyServer + Suspense path in RSC.
+  // The AsyncServerDynamic fallback (for hypothetical future React versions
+  // that strip lazy) is covered by unit tests in tests/dynamic.test.ts.
+
+  it("RSC: dynamic() in a pure server component renders content", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/rsc-dynamic");
+    expect(html).toContain("next-dynamic dynamic on rsc");
+    expect(html).toContain('id="css-text-dynamic-rsc"');
   });
 
   // ── Browser-only tests (documented, not ported) ──────────────

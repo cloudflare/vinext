@@ -9,16 +9,11 @@ test.describe("Static Metadata", () => {
     await expect(page).toHaveTitle("Metadata Test Page");
   });
 
-  test("metadata export renders <meta name='description'>", async ({
-    page,
-  }) => {
+  test("metadata export renders <meta name='description'>", async ({ page }) => {
     await page.goto(`${BASE}/metadata-test`);
 
     const description = page.locator('meta[name="description"]');
-    await expect(description).toHaveAttribute(
-      "content",
-      "A page to test the metadata API",
-    );
+    await expect(description).toHaveAttribute("content", "A page to test the metadata API");
   });
 
   test("metadata export renders <meta name='keywords'>", async ({ page }) => {
@@ -41,9 +36,7 @@ test.describe("Static Metadata", () => {
     await expect(ogType).toHaveAttribute("content", "website");
   });
 
-  test("viewport export renders theme-color and color-scheme", async ({
-    page,
-  }) => {
+  test("viewport export renders theme-color and color-scheme", async ({ page }) => {
     await page.goto(`${BASE}/metadata-test`);
 
     const themeColor = page.locator('meta[name="theme-color"]');
@@ -59,9 +52,7 @@ test.describe("Dynamic Metadata (generateMetadata)", () => {
     await page.goto(`${BASE}/metadata-dynamic-test`);
 
     await expect(page).toHaveTitle("Dynamic Metadata Page");
-    await expect(
-      page.locator('[data-testid="dynamic-metadata-heading"]'),
-    ).toBeVisible();
+    await expect(page.locator('[data-testid="dynamic-metadata-heading"]')).toBeVisible();
   });
 
   test("generateMetadata renders description", async ({ page }) => {
@@ -81,10 +72,7 @@ test.describe("Dynamic Metadata (generateMetadata)", () => {
     await expect(ogTitle).toHaveAttribute("content", "Dynamic OG Title");
 
     const ogDescription = page.locator('meta[property="og:description"]');
-    await expect(ogDescription).toHaveAttribute(
-      "content",
-      "Dynamic OG Description",
-    );
+    await expect(ogDescription).toHaveAttribute("content", "Dynamic OG Description");
   });
 });
 
