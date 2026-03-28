@@ -14,15 +14,11 @@ function unwrapHook(hook: any): Function {
 }
 
 /** Extract the vinext:google-fonts plugin from the plugin array */
-function getGoogleFontsPlugin(): Plugin & {
-  _isBuild: boolean;
-  _fontCache: Map<string, string>;
-  _cacheDir: string;
-} {
+function getGoogleFontsPlugin(): Plugin {
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:google-fonts");
   if (!plugin) throw new Error("vinext:google-fonts plugin not found");
-  return plugin as any;
+  return plugin;
 }
 
 /** Simulate Vite's configResolved hook to initialize plugin state */
@@ -304,7 +300,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("rewrites dependency files that import next/font/google", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = false;
+    initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "node_modules/some-pkg/index.ts");
@@ -343,7 +339,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("rewrites namespace imports to the default proxy", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = false;
+    initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
     const code = `import * as fonts from 'next/font/google';\nconst inter = fonts.Inter({ weight: ['400'] });`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
@@ -354,7 +350,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("rewrites named re-exports through a virtual module", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = false;
+    initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
     const code = `export { Inter, buildGoogleFontsUrl } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "/app/fonts.ts");
@@ -521,47 +517,57 @@ describe("vinext:google-fonts plugin", () => {
 
   it("self-hosts aliased lowercase font imports during build", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache-alias");
-    plugin._fontCache.clear();
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Inter%3Awght%40400&display=swap",
-      "@font-face { font-family: 'Inter'; src: url(/inter.woff2); }",
-    );
+    const root = path.join(import.meta.dirname, ".test-font-root-alias");
+    initPlugin(plugin, { command: "build", root });
 
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import { Inter as inter } from 'next/font/google';`,
-      `const body = inter({ weight: '400' });`,
-    ].join("\n");
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("virtual:vinext-google-fonts?");
-    expect(result.code).toContain("_selfHostedCSS");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
 
-    plugin._fontCache.clear();
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter as inter } from 'next/font/google';`,
+        `const body = inter({ weight: '400' });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      expect(result.code).toContain("_selfHostedCSS");
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("self-hosts default proxy member calls during build", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache-default");
-    plugin._fontCache.clear();
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Roboto%2BMono%3Awght%40400&display=swap",
-      "@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }",
-    );
+    const root = path.join(import.meta.dirname, ".test-font-root-default");
+    initPlugin(plugin, { command: "build", root });
 
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import fonts from 'next/font/google';`,
-      `const mono = fonts.Roboto_Mono({ weight: '400' });`,
-    ].join("\n");
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("_selfHostedCSS");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
 
-    plugin._fontCache.clear();
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import fonts from 'next/font/google';`,
+        `const mono = fonts.Roboto_Mono({ weight: '400' });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
