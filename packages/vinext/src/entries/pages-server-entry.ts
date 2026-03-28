@@ -201,6 +201,8 @@ async function _runMiddleware(request) {
   try { response = await middlewareFn(nextRequest, fetchEvent); }
   catch (e) {
     console.error("[vinext] Middleware error:", e);
+    var _mwCtxErr = _getRequestExecutionContext();
+    if (_mwCtxErr && typeof _mwCtxErr.waitUntil === "function") { _mwCtxErr.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
     return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
   }
   var _mwCtx = _getRequestExecutionContext();
