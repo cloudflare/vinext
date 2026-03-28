@@ -591,10 +591,7 @@ async function main(): Promise<void> {
       if (cachedRoute) {
         // Keep params local until the final stale-navigation gate
         const cachedParams = cachedRoute.params;
-        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
-          href,
-          cachedParams,
-        );
+        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
         const cachedPayload = await createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );

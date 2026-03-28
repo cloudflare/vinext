@@ -3,11 +3,7 @@
 
 import Link from "next/link";
 
-export default async function SlowRoutePage({
-  params,
-}: {
-  params: Promise<{ value: string }>;
-}) {
+export default async function SlowRoutePage({ params }: { params: Promise<{ value: string }> }) {
   const { value } = await params;
 
   // Intentional delay to simulate slow RSC fetch
