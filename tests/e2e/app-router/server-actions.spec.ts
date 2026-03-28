@@ -120,6 +120,33 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");
     await expect(page.locator('[data-testid="redirect-btn"]')).toBeVisible();
   });
+
+  test("server action redirect performs soft RSC navigation (issue #654)", async ({ page }) => {
+    // Track page load events BEFORE navigating — a hard reload triggers a full 'load' event.
+    // Soft RSC navigation uses history.pushState which does NOT trigger 'load'.
+    let pageLoads = 0;
+    page.on("load", () => {
+      pageLoads++;
+    });
+
+    await page.goto(`${BASE}/action-redirect-test`);
+    await expect(page.locator("h1")).toHaveText("Action Redirect Test");
+    await waitForHydration(page);
+
+    // Initial page load should have been counted
+    expect(pageLoads).toBe(1);
+
+    // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
+    await page.click('[data-testid="redirect-btn"]');
+
+    // Should navigate to /about
+    await expect(page).toHaveURL(/\/about/, { timeout: 10_000 });
+    await expect(page.locator("h1")).toHaveText("About");
+
+    // Soft navigation = no additional page load after the initial one
+    // If it was a hard redirect, pageLoads would be 2 (initial + redirect)
+    expect(pageLoads).toBe(1);
+  });
 });
 
 test.describe("useActionState", () => {
@@ -188,32 +215,5 @@ test.describe("useActionState", () => {
     // Should navigate to /action-state-test without crashing
     await expect(page).toHaveURL(/\/action-state-test$/);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
-  });
-
-  test("server action redirect performs soft RSC navigation (issue #654)", async ({ page }) => {
-    // Track page load events BEFORE navigating — a hard reload triggers a full 'load' event.
-    // Soft RSC navigation uses history.pushState which does NOT trigger 'load'.
-    let pageLoads = 0;
-    page.on("load", () => {
-      pageLoads++;
-    });
-
-    await page.goto(`${BASE}/action-redirect-test`);
-    await expect(page.locator("h1")).toHaveText("Action Redirect Test");
-    await waitForHydration(page);
-
-    // Initial page load should have been counted
-    expect(pageLoads).toBe(1);
-
-    // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
-    await page.click('[data-testid="redirect-btn"]');
-
-    // Should navigate to /about
-    await expect(page).toHaveURL(/\/about/, { timeout: 10_000 });
-    await expect(page.locator("h1")).toHaveText("About");
-
-    // Soft navigation = no additional page load after the initial one
-    // If it was a hard redirect, pageLoads would be 2 (initial + redirect)
-    expect(pageLoads).toBe(1);
   });
 });

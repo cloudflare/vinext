@@ -146,10 +146,9 @@ function registerServerActionCallback(): void {
       }
 
       // Check if the server pre-rendered the redirect target's RSC payload.
-      // If so, we can perform a soft RSC navigation (SPA-style) instead of
-      // a hard page reload. This is the fix for issue #654.
-      const contentType = fetchResponse.headers.get("content-type") ?? "";
-      const hasRscPayload = contentType.includes("text/x-component");
+      // The server sets x-action-rsc-prerender: 1 when it has pre-rendered the target.
+      // This is the fix for issue #654.
+      const hasRscPayload = fetchResponse.headers.get("x-action-rsc-prerender") === "1";
       const redirectType = fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
 
       if (hasRscPayload && fetchResponse.body) {
@@ -171,6 +170,27 @@ function registerServerActionCallback(): void {
               window.history.pushState(null, "", actionRedirect);
             } else {
               window.history.replaceState(null, "", actionRedirect);
+            }
+
+            // Update client-side navigation context so usePathname(), useSearchParams(),
+            // and useParams() return the correct values for the redirect target.
+            const redirectUrl = new URL(actionRedirect, window.location.origin);
+            setNavigationContext({
+              pathname: redirectUrl.pathname,
+              searchParams: redirectUrl.searchParams,
+              params: {}, // params will be populated by the RSC stream consumption
+            });
+
+            // Read params from response header (same as normal RSC navigation)
+            const paramsHeader = fetchResponse.headers.get("X-Vinext-Params");
+            if (paramsHeader) {
+              try {
+                setClientParams(JSON.parse(decodeURIComponent(paramsHeader)));
+              } catch {
+                setClientParams({});
+              }
+            } else {
+              setClientParams({});
             }
 
             // Handle return value if present
