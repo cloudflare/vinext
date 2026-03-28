@@ -361,9 +361,7 @@ async function buildApp() {
   const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
 
   const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
-    viteMajorVersion >= 8
-      ? { rolldownOptions: bundlerOptions }
-      : { rollupOptions: bundlerOptions };
+    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
