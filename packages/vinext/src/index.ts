@@ -33,7 +33,11 @@ import {
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
-import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
+import {
+  findInstrumentationClientFile,
+  findInstrumentationFile,
+  runInstrumentation,
+} from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "./shims/constants.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
@@ -57,7 +61,18 @@ import {
 import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { fixUseServerClosureCollisionPlugin } from "./plugins/fix-use-server-closure-collision.js";
+import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import {
+  VIRTUAL_GOOGLE_FONTS,
+  RESOLVED_VIRTUAL_GOOGLE_FONTS,
+  parseStaticObjectLiteral,
+  generateGoogleFontsVirtualModule,
+  createGoogleFontsPlugin,
+  createLocalFontsPlugin,
+} from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
@@ -99,172 +114,8 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   return path.join(shimsDir, `${moduleName}.js`);
 }
 
-/**
- * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
- * @font-face CSS with local file references.
- *
- * Cache dir structure: .vinext/fonts/<family-hash>/
- *   - style.css (the rewritten @font-face CSS)
- *   - *.woff2 (downloaded font files)
- */
-async function fetchAndCacheFont(
-  cssUrl: string,
-  family: string,
-  cacheDir: string,
-): Promise<string> {
-  // Use a hash of the URL for the cache key
-  const { createHash } = await import("node:crypto");
-  const urlHash = createHash("md5").update(cssUrl).digest("hex").slice(0, 12);
-  const fontDir = path.join(cacheDir, `${family.toLowerCase().replace(/\s+/g, "-")}-${urlHash}`);
-
-  // Check if already cached
-  const cachedCSSPath = path.join(fontDir, "style.css");
-  if (fs.existsSync(cachedCSSPath)) {
-    return fs.readFileSync(cachedCSSPath, "utf-8");
-  }
-
-  // Fetch CSS from Google Fonts (woff2 user-agent gives woff2 URLs)
-  const cssResponse = await fetch(cssUrl, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    },
-  });
-  if (!cssResponse.ok) {
-    throw new Error(`Failed to fetch Google Fonts CSS: ${cssResponse.status}`);
-  }
-  let css = await cssResponse.text();
-
-  // Extract all font file URLs
-  const urlRe = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
-  const urls = new Map<string, string>(); // original URL -> local filename
-  let urlMatch;
-  while ((urlMatch = urlRe.exec(css)) !== null) {
-    const fontUrl = urlMatch[1];
-    if (!urls.has(fontUrl)) {
-      const ext = fontUrl.includes(".woff2")
-        ? ".woff2"
-        : fontUrl.includes(".woff")
-          ? ".woff"
-          : ".ttf";
-      const fileHash = createHash("md5").update(fontUrl).digest("hex").slice(0, 8);
-      urls.set(fontUrl, `${family.toLowerCase().replace(/\s+/g, "-")}-${fileHash}${ext}`);
-    }
-  }
-
-  // Download font files
-  fs.mkdirSync(fontDir, { recursive: true });
-  for (const [fontUrl, filename] of urls) {
-    const filePath = path.join(fontDir, filename);
-    if (!fs.existsSync(filePath)) {
-      const fontResponse = await fetch(fontUrl);
-      if (fontResponse.ok) {
-        const buffer = Buffer.from(await fontResponse.arrayBuffer());
-        fs.writeFileSync(filePath, buffer);
-      }
-    }
-    // Rewrite CSS to use relative path (Vite will resolve /@fs/ for dev, or asset for build)
-    css = css.split(fontUrl).join(filePath);
-  }
-
-  // Cache the rewritten CSS
-  fs.writeFileSync(cachedCSSPath, css);
-  return css;
-}
-
-/**
- * Safely parse a static JS object literal string into a plain object.
- * Uses Vite's parseAst (Rollup/acorn) so no code is ever evaluated.
- * Returns null if the expression contains anything dynamic (function calls,
- * template literals, identifiers, computed properties, etc.).
- *
- * Supports: string literals, numeric literals, boolean literals,
- * arrays of the above, and nested object literals.
- */
-function parseStaticObjectLiteral(objectStr: string): Record<string, unknown> | null {
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    // Wrap in parens so the parser treats `{…}` as an expression, not a block
-    ast = parseAst(`(${objectStr})`);
-  } catch {
-    return null;
-  }
-
-  // The AST should be: Program > ExpressionStatement > ObjectExpression
-  const body = ast.body;
-  if (body.length !== 1 || body[0].type !== "ExpressionStatement") return null;
-
-  const expr = body[0].expression;
-  if (expr.type !== "ObjectExpression") return null;
-
-  const result = extractStaticValue(expr);
-  return result === undefined ? null : (result as Record<string, unknown>);
-}
-
-/**
- * Recursively extract a static value from an ESTree AST node.
- * Returns undefined (not null) if the node contains any dynamic expression.
- *
- * Uses `any` for the node parameter because Rollup's internal ESTree types
- * (estree.Expression, estree.ObjectExpression, etc.) aren't re-exported by Vite,
- * and the recursive traversal touches many different node shapes.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractStaticValue(node: any): unknown {
-  switch (node.type) {
-    case "Literal":
-      // String, number, boolean, null
-      return node.value;
-
-    case "UnaryExpression":
-      // Handle negative numbers: -1, -3.14
-      if (
-        node.operator === "-" &&
-        node.argument?.type === "Literal" &&
-        typeof node.argument.value === "number"
-      ) {
-        return -node.argument.value;
-      }
-      return undefined;
-
-    case "ArrayExpression": {
-      const arr: unknown[] = [];
-      for (const elem of node.elements) {
-        if (!elem) return undefined; // sparse array
-        const val = extractStaticValue(elem);
-        if (val === undefined) return undefined;
-        arr.push(val);
-      }
-      return arr;
-    }
-
-    case "ObjectExpression": {
-      const obj: Record<string, unknown> = {};
-      for (const prop of node.properties) {
-        if (prop.type !== "Property") return undefined; // SpreadElement etc.
-        if (prop.computed) return undefined; // [expr]: val
-
-        // Key can be Identifier (unquoted) or Literal (quoted)
-        let key: string;
-        if (prop.key.type === "Identifier") {
-          key = prop.key.name;
-        } else if (prop.key.type === "Literal" && typeof prop.key.value === "string") {
-          key = prop.key.value;
-        } else {
-          return undefined;
-        }
-
-        const val = extractStaticValue(prop.value);
-        if (val === undefined) return undefined;
-        obj[key] = val;
-      }
-      return obj;
-    }
-
-    default:
-      // TemplateLiteral, CallExpression, Identifier, etc. — reject
-      return undefined;
-  }
+function toRelativeFileEntry(root: string, absPath: string): string {
+  return path.relative(root, absPath).split(path.sep).join("/");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -603,22 +454,9 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
-const VIRTUAL_GOOGLE_FONTS = "virtual:vinext-google-fonts";
-const RESOLVED_VIRTUAL_GOOGLE_FONTS = "\0" + VIRTUAL_GOOGLE_FONTS;
-
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
-
-// IMPORTANT: keep this set in sync with the non-default exports from
-// packages/vinext/src/shims/font-google.ts (and its re-export barrel).
-const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
-  "buildGoogleFontsUrl",
-  "getSSRFontLinks",
-  "getSSRFontStyles",
-  "getSSRFontPreloads",
-  "createFontLoader",
-]);
 
 /**
  * Extract the npm package name from a module ID (file path).
@@ -642,161 +480,6 @@ function getPackageName(id: string): string | null {
 /** Absolute path to vinext's shims directory, used by clientManualChunks. */
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
-
-type GoogleFontNamedSpecifier = {
-  imported: string;
-  local: string;
-  isType: boolean;
-  raw: string;
-};
-
-function parseGoogleFontNamedSpecifiers(
-  specifiersStr: string,
-  forceType = false,
-): GoogleFontNamedSpecifier[] {
-  return specifiersStr
-    .split(",")
-    .map((spec) => spec.trim())
-    .filter(Boolean)
-    .map((raw) => {
-      const isType = forceType || raw.startsWith("type ");
-      const valueSpec = isType ? raw.replace(/^type\s+/, "") : raw;
-      const asParts = valueSpec.split(/\s+as\s+/);
-      const imported = asParts[0]?.trim() ?? "";
-      const local = (asParts[1] || asParts[0] || "").trim();
-      return { imported, local, isType, raw };
-    })
-    .filter((spec) => spec.imported.length > 0 && spec.local.length > 0);
-}
-
-function parseGoogleFontImportClause(clause: string): {
-  defaultLocal: string | null;
-  namespaceLocal: string | null;
-  named: GoogleFontNamedSpecifier[];
-} {
-  const trimmed = clause.trim();
-
-  if (trimmed.startsWith("type ")) {
-    const braceStart = trimmed.indexOf("{");
-    const braceEnd = trimmed.lastIndexOf("}");
-    if (braceStart === -1 || braceEnd === -1) {
-      return { defaultLocal: null, namespaceLocal: null, named: [] };
-    }
-    return {
-      defaultLocal: null,
-      namespaceLocal: null,
-      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd), true),
-    };
-  }
-
-  const braceStart = trimmed.indexOf("{");
-  const braceEnd = trimmed.lastIndexOf("}");
-  if (braceStart !== -1 && braceEnd !== -1) {
-    const beforeNamed = trimmed.slice(0, braceStart).trim().replace(/,\s*$/, "").trim();
-    return {
-      defaultLocal: beforeNamed || null,
-      namespaceLocal: null,
-      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd)),
-    };
-  }
-
-  const commaIndex = trimmed.indexOf(",");
-  if (commaIndex !== -1) {
-    const defaultLocal = trimmed.slice(0, commaIndex).trim() || null;
-    const rest = trimmed.slice(commaIndex + 1).trim();
-    if (rest.startsWith("* as ")) {
-      return {
-        defaultLocal,
-        namespaceLocal: rest.slice("* as ".length).trim() || null,
-        named: [],
-      };
-    }
-  }
-
-  if (trimmed.startsWith("* as ")) {
-    return {
-      defaultLocal: null,
-      namespaceLocal: trimmed.slice("* as ".length).trim() || null,
-      named: [],
-    };
-  }
-
-  return {
-    defaultLocal: trimmed || null,
-    namespaceLocal: null,
-    named: [],
-  };
-}
-
-function encodeGoogleFontsVirtualId(payload: {
-  hasDefault: boolean;
-  fonts: string[];
-  utilities: string[];
-}): string {
-  const params = new URLSearchParams();
-  if (payload.hasDefault) params.set("default", "1");
-  if (payload.fonts.length > 0) params.set("fonts", payload.fonts.join(","));
-  if (payload.utilities.length > 0) params.set("utilities", payload.utilities.join(","));
-  return `${VIRTUAL_GOOGLE_FONTS}?${params.toString()}`;
-}
-
-function parseGoogleFontsVirtualId(id: string): {
-  hasDefault: boolean;
-  fonts: string[];
-  utilities: string[];
-} | null {
-  const cleanId = id.startsWith("\0") ? id.slice(1) : id;
-  if (!cleanId.startsWith(VIRTUAL_GOOGLE_FONTS)) return null;
-  const queryIndex = cleanId.indexOf("?");
-  const params = new URLSearchParams(queryIndex === -1 ? "" : cleanId.slice(queryIndex + 1));
-  return {
-    hasDefault: params.get("default") === "1",
-    fonts:
-      params
-        .get("fonts")
-        ?.split(",")
-        .map((value) => value.trim())
-        .filter(Boolean) ?? [],
-    utilities:
-      params
-        .get("utilities")
-        ?.split(",")
-        .map((value) => value.trim())
-        .filter(Boolean) ?? [],
-  };
-}
-
-function generateGoogleFontsVirtualModule(id: string): string | null {
-  const payload = parseGoogleFontsVirtualId(id);
-  if (!payload) return null;
-
-  const utilities = Array.from(new Set(payload.utilities));
-  const fonts = Array.from(new Set(payload.fonts));
-  const lines: string[] = [];
-
-  lines.push(`import { createFontLoader } from ${JSON.stringify(_fontGoogleShimPath)};`);
-
-  const reExports: string[] = [];
-  if (payload.hasDefault) reExports.push("default");
-  reExports.push(...utilities);
-  if (reExports.length > 0) {
-    lines.push(`export { ${reExports.join(", ")} } from ${JSON.stringify(_fontGoogleShimPath)};`);
-  }
-
-  for (const fontName of fonts) {
-    const family = fontName.replace(/_/g, " ");
-    lines.push(
-      `export const ${fontName} = /*#__PURE__*/ createFontLoader(${JSON.stringify(family)});`,
-    );
-  }
-
-  lines.push("");
-  return lines.join("\n");
-}
-
-function propertyNameToGoogleFontFamily(prop: string): string {
-  return prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
-}
 
 /**
  * manualChunks function for client builds.
@@ -1232,6 +915,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
+  let instrumentationClientPath: string | null = null;
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
@@ -1241,12 +925,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
-
-  // Build-only cache for og-inline-fetch-assets to avoid repeated file reads
-  // during a single production build. Dev mode skips the cache so asset edits
-  // are picked up without restarting the Vite server.
-  const _ogInlineCache = new Map<string, string>();
-  let _ogInlineIsBuild = false;
 
   /**
    * Generate the virtual SSR server entry module.
@@ -1376,449 +1054,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
     // Fix 'use server' closure variable collision with local declarations.
-    //
-    // @vitejs/plugin-rsc uses `periscopic` to find closure variables for
-    // 'use server' inline functions. Due to how periscopic handles block scopes,
-    // `const X = ...` declared inside a 'use server' function body is tracked in
-    // the BlockStatement scope (not the FunctionDeclaration scope). When periscopic
-    // searches for the owner of a reference `X`, it finds the block scope — which
-    // is neither the function scope nor the module scope — so it incorrectly
-    // classifies `X` as a closure variable from the outer scope.
-    //
-    // The result: plugin-rsc injects `const [X] = await decryptActionBoundArgs(...)`
-    // at the top of the hoisted function, colliding with the existing `const X = ...`
-    // declaration in the body. This causes a SyntaxError.
-    //
-    // Fix: before plugin-rsc sees the file, detect any 'use server' function whose
-    // local `const/let/var` declarations shadow an outer-scope variable, and rename
-    // the inner declarations (+ usages within that function) to `__local_X`. This
-    // eliminates the collision without changing semantics.
-    //
-    // This is a general fix that works for any library — not just @payloadcms/next.
-    {
-      name: "vinext:fix-use-server-closure-collision",
-      enforce: "pre" as const,
-      transform(code: string, id: string) {
-        // Quick bail-out: only files that contain 'use server' inline
-        if (!code.includes("use server")) return null;
-        // Only JS/TS files
-        if (!/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(id.split("?")[0])) return null;
-
-        let ast: any;
-        try {
-          ast = parseAst(code);
-        } catch {
-          return null;
-        }
-
-        function collectPatternNames(pattern: any, names: Set<string>) {
-          if (!pattern) return;
-          if (pattern.type === "Identifier") {
-            names.add(pattern.name);
-          } else if (pattern.type === "ObjectPattern") {
-            for (const prop of pattern.properties) {
-              collectPatternNames(prop.value ?? prop.argument, names);
-            }
-          } else if (pattern.type === "ArrayPattern") {
-            for (const elem of pattern.elements) {
-              collectPatternNames(elem, names);
-            }
-          } else if (pattern.type === "RestElement" || pattern.type === "AssignmentPattern") {
-            collectPatternNames(pattern.left ?? pattern.argument, names);
-          }
-        }
-
-        // Check if a block body has 'use server' as its leading directive prologue.
-        // Only the first contiguous run of string-literal expression statements
-        // counts — a "use server" string mid-function is not a directive.
-        function hasUseServerDirective(body: any[]): boolean {
-          for (const stmt of body) {
-            if (
-              stmt.type === "ExpressionStatement" &&
-              stmt.expression?.type === "Literal" &&
-              typeof stmt.expression.value === "string"
-            ) {
-              if (stmt.expression.value === "use server") return true;
-              // Any other string literal in the prologue — keep scanning
-              continue;
-            }
-            // First non-string-literal statement ends the prologue
-            break;
-          }
-          return false;
-        }
-
-        // Find all 'use server' inline functions and check for collisions.
-        //
-        // `ancestorNames` accumulates the names that are in scope in all ancestor
-        // function/program bodies as we descend — this is the correct set to
-        // compare against, not a whole-AST walk (which would pick up siblings).
-        const s = new MagicString(code);
-        // Track source ranges already rewritten so renamingWalk never calls
-        // s.update() twice on the same span (MagicString throws if it does).
-        const renamedRanges = new Set<string>();
-        let changed = false;
-
-        function visitNode(node: any, ancestorNames: Set<string>) {
-          if (!node || typeof node !== "object") return;
-
-          const isFn =
-            node.type === "FunctionDeclaration" ||
-            node.type === "FunctionExpression" ||
-            node.type === "ArrowFunctionExpression";
-
-          if (!isFn) {
-            // Non-function nodes (Program, BlockStatement, IfStatement, CatchClause,
-            // etc.) don't introduce a new function scope, but they may contain
-            // variable declarations and catch bindings that are visible to nested
-            // functions as ancestor names.  Accumulate those into a new set before
-            // recursing so we don't mutate the caller's set.
-            const namesForChildren = new Set(ancestorNames);
-
-            // CatchClause: `catch (e)` — `e` is in scope for the catch body
-            if (node.type === "CatchClause" && node.param) {
-              collectPatternNames(node.param, namesForChildren);
-            }
-
-            // Collect names visible at function scope from this node:
-            //   - FunctionDeclaration names (hoisted to enclosing scope)
-            //   - ClassDeclaration names (block-scoped like let, but treated as
-            //     function-scoped for our purposes since periscopic sees them)
-            //   - var declarations (hoisted to function scope, found anywhere)
-            // We do NOT collect let/const from nested blocks here — those are
-            // block-scoped and not visible to sibling/outer function declarations.
-            collectFunctionScopedNames(node, namesForChildren);
-            // Also collect let/const/var/class/import declared as immediate children
-            // of this node (e.g. top-level Program statements, or the direct body of
-            // a BlockStatement) — those ARE in scope for everything in the same block.
-            const immediateStmts: any[] =
-              node.type === "Program" ? node.body : node.type === "BlockStatement" ? node.body : [];
-            for (const stmt of immediateStmts) {
-              if (stmt?.type === "VariableDeclaration") {
-                for (const decl of stmt.declarations)
-                  collectPatternNames(decl.id, namesForChildren);
-              } else if (stmt?.type === "ClassDeclaration" && stmt.id?.name) {
-                namesForChildren.add(stmt.id.name);
-              } else if (stmt?.type === "ImportDeclaration") {
-                for (const spec of stmt.specifiers ?? []) {
-                  // ImportDefaultSpecifier, ImportNamespaceSpecifier, ImportSpecifier
-                  // all have `local.name` as the binding name in this module.
-                  if (spec.local?.name) namesForChildren.add(spec.local.name);
-                }
-              }
-            }
-
-            for (const key of Object.keys(node)) {
-              if (key === "type") continue;
-              const child = node[key];
-              if (Array.isArray(child)) {
-                for (const c of child) visitNode(c, namesForChildren);
-              } else if (child && typeof child === "object" && child.type) {
-                visitNode(child, namesForChildren);
-              }
-            }
-            return;
-          }
-
-          // Build the ancestor name set visible inside this function:
-          // everything the parent saw, plus this function's own params.
-          const namesForBody = new Set(ancestorNames);
-          for (const p of node.params ?? []) collectPatternNames(p, namesForBody);
-
-          // Check whether the body has the 'use server' directive.
-          const bodyStmts: any[] = node.body?.type === "BlockStatement" ? node.body.body : [];
-          const isServerFn = hasUseServerDirective(bodyStmts);
-
-          if (isServerFn) {
-            // Collect ALL variables declared anywhere in this function body.
-            // This includes direct bodyStmts, but also for...of/for...in loop
-            // variables, declarations inside if/try/while blocks, etc.
-            // periscopic puts these in the BlockStatement scope (not the function
-            // scope), so they get mis-classified as closure vars from the outer scope.
-            // We use collectAllDeclaredNames (recursive, crosses blocks, stops at
-            // nested function bodies) to catch every possible declaration site.
-            const localDecls = new Set<string>();
-            collectAllDeclaredNames(node.body, localDecls);
-
-            // Find collisions: local decls that shadow a name from ancestor scopes.
-            // collisionRenames maps original name → chosen rename target, taking
-            // into account that `__local_${name}` may itself already be declared
-            // (e.g. the user wrote `const __local_cookies = ...`).  In that case
-            // we try `__local_0_${name}`, `__local_1_${name}`, … until we find a
-            // free name.  This prevents a secondary collision.
-            const collisionRenames = new Map<string, string>();
-            for (const name of localDecls) {
-              if (namesForBody.has(name)) {
-                let to = `__local_${name}`;
-                let suffix = 0;
-                while (localDecls.has(to) || namesForBody.has(to)) {
-                  to = `__local_${suffix}_${name}`;
-                  suffix++;
-                }
-                collisionRenames.set(name, to);
-              }
-            }
-
-            if (collisionRenames.size > 0) {
-              for (const [name, to] of collisionRenames) {
-                renamingWalk(node.body, name, to);
-              }
-              changed = true;
-            }
-
-            // Build the ancestor set for children of this server function.
-            // Colliding names have been renamed in this body, e.g. `cookies` →
-            // `__local_cookies`.  The original name no longer exists as a binding
-            // in this scope, so we must remove it from the set and add the renamed
-            // version instead.  Leaving the original name in would cause nested
-            // server functions to see it as an ancestor binding and spuriously flag
-            // their own independent `const cookies` as a collision.
-            const namesForChildren = new Set(namesForBody);
-            for (const name of localDecls) {
-              if (collisionRenames.has(name)) {
-                namesForChildren.delete(name);
-                namesForChildren.add(collisionRenames.get(name)!);
-              } else {
-                namesForChildren.add(name);
-              }
-            }
-
-            // Recurse into children — nested 'use server' functions must be visited.
-            // Skip node.body itself (already handled by renamingWalk above for
-            // collisions); we recurse into each statement individually so that
-            // nested functions inside the body get their own visitNode pass with
-            // the correct ancestorNames.
-            for (const stmt of bodyStmts) {
-              visitNode(stmt, namesForChildren);
-            }
-            // Also visit params (they can contain default expressions with closures)
-            for (const p of node.params ?? []) visitNode(p, ancestorNames);
-            return;
-          }
-
-          // Not a server function — build the ancestor set for nested functions:
-          //   - var declarations anywhere in this function body (function-scoped)
-          //   - FunctionDeclaration names anywhere in this function body
-          //   - let/const only from the top-level statements of this function body
-          //     (block-scoped — not visible to nested fns in sibling blocks)
-          const namesForChildren = new Set(namesForBody);
-          collectFunctionScopedNames(node.body, namesForChildren);
-          for (const stmt of bodyStmts) {
-            if (stmt?.type === "VariableDeclaration" && stmt.kind !== "var") {
-              for (const decl of stmt.declarations) collectPatternNames(decl.id, namesForChildren);
-            }
-          }
-
-          for (const key of Object.keys(node)) {
-            if (key === "type") continue;
-            const child = node[key];
-            if (Array.isArray(child)) {
-              for (const c of child) visitNode(c, namesForChildren);
-            } else if (child && typeof child === "object" && child.type) {
-              visitNode(child, namesForChildren);
-            }
-          }
-        }
-
-        // Walk an AST subtree renaming all variable-reference Identifier nodes
-        // matching `from` to `to`.
-        //
-        // Correctness rules:
-        //   - Non-computed MemberExpression.property is NOT a variable reference
-        //   - Non-computed Property.key is NOT a variable reference
-        //   - Shorthand Property { x } must be expanded to { x: __local_x }
-        //   - A nested function that re-declares `from` in its params OR anywhere
-        //     in its body via var/const/let (including inside control flow) is a
-        //     new binding — stop descending into it
-        //   - Never call s.update() on the same source range twice
-        //
-        // `parent` is the direct parent AST node, used to detect property contexts.
-        function renamingWalk(node: any, from: string, to: string, parent?: any) {
-          if (!node || typeof node !== "object") return;
-
-          if (node.type === "Identifier" && node.name === from) {
-            // Non-computed member expression property: obj.cookies — not a ref
-            if (
-              parent?.type === "MemberExpression" &&
-              parent.property === node &&
-              !parent.computed
-            ) {
-              return;
-            }
-
-            // Non-computed property key in an object literal
-            if (parent?.type === "Property" && parent.key === node && !parent.computed) {
-              if (parent.shorthand) {
-                // { cookies } — key and value are the same AST node.
-                // Expand to { cookies: __local_cookies } by rewriting at the key
-                // visit; skip the value visit via the guard below.
-                const rangeKey = `${node.start}:${node.end}`;
-                if (!renamedRanges.has(rangeKey)) {
-                  renamedRanges.add(rangeKey);
-                  s.update(node.start, node.end, `${from}: ${to}`);
-                }
-              }
-              // Either way, key is not a variable reference — do not rename it.
-              return;
-            }
-
-            // Value side of a shorthand property — same node as key, already handled
-            if (parent?.type === "Property" && parent.shorthand && parent.value === node) {
-              return;
-            }
-
-            // LabeledStatement label: `cookies: for (...)` — not a variable reference
-            if (parent?.type === "LabeledStatement" && parent.label === node) {
-              return;
-            }
-
-            // break/continue label: `break cookies` / `continue cookies` — not a variable reference
-            if (
-              (parent?.type === "BreakStatement" || parent?.type === "ContinueStatement") &&
-              parent.label === node
-            ) {
-              return;
-            }
-
-            const rangeKey = `${node.start}:${node.end}`;
-            if (!renamedRanges.has(rangeKey)) {
-              renamedRanges.add(rangeKey);
-              s.update(node.start, node.end, to);
-            }
-            return;
-          }
-
-          // For nested function nodes, check whether they re-declare `from`.
-          // If they do, stop — the name in that nested scope is a different binding.
-          // We must check ALL var declarations anywhere in the body (var hoists),
-          // not just top-level statements.
-          if (
-            node.type === "FunctionDeclaration" ||
-            node.type === "FunctionExpression" ||
-            node.type === "ArrowFunctionExpression"
-          ) {
-            const nestedDecls = new Set<string>();
-            // Params
-            for (const p of node.params ?? []) collectPatternNames(p, nestedDecls);
-            // Recursively find all var/const/let declarations in the body,
-            // including those nested inside if/for/while/etc.
-            collectAllDeclaredNames(node.body, nestedDecls);
-            if (nestedDecls.has(from)) return;
-
-            // Also stop at nested 'use server' functions — visitNode will handle them
-            // independently with the correct collision set, preventing double-rewrites.
-            if (node.body?.type === "BlockStatement" && hasUseServerDirective(node.body.body)) {
-              return;
-            }
-          }
-
-          for (const key of Object.keys(node)) {
-            if (key === "type" || key === "start" || key === "end") continue;
-            const child = node[key];
-            if (Array.isArray(child)) {
-              for (const c of child) renamingWalk(c, from, to, node);
-            } else if (child && typeof child === "object" && child.type) {
-              renamingWalk(child, from, to, node);
-            }
-          }
-        }
-
-        // Collect names that are visible at function scope from a given subtree.
-        //
-        // Two separate helpers with different traversal rules:
-        //
-        //   collectFunctionScopedNames(node, names)
-        //     Collects `var` declarations and `FunctionDeclaration` names anywhere
-        //     in the subtree, crossing block boundaries (if/for/while/try/catch)
-        //     but NOT crossing nested function bodies.  `let`/`const` in nested
-        //     blocks are intentionally skipped — they are block-scoped and not
-        //     visible outside that block.
-        //     Use this when building ancestorNames for nested functions.
-        //
-        //   collectAllDeclaredNames(node, names)
-        //     Collects ALL var/let/const declarations anywhere in the subtree,
-        //     crossing block boundaries but not nested function bodies.
-        //     Used only by renamingWalk's re-declaration check, where we want to
-        //     know if ANY declaration of `from` exists in a nested function's scope
-        //     (params already handled separately).
-
-        function collectFunctionScopedNames(node: any, names: Set<string>) {
-          if (!node || typeof node !== "object") return;
-          // FunctionDeclaration: its name is a binding in the enclosing scope.
-          // Record it, then stop — don't recurse into the body (different scope).
-          if (node.type === "FunctionDeclaration") {
-            if (node.id?.name) names.add(node.id.name);
-            return;
-          }
-          // ClassDeclaration: like FunctionDeclaration, its name is a binding in
-          // the enclosing scope.  Don't recurse into the body.
-          if (node.type === "ClassDeclaration") {
-            if (node.id?.name) names.add(node.id.name);
-            return;
-          }
-          // FunctionExpression / ArrowFunctionExpression names are only in scope
-          // inside their own body, not the enclosing scope — skip entirely.
-          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-            return;
-          }
-          // var declarations are function-scoped — collect them wherever they appear.
-          // let/const at a nested block level are block-scoped and NOT visible to
-          // sibling or outer function declarations, so skip them here.
-          if (node.type === "VariableDeclaration" && node.kind === "var") {
-            for (const decl of node.declarations) collectPatternNames(decl.id, names);
-          }
-          for (const key of Object.keys(node)) {
-            if (key === "type") continue;
-            const child = node[key];
-            if (Array.isArray(child)) {
-              for (const c of child) collectFunctionScopedNames(c, names);
-            } else if (child && typeof child === "object" && child.type) {
-              collectFunctionScopedNames(child, names);
-            }
-          }
-        }
-
-        // Collect ALL declared names (var/let/const/class/function) in a subtree,
-        // crossing blocks but not nested function bodies or class bodies.
-        // Used by renamingWalk's re-declaration check where any shadowing
-        // declaration — regardless of kind — must stop the rename from descending
-        // further, and by the server-function local-decl scan to detect all
-        // possible collision sites (including class declarations in the body).
-        function collectAllDeclaredNames(node: any, names: Set<string>) {
-          if (!node || typeof node !== "object") return;
-          if (node.type === "VariableDeclaration") {
-            for (const decl of node.declarations) collectPatternNames(decl.id, names);
-          }
-          // FunctionDeclaration name is a binding in the enclosing scope — record it.
-          if (node.type === "FunctionDeclaration") {
-            if (node.id?.name) names.add(node.id.name);
-            return; // don't recurse into its body
-          }
-          // ClassDeclaration name is a binding in the enclosing scope — record it.
-          if (node.type === "ClassDeclaration") {
-            if (node.id?.name) names.add(node.id.name);
-            return; // don't recurse into the class body (separate scope)
-          }
-          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-            return; // different scope — stop
-          }
-          for (const key of Object.keys(node)) {
-            if (key === "type") continue;
-            const child = node[key];
-            if (Array.isArray(child)) {
-              for (const c of child) collectAllDeclaredNames(c, names);
-            } else if (child && typeof child === "object" && child.type) {
-              collectAllDeclaredNames(child, names);
-            }
-          }
-        }
-
-        visitNode(ast, new Set());
-
-        if (!changed) return null;
-        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
-      },
-    },
+    // See packages/vinext/src/plugins/fix-use-server-closure-collision.ts for details.
+    fixUseServerClosureCollisionPlugin,
     {
       name: "vinext:config",
       enforce: "pre",
@@ -1905,6 +1142,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         nextConfig = await resolveNextConfig(rawConfig, root);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
+        instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
@@ -2053,7 +1291,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
+            "vinext/instrumentation-client": path.resolve(
+              __dirname,
+              "client",
+              "instrumentation-client",
+            ),
             "vinext/html": path.resolve(__dirname, "server", "html"),
+            "private-next-instrumentation-client":
+              instrumentationClientPath ?? path.resolve(__dirname, "client", "empty-module"),
           }).flatMap(([k, v]) =>
             k.startsWith("next/")
               ? [
@@ -2312,6 +1557,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
         };
+        const pagesOptimizeEntries = !hasAppDir
+          ? [
+              ...(hasPagesDir
+                ? [toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
+                : []),
+              ...[instrumentationPath, instrumentationClientPath].flatMap((entry) =>
+                entry ? [toRelativeFileEntry(root, entry)] : [],
+              ),
+            ]
+          : [];
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
@@ -2323,6 +1578,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
           const appEntries = [`${relAppDir}/**/*.{tsx,ts,jsx,js}`];
+          const explicitInstrumentationEntries = [
+            instrumentationPath,
+            instrumentationClientPath,
+          ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
+          const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
 
           viteConfig.environments = {
             rsc: {
@@ -2351,7 +1611,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }),
               optimizeDeps: {
                 exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
-                entries: appEntries,
+                entries: optimizeEntries,
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
@@ -2376,7 +1636,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }),
               optimizeDeps: {
                 exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
-                entries: appEntries,
+                entries: optimizeEntries,
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
@@ -2408,7 +1668,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
-                entries: appEntries,
+                entries: optimizeEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [
@@ -2447,6 +1707,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteConfig.environments = {
             client: {
               consumer: "client",
+              optimizeDeps:
+                pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
               build: {
                 manifest: true,
                 ssrManifest: true,
@@ -2457,6 +1719,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }),
               },
             },
+          };
+        }
+
+        if (pagesOptimizeEntries.length > 0 && !hasCloudflarePlugin) {
+          viteConfig.optimizeDeps = {
+            ...viteConfig.optimizeDeps,
+            entries: pagesOptimizeEntries,
           };
         }
 
@@ -2637,12 +1906,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           return generateBrowserEntry();
         }
         if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
-          return generateGoogleFontsVirtualModule(id);
+          return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
         }
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
@@ -3240,6 +2510,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   nextConfig?.basePath,
                 );
 
+                // Settle waitUntil promises — no ctx.waitUntil() in dev, but
+                // promises must still run for parity with prod (session sync, telemetry, etc.)
+                if (result.waitUntilPromises?.length) {
+                  void Promise.allSettled(result.waitUntilPromises);
+                }
+
                 if (!result.continue) {
                   if (result.redirectUrl) {
                     const redirectHeaders: Record<string, string | string[]> = {
@@ -3643,340 +2919,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
-    // Google Fonts import rewrite + self-hosting:
-    //
-    // 1. Rewrites named next/font/google imports/exports to a tiny virtual module
-    //    that exports only the requested fonts plus any utility exports.
-    //    This lets us delete the generated ~1,900-line runtime catalog while
-    //    keeping ESM import semantics intact.
-    // 2. During production builds, fetches Google Fonts CSS + font files and
-    //    injects _selfHostedCSS into statically analyzable font loader calls.
-    {
-      name: "vinext:google-fonts",
-      enforce: "pre",
-
-      _isBuild: false,
-      _fontCache: new Map<string, string>(), // url -> local @font-face CSS
-      _cacheDir: "",
-
-      configResolved(config) {
-        (this as any)._isBuild = config.command === "build";
-        (this as any)._cacheDir = path.join(config.root, ".vinext", "fonts");
-      },
-
-      transform: {
-        // Hook filter: only invoke JS when code contains 'next/font/google'.
-        // This still eliminates nearly all Rust-to-JS calls since very few files
-        // import from next/font/google.
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-          },
-          code: "next/font/google",
-        },
-        async handler(code, id) {
-          // Defensive guard — duplicates filter logic
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-          if (!code.includes("next/font/google")) return null;
-          if (id.startsWith(_shimsDir)) return null;
-
-          const s = new MagicString(code);
-          let hasChanges = false;
-          let proxyImportCounter = 0;
-          const overwrittenRanges: Array<[number, number]> = [];
-          const fontLocals = new Map<string, string>();
-          const proxyObjectLocals = new Set<string>();
-
-          const importRe = /^[ \t]*import\s+([^;]+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
-          let importMatch;
-          while ((importMatch = importRe.exec(code)) !== null) {
-            const [fullMatch, clause] = importMatch;
-            const matchStart = importMatch.index;
-            const matchEnd = matchStart + fullMatch.length;
-            const parsed = parseGoogleFontImportClause(clause);
-            const utilityImports = parsed.named.filter(
-              (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
-            );
-            const fontImports = parsed.named.filter(
-              (spec) => !spec.isType && !GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
-            );
-
-            if (parsed.defaultLocal) {
-              proxyObjectLocals.add(parsed.defaultLocal);
-            }
-            for (const fontImport of fontImports) {
-              fontLocals.set(fontImport.local, fontImport.imported);
-            }
-
-            if (fontImports.length > 0) {
-              const virtualId = encodeGoogleFontsVirtualId({
-                hasDefault: Boolean(parsed.defaultLocal),
-                fonts: Array.from(new Set(fontImports.map((spec) => spec.imported))),
-                utilities: Array.from(new Set(utilityImports.map((spec) => spec.imported))),
-              });
-              s.overwrite(
-                matchStart,
-                matchEnd,
-                `import ${clause} from ${JSON.stringify(virtualId)};`,
-              );
-              overwrittenRanges.push([matchStart, matchEnd]);
-              hasChanges = true;
-              continue;
-            }
-
-            if (parsed.namespaceLocal) {
-              const proxyImportName = `__vinext_google_fonts_proxy_${proxyImportCounter++}`;
-              const replacementLines = [
-                `import ${proxyImportName} from ${JSON.stringify(_fontGoogleShimPath)};`,
-              ];
-              if (parsed.defaultLocal) {
-                replacementLines.push(`var ${parsed.defaultLocal} = ${proxyImportName};`);
-              }
-              replacementLines.push(`var ${parsed.namespaceLocal} = ${proxyImportName};`);
-              s.overwrite(matchStart, matchEnd, replacementLines.join("\n"));
-              overwrittenRanges.push([matchStart, matchEnd]);
-              proxyObjectLocals.add(parsed.namespaceLocal);
-              hasChanges = true;
-            }
-          }
-
-          const exportRe = /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
-          let exportMatch;
-          while ((exportMatch = exportRe.exec(code)) !== null) {
-            const [fullMatch, specifiers] = exportMatch;
-            const matchStart = exportMatch.index;
-            const matchEnd = matchStart + fullMatch.length;
-            const namedExports = parseGoogleFontNamedSpecifiers(specifiers);
-            const utilityExports = namedExports.filter(
-              (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
-            );
-            const fontExports = namedExports.filter(
-              (spec) => !spec.isType && !GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
-            );
-            if (fontExports.length === 0) continue;
-
-            const virtualId = encodeGoogleFontsVirtualId({
-              hasDefault: false,
-              fonts: Array.from(new Set(fontExports.map((spec) => spec.imported))),
-              utilities: Array.from(new Set(utilityExports.map((spec) => spec.imported))),
-            });
-            s.overwrite(
-              matchStart,
-              matchEnd,
-              `export { ${specifiers.trim()} } from ${JSON.stringify(virtualId)};`,
-            );
-            overwrittenRanges.push([matchStart, matchEnd]);
-            hasChanges = true;
-          }
-
-          const cacheDir = (this as any)._cacheDir as string;
-          const fontCache = (this as any)._fontCache as Map<string, string>;
-
-          async function injectSelfHostedCss(
-            callStart: number,
-            callEnd: number,
-            optionsStr: string,
-            family: string,
-            calleeSource: string,
-          ) {
-            // Parse options safely via AST — no eval/new Function
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            let options: Record<string, any> = {};
-            try {
-              const parsed = parseStaticObjectLiteral(optionsStr);
-              if (!parsed) return; // Contains dynamic expressions, skip
-              options = parsed as Record<string, any>;
-            } catch {
-              return; // Can't parse options statically, skip
-            }
-
-            // Build the Google Fonts CSS URL
-            const weights = options.weight
-              ? Array.isArray(options.weight)
-                ? options.weight
-                : [options.weight]
-              : [];
-            const styles = options.style
-              ? Array.isArray(options.style)
-                ? options.style
-                : [options.style]
-              : [];
-            const display = options.display ?? "swap";
-
-            let spec = family.replace(/\s+/g, "+");
-            if (weights.length > 0) {
-              const hasItalic = styles.includes("italic");
-              if (hasItalic) {
-                const pairs: string[] = [];
-                for (const w of weights) {
-                  pairs.push(`0,${w}`);
-                  pairs.push(`1,${w}`);
-                }
-                spec += `:ital,wght@${pairs.join(";")}`;
-              } else {
-                spec += `:wght@${weights.join(";")}`;
-              }
-            } else if (styles.length === 0) {
-              // Request full variable weight range when no weight specified.
-              // Without this, Google Fonts returns only weight 400.
-              spec += `:wght@100..900`;
-            }
-            const params = new URLSearchParams();
-            params.set("family", spec);
-            params.set("display", display);
-            const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
-
-            // Check cache
-            let localCSS = fontCache.get(cssUrl);
-            if (!localCSS) {
-              try {
-                localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
-                fontCache.set(cssUrl, localCSS);
-              } catch {
-                // Fetch failed (offline?) — fall back to CDN mode
-                return;
-              }
-            }
-
-            // Inject _selfHostedCSS into the options object
-            const escapedCSS = JSON.stringify(localCSS);
-            const closingBrace = optionsStr.lastIndexOf("}");
-            const optionsWithCSS =
-              optionsStr.slice(0, closingBrace) +
-              (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
-              `_selfHostedCSS: ${escapedCSS}` +
-              optionsStr.slice(closingBrace);
-
-            const replacement = `${calleeSource}(${optionsWithCSS})`;
-            s.overwrite(callStart, callEnd, replacement);
-            hasChanges = true;
-          }
-
-          if ((this as any)._isBuild) {
-            const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
-            let namedCallMatch;
-            while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
-              const [fullMatch, localName, optionsStr] = namedCallMatch;
-              const importedName = fontLocals.get(localName);
-              if (!importedName) continue;
-
-              const callStart = namedCallMatch.index;
-              const callEnd = callStart + fullMatch.length;
-              if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
-                continue;
-              }
-
-              await injectSelfHostedCss(
-                callStart,
-                callEnd,
-                optionsStr,
-                importedName.replace(/_/g, " "),
-                localName,
-              );
-            }
-
-            const memberCallRe =
-              /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
-            let memberCallMatch;
-            while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
-              const [fullMatch, objectName, propName, optionsStr] = memberCallMatch;
-              if (!proxyObjectLocals.has(objectName)) continue;
-
-              const callStart = memberCallMatch.index;
-              const callEnd = callStart + fullMatch.length;
-              if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
-                continue;
-              }
-
-              await injectSelfHostedCss(
-                callStart,
-                callEnd,
-                optionsStr,
-                propertyNameToGoogleFontFamily(propName),
-                `${objectName}.${propName}`,
-              );
-            }
-          }
-
-          if (!hasChanges) return null;
-          return {
-            code: s.toString(),
-            map: s.generateMap({ hires: "boundary" }),
-          };
-        },
-      },
-    } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
-    // Local font path resolution:
-    // When a source file calls localFont({ src: "./font.woff2" }) or
-    // localFont({ src: [{ path: "./font.woff2" }] }), the relative paths
-    // won't resolve in the browser because the CSS is injected at runtime.
-    // This plugin rewrites those path strings into Vite asset import
-    // references so that both dev (/@fs/...) and prod (/assets/font-xxx.woff2)
-    // URLs are correct.
-    {
-      name: "vinext:local-fonts",
-      enforce: "pre",
-
-      transform: {
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
-          },
-          code: "next/font/local",
-        },
-        handler(code, id) {
-          // Defensive guards — duplicate filter logic
-          if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-          if (!code.includes("next/font/local")) return null;
-          // Skip vinext's own font-local shim — it contains example paths
-          // in comments that would be incorrectly rewritten.
-          if (id.includes("font-local")) return null;
-
-          // Verify there's actually an import from next/font/local
-          const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
-          if (!importRe.test(code)) return null;
-
-          const s = new MagicString(code);
-          let hasChanges = false;
-          let fontImportCounter = 0;
-          const imports: string[] = [];
-
-          // Match font file paths in `path: "..."` or `src: "..."` properties.
-          // Captures: (1) property+colon prefix, (2) quote char, (3) the path.
-          const fontPathRe = /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
-
-          let match;
-          while ((match = fontPathRe.exec(code)) !== null) {
-            const [fullMatch, prefix, _quote, fontPath] = match;
-            const varName = `__vinext_local_font_${fontImportCounter++}`;
-
-            // Add an import for this font file — Vite resolves it as a static
-            // asset and returns the correct URL for both dev and prod.
-            imports.push(`import ${varName} from ${JSON.stringify(fontPath)};`);
-
-            // Replace: path: "./font.woff2" -> path: __vinext_local_font_0
-            const matchStart = match.index;
-            const matchEnd = matchStart + fullMatch.length;
-            s.overwrite(matchStart, matchEnd, `${prefix}${varName}`);
-            hasChanges = true;
-          }
-
-          if (!hasChanges) return null;
-
-          // Prepend the asset imports at the top of the file
-          s.prepend(imports.join("\n") + "\n");
-
-          return {
-            code: s.toString(),
-            map: s.generateMap({ hires: "boundary" }),
-          };
-        },
-      },
-    } as Plugin,
+    // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
+    createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
+    // Local font path resolution — see src/plugins/fonts.ts
+    createLocalFontsPlugin(),
     // Barrel import optimization:
     // Rewrites `import { Slot } from "radix-ui"` → `import * as Slot from "@radix-ui/react-slot"`
     // for packages listed in optimizePackageImports or DEFAULT_OPTIMIZE_PACKAGES.
@@ -4193,188 +3139,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))`.
-    //
-    // Some bundled libraries (notably @vercel/og) load assets at module init time
-    // with the pattern:
-    //
-    //   fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
-    //
-    // This works in browser and standard Node.js because import.meta.url is a real
-    // file:// URL. In Cloudflare Workers (both wrangler dev and production), however,
-    // import.meta.url is the string "worker" — not a URL — so new URL(...) throws
-    // "TypeError: Invalid URL string" and the Worker fails to start.
-    //
-    // Fix: at Vite transform time, find every such pattern, resolve the referenced
-    // file relative to the module's actual path on disk (available as `id`), read it,
-    // and replace the entire fetch(new URL(...)) expression with an inline base64 IIFE
-    // that resolves synchronously. This eliminates the runtime fetch entirely and works
-    // in all environments (workerd, Node.js, browser).
-    //
-    // Note: WASM files imported via `import ... from "./foo.wasm?module"` are handled
-    // by the bundler/Vite directly and do not need this treatment. Only assets that
-    // are runtime-fetched (not statically imported) need to be inlined here.
-    {
-      name: "vinext:og-inline-fetch-assets",
-      enforce: "pre",
-      configResolved(config) {
-        _ogInlineIsBuild = config.command === "build";
-      },
-      buildStart() {
-        if (_ogInlineIsBuild) {
-          _ogInlineCache.clear();
-        }
-      },
-      async transform(code, id) {
-        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
-        if (!code.includes("import.meta.url")) {
-          return null;
-        }
-
-        const useCache = _ogInlineIsBuild;
-        const moduleDir = path.dirname(id);
-        let newCode = code;
-        let didReplace = false;
-
-        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
-        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
-        if (code.includes("fetch(")) {
-          const fetchPattern =
-            /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
-
-          for (const match of code.matchAll(fetchPattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
-
-            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
-            if (fileBase64 === undefined) {
-              try {
-                const buf = await fs.promises.readFile(absPath);
-                fileBase64 = buf.toString("base64");
-                if (useCache) {
-                  _ogInlineCache.set(absPath, fileBase64);
-                }
-              } catch {
-                // File not found on disk — skip (may be a runtime-only asset)
-                continue;
-              }
-            }
-
-            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
-            const inlined = [
-              `(function(){`,
-              `var b=${JSON.stringify(fileBase64)};`,
-              `var r=atob(b);`,
-              `var a=new Uint8Array(r.length);`,
-              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-              `return Promise.resolve(a.buffer);`,
-              `})()`,
-            ].join("");
-
-            newCode = newCode.replaceAll(fullMatch, inlined);
-            didReplace = true;
-          }
-        }
-
-        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
-        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
-        // both font data passed to satori and WASM bytes passed to initWasm).
-        if (code.includes("readFileSync(")) {
-          const readFilePattern =
-            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
-
-          for (const match of newCode.matchAll(readFilePattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
-
-            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
-            if (fileBase64 === undefined) {
-              try {
-                const buf = await fs.promises.readFile(absPath);
-                fileBase64 = buf.toString("base64");
-                if (useCache) {
-                  _ogInlineCache.set(absPath, fileBase64);
-                }
-              } catch {
-                // File not found on disk — skip
-                continue;
-              }
-            }
-
-            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
-            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
-            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
-
-            newCode = newCode.replaceAll(fullMatch, inlined);
-            didReplace = true;
-          }
-        }
-
-        if (!didReplace) return null;
-        return { code: newCode, map: null };
-      },
-    },
-    // Copy @vercel/og binary assets to the RSC output directory for production builds.
-    //
-    // The edge build (dist/index.edge.js) uses:
-    //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
-    //   - resvg.wasm via dynamic import (og-font-patch rewrites the static import)
-    //
-    // The node build (dist/index.node.js) uses:
-    //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
-    //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
-    //
-    // The og-font-patch plugin's resvg fallback uses new URL("./resvg.wasm", import.meta.url)
-    // which the bundler should emit as an asset. This plugin is kept as a safety net to ensure
-    // the resvg.wasm file exists in the output directory for the Node.js disk-read fallback.
-    {
-      name: "vinext:og-assets",
-      apply: "build",
-      enforce: "post",
-      writeBundle: {
-        sequential: true,
-        order: "post",
-        async handler(options) {
-          const envName = this.environment?.name;
-          if (envName !== "rsc") return;
-
-          const outDir = options.dir;
-          if (!outDir) return;
-
-          // Check if the bundle references @vercel/og assets
-          const indexPath = path.join(outDir, "index.js");
-          if (!fs.existsSync(indexPath)) return;
-
-          const content = fs.readFileSync(indexPath, "utf-8");
-          // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
-          // the WASM needs to be present as a file alongside the bundle.
-          const ogAssets = ["resvg.wasm"];
-
-          // Only copy if the bundle actually references these files
-          const referencedAssets = ogAssets.filter((asset) => content.includes(asset));
-          if (referencedAssets.length === 0) return;
-
-          // Find @vercel/og in node_modules
-          try {
-            const require = createRequire(import.meta.url);
-            const ogPkgPath = require.resolve("@vercel/og/package.json");
-            const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
-
-            for (const asset of referencedAssets) {
-              const src = path.join(ogDistDir, asset);
-              const dest = path.join(outDir, asset);
-              if (fs.existsSync(src) && !fs.existsSync(dest)) {
-                fs.copyFileSync(src, dest);
-              }
-            }
-          } catch {
-            // @vercel/og not installed — nothing to copy
-          }
-        },
-      },
-    },
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
+    // see src/plugins/og-assets.ts
+    createOgInlineFetchAssetsPlugin(),
+    // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
+    ogAssetsPlugin,
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that

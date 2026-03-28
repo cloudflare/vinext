@@ -18,6 +18,8 @@ import {
   setServerCallback,
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
+import "../client/instrumentation-client.js";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   activateNavigationSnapshot,
   commitClientNavigationState,
@@ -553,6 +555,7 @@ async function main(): Promise<void> {
     }),
     import.meta.env.DEV ? { onCaughtError() {} } : undefined,
   );
+  window.__VINEXT_HYDRATED_AT = performance.now();
 
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
@@ -696,6 +699,7 @@ async function main(): Promise<void> {
   // Pages Router scroll restoration is handled in navigation.ts with
   // microtask-based deferral for compatibility with non-RSC navigation.
   window.addEventListener("popstate", (event) => {
+    notifyAppRouterTransitionStart(window.location.href, "traverse");
     const pendingNavigation =
       window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ?? Promise.resolve();
     window.__VINEXT_RSC_PENDING__ = pendingNavigation;

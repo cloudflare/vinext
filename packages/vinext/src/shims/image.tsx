@@ -153,6 +153,24 @@ function isRemoteUrl(src: string): boolean {
 }
 
 /**
+ * Resolve src, width, height, blurDataURL from Image props (string or StaticImageData).
+ * Shared by the Image component and getImageProps to keep behavior in sync.
+ */
+function resolveImageSource(v: {
+  src: string | StaticImageData;
+  width?: number;
+  height?: number;
+  blurDataURL?: string;
+}): { src: string; width?: number; height?: number; blurDataURL?: string } {
+  const src = typeof v.src === "string" ? v.src : v.src.src;
+  const imgWidth = v.width ?? (typeof v.src === "object" ? v.src.width : undefined);
+  const imgHeight = v.height ?? (typeof v.src === "object" ? v.src.height : undefined);
+  const imgBlurDataURL =
+    v.blurDataURL ?? (typeof v.src === "object" ? v.src.blurDataURL : undefined);
+  return { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL };
+}
+
+/**
  * Responsive image widths matching Next.js's device sizes config.
  * These are the breakpoints used for srcSet generation.
  * Configurable via `images.deviceSizes` in next.config.js.
@@ -217,12 +235,12 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
     : onLoad;
 
-  // Handle StaticImageData (import result)
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
-  const imgBlurDataURL =
-    blurDataURL ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
@@ -421,11 +439,12 @@ export function getImageProps(props: ImageProps): {
     ...rest
   } = props;
 
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
-  const imgBlurDataURL =
-    blurDataURLProp ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
 
   // Validate remote URLs against configured patterns
   let blockedInProd = false;

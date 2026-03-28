@@ -26,6 +26,7 @@ import {
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { isDangerousScheme } from "./url-safety.js";
 import {
   resolveRelativeHref,
@@ -404,6 +405,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+      notifyAppRouterTransitionStart(absoluteFullHref, replace ? "replace" : "push");
       setPending(true);
       try {
         await navigateClientSide(navigateHref, replace ? "replace" : "push", scroll);
@@ -411,6 +413,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         if (mountedRef.current) setPending(false);
       }
     } else {
+      // Next.js only consumes onRouterTransitionStart in the App Router.
+      // Pages Router still executes instrumentation-client side effects
+      // during startup, but it does not invoke the named export on navigation.
       // Pages Router: use the Router singleton
       try {
         const routerModule = await import("next/router");

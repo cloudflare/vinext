@@ -857,6 +857,7 @@ export function createSSRHandler(
         // Stores the React root and page loader for client-side navigation.
         const hydrationScript = `
 <script type="module">
+import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import { wrapWithRouterContext } from "next/router";
@@ -883,6 +884,7 @@ async function hydrate() {
   element = wrapWithRouterContext(element);
   const root = hydrateRoot(document.getElementById("__next"), element);
   window.__VINEXT_ROOT__ = root;
+  window.__VINEXT_HYDRATED_AT = performance.now();
 }
 hydrate();
 </script>`;

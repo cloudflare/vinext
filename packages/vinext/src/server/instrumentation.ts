@@ -66,6 +66,22 @@ export async function importModule(
 
 const INSTRUMENTATION_LOCATIONS = ["", "src/"];
 
+function findInstrumentationHookFile(
+  root: string,
+  basename: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  for (const dir of INSTRUMENTATION_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `${basename}${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Find the instrumentation file in the project root.
  */
@@ -73,15 +89,17 @@ export function findInstrumentationFile(
   root: string,
   fileMatcher: ValidFileMatcher,
 ): string | null {
-  for (const dir of INSTRUMENTATION_LOCATIONS) {
-    for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `instrumentation${ext}`);
-      if (fs.existsSync(fullPath)) {
-        return fullPath;
-      }
-    }
-  }
-  return null;
+  return findInstrumentationHookFile(root, "instrumentation", fileMatcher);
+}
+
+/**
+ * Find the instrumentation-client file in the project root.
+ */
+export function findInstrumentationClientFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation-client", fileMatcher);
 }
 
 /**

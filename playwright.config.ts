@@ -10,7 +10,7 @@ const projectServers = {
     testDir: "./tests/e2e/pages-router",
     use: { baseURL: "http://localhost:4173" },
     server: {
-      command: "npx tsc -p ../../../packages/vinext/tsconfig.json && npx vp dev --port 4173",
+      command: "npx vp run vinext#build && npx vp dev --port 4173",
       cwd: "./tests/fixtures/pages-basic",
       port: 4173,
       reuseExistingServer: !process.env.CI,
@@ -120,6 +120,17 @@ const projectServers = {
       port: 4180,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+    },
+  },
+  "app-with-src": {
+    testDir: "./tests/e2e/app-with-src",
+    use: { baseURL: "http://localhost:4181" },
+    server: {
+      command: "npx vp dev --port 4181",
+      cwd: "./tests/fixtures/app-with-src",
+      port: 4181,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
     },
   },
 };

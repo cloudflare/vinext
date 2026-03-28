@@ -358,6 +358,8 @@ export interface MiddlewareResult {
   responseHeaders?: Headers;
   /** If the middleware returned a full Response, use it directly. */
   response?: Response;
+  /** Promises registered via event.waitUntil() during middleware execution */
+  waitUntilPromises?: Promise<unknown>[];
 }
 
 /**
@@ -444,16 +446,13 @@ export async function runMiddleware(
       response: new Response(message, {
         status: 500,
       }),
+      waitUntilPromises: fetchEvent.waitUntilPromises,
     };
   }
 
-  // Drain waitUntil promises (fire-and-forget: we don't block the response
-  // on these — matches platform semantics where waitUntil runs after response).
-  void fetchEvent.drainWaitUntil();
-
   // No response = continue
   if (!response) {
-    return { continue: true };
+    return { continue: true, waitUntilPromises: fetchEvent.waitUntilPromises };
   }
 
   // Check for x-middleware-next header (NextResponse.next())
@@ -466,7 +465,7 @@ export async function runMiddleware(
         responseHeaders.append(key, value);
       }
     }
-    return { continue: true, responseHeaders };
+    return { continue: true, responseHeaders, waitUntilPromises: fetchEvent.waitUntilPromises };
   }
 
   // Check for redirect (3xx status)
@@ -485,6 +484,7 @@ export async function runMiddleware(
         redirectUrl: location,
         redirectStatus: response.status,
         responseHeaders,
+        waitUntilPromises: fetchEvent.waitUntilPromises,
       };
     }
   }
@@ -512,9 +512,10 @@ export async function runMiddleware(
       rewriteUrl: rewritePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders,
+      waitUntilPromises: fetchEvent.waitUntilPromises,
     };
   }
 
   // Middleware returned a full Response (e.g., blocking, custom body)
-  return { continue: false, response };
+  return { continue: false, response, waitUntilPromises: fetchEvent.waitUntilPromises };
 }

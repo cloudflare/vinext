@@ -227,6 +227,18 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Go to About");
   });
 
+  it("sets optimizeDeps.entries for pages and instrumentation hooks so deps are discovered at startup", () => {
+    const entries = server.config.optimizeDeps?.entries;
+
+    expect(entries).toBeDefined();
+    expect(Array.isArray(entries)).toBe(true);
+
+    const glob = (entries as string[]).join(",");
+    expect(glob).toMatch(/pages\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(glob).toContain("instrumentation.ts");
+    expect(glob).toContain("instrumentation-client.ts");
+  });
+
   it("resolves tsconfig path aliases (@/ imports)", async () => {
     const res = await fetch(`${baseUrl}/alias-test`);
     expect(res.status).toBe(200);

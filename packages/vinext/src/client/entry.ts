@@ -10,6 +10,7 @@
  */
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import "./instrumentation-client.js";
 // Eagerly import the router shim so its module-level popstate listener is
 // registered.  Without this, browser back/forward buttons do nothing because
 // navigateClient() is never invoked on history changes.
@@ -75,6 +76,7 @@ async function hydrate() {
   // re-render the tree during client-side navigation. import.meta.hot.data
   // is module-scoped and cannot be read across module boundaries.
   window.__VINEXT_ROOT__ = root;
+  window.__VINEXT_HYDRATED_AT = performance.now();
 }
 
 void hydrate();

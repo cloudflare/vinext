@@ -1186,6 +1186,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(webRequest, undefined);
 
+        // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
+        // Must run BEFORE the !result.continue check so promises survive redirect/response paths
+        // (e.g. Clerk auth redirecting unauthenticated users).
+        if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
+          void Promise.allSettled(result.waitUntilPromises);
+        }
+
         if (!result.continue) {
           if (result.redirectUrl) {
             const redirectHeaders: Record<string, string | string[]> = {

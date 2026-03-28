@@ -11,6 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
@@ -950,6 +951,9 @@ export async function navigateClientSide(
   }
 
   const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  // Match Next.js: App Router reports navigation start before dispatching,
+  // including hash-only navigations that short-circuit after URL update.
+  notifyAppRouterTransitionStart(fullHref, mode);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {

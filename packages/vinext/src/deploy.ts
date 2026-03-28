@@ -660,6 +660,13 @@ export default {
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(request, ctx);
 
+        // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
+        if (result.waitUntilPromises?.length) {
+          for (const p of result.waitUntilPromises) {
+            ctx.waitUntil(p);
+          }
+        }
+
         if (!result.continue) {
           if (result.redirectUrl) {
             const redirectHeaders = new Headers({ Location: result.redirectUrl });
