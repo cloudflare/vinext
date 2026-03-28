@@ -154,6 +154,12 @@ describe("convertToNitroPattern", () => {
   it("converts :param* optional catch-all segments to /** globs", () => {
     expect(convertToNitroPattern("/docs/:slug*")).toBe("/docs/**");
   });
+
+  it("handles consecutive dynamic segments correctly", () => {
+    expect(convertToNitroPattern("/:a/:b")).toBe("/**/**");
+    expect(convertToNitroPattern("/blog/:year/:month/:slug")).toBe("/blog/**/**/**");
+    expect(convertToNitroPattern("/api/:version/:resource/:id")).toBe("/api/**/**/**");
+  });
 });
 
 describe("generateNitroRouteRules", () => {
@@ -202,15 +208,15 @@ describe("mergeNitroRouteRules", () => {
   it("merges generated swr into existing exact rules with unrelated fields", () => {
     const result = mergeNitroRouteRules(
       {
-        "/blog/:slug": { headers: { "x-test": "1" } },
+        "/blog/**": { headers: { "x-test": "1" } },
       },
       {
-        "/blog/:slug": { swr: 60 },
+        "/blog/**": { swr: 60 },
       },
     );
 
     expect(result.routeRules).toEqual({
-      "/blog/:slug": {
+      "/blog/**": {
         headers: { "x-test": "1" },
         swr: 60,
       },
@@ -221,17 +227,17 @@ describe("mergeNitroRouteRules", () => {
   it("does not override explicit user cache rules on exact collisions", () => {
     const result = mergeNitroRouteRules(
       {
-        "/blog/:slug": { cache: { swr: true, maxAge: 600 } },
+        "/blog/**": { cache: { swr: true, maxAge: 600 } },
       },
       {
-        "/blog/:slug": { swr: 60 },
+        "/blog/**": { swr: 60 },
       },
     );
 
     expect(result.routeRules).toEqual({
-      "/blog/:slug": { cache: { swr: true, maxAge: 600 } },
+      "/blog/**": { cache: { swr: true, maxAge: 600 } },
     });
-    expect(result.skippedRoutes).toEqual(["/blog/:slug"]);
+    expect(result.skippedRoutes).toEqual(["/blog/**"]);
   });
 });
 

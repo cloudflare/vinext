@@ -78,9 +78,18 @@ export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
  *   /docs/:slug+  -> /docs/**
  *   /docs/:slug*  -> /docs/**
  *   /about        -> /about  (unchanged)
+ *   /:a/:b        -> /`**`/`**`  (consecutive segments)
  */
 export function convertToNitroPattern(pattern: string): string {
-  return pattern.replace(/\/:([a-zA-Z_][a-zA-Z0-9_-]*)([+*]?)(\/|$)/g, "/**$3");
+  return pattern
+    .split("/")
+    .map((segment) => {
+      if (segment.startsWith(":")) {
+        return "**";
+      }
+      return segment;
+    })
+    .join("/");
 }
 
 export function mergeNitroRouteRules(
