@@ -4,7 +4,6 @@ packages:
   - tests/fixtures/*
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
-  - benchmarks/vinext-rolldown
 
 catalog:
   "@cloudflare/kumo": ^1.6.0
