@@ -5,6 +5,8 @@
     "build": "vp run vinext#build",
     "check": "vp check",
     "test": "vp test run",
+    "test:unit": "vp test run --project unit",
+    "test:integration": "vp test run --project integration",
     "test:watch": "vp test",
     "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "fmt": "vp fmt",
