@@ -346,6 +346,58 @@ describe("emitStandaloneOutput", () => {
     ).toThrow('Failed to resolve required runtime dependency "missing-required"');
   });
 
+  it("copies vinext's own runtime dependencies into standalone node_modules", () => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    // No app-level externals; the manifest is empty.
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify([]));
+
+    // Set up a fake vinext package that has its own runtime dependency (rsc-html-stream),
+    // which the app does NOT depend on but vinext's prod-server needs at runtime.
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "vinext",
+          version: "0.0.0-test",
+          type: "module",
+          dependencies: {
+            "rsc-html-stream": "1.0.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+    // Install rsc-html-stream in the fake vinext's node_modules so it can be resolved.
+    writePackage(fakeVinextRoot, "rsc-html-stream");
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    // vinext's own runtime dep must be present even though the app doesn't list it.
+    expect(result.copiedPackages).toContain("rsc-html-stream");
+    expect(
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/rsc-html-stream/package.json"),
+      ),
+    ).toBe(true);
+  });
+
   it("copies packages referenced through symlinked node_modules entries", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });

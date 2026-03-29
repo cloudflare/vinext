@@ -58,9 +58,6 @@ export function createServerExternalsManifestPlugin(): Plugin {
   // builds (ssr only) and App Router builds (rsc + ssr) both produce a
   // complete manifest.
   const externals = new Set<string>();
-  // Track how many server environments have completed their writeBundle call
-  // so we know when it is safe to flush to disk.
-  let pendingWrites = 0;
   let outDir: string | null = null;
 
   return {
@@ -100,8 +97,6 @@ export function createServerExternalsManifestPlugin(): Plugin {
           }
           if (!outDir) outDir = dir;
         }
-
-        pendingWrites++;
 
         for (const item of Object.values(bundle)) {
           if (item.type !== "chunk") continue;

@@ -97,11 +97,12 @@ function copyPackageAndRuntimeDeps(
   root: string,
   targetNodeModulesDir: string,
   initialPackages: string[],
+  alreadyCopied?: Set<string>,
 ): string[] {
   const rootResolver = createRequire(path.join(root, "package.json"));
   const rootPkg = readPackageJson(path.join(root, "package.json"));
   const rootOptional = new Set(Object.keys(rootPkg.optionalDependencies ?? {}));
-  const copied = new Set<string>();
+  const copied = alreadyCopied ?? new Set<string>();
   const queue: QueueEntry[] = initialPackages.map((packageName) => ({
     packageName,
     resolver: rootResolver,
@@ -126,7 +127,13 @@ function copyPackageAndRuntimeDeps(
     const packageRoot = path.dirname(packageJsonPath);
     const packageTarget = path.join(targetNodeModulesDir, entry.packageName);
     fs.mkdirSync(path.dirname(packageTarget), { recursive: true });
-    fs.cpSync(packageRoot, packageTarget, { recursive: true, dereference: true });
+    fs.cpSync(packageRoot, packageTarget, {
+      recursive: true,
+      dereference: true,
+      // Skip any nested node_modules/ — the BFS walk resolves deps at their
+      // correct hoisted location, so nested copies would be stale duplicates.
+      filter: (src) => path.basename(src) !== "node_modules",
+    });
 
     copied.add(entry.packageName);
 
@@ -256,7 +263,8 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   const initialPackages = readServerExternalsManifest(serverDir).filter(
     (name) => name !== "vinext",
   );
-  const copiedPackages = copyPackageAndRuntimeDeps(root, standaloneNodeModulesDir, initialPackages);
+  const copiedSet = new Set<string>();
+  copyPackageAndRuntimeDeps(root, standaloneNodeModulesDir, initialPackages, copiedSet);
 
   // Always embed the exact vinext runtime that produced this build.
   const vinextPackageRoot = resolveVinextPackageRoot(options.vinextPackageRoot);
@@ -274,12 +282,26 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     recursive: true,
     dereference: true,
   });
+  copiedSet.add("vinext");
+
+  // Copy vinext's own runtime dependencies. The prod-server imports packages
+  // like `rsc-html-stream` at runtime; they must be present in standalone
+  // node_modules/ even if the user's app doesn't depend on them directly.
+  // We resolve them from vinext's package root so nested requires work correctly.
+  const vinextPkg = readPackageJson(path.join(vinextPackageRoot, "package.json"));
+  const vinextRuntimeDeps = runtimeDeps(vinextPkg).filter((name) => !copiedSet.has(name));
+  copyPackageAndRuntimeDeps(
+    vinextPackageRoot,
+    standaloneNodeModulesDir,
+    vinextRuntimeDeps,
+    copiedSet,
+  );
 
   writeStandaloneServerEntry(path.join(standaloneDir, "server.js"));
   writeStandalonePackageJson(path.join(standaloneDir, "package.json"));
 
   return {
     standaloneDir,
-    copiedPackages: [...new Set([...copiedPackages, "vinext"])],
+    copiedPackages: [...copiedSet],
   };
 }
