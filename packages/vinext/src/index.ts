@@ -1320,11 +1320,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedMissingMdxPlugin = false;
 
   async function ensureMdxDelegate(reason: "detected" | "on-demand"): Promise<Plugin | null> {
-    // If user registered their own MDX plugin, don't interfere — their plugin
-    // will handle .mdx transforms later in the pipeline.
-    // Note: hasUserMdxPlugin is set during config() which always runs before transform().
-    // When true and mdxDelegate is still null (no auto-injected delegate), the
-    // caller in transform() silently returns undefined to let the user's plugin handle the file.
+    // Reuse the auto-injected delegate once it has been created.
+    // If the user registered their own MDX plugin and `mdxDelegate` is still null,
+    // return null here so transform() falls through without handling the file and
+    // the user's plugin can process the .mdx module later in the pipeline.
+    // Note: hasUserMdxPlugin is set during config(), which runs before transform().
     if (mdxDelegate || hasUserMdxPlugin) return mdxDelegate;
     if (!mdxDelegatePromise) {
       mdxDelegatePromise = (async () => {
