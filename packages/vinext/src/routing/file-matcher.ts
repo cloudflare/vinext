@@ -1,6 +1,4 @@
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import type { Dirent } from "node:fs";
+import { glob } from "node:fs/promises";
 
 export const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -87,9 +85,7 @@ export function createValidFileMatcher(
 }
 
 /**
- * Use function-form exclude for Node 22.14+ compatibility.
- * Scans for files matching stem with extensions recursively under cwd.
- * Supports glob patterns in stem.
+ * Use function-form exclude for Node < 22.14 compatibility.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -97,70 +93,11 @@ export async function* scanWithExtensions(
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
-  const dir = cwd;
-
-  // Check if stem contains glob patterns
-  const isGlob = stem.includes("**") || stem.includes("*");
-
-  // Extract the base name from stem (e.g., "**/page" -> "page", "page" -> "page")
-  // For "**/*", baseName will be "*" which means match all files
-  const baseName = stem.split("/").pop() || stem;
-  const matchAllFiles = baseName === "*";
-
-  async function* scanDir(currentDir: string, relativeBase: string): AsyncGenerator<string> {
-    let entries: Dirent[];
-    try {
-      entries = (await readdir(currentDir, { withFileTypes: true })) as Dirent[];
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (exclude && exclude(entry.name)) continue;
-      if (entry.name.startsWith(".")) continue;
-
-      const fullPath = join(currentDir, entry.name);
-      const relativePath = fullPath.startsWith(dir) ? fullPath.slice(dir.length + 1) : fullPath;
-
-      if (entry.isDirectory()) {
-        // Recurse into subdirectories
-        yield* scanDir(fullPath, relativePath);
-      } else if (entry.isFile()) {
-        if (matchAllFiles) {
-          // For "**/*" pattern, match any file with the given extensions
-          for (const ext of extensions) {
-            if (entry.name.endsWith(`.${ext}`)) {
-              yield relativePath;
-              break;
-            }
-          }
-        } else {
-          // Check if file matches baseName.{extension}
-          for (const ext of extensions) {
-            const expectedName = `${baseName}.${ext}`;
-            if (entry.name === expectedName) {
-              // For glob patterns like **/page, match any path ending with page.tsx
-              if (isGlob) {
-                if (relativePath.endsWith(`${baseName}.${ext}`)) {
-                  yield relativePath;
-                }
-              } else {
-                // For non-glob stems, the path should start with the stem
-                if (
-                  relativePath === `${relativeBase}.${ext}` ||
-                  relativePath.startsWith(`${relativeBase}/`) ||
-                  relativePath === `${baseName}.${ext}`
-                ) {
-                  yield relativePath;
-                }
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
+  const pattern = buildExtensionGlob(stem, extensions);
+  for await (const file of glob(pattern, {
+    cwd,
+    ...(exclude ? { exclude } : {}),
+  })) {
+    yield file;
   }
-
-  yield* scanDir(dir, stem);
 }
