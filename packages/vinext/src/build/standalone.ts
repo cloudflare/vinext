@@ -3,32 +3,32 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
-interface PackageJson {
+type PackageJson = {
   name?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
-}
+};
 
-export interface StandaloneBuildOptions {
+export type StandaloneBuildOptions = {
   root: string;
   outDir: string;
   /**
    * Test hook: override vinext package root used for embedding runtime files.
    */
   vinextPackageRoot?: string;
-}
+};
 
-export interface StandaloneBuildResult {
+export type StandaloneBuildResult = {
   standaloneDir: string;
   copiedPackages: string[];
-}
+};
 
-interface QueueEntry {
+type QueueEntry = {
   packageName: string;
   resolver: NodeRequire;
   optional: boolean;
-}
+};
 
 function readPackageJson(packageJsonPath: string): PackageJson {
   return JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as PackageJson;

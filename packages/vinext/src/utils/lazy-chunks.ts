@@ -1,7 +1,7 @@
 /**
  * Build-manifest chunk metadata used to compute lazy chunks.
  */
-export interface BuildManifestChunk {
+export type BuildManifestChunk = {
   file: string;
   isEntry?: boolean;
   isDynamicEntry?: boolean;
@@ -9,7 +9,7 @@ export interface BuildManifestChunk {
   dynamicImports?: string[];
   css?: string[];
   assets?: string[];
-}
+};
 
 /**
  * Compute the set of chunk filenames that are ONLY reachable through dynamic
