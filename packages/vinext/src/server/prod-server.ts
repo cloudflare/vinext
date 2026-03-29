@@ -448,10 +448,7 @@ async function tryServeStatic(
       res.end(variant.buffer);
     } else {
       pipeline(fs.createReadStream(variant.path), res, (err) => {
-        if (err && !res.headersSent) {
-          res.writeHead(500);
-          res.end();
-        }
+        if (err) res.destroy(err);
       });
     }
     return true;
@@ -500,10 +497,7 @@ async function tryServeStatic(
         return true;
       }
       pipeline(fs.createReadStream(resolved.path), compressor, res, (err) => {
-        if (err && !res.headersSent) {
-          res.writeHead(500);
-          res.end();
-        }
+        if (err) res.destroy(err);
       });
       return true;
     }
@@ -518,10 +512,7 @@ async function tryServeStatic(
     return true;
   }
   pipeline(fs.createReadStream(resolved.path), res, (err) => {
-    if (err && !res.headersSent) {
-      res.writeHead(500);
-      res.end();
-    }
+    if (err) res.destroy(err);
   });
   return true;
 }

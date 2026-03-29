@@ -1,7 +1,7 @@
 /**
  * Build-time precompression for hashed static assets.
  *
- * Generates .br (brotli q5), .gz (gzip l9), and .zst (zstd l22) files
+ * Generates .br (brotli q5), .gz (gzip l8), and .zst (zstd l8) files
  * alongside compressible assets in dist/client/assets/. Served directly by
  * the production server — no per-request compression needed for immutable
  * build output.
@@ -73,7 +73,10 @@ async function* walkFiles(dir: string, base: string = dir): AsyncGenerator<strin
  * Safe to re-run — overwrites existing compressed variants with identical
  * output, and never compresses `.br`, `.gz`, or `.zst` files themselves.
  */
-export async function precompressAssets(clientDir: string): Promise<PrecompressResult> {
+export async function precompressAssets(
+  clientDir: string,
+  onProgress?: (completed: number, total: number, file: string) => void,
+): Promise<PrecompressResult> {
   const assetsDir = path.join(clientDir, "assets");
   const result: PrecompressResult = {
     filesCompressed: 0,
@@ -81,47 +84,41 @@ export async function precompressAssets(clientDir: string): Promise<PrecompressR
     totalCompressedBytes: 0,
   };
 
-  // Collect compressible files first, then process in bounded chunks
-  const files: { fullPath: string; content: Buffer }[] = [];
+  // Collect compressible file paths, then read + compress in bounded chunks
+  // to keep peak memory at O(CONCURRENCY * max_file_size) instead of
+  // O(total_assets).
+  const filePaths: string[] = [];
 
   for await (const relativePath of walkFiles(assetsDir)) {
     const ext = path.extname(relativePath).toLowerCase();
 
-    // Skip non-compressible types and already-compressed variants
     if (!COMPRESSIBLE_EXTENSIONS.has(ext)) continue;
-    if (
-      relativePath.endsWith(".br") ||
-      relativePath.endsWith(".gz") ||
-      relativePath.endsWith(".zst")
-    )
-      continue;
 
-    const fullPath = path.join(assetsDir, relativePath);
-    const content = await fsp.readFile(fullPath);
-
-    if (content.length < MIN_SIZE) continue;
-
-    files.push({ fullPath, content });
-    result.filesCompressed++;
-    result.totalOriginalBytes += content.length;
+    filePaths.push(path.join(assetsDir, relativePath));
   }
 
   // Process in chunks to bound concurrent CPU-heavy compressions
-  for (let i = 0; i < files.length; i += CONCURRENCY) {
-    const chunk = files.slice(i, i + CONCURRENCY);
+  for (let i = 0; i < filePaths.length; i += CONCURRENCY) {
+    const chunk = filePaths.slice(i, i + CONCURRENCY);
     await Promise.all(
-      chunk.map(async ({ fullPath, content }) => {
+      chunk.map(async (fullPath) => {
+        const content = await fsp.readFile(fullPath);
+        if (content.length < MIN_SIZE) return;
+
+        result.filesCompressed++;
+        result.totalOriginalBytes += content.length;
+
         // Compress all variants concurrently within each file
         const compressions: Promise<Buffer>[] = [
           brotliCompress(content, {
             params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
           }),
-          gzip(content, { level: zlib.constants.Z_BEST_COMPRESSION }),
+          gzip(content, { level: 8 }),
         ];
         if (zstdCompress) {
           compressions.push(
             zstdCompress(content, {
-              params: { [zlib.constants.ZSTD_c_compressionLevel]: 22 },
+              params: { [zlib.constants.ZSTD_c_compressionLevel]: 8 },
             }),
           );
         }
@@ -139,6 +136,7 @@ export async function precompressAssets(clientDir: string): Promise<PrecompressR
         await Promise.all(writes);
 
         result.totalCompressedBytes += brContent.length;
+        onProgress?.(result.filesCompressed, filePaths.length, path.basename(fullPath));
       }),
     );
   }
