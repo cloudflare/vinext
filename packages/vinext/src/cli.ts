@@ -28,7 +28,6 @@ import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
-import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -517,7 +516,7 @@ async function buildApp() {
       `  Generated standalone output in ${path.relative(process.cwd(), standalone.standaloneDir)}/`,
     );
     console.log("  Start it with: node dist/standalone/server.js\n");
-    return;
+    return process.exit(0);
   }
 
   let prerenderResult;

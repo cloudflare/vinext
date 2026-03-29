@@ -8,7 +8,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
+export { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD };
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
 
@@ -271,14 +272,12 @@ function isCjsError(e: unknown): boolean {
   );
 }
 
+const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
+
 /**
  * Emit a warning when config loading fails, with a targeted hint for
  * known plugin wrappers that are unnecessary in vinext.
  */
-export const PHASE_PRODUCTION_BUILD = "phase-production-build";
-
-const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
-
 function warnConfigLoadFailure(filename: string, err: Error): void {
   const msg = err.message ?? "";
   const stack = err.stack ?? "";
