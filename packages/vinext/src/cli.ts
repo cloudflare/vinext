@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientTreeshakeConfig, getClientOutputConfigForVite } from "./index.js";
+import vinext from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
@@ -384,12 +384,13 @@ async function buildApp() {
     }
   }
 
-  if (isApp) {
-    // App Router: use createBuilder for multi-environment RSC builds
-    const config = buildViteConfig({}, logger);
-    const builder = await vite.createBuilder(config);
-    await builder.buildApp();
+  // Both App Router and Pages Router use createBuilder + buildApp() so that
+  // cloudflare() runs in its intended multi-environment mode.
+  const config = buildViteConfig({}, logger);
+  const builder = await vite.createBuilder(config);
+  await builder.buildApp();
 
+  if (isApp) {
     // Hybrid app (both app/ and pages/ directories): also build the Pages Router
     // SSR bundle so the prerender phase can render Pages Router routes.
     // The App Router multi-env build (buildApp) doesn't include the Pages Router
@@ -457,46 +458,6 @@ async function buildApp() {
         },
       });
     }
-  } else {
-    // Pages Router: client + SSR builds.
-    // Use buildViteConfig() so that when a vite.config exists we don't
-    // duplicate the vinext() plugin.
-    console.log("  Building client...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/client",
-            manifest: true,
-            ssrManifest: true,
-            ...withBuildBundlerOptions({
-              input: "virtual:vinext-client-entry",
-              output: getClientOutputConfigForVite(viteMajorVersion),
-              treeshake: clientTreeshakeConfig,
-            }),
-          },
-        },
-        logger,
-      ),
-    );
-
-    console.log("  Building server...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/server",
-            ssr: "virtual:vinext-server-entry",
-            ...withBuildBundlerOptions({
-              output: {
-                entryFileNames: "entry.js",
-              },
-            }),
-          },
-        },
-        logger,
-      ),
-    );
   }
 
   const nextConfig = await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd());
