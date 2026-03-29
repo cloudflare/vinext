@@ -1,9 +1,9 @@
 import { safeJsonStringify } from "./html.js";
 
-export interface RscEmbedTransform {
+export type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
-}
+};
 
 /**
  * Fix invalid preload "as" values in RSC Flight hint lines before they reach

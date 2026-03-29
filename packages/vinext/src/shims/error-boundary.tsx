@@ -4,14 +4,14 @@ import React from "react";
 // oxlint-disable-next-line @typescript-eslint/no-require-imports -- next/navigation is shimmed
 import { usePathname } from "next/navigation";
 
-export interface ErrorBoundaryProps {
+export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: Error; reset: () => void }>;
   children: React.ReactNode;
-}
+};
 
-export interface ErrorBoundaryState {
+export type ErrorBoundaryState = {
   error: Error | null;
-}
+};
 
 /**
  * Generic ErrorBoundary used to wrap route segments with error.tsx.
@@ -58,19 +58,19 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 // NotFoundBoundary — catches notFound() on the client and renders not-found.tsx
 // ---------------------------------------------------------------------------
 
-interface NotFoundBoundaryProps {
+type NotFoundBoundaryProps = {
   fallback: React.ReactNode;
   children: React.ReactNode;
-}
+};
 
-interface NotFoundBoundaryInnerProps extends NotFoundBoundaryProps {
+type NotFoundBoundaryInnerProps = {
   pathname: string;
-}
+} & NotFoundBoundaryProps;
 
-interface NotFoundBoundaryState {
+type NotFoundBoundaryState = {
   notFound: boolean;
   previousPathname: string;
-}
+};
 
 /**
  * Inner class component that catches notFound() errors and renders the

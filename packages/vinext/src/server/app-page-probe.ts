@@ -4,7 +4,7 @@ import {
   type AppPageSpecialError,
 } from "./app-page-execution.js";
 
-export interface ProbeAppPageBeforeRenderOptions {
+export type ProbeAppPageBeforeRenderOptions = {
   hasLoadingBoundary: boolean;
   layoutCount: number;
   probeLayoutAt: (layoutIndex: number) => unknown;
@@ -16,7 +16,7 @@ export interface ProbeAppPageBeforeRenderOptions {
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-}
+};
 
 export async function probeAppPageBeforeRender(
   options: ProbeAppPageBeforeRenderOptions,

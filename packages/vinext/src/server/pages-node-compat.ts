@@ -12,20 +12,20 @@ export { PagesBodyParseError as PagesApiBodyParseError };
 
 export type PagesRequestQuery = Record<string, string | string[]>;
 
-export interface PagesReqResRequest {
+export type PagesReqResRequest = {
   method: string;
   url: string;
   headers: Record<string, string>;
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
-}
+};
 
-export interface PagesReqResHeaders {
+export type PagesReqResHeaders = {
   [key: string]: string | number | boolean | string[];
-}
+};
 
-export interface PagesReqResResponse {
+export type PagesReqResResponse = {
   statusCode: number;
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
@@ -37,20 +37,20 @@ export interface PagesReqResResponse {
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => void;
   getHeaders: () => PagesReqResHeaders;
-}
+};
 
-export interface CreatePagesReqResOptions {
+export type CreatePagesReqResOptions = {
   body: unknown;
   query: PagesRequestQuery;
   request: Request;
   url: string;
-}
+};
 
-export interface CreatePagesReqResResult {
+export type CreatePagesReqResResult = {
   req: PagesReqResRequest;
   res: PagesReqResResponse;
   responsePromise: Promise<Response>;
-}
+};
 
 async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) {

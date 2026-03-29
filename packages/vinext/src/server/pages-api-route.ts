@@ -9,23 +9,23 @@ import {
   PagesApiBodyParseError,
 } from "./pages-node-compat.js";
 
-interface PagesApiRouteModule {
+type PagesApiRouteModule = {
   default?: (req: PagesReqResRequest, res: PagesReqResResponse) => void | Promise<void>;
-}
+};
 
-export interface PagesApiRouteMatch {
+export type PagesApiRouteMatch = {
   params: PagesRequestQuery;
   route: Pick<Route, "pattern"> & {
     module: PagesApiRouteModule;
   };
-}
+};
 
-export interface HandlePagesApiRouteOptions {
+export type HandlePagesApiRouteOptions = {
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
   url: string;
-}
+};
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
   const query: PagesRequestQuery = { ...params };

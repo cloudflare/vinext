@@ -103,11 +103,11 @@ function useChildSegments(): string[] {
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
 
-export interface NavigationContext {
+export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
-}
+};
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
 const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
@@ -137,12 +137,12 @@ type NavigationContextWithReadonlyCache = NavigationContext & {
 // ALS-backed state regardless of which instance was registered.
 // ---------------------------------------------------------------------------
 
-interface _StateAccessors {
+type _StateAccessors = {
   getServerContext: () => NavigationContext | null;
   setServerContext: (ctx: NavigationContext | null) => void;
   getInsertedHTMLCallbacks: () => Array<() => unknown>;
   clearInsertedHTMLCallbacks: () => void;
-}
+};
 
 export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
 const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
@@ -229,10 +229,10 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
 
-export interface PrefetchCacheEntry {
+export type PrefetchCacheEntry = {
   response: Response;
   timestamp: number;
-}
+};
 
 /**
  * Convert a pathname (with optional query/hash) to its .rsc URL.

@@ -345,7 +345,7 @@ function compileMatcherPattern(pattern: string): RegExp | null {
 }
 
 /** Result of running middleware. */
-export interface MiddlewareResult {
+export type MiddlewareResult = {
   /** Whether to continue to the route handler. */
   continue: boolean;
   /** If set, redirect to this URL. */
@@ -362,7 +362,7 @@ export interface MiddlewareResult {
   response?: Response;
   /** Promises registered via event.waitUntil() during middleware execution */
   waitUntilPromises?: Promise<unknown>[];
-}
+};
 
 /**
  * Load and execute middleware for a given request.

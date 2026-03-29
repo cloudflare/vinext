@@ -9,9 +9,9 @@
  */
 import React, { useEffect, useRef, Children, isValidElement } from "react";
 
-interface HeadProps {
+type HeadProps = {
   children?: React.ReactNode;
-}
+};
 
 // --- SSR head collection ---
 // State uses a registration pattern so this module can be bundled for the

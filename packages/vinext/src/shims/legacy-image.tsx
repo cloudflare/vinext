@@ -11,7 +11,7 @@
 import React, { forwardRef } from "react";
 import Image from "./image.js";
 
-interface LegacyImageProps {
+type LegacyImageProps = {
   src: string | { src: string; width: number; height: number; blurDataURL?: string };
   alt: string;
   width?: number | string;
@@ -36,7 +36,7 @@ interface LegacyImageProps {
   loading?: "lazy" | "eager";
   unoptimized?: boolean;
   id?: string;
-}
+};
 
 const LegacyImage = forwardRef<HTMLImageElement, LegacyImageProps>(
   function LegacyImage(props, ref) {

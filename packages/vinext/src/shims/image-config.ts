@@ -12,13 +12,13 @@
  * - protocol, port, and search are matched exactly when specified
  */
 
-export interface RemotePattern {
+export type RemotePattern = {
   protocol?: string;
   hostname: string;
   port?: string;
   pathname?: string;
   search?: string;
-}
+};
 
 /**
  * Convert a glob pattern (with `*` and `**`) to a RegExp.

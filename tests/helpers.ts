@@ -36,10 +36,10 @@ export const RSC_ENTRIES = {
 
 // ── Server lifecycle helper ───────────────────────────────────
 
-export interface TestServerResult {
+export type TestServerResult = {
   server: ViteDevServer;
   baseUrl: string;
-}
+};
 
 /**
  * Start a Vite dev server against a fixture directory.
@@ -129,11 +129,11 @@ export async function fetchJson(
   return { res, data };
 }
 
-export interface NodeHttpResponse {
+export type NodeHttpResponse = {
   status: number;
   headers: IncomingHttpHeaders;
   body: string;
-}
+};
 
 export async function createIsolatedFixture(
   fixtureDir: string,

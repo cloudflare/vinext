@@ -160,14 +160,14 @@ function buildFormData(form: HTMLFormElement, submitter: FormSubmitter | null): 
   }
 }
 
-interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
+type FormProps = {
   /** Target URL for GET forms, or server action for POST forms */
   action: string | ((formData: FormData) => void | Promise<void>);
   /** Replace instead of push in history (default: false) */
   replace?: boolean;
   /** Scroll to top after navigation (default: true) */
   scroll?: boolean;
-}
+} & FormHTMLAttributes<HTMLFormElement>;
 
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
   const { action, replace = false, scroll = true, onSubmit, ...rest } = props;

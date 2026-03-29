@@ -1,3 +1,5 @@
+// oxlint-disable typescript/consistent-type-definitions
+
 /**
  * Global ambient type declarations for vinext runtime globals.
  *

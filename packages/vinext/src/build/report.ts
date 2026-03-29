@@ -29,7 +29,7 @@ import type { PrerenderResult } from "./prerender.js";
 
 export type RouteType = "static" | "isr" | "ssr" | "unknown" | "api";
 
-export interface RouteRow {
+export type RouteRow = {
   pattern: string;
   type: RouteType;
   /** Only set for `isr` routes. */
@@ -40,7 +40,7 @@ export interface RouteRow {
    * Used by `formatBuildReport` to add a note in the legend.
    */
   prerendered?: boolean;
-}
+};
 
 // ─── Regex-based export detection ────────────────────────────────────────────
 

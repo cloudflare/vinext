@@ -22,7 +22,7 @@ import path from "node:path";
 // Types matching Next.js MetadataRoute
 // -------------------------------------------------------------------
 
-export interface SitemapEntry {
+export type SitemapEntry = {
   url: string;
   lastModified?: string | Date;
   changeFrequency?: "always" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "never";
@@ -53,22 +53,22 @@ export interface SitemapEntry {
     live?: "yes" | "no";
     tag?: string;
   }>;
-}
+};
 
-export interface RobotsRule {
+export type RobotsRule = {
   userAgent?: string | string[];
   allow?: string | string[];
   disallow?: string | string[];
   crawlDelay?: number;
-}
+};
 
-export interface RobotsConfig {
+export type RobotsConfig = {
   rules: RobotsRule | RobotsRule[];
   sitemap?: string | string[];
   host?: string;
-}
+};
 
-export interface ManifestConfig {
+export type ManifestConfig = {
   name?: string;
   short_name?: string;
   description?: string;
@@ -83,7 +83,7 @@ export interface ManifestConfig {
     purpose?: string;
   }>;
   [key: string]: unknown;
-}
+};
 
 // -------------------------------------------------------------------
 // Known metadata file patterns
@@ -343,7 +343,7 @@ function serializeDate(value: string | Date): string {
 // Metadata route discovery
 // -------------------------------------------------------------------
 
-export interface MetadataFileRoute {
+export type MetadataFileRoute = {
   /** Type of metadata file */
   type: string;
   /** Whether this is a dynamic (code-generated) route */
@@ -354,7 +354,7 @@ export interface MetadataFileRoute {
   servedUrl: string;
   /** Content type for the response */
   contentType: string;
-}
+};
 
 function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
   if (metaType === "sitemap" || metaType === "robots" || metaType === "manifest") {

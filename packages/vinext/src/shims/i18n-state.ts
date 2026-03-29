@@ -21,9 +21,9 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-export interface I18nState {
+export type I18nState = {
   i18nContext: I18nContext | null;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.i18n.als");
 const _FALLBACK_KEY = Symbol.for("vinext.i18n.fallback");

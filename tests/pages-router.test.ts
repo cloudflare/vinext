@@ -85,7 +85,7 @@ function unwrapStartedProdServer(
   return "server" in result ? result.server : result;
 }
 
-interface CapturedStreamResponse {
+type CapturedStreamResponse = {
   body: Buffer;
   headers: IncomingHttpHeaders;
   statusCode: number;
@@ -94,7 +94,7 @@ interface CapturedStreamResponse {
   snapshot: Buffer;
   rawBody: Buffer;
   rawSnapshot: Buffer;
-}
+};
 
 function createResponseDecoder(
   contentEncoding: string | string[] | undefined,

@@ -45,14 +45,14 @@ import {
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
 // ---------------------------------------------------------------------------
 
-export interface CacheContext {
+export type CacheContext = {
   /** Tags collected via cacheTag() during execution */
   tags: string[];
   /** Cache life configs collected via cacheLife() — minimum-wins rule applies */
   lifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
-}
+};
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
 // without a direct import (avoiding circular dependencies).
@@ -82,14 +82,14 @@ export function getCacheContext(): CacheContext | null {
  * (they depend on virtual modules set up by @vitejs/plugin-rsc).
  * In test environments, the import fails and we fall back to JSON.
  */
-interface RscModule {
+type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
   decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
-}
+};
 
 const NOT_LOADED = Symbol("not-loaded");
 let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
@@ -229,9 +229,9 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // Uses AsyncLocalStorage for request isolation so concurrent requests
 // on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
-export interface PrivateCacheState {
+export type PrivateCacheState = {
   _privateCache: Map<string, unknown> | null;
-}
+};
 
 const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");

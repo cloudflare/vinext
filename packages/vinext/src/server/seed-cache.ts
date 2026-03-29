@@ -37,19 +37,19 @@ import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
 
 // ─── Manifest types ───────────────────────────────────────────────────────────
 
-interface PrerenderManifest {
+type PrerenderManifest = {
   buildId: string;
   trailingSlash?: boolean;
   routes: PrerenderManifestRoute[];
-}
+};
 
-interface PrerenderManifestRoute {
+type PrerenderManifestRoute = {
   route: string;
   status: string;
   revalidate?: number | false;
   path?: string;
   router?: "app" | "pages";
-}
+};
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 

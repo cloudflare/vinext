@@ -19,7 +19,7 @@ function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-export interface Viewport {
+export type Viewport = {
   /** Viewport width (default: "device-width") */
   width?: string | number;
   /** Viewport height */
@@ -36,7 +36,7 @@ export interface Viewport {
   themeColor?: string | Array<{ media?: string; color: string }>;
   /** Color scheme: 'light' | 'dark' | 'light dark' | 'normal' */
   colorScheme?: string;
-}
+};
 
 /**
  * Resolve viewport config from a module. Handles both static `viewport` export
@@ -124,7 +124,7 @@ export function ViewportHead({ viewport }: { viewport: Viewport }) {
 // Metadata types and resolution
 // ---------------------------------------------------------------------------
 
-export interface Metadata {
+export type Metadata = {
   title?: string | { default?: string; template?: string; absolute?: string };
   description?: string;
   generator?: string;
@@ -227,40 +227,40 @@ export interface Metadata {
   };
   other?: Record<string, string | string[]>;
   [key: string]: unknown;
-}
+};
 
-interface AppLinksApple {
+type AppLinksApple = {
   url: string | URL;
   app_store_id?: string | number;
   app_name?: string;
-}
+};
 
-interface AppLinksAndroid {
+type AppLinksAndroid = {
   package: string;
   url?: string | URL;
   class?: string;
   app_name?: string;
-}
+};
 
-interface AppLinksWindows {
+type AppLinksWindows = {
   url: string | URL;
   app_id?: string;
   app_name?: string;
-}
+};
 
-interface AppLinksWeb {
+type AppLinksWeb = {
   url: string | URL;
   should_fallback?: boolean;
-}
+};
 
-interface TwitterPlayerDescriptor {
+type TwitterPlayerDescriptor = {
   playerUrl: string | URL;
   streamUrl: string | URL;
   width: number;
   height: number;
-}
+};
 
-interface TwitterAppDescriptor {
+type TwitterAppDescriptor = {
   id: {
     iphone?: string | number;
     ipad?: string | number;
@@ -272,7 +272,7 @@ interface TwitterAppDescriptor {
     googleplay?: string | URL;
   };
   name?: string;
-}
+};
 
 /**
  * Merge metadata from multiple sources (layouts + page).

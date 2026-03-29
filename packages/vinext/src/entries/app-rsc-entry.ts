@@ -68,7 +68,7 @@ const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", impo
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
-export interface AppRouterConfig {
+export type AppRouterConfig = {
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -93,7 +93,7 @@ export interface AppRouterConfig {
    * `virtual:vinext-server-entry` when this flag is set.
    */
   hasPagesDir?: boolean;
-}
+};
 
 /**
  * Generate the virtual RSC entry module.

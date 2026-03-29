@@ -34,15 +34,15 @@ import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 
-interface NavigateEvent {
+type NavigateEvent = {
   url: URL;
   /** Call to prevent the Link's default navigation (e.g. for View Transitions). */
   preventDefault(): void;
   /** Whether preventDefault() has been called. */
   defaultPrevented: boolean;
-}
+};
 
-interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
+type LinkProps = {
   href: string | { pathname?: string; query?: UrlQuery };
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
   as?: string;
@@ -59,15 +59,15 @@ interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"
   /** Called before navigation happens (Next.js 16). Return value is ignored. */
   onNavigate?: (event: NavigateEvent) => void;
   children?: React.ReactNode;
-}
+} & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
 
 // ---------------------------------------------------------------------------
 // useLinkStatus — reports the pending state of a parent <Link> navigation
 // ---------------------------------------------------------------------------
 
-interface LinkStatusContextValue {
+type LinkStatusContextValue = {
   pending: boolean;
-}
+};
 
 const LinkStatusContext = createContext<LinkStatusContextValue>({ pending: false });
 

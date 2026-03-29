@@ -5,16 +5,16 @@
  * pulling in the full vite/client types, which would add CSS module
  * declarations and other globals inappropriate for a library package.
  */
-interface ViteHotData {
+type ViteHotData = {
   [key: string]: unknown;
-}
+};
 
-interface ViteHotContext {
+type ViteHotContext = {
   readonly data: ViteHotData;
   accept(): void;
   on(event: string, cb: (...args: unknown[]) => void): void;
-}
+};
 
-interface ImportMeta {
+type ImportMeta = {
   readonly hot?: ViteHotContext;
-}
+};

@@ -31,11 +31,11 @@ import {
 // The cache-runtime module sets this on load.
 // ---------------------------------------------------------------------------
 
-interface CacheContextLike {
+type CacheContextLike = {
   tags: string[];
   lifeConfigs: import("./cache-runtime.js").CacheContext["lifeConfigs"];
   variant: string;
-}
+};
 
 /** @internal Set by cache-runtime.ts on import to avoid circular dependency */
 let _getCacheContextFn: (() => CacheContextLike | null) | null = null;
@@ -53,12 +53,12 @@ export function _registerCacheContextAccessor(fn: () => CacheContextLike | null)
 // Implement this to provide a custom cache backend.
 // ---------------------------------------------------------------------------
 
-export interface CacheHandlerValue {
+export type CacheHandlerValue = {
   lastModified: number;
   age?: number;
   cacheState?: string;
   value: IncrementalCacheValue | null;
-}
+};
 
 /** Discriminated union of cache value types. */
 export type IncrementalCacheValue =
@@ -69,7 +69,7 @@ export type IncrementalCacheValue =
   | CachedRedirectValue
   | CachedImageValue;
 
-export interface CachedFetchValue {
+export type CachedFetchValue = {
   kind: "FETCH";
   data: {
     headers: Record<string, string>;
@@ -79,53 +79,53 @@ export interface CachedFetchValue {
   };
   tags?: string[];
   revalidate: number | false;
-}
+};
 
-export interface CachedAppPageValue {
+export type CachedAppPageValue = {
   kind: "APP_PAGE";
   html: string;
   rscData: ArrayBuffer | undefined;
   headers: Record<string, string | string[]> | undefined;
   postponed: string | undefined;
   status: number | undefined;
-}
+};
 
-export interface CachedPagesValue {
+export type CachedPagesValue = {
   kind: "PAGES";
   html: string;
   pageData: object;
   headers: Record<string, string | string[]> | undefined;
   status: number | undefined;
-}
+};
 
-export interface CachedRouteValue {
+export type CachedRouteValue = {
   kind: "APP_ROUTE";
   body: ArrayBuffer;
   status: number;
   headers: Record<string, string | string[]>;
-}
+};
 
-export interface CachedRedirectValue {
+export type CachedRedirectValue = {
   kind: "REDIRECT";
   props: object;
-}
+};
 
-export interface CachedImageValue {
+export type CachedImageValue = {
   kind: "IMAGE";
   etag: string;
   buffer: ArrayBuffer;
   extension: string;
   revalidate?: number;
-}
+};
 
-export interface CacheHandlerContext {
+export type CacheHandlerContext = {
   dev?: boolean;
   maxMemoryCacheSize?: number;
   revalidatedTags?: string[];
   [key: string]: unknown;
-}
+};
 
-export interface CacheHandler {
+export type CacheHandler = {
   get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
 
   set(
@@ -137,7 +137,7 @@ export interface CacheHandler {
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
 
   resetRequestCache?(): void;
-}
+};
 
 // ---------------------------------------------------------------------------
 // No-op cache handler — used during prerender to skip wasteful isrSet writes.
@@ -169,25 +169,25 @@ export class NoOpCacheHandler implements CacheHandler {
 // single-process production. Not shared across workers/instances.
 // ---------------------------------------------------------------------------
 
-interface MemoryEntry {
+type MemoryEntry = {
   value: IncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
   revalidateAt: number | null;
-}
+};
 
 /**
  * Shape of the optional `ctx` argument passed to `CacheHandler.set()`.
  * Covers both the older `{ revalidate: number }` shape and the newer
  * `{ cacheControl: { revalidate: number } }` shape (Next.js 16).
  */
-interface SetCtx {
+type SetCtx = {
   tags?: string[];
   fetchCache?: boolean;
   revalidate?: number;
   cacheControl?: { revalidate?: number };
   [key: string]: unknown;
-}
+};
 
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
@@ -430,9 +430,9 @@ export { unstable_noStore as noStore };
 //
 // Uses AsyncLocalStorage for request isolation on concurrent workers.
 // ---------------------------------------------------------------------------
-export interface CacheState {
+export type CacheState = {
   requestScopedCacheLife: CacheLifeConfig | null;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.cache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.cache.fallback");
@@ -528,14 +528,14 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
 /**
  * Cache life configuration. Controls stale-while-revalidate behavior.
  */
-export interface CacheLifeConfig {
+export type CacheLifeConfig = {
   /** How long (seconds) the client can cache without checking the server */
   stale?: number;
   /** How frequently (seconds) the server cache refreshes */
   revalidate?: number;
   /** Max staleness (seconds) before deoptimizing to dynamic */
   expire?: number;
-}
+};
 
 /**
  * Built-in cache life profiles matching Next.js 16.
@@ -666,10 +666,10 @@ export function isInsideUnstableCacheScope(): boolean {
   return _unstableCacheAls.getStore() === true;
 }
 
-interface UnstableCacheOptions {
+type UnstableCacheOptions = {
   revalidate?: number | false;
   tags?: string[];
-}
+};
 
 /**
  * Wrap an async function with caching.

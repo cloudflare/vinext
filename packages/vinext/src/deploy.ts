@@ -34,7 +34,7 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface DeployOptions {
+export type DeployOptions = {
   /** Project root directory */
   root: string;
   /** Deploy to preview environment (default: production) */
@@ -57,7 +57,7 @@ export interface DeployOptions {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
-}
+};
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
@@ -106,7 +106,7 @@ export function parseDeployArgs(args: string[]) {
 
 // ─── Project Detection ──────────────────────────────────────────────────────
 
-interface ProjectInfo {
+type ProjectInfo = {
   root: string;
   isAppRouter: boolean;
   isPagesRouter: boolean;
@@ -127,7 +127,7 @@ interface ProjectInfo {
   hasCodeHike: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
-}
+};
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
@@ -993,10 +993,10 @@ export default defineConfig({
 
 // ─── Dependency Management ───────────────────────────────────────────────────
 
-interface MissingDep {
+type MissingDep = {
   name: string;
   version: string;
-}
+};
 
 /**
  * Check if a package is resolvable from a given root directory using
@@ -1066,11 +1066,11 @@ const detectPackageManager = _detectPackageManager;
 
 // ─── File Writing ────────────────────────────────────────────────────────────
 
-interface GeneratedFile {
+type GeneratedFile = {
   path: string;
   content: string;
   description: string;
-}
+};
 
 /**
  * Check whether an existing vite.config file already imports and uses the
@@ -1183,10 +1183,10 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-export interface WranglerDeployArgs {
+export type WranglerDeployArgs = {
   args: string[];
   env: string | undefined;
-}
+};
 
 export function buildWranglerDeployArgs(
   options: Pick<DeployOptions, "preview" | "env">,

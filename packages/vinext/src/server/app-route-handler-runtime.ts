@@ -75,16 +75,16 @@ type NextUrlDynamicAccess =
 
 export type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
 
-export interface TrackedAppRouteRequestOptions {
+export type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
-}
+};
 
-export interface TrackedAppRouteRequest {
+export type TrackedAppRouteRequest = {
   request: NextRequest;
   didAccessDynamicRequest(): boolean;
-}
+};
 
 function bindMethodIfNeeded<T>(value: T, target: object): T {
   return typeof value === "function" ? (value.bind(target) as T) : value;

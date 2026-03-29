@@ -20,18 +20,18 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-export interface SSRContext {
+export type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
-}
+};
 
-export interface RouterState {
+export type RouterState = {
   ssrContext: SSRContext | null;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");

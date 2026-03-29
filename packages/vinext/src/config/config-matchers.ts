@@ -421,12 +421,12 @@ export function escapeHeaderSource(source: string): string {
  * Request context needed for evaluating has/missing conditions.
  * Callers extract the relevant parts from the incoming Request.
  */
-export interface RequestContext {
+export type RequestContext = {
   headers: Headers;
   cookies: Record<string, string>;
   query: URLSearchParams;
   host: string;
-}
+};
 
 /**
  * Parse a Cookie header string into a key-value record.

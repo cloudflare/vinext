@@ -37,14 +37,14 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 // To fix this, we resolve Vite dynamically from `process.cwd()` at runtime
 // using `createRequire`. This ensures we always use the project's Vite.
 
-interface ViteModule {
+type ViteModule = {
   createServer: typeof import("vite").createServer;
   build: typeof import("vite").build;
   createBuilder: typeof import("vite").createBuilder;
   createLogger: typeof import("vite").createLogger;
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
   version: string;
-}
+};
 
 let _viteModule: ViteModule | null = null;
 
@@ -90,7 +90,7 @@ const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.met
 const command = process.argv[2];
 const rawArgs = process.argv.slice(3);
 
-interface ParsedArgs {
+type ParsedArgs = {
   port?: number;
   hostname?: string;
   help?: boolean;
@@ -98,7 +98,7 @@ interface ParsedArgs {
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
   prerenderAll?: boolean;
-}
+};
 
 function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {};

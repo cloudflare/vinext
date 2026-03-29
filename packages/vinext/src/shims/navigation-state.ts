@@ -27,10 +27,10 @@ import {
 // ALS setup — same pattern as headers.ts
 // ---------------------------------------------------------------------------
 
-export interface NavigationState {
+export type NavigationState = {
   serverContext: NavigationContext | null;
   serverInsertedHTMLCallbacks: Array<() => unknown>;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.navigation.als");
 const _FALLBACK_KEY = Symbol.for("vinext.navigation.fallback");

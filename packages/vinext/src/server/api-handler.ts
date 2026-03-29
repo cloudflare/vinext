@@ -17,21 +17,21 @@ import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-medi
 /**
  * Extend the Node.js request with Next.js-style helpers.
  */
-interface NextApiRequest extends IncomingMessage {
+type NextApiRequest = {
   query: Record<string, string | string[]>;
   body: unknown;
   cookies: Record<string, string>;
-}
+} & IncomingMessage;
 
 /**
  * Extend the Node.js response with Next.js-style helpers.
  */
-interface NextApiResponse extends ServerResponse {
+type NextApiResponse = {
   status(code: number): NextApiResponse;
   json(data: unknown): void;
   send(data: unknown): void;
   redirect(statusOrUrl: number | string, url?: string): void;
-}
+} & ServerResponse;
 
 /**
  * Maximum request body size (1 MB). Matches Next.js default bodyParser sizeLimit.

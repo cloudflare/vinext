@@ -14,7 +14,7 @@ import {
 
 const tempDirs: string[] = [];
 
-interface NitroSetupTarget {
+type NitroSetupTarget = {
   options: {
     dev?: boolean;
     routeRules?: Record<string, NitroRouteRuleConfig>;
@@ -22,13 +22,13 @@ interface NitroSetupTarget {
   logger?: {
     warn?: (message: string) => void;
   };
-}
+};
 
-interface NitroSetupPlugin extends Plugin {
+type NitroSetupPlugin = {
   nitro?: {
     setup?: (nitro: NitroSetupTarget) => Promise<void> | void;
   };
-}
+} & Plugin;
 
 afterEach(() => {
   vi.restoreAllMocks();

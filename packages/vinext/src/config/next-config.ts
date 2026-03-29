@@ -62,35 +62,35 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
   return bytes;
 }
 
-export interface HasCondition {
+export type HasCondition = {
   type: "header" | "cookie" | "query" | "host";
   key: string;
   value?: string;
-}
+};
 
-export interface NextRedirect {
+export type NextRedirect = {
   source: string;
   destination: string;
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextRewrite {
+export type NextRewrite = {
   source: string;
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextHeader {
+export type NextHeader = {
   source: string;
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
-}
+};
 
-export interface NextI18nConfig {
+export type NextI18nConfig = {
   /** List of supported locales */
   locales: string[];
   /** The default locale (used when no locale prefix is in the URL) */
@@ -109,20 +109,20 @@ export interface NextI18nConfig {
     locales?: string[];
     http?: boolean;
   }>;
-}
+};
 
 /**
  * MDX compilation options extracted from @next/mdx config.
  * These are passed through to @mdx-js/rollup so that custom
  * remark/rehype/recma plugins configured in next.config work with Vite.
  */
-export interface MdxOptions {
+export type MdxOptions = {
   remarkPlugins?: unknown[];
   rehypePlugins?: unknown[];
   recmaPlugins?: unknown[];
-}
+};
 
-export interface NextConfig {
+export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
   /** Base URL path prefix */
@@ -202,7 +202,7 @@ export interface NextConfig {
   generateBuildId?: () => string | null | Promise<string | null>;
   /** Any other options */
   [key: string]: unknown;
-}
+};
 
 export type NextConfigFactory = (
   phase: string,
@@ -214,7 +214,7 @@ export type NextConfigInput = NextConfig | NextConfigFactory;
 /**
  * Resolved configuration with all async values awaited.
  */
-export interface ResolvedNextConfig {
+export type ResolvedNextConfig = {
   env: Record<string, string>;
   basePath: string;
   trailingSlash: boolean;
@@ -250,7 +250,7 @@ export interface ResolvedNextConfig {
   serverExternalPackages: string[];
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
-}
+};
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
 

@@ -29,7 +29,7 @@ export default defineConfig({
     plugins: ["typescript", "unicorn", "import", "react"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
-      // TODO: "typescript/consistent-type-definitions": ["error", "type"],
+      "typescript/consistent-type-definitions": ["error", "type"],
       "@typescript-eslint/no-unsafe-function-type": "error",
       "@typescript-eslint/no-unused-vars": "error",
       "@typescript-eslint/no-redeclare": "error",

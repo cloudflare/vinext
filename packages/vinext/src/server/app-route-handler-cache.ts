@@ -21,7 +21,7 @@ type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type RouteHandlerBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 type RouteHandlerRevalidationContextRunner = (renderFn: () => Promise<void>) => Promise<void>;
 
-export interface ReadAppRouteHandlerCacheOptions {
+export type ReadAppRouteHandlerCacheOptions = {
   basePath?: string;
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   cleanPathname: string;
@@ -51,7 +51,7 @@ export interface ReadAppRouteHandlerCacheOptions {
       params: AppRouteParams;
     } | null,
   ) => void;
-}
+};
 
 function getCachedAppRouteValue(entry: ISRCacheEntry | null) {
   return entry?.value.value && entry.value.value.kind === "APP_ROUTE" ? entry.value.value : null;

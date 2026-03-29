@@ -45,9 +45,9 @@ import { ValidFileMatcher } from "../routing/file-matcher.js";
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
  * callers (including tests) to provide a full `ModuleRunner` instance.
  */
-export interface ModuleImporter {
+export type ModuleImporter = {
   import(id: string): Promise<unknown>;
-}
+};
 
 /**
  * Import a module via the runner and cast the result to `Record<string, any>`.
@@ -109,7 +109,7 @@ export function findInstrumentationClientFile(
  * Called when an unhandled error occurs during request handling.
  * Provides the error, the request info, and an error context.
  */
-export interface OnRequestErrorContext {
+export type OnRequestErrorContext = {
   /** The route path (e.g., '/blog/[slug]') */
   routerKind: "Pages Router" | "App Router";
   /** The matched route pattern */
@@ -118,7 +118,7 @@ export interface OnRequestErrorContext {
   routeType: "render" | "route" | "action" | "middleware";
   /** HTTP status code that will be sent */
   revalidateReason?: "on-demand" | "stale" | undefined;
-}
+};
 
 export type OnRequestErrorHandler = (
   error: Error,

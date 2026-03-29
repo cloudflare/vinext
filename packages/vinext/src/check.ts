@@ -13,14 +13,14 @@ import path from "node:path";
 
 type Status = "supported" | "partial" | "unsupported";
 
-interface CheckItem {
+type CheckItem = {
   name: string;
   status: Status;
   detail?: string;
   files?: string[];
-}
+};
 
-export interface CheckResult {
+export type CheckResult = {
   imports: CheckItem[];
   config: CheckItem[];
   libraries: CheckItem[];
@@ -32,7 +32,7 @@ export interface CheckResult {
     total: number;
     score: number;
   };
-}
+};
 
 // ── Import support map ─────────────────────────────────────────────────────
 

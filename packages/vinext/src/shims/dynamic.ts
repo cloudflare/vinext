@@ -19,10 +19,10 @@
  */
 import React, { type ComponentType } from "react";
 
-interface DynamicOptions {
+type DynamicOptions = {
   loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
   ssr?: boolean;
-}
+};
 
 type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>;
 

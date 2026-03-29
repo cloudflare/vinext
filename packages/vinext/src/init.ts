@@ -32,7 +32,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface InitOptions {
+export type InitOptions = {
   /** Project root directory */
   root: string;
   /** Dev server port (default: 3001) */
@@ -43,9 +43,9 @@ export interface InitOptions {
   force?: boolean;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
-}
+};
 
-export interface InitResult {
+export type InitResult = {
   /** Whether dependencies were installed */
   installedDeps: string[];
   /** Whether "type": "module" was added */
@@ -60,7 +60,7 @@ export interface InitResult {
   skippedViteConfig: boolean;
   /** Whether .gitignore was updated to include /dist/ */
   updatedGitignore: boolean;
-}
+};
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 

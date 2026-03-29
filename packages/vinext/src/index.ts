@@ -840,7 +840,7 @@ function augmentSsrManifestFromBundle(
   ) as Record<string, string[]>;
 }
 
-export interface VinextOptions {
+export type VinextOptions = {
   /**
    * Base directory containing the app/ and pages/ directories.
    * Can be an absolute path or a path relative to the Vite root.
@@ -910,9 +910,9 @@ export interface VinextOptions {
      */
     clientReferenceDedup?: boolean;
   };
-}
+};
 
-interface NitroSetupContext {
+type NitroSetupContext = {
   options: {
     dev?: boolean;
     routeRules?: Record<string, NitroRouteRuleConfig>;
@@ -920,7 +920,7 @@ interface NitroSetupContext {
   logger?: {
     warn?: (message: string) => void;
   };
-}
+};
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();

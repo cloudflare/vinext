@@ -63,7 +63,7 @@ type SerializedIncrementalCacheValue =
   | SerializedCachedImageValue;
 
 // Cloudflare KV namespace interface (matches Workers types)
-interface KVNamespace {
+type KVNamespace = {
   get(key: string, options?: { type?: string }): Promise<string | null>;
   get(key: string, options: { type: "arrayBuffer" }): Promise<ArrayBuffer | null>;
   put(
@@ -77,16 +77,16 @@ interface KVNamespace {
     list_complete: boolean;
     cursor?: string;
   }>;
-}
+};
 
 /** Shape stored in KV for each cache entry. */
-interface KVCacheEntry {
+type KVCacheEntry = {
   value: SerializedIncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
   /** Absolute timestamp (ms) after which the entry is "stale" (but still served). */
   revalidateAt: number | null;
-}
+};
 
 /** Key prefix for tag invalidation timestamps. */
 const TAG_PREFIX = "__tag:";
