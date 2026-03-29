@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
 interface PackageJson {
   name?: string;
@@ -160,16 +160,6 @@ function copyPackageAndRuntimeDeps(
   return [...copied];
 }
 
-function resolveVinextPackageRoot(explicitRoot?: string): string {
-  if (explicitRoot) {
-    return path.resolve(explicitRoot);
-  }
-
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  // dist/build/standalone.js -> package root is ../..
-  return path.resolve(currentDir, "..", "..");
-}
-
 function writeStandaloneServerEntry(filePath: string): void {
   // Uses import.meta.dirname (Node >= 21.2, vinext requires >= 22) so the
   // entry point is pure ESM — no need for CJS require() or __dirname.
@@ -244,10 +234,14 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   fs.cpSync(clientDir, path.join(standaloneDistDir, "client"), {
     recursive: true,
     dereference: true,
+    // Build output shouldn't contain node_modules, but filter defensively for
+    // consistency with the other cpSync calls in this function.
+    filter: (src) => !path.relative(clientDir, src).split(path.sep).includes("node_modules"),
   });
   fs.cpSync(serverDir, path.join(standaloneDistDir, "server"), {
     recursive: true,
     dereference: true,
+    filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
 
   const publicDir = path.join(root, "public");

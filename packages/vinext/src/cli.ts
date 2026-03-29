@@ -18,7 +18,7 @@ import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
@@ -28,6 +28,7 @@ import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
+import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -379,12 +380,7 @@ async function buildApp() {
   // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
   // the full multi-minute Vite build completes, when emitStandaloneOutput runs.
   if (outputMode === "standalone") {
-    // Resolves to <vinext-package>/dist — one level up from this file's own
-    // directory (src/ at dev time, dist/ at runtime via the built CLI).
-    // Must stay in sync with resolveVinextPackageRoot() in standalone.ts, which
-    // uses path.resolve(currentDir, "..", "..") from dist/build/standalone.js
-    // and arrives at the same package root via a different traversal depth.
-    const vinextDistDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
+    const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
     if (!fs.existsSync(vinextDistDir)) {
       console.error(
         `  Error: vinext dist/ not found at ${vinextDistDir}. Run \`pnpm run build\` in the vinext package first.`,
