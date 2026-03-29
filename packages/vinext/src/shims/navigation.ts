@@ -299,11 +299,13 @@ function evictPrefetchCacheIfNeeded(): void {
     }
   }
 
-  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+  while (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) {
       cache.delete(oldest);
       prefetched.delete(oldest);
+    } else {
+      break;
     }
   }
 }
@@ -828,6 +830,11 @@ export function commitClientNavigationState(): void {
   const state = getClientNavigationState();
   if (!state) return;
 
+  if (import.meta.env?.DEV && state.navigationSnapshotActiveCount <= 0) {
+    console.warn(
+      "[vinext] navigationSnapshotActiveCount already at 0 — possible activate/commit pairing mismatch",
+    );
+  }
   state.navigationSnapshotActiveCount = Math.max(0, state.navigationSnapshotActiveCount - 1);
 
   const urlChanged = syncCommittedUrlStateFromLocation();
@@ -1284,8 +1291,8 @@ if (!isServer) {
     // Listen for popstate on the client.
     // Note: This handler runs for Pages Router only (when __VINEXT_RSC_NAVIGATE__
     // is not available). It restores scroll position with microtask-based deferral.
-    // App Router scroll restoration is handled in app-browser-entry.ts with RSC
-    // navigation coordination (waits for pending navigation to settle).
+    // App Router scroll restoration is handled in server/app-browser-entry.ts:697
+    // with RSC navigation coordination (waits for pending navigation to settle).
     window.addEventListener("popstate", (event) => {
       if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function") {
         commitClientNavigationState();

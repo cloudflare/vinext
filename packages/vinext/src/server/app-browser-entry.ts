@@ -253,6 +253,9 @@ function NavigationCommitSignal({
 
     return () => {
       cancelAnimationFrame(frame);
+      // Resolve pending commits to prevent callers from hanging if React
+      // unmounts this component without committing (e.g., error boundary).
+      resolveCommittedNavigations(renderId);
     };
   }, [renderId]);
 
@@ -664,15 +667,15 @@ async function main(): Promise<void> {
 
       if (navId !== activeNavigationId) return;
 
-      // Store visited response only for navigations that haven't been superseded
-      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       const rscPayload = await createFromFetch<ReactNode>(
         Promise.resolve(restoreRscResponse(responseSnapshot)),
       );
 
       if (navId !== activeNavigationId) return;
 
-      // Stage params only after confirming this navigation hasn't been superseded
+      // Store visited response and stage params only after confirming this
+      // navigation hasn't been superseded (avoids stale cache entries).
+      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       stageClientParams(navParams);
       await renderNavigationPayload(
         rscPayload,
@@ -693,8 +696,9 @@ async function main(): Promise<void> {
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
   // It coordinates scroll restoration with the pending RSC navigation.
-  // Pages Router scroll restoration is handled in navigation.ts with
+  // Pages Router scroll restoration is handled in shims/navigation.ts:1289 with
   // microtask-based deferral for compatibility with non-RSC navigation.
+  // See: https://github.com/vercel/next.js/discussions/41934#discussioncomment-4602607
   window.addEventListener("popstate", (event) => {
     notifyAppRouterTransitionStart(window.location.href, "traverse");
     const pendingNavigation =
