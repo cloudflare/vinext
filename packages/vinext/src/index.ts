@@ -65,6 +65,7 @@ import { createInstrumentationClientTransformPlugin } from "./plugins/instrument
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { fixUseServerClosureCollisionPlugin } from "./plugins/fix-use-server-closure-collision.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -3060,6 +3061,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createOgInlineFetchAssetsPlugin(),
     // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
     ogAssetsPlugin,
+    // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
+    // Used by emitStandaloneOutput to determine which packages to copy into
+    // standalone/node_modules/ — uses the bundler's own import graph instead of
+    // fragile regex scanning of emitted files.
+    createServerExternalsManifestPlugin(),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that

@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe("emitStandaloneOutput", () => {
-  it("creates standalone output with runtime deps and entry script", () => {
+  it("copies packages listed in vinext-externals.json and their transitive deps", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });
 
@@ -61,14 +61,13 @@ describe("emitStandaloneOutput", () => {
         {
           name: "app",
           dependencies: {
+            // dep-a is in package.json#dependencies but NOT in the externals manifest.
+            // The standalone builder should NOT copy it — only manifest entries matter.
             "dep-a": "1.0.0",
             react: "1.0.0",
             vinext: "1.0.0",
           },
           devDependencies: {
-            // This is intentionally in devDependencies. The standalone builder
-            // should still copy it because the server bundle imports it directly.
-            "react-server-dom-webpack": "1.0.0",
             typescript: "5.0.0",
           },
         },
@@ -78,10 +77,13 @@ describe("emitStandaloneOutput", () => {
     );
 
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    // The externals manifest is written by vinext:server-externals-manifest at build time.
+    // It contains only the packages the server bundle actually imports at runtime.
     writeFile(
       appRoot,
-      "dist/server/entry.js",
-      'import "react-server-dom-webpack/server.edge";\nconsole.log("server");\n',
+      "dist/server/vinext-externals.json",
+      JSON.stringify(["react", "react-server-dom-webpack"]),
     );
     writeFile(appRoot, "public/robots.txt", "User-agent: *\n");
 
@@ -116,11 +118,16 @@ describe("emitStandaloneOutput", () => {
       vinextPackageRoot: fakeVinextRoot,
     });
 
-    expect(result.copiedPackages).toContain("dep-a");
-    expect(result.copiedPackages).toContain("dep-b");
+    // Packages from the externals manifest are copied.
     expect(result.copiedPackages).toContain("react");
     expect(result.copiedPackages).toContain("react-server-dom-webpack");
     expect(result.copiedPackages).toContain("vinext");
+
+    // dep-a is in package.json#dependencies but NOT in the manifest — must NOT be copied.
+    expect(result.copiedPackages).not.toContain("dep-a");
+    expect(result.copiedPackages).not.toContain("dep-b");
+    // devDependencies must never be copied.
+    expect(result.copiedPackages).not.toContain("typescript");
 
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/server.js"))).toBe(true);
     expect(fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8")).toContain(
@@ -138,12 +145,6 @@ describe("emitStandaloneOutput", () => {
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/public/robots.txt"))).toBe(true);
 
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json")),
-    ).toBe(true);
-    expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-b/package.json")),
-    ).toBe(true);
-    expect(
       fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/react/package.json")),
     ).toBe(true);
     expect(
@@ -152,6 +153,9 @@ describe("emitStandaloneOutput", () => {
       ),
     ).toBe(true);
     expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json")),
+    ).toBe(false);
+    expect(
       fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/typescript/package.json")),
     ).toBe(false);
     expect(
@@ -159,6 +163,80 @@ describe("emitStandaloneOutput", () => {
         path.join(appRoot, "dist/standalone/node_modules/vinext/dist/server/prod-server.js"),
       ),
     ).toBe(true);
+  });
+
+  it("copies transitive dependencies of manifest packages", () => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    // dep-a is in the manifest; dep-b is dep-a's dependency (transitive).
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-a"]));
+
+    writePackage(appRoot, "dep-a", { "dep-b": "1.0.0" });
+    writePackage(appRoot, "dep-b");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("dep-a");
+    // Transitive dep of dep-a must also be present.
+    expect(result.copiedPackages).toContain("dep-b");
+    expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json")),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-b/package.json")),
+    ).toBe(true);
+  });
+
+  it("falls back gracefully when vinext-externals.json is missing (no manifest)", () => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    // No vinext-externals.json written.
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    // Only vinext itself should be present (always embedded).
+    expect(result.copiedPackages).toEqual(["vinext"]);
+    expect(fs.existsSync(path.join(appRoot, "dist/standalone/server.js"))).toBe(true);
   });
 
   it("throws when dist/client or dist/server are missing", () => {
@@ -195,6 +273,7 @@ describe("emitStandaloneOutput", () => {
     );
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "import 'dep-hidden';\n");
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-hidden"]));
 
     writePackage(appRoot, "dep-hidden", {}, { exports: { ".": "./index.js" } });
 
@@ -243,6 +322,8 @@ describe("emitStandaloneOutput", () => {
     );
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "console.log('server');\n");
+    // missing-required is in the manifest but not installed in node_modules.
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["missing-required"]));
 
     const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
     writeFile(
@@ -286,6 +367,7 @@ describe("emitStandaloneOutput", () => {
     );
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "import 'dep-link';\n");
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-link"]));
 
     const storeDir = path.join(tmpDir, "store", "dep-link");
     fs.mkdirSync(storeDir, { recursive: true });

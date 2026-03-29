@@ -41,72 +41,30 @@ function runtimeDeps(pkg: PackageJson): string[] {
   });
 }
 
-function walkFiles(dir: string): string[] {
-  const files: string[] = [];
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...walkFiles(fullPath));
-    } else {
-      files.push(fullPath);
-    }
+/**
+ * Read the externals manifest written by the `vinext:server-externals-manifest`
+ * Vite plugin during the production build.
+ *
+ * The manifest (`dist/server/vinext-externals.json`) contains the exact set of
+ * npm packages that the bundler left external in the SSR/RSC output — i.e.
+ * packages that the server bundle actually imports at runtime. Using this
+ * instead of scanning emitted files with regexes or seeding from
+ * `package.json#dependencies` avoids both false negatives (missed imports) and
+ * false positives (client-only deps that are never loaded server-side).
+ *
+ * Falls back to an empty array if the manifest does not exist (e.g. when
+ * running against a build that predates this feature).
+ */
+function readServerExternalsManifest(serverDir: string): string[] {
+  const manifestPath = path.join(serverDir, "vinext-externals.json");
+  if (!fs.existsSync(manifestPath)) {
+    return [];
   }
-  return files;
-}
-
-function packageNameFromSpecifier(specifier: string): string | null {
-  if (
-    specifier.startsWith(".") ||
-    specifier.startsWith("/") ||
-    specifier.startsWith("node:") ||
-    specifier.startsWith("#")
-  ) {
-    return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as string[];
+  } catch {
+    return [];
   }
-
-  if (specifier.startsWith("@")) {
-    const parts = specifier.split("/");
-    if (parts.length >= 2) {
-      return `${parts[0]}/${parts[1]}`;
-    }
-    return null;
-  }
-
-  return specifier.split("/")[0] || null;
-}
-
-function collectServerExternalPackages(serverDir: string): string[] {
-  const packages = new Set<string>();
-  const files = walkFiles(serverDir).filter((filePath) => /\.(c|m)?js$/.test(filePath));
-
-  // fromRE:             import { x } from "pkg"  /  export { x } from "pkg"
-  // importSideEffectRE: import "pkg"             (side-effect-only import)
-  // dynamicImportRE:    import("pkg")            (dynamic import)
-  // requireRE:          require("pkg")           (CommonJS require)
-  const fromRE = /\bfrom\s*["']([^"']+)["']/g;
-  const importSideEffectRE = /\bimport\s*["']([^"']+)["']/g;
-  const dynamicImportRE = /import\(\s*["']([^"']+)["']\s*\)/g;
-  const requireRE = /require\(\s*["']([^"']+)["']\s*\)/g;
-
-  for (const filePath of files) {
-    const code = fs.readFileSync(filePath, "utf-8");
-
-    // These regexes are stateful (/g) and intentionally function-local.
-    // Reset lastIndex before every file scan to avoid leaking state across files.
-    for (const regex of [fromRE, importSideEffectRE, dynamicImportRE, requireRE]) {
-      regex.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(code)) !== null) {
-        const packageName = packageNameFromSpecifier(match[1]);
-        if (packageName) {
-          packages.add(packageName);
-        }
-      }
-    }
-  }
-
-  return [...packages];
 }
 
 function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): string | null {
@@ -247,6 +205,13 @@ function writeStandalonePackageJson(filePath: string): void {
  * - <outDir>/standalone/server.js
  * - <outDir>/standalone/dist/{client,server}
  * - <outDir>/standalone/node_modules (runtime deps only)
+ *
+ * The set of packages copied into node_modules/ is determined by
+ * `dist/server/vinext-externals.json`, which is written by the
+ * `vinext:server-externals-manifest` Vite plugin during the production build.
+ * It contains exactly the packages the server bundle imports at runtime
+ * (i.e. those left external by the bundler), so no client-only deps are
+ * included.
  */
 export function emitStandaloneOutput(options: StandaloneBuildOptions): StandaloneBuildResult {
   const root = path.resolve(options.root);
@@ -284,10 +249,11 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
 
   fs.mkdirSync(standaloneNodeModulesDir, { recursive: true });
 
-  const appPkg = readPackageJson(path.join(root, "package.json"));
-  const appRuntimeDeps = runtimeDeps(appPkg);
-  const serverRuntimeDeps = collectServerExternalPackages(serverDir);
-  const initialPackages = [...new Set([...appRuntimeDeps, ...serverRuntimeDeps])].filter(
+  // Seed from the manifest written by vinext:server-externals-manifest during
+  // the production build. This is the authoritative list of packages the server
+  // bundle actually imports at runtime — determined by the bundler's own graph,
+  // not regex scanning or package.json#dependencies.
+  const initialPackages = readServerExternalsManifest(serverDir).filter(
     (name) => name !== "vinext",
   );
   const copiedPackages = copyPackageAndRuntimeDeps(root, standaloneNodeModulesDir, initialPackages);
