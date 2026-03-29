@@ -323,7 +323,6 @@ const POSTCSS_CONFIG_FILES = [
  * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
  * parallel) all await the same in-flight scan rather than each starting their own.
  */
-// oxlint-disable-next-line typescript/no-explicit-any
 const _postcssCache = new Map<string, Promise<{ plugins: unknown[] } | undefined>>();
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
@@ -358,7 +357,6 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-// oxlint-disable-next-line typescript/no-explicit-any
 function resolvePostcssStringPlugins(
   projectRoot: string,
 ): Promise<{ plugins: unknown[] } | undefined> {
@@ -371,7 +369,6 @@ function resolvePostcssStringPlugins(
 
 async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
-  // oxlint-disable-next-line typescript/no-explicit-any
 ): Promise<{ plugins: unknown[] } | undefined> {
   // Find the PostCSS config file
   let configPath: string | null = null;
