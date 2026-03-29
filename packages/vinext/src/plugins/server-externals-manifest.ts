@@ -83,31 +83,23 @@ export function createServerExternalsManifestPlugin(): Plugin {
         // For App Router SSR: options.dir is dist/server/ssr.
         // We always want dist/server as the manifest location.
         if (!outDir) {
-          // Walk up from options.dir until we find a parent whose basename is "server",
-          // or fall back to options.dir if none found within 3 levels.
-          let candidate = dir;
-          for (let i = 0; i < 3; i++) {
-            if (path.basename(candidate) === "server") {
-              outDir = candidate;
-              break;
-            }
-            const parent = path.dirname(candidate);
-            if (parent === candidate) break;
-            candidate = parent;
-          }
-          if (!outDir) outDir = dir;
+          // The only sub-directory case is App Router SSR, which outputs to
+          // dist/server/ssr. For all other environments, options.dir is already
+          // dist/server. Using basename avoids the fragile walk-up heuristic
+          // which would misfire if a user's project path contains a directory
+          // named "server" above the dist output (e.g. /home/user/server/my-app/).
+          outDir = path.basename(dir) === "ssr" ? path.dirname(dir) : dir;
         }
 
         for (const item of Object.values(bundle)) {
           if (item.type !== "chunk") continue;
-          const chunk = item;
-          // In Rollup output, chunk.imports normally contains filenames of other
+          // In Rollup output, item.imports normally contains filenames of other
           // chunks in the bundle. But externalized packages remain as bare npm
           // specifiers (e.g. "react", "@mdx-js/react") since they were never
           // bundled into chunk files. packageNameFromSpecifier filters out chunk
           // filenames (relative/absolute paths) and extracts the package name from
           // bare specifiers — which is exactly what the standalone BFS needs.
-          for (const specifier of [...chunk.imports, ...chunk.dynamicImports]) {
+          for (const specifier of [...item.imports, ...item.dynamicImports]) {
             const pkg = packageNameFromSpecifier(specifier);
             if (pkg) externals.add(pkg);
           }

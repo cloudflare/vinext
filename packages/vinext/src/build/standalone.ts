@@ -132,10 +132,13 @@ function copyPackageAndRuntimeDeps(
       dereference: true,
       // Skip any nested node_modules/ inside the package — the BFS walk
       // resolves deps at their correct hoisted location, so nested copies
-      // would be stale duplicates. Check only the relative portion of the
-      // path (after packageRoot) so the source path's own node_modules
-      // ancestor doesn't accidentally filter out the package itself.
-      filter: (src) => !path.relative(packageRoot, src).includes(`node_modules`),
+      // would be stale duplicates. Use path segment splitting so that a
+      // directory merely containing "node_modules" as a substring (e.g.
+      // "not_node_modules_v2") is not accidentally filtered out.
+      filter: (src) => {
+        const rel = path.relative(packageRoot, src);
+        return !rel.split(path.sep).includes("node_modules");
+      },
     });
 
     copied.add(entry.packageName);
@@ -168,22 +171,20 @@ function resolveVinextPackageRoot(explicitRoot?: string): string {
 }
 
 function writeStandaloneServerEntry(filePath: string): void {
+  // Uses import.meta.dirname (Node >= 21.2, vinext requires >= 22) so the
+  // entry point is pure ESM — no need for CJS require() or __dirname.
   const content = `#!/usr/bin/env node
-const path = require("node:path");
+import { join } from "node:path";
+import { startProdServer } from "vinext/server/prod-server";
 
-async function main() {
-  const { startProdServer } = await import("vinext/server/prod-server");
-  const port = Number.parseInt(process.env.PORT ?? "3000", 10);
-  const host = process.env.HOST ?? "0.0.0.0";
+const port = Number.parseInt(process.env.PORT ?? "3000", 10);
+const host = process.env.HOST ?? "0.0.0.0";
 
-  await startProdServer({
-    port,
-    host,
-    outDir: path.join(__dirname, "dist"),
-  });
-}
-
-main().catch((error) => {
+startProdServer({
+  port,
+  host,
+  outDir: join(import.meta.dirname, "dist"),
+}).catch((error) => {
   console.error("[vinext] Failed to start standalone server");
   console.error(error);
   process.exit(1);
@@ -199,7 +200,7 @@ function writeStandalonePackageJson(filePath: string): void {
     JSON.stringify(
       {
         private: true,
-        type: "commonjs",
+        type: "module",
       },
       null,
       2,
@@ -290,6 +291,11 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   fs.cpSync(vinextDistDir, path.join(vinextTargetDir, "dist"), {
     recursive: true,
     dereference: true,
+    // Defensive: skip any node_modules/ that may exist inside vinext's dist/.
+    filter: (src) => {
+      const rel = path.relative(vinextDistDir, src);
+      return !rel.split(path.sep).includes("node_modules");
+    },
   });
   copiedSet.add("vinext");
 

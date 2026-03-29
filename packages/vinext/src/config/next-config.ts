@@ -271,6 +271,10 @@ function isCjsError(e: unknown): boolean {
   );
 }
 
+// Dev-server phase is the safe default for config loading: it enables all
+// optional config sections (headers, redirects, rewrites) without triggering
+// build-only behaviour. Used in two default parameter values below to avoid
+// repeating PHASE_DEVELOPMENT_SERVER inline.
 const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
 
 /**

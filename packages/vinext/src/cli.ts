@@ -379,6 +379,11 @@ async function buildApp() {
   // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
   // the full multi-minute Vite build completes, when emitStandaloneOutput runs.
   if (outputMode === "standalone") {
+    // Resolves to <vinext-package>/dist — one level up from this file's own
+    // directory (src/ at dev time, dist/ at runtime via the built CLI).
+    // Must stay in sync with resolveVinextPackageRoot() in standalone.ts, which
+    // uses path.resolve(currentDir, "..", "..") from dist/build/standalone.js
+    // and arrives at the same package root via a different traversal depth.
     const vinextDistDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
     if (!fs.existsSync(vinextDistDir)) {
       console.error(

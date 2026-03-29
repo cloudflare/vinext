@@ -136,7 +136,7 @@ describe("emitStandaloneOutput", () => {
     const standalonePkg = JSON.parse(
       fs.readFileSync(path.join(appRoot, "dist/standalone/package.json"), "utf-8"),
     ) as { type: string };
-    expect(standalonePkg.type).toBe("commonjs");
+    expect(standalonePkg.type).toBe("module");
 
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/assets/main.js"))).toBe(
       true,
