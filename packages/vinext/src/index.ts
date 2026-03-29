@@ -1720,15 +1720,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
           };
-        } else if (!isSSR) {
+        } else if (!isSSR && !getBuildBundlerOptions(config.build)?.input) {
           // Plain Pages Router (Node): define client + ssr environments so
           // createBuilder + buildApp() produces both dist/client and
           // dist/server/entry.js. Without this, buildApp() only sees the
           // default client environment and never builds the server entry.
-          // Guard with !isSSR so legacy vite.build({ ssr: ... }) calls (used
-          // in tests and the hybrid App+Pages build step) still work via the
-          // single-build path — setting environments alongside build.ssr
-          // causes Vite to conflict on which build mode to use.
+          // Guard with !isSSR and no explicit input so legacy vite.build()
+          // calls that specify their own input (tests, hybrid build step)
+          // still work via the single-build path — injecting environments
+          // alongside an explicit build input conflicts with the caller's intent.
           viteConfig.environments = {
             client: {
               consumer: "client",
