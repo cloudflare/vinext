@@ -93,7 +93,7 @@ export function parseStaticObjectLiteral(objectStr: string): Record<string, unkn
  * (estree.Expression, estree.ObjectExpression, etc.) aren't re-exported by Vite,
  * and the recursive traversal touches many different node shapes.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 function extractStaticValue(node: any): unknown {
   switch (node.type) {
     case "Literal":
@@ -523,12 +523,12 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           calleeSource: string,
         ) {
           // Parse options safely via AST — no eval/new Function
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
           let options: Record<string, any> = {};
           try {
             const parsed = parseStaticObjectLiteral(optionsStr);
             if (!parsed) return; // Contains dynamic expressions, skip
-            options = parsed as Record<string, any>;
+            options = parsed as Record<string, unknown>;
           } catch {
             return; // Can't parse options statically, skip
           }

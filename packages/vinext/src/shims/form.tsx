@@ -174,7 +174,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
   // If action is a function (server action), pass it directly to React
   if (typeof action === "function") {
-    return <form ref={ref} action={action as any} onSubmit={onSubmit as any} {...rest} />;
+    return <form ref={ref} action={action} onSubmit={onSubmit} {...rest} />;
   }
 
   // Block dangerous action URLs. Render <form> without action attribute
@@ -187,13 +187,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
     }
-    return <form ref={ref} onSubmit={onSubmit as any} {...rest} />;
+    return <form ref={ref} onSubmit={onSubmit} {...rest} />;
   }
 
-  async function handleSubmit(e: any) {
+  async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
     if (onSubmit) {
-      (onSubmit as any)(e);
+      onSubmit(e);
       if (e.defaultPrevented) return;
     }
 

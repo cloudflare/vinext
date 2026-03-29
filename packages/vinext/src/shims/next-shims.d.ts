@@ -1,3 +1,4 @@
+// oxlint-disable typescript/no-explicit-any
 /**
  * Type declarations for next/* bare specifiers used within shims.
  *

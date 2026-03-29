@@ -25,6 +25,7 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
 type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
@@ -177,17 +178,20 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
     renderErrorBoundary(GlobalErrorComponent, children) {
       return createElement(ErrorBoundary, {
         fallback: GlobalErrorComponent,
+        // oxlint-disable-next-line react/no-children-prop
         children,
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
       return createElement(LayoutComponent as AppPageComponent, {
+        // oxlint-disable-next-line react/no-children-prop
         children,
         params: asyncParams,
       });
     },
     renderLayoutSegmentProvider(childSegments, children) {
       return createElement(
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         LayoutSegmentProvider as ComponentType<any>,
         { childSegments },
         children,

@@ -3,7 +3,7 @@
  * Generate the shared 33-route benchmark app.
  * Shared between the Next.js and vinext benchmark projects.
  */
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readdirSync, statSync, cpSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 // Seeded PRNG (mulberry32) for deterministic source generation across runs.
@@ -557,7 +557,6 @@ export default function ${title}Page() {
 }
 
 // Count results
-import { readdirSync, statSync } from "node:fs";
 function countFiles(dir, name) {
   let count = 0;
   for (const entry of readdirSync(dir)) {
@@ -575,7 +574,6 @@ console.log(
 );
 
 // Copy to each benchmark project (symlinks don't work with Turbopack)
-import { cpSync } from "node:fs";
 const BASE = dirname(new URL(import.meta.url).pathname);
 for (const project of ["nextjs", "vinext"]) {
   const dest = join(BASE, project, "app");

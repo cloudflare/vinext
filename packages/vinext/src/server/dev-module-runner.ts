@@ -92,7 +92,7 @@ export function createDirectRunner(environment: DevEnvironmentLike | DevEnvironm
         //   { type: "custom", event: "vite:invoke", data: { id, name, data: args } }
         // normalizeModuleRunnerTransport() unpacks this before calling our impl,
         // so `payload.data` is already `{ id, name, data: args }`.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         invoke: async (payload: any) => {
           const { name, data: args } = payload.data;
 

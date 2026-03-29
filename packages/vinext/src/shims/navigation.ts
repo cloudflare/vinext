@@ -92,6 +92,7 @@ function useChildSegments(): string[] {
   // This branch is only taken in SSR/Browser, never in RSC.
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
+    // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
     return React.useContext(ctx);
   } catch {
     return [];
@@ -403,6 +404,7 @@ export function usePathname(): string {
     return _getServerContext()?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
@@ -419,6 +421,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     // Return a safe fallback — the client will hydrate with the real value.
     return getServerSearchParamsSnapshot();
   }
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getSearchParamsSnapshot,
@@ -436,6 +439,7 @@ export function useParams<
     // During SSR of "use client" components, the navigation context may not be set.
     return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getClientParamsSnapshot as () => T,

@@ -131,7 +131,7 @@ declare global {
    * The browser RSC entry monkey-patches this array's `push` method to feed a
    * `ReadableStream` that is consumed by `react-server-dom-webpack`.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_RSC_CHUNKS__: string[] | undefined;
 
   /**
@@ -139,7 +139,7 @@ declare global {
    * emitting all RSC chunks for the current request.
    * The browser RSC entry closes the `ReadableStream` when it sees this flag.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_RSC_DONE__: boolean | undefined;
 
   /**
@@ -147,7 +147,7 @@ declare global {
    * script so they are available synchronously before hydration.
    * Shape: `Record<string, string | string[]>` (same as Next.js `params`).
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
@@ -158,7 +158,7 @@ declare global {
    * `searchParams` is serialised as an array of `[key, value]` pairs to
    * preserve duplicate keys (e.g. `?tag=a&tag=b`).
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
 
   /**
@@ -171,7 +171,7 @@ declare global {
    * @deprecated Use `__VINEXT_RSC_CHUNKS__` / `__VINEXT_RSC_DONE__` /
    *   `__VINEXT_RSC_PARAMS__` instead.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_RSC__: { rsc: string[]; params: Record<string, string | string[]> } | undefined;
 
   // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
@@ -188,7 +188,7 @@ declare global {
    * Read by `collectAssetTags()` to inject `<link rel="modulepreload">` and
    * `<link rel="stylesheet">` tags into the SSR HTML.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_SSR_MANIFEST__: Record<string, string[]> | undefined;
 
   /**
@@ -198,7 +198,7 @@ declare global {
    * Injected into the Worker entry at build time; also set at Node.js server
    * startup by `server/prod-server.ts`.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_LAZY_CHUNKS__: string[] | undefined;
 
   /**
@@ -208,7 +208,7 @@ declare global {
    * App Router uses the RSC plugin's `loadBootstrapScriptContent` mechanism
    * instead.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_CLIENT_ENTRY__: string | undefined;
 
   /**
@@ -216,13 +216,13 @@ declare global {
    * (Pages Router with i18n).  Mirrors `window.__VINEXT_LOCALE__` for use in
    * environments where `window` is not available (e.g. Cloudflare Workers).
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_LOCALE__: string | undefined;
 
   /**
    * All configured locales, set on `globalThis` for server-side SSR rendering.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_LOCALES__: string[] | undefined;
 
   /**
@@ -230,7 +230,7 @@ declare global {
    * Also read client-side from `globalThis` in `shims/link.tsx` when `window`
    * is not yet available (e.g. during SSR of Link components).
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
   /**
@@ -238,7 +238,7 @@ declare global {
    * server-side rendering so `next/link` can resolve cross-domain locale hrefs
    * before hydration.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_DOMAIN_LOCALES__:
     | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
     | undefined;
@@ -248,7 +248,7 @@ declare global {
    * locale-domain links can decide whether to render relative or absolute
    * hrefs.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_HOSTNAME__: string | undefined;
 
   /**
@@ -260,7 +260,7 @@ declare global {
    * `@cloudflare/vite-plugin` it runs entirely inside the Worker, so
    * `globalThis` is the Worker's global — also correct.
    */
-  // eslint-disable-next-line no-var
+  // oxlint-disable-next-line no-var
   var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
 }
 

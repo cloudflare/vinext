@@ -53,14 +53,15 @@ export interface ModuleImporter {
  * Import a module via the runner and cast the result to `Record<string, any>`.
  *
  * Centralises the `as Record<string, any>` cast so callers don't need
- * per-call eslint-disable comments.
+ * per-call oxlint-disable comments.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export async function importModule(
   runner: ModuleImporter,
   id: string,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<Record<string, any>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await runner.import(id)) as Record<string, any>;
 }
 

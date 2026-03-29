@@ -30,6 +30,7 @@ function shouldIgnoreError(message: string): boolean {
  * Extended test fixture that collects console errors and fails if any occur.
  */
 export const test = base.extend<{ consoleErrors: string[] }>({
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   consoleErrors: async ({ page }, use) => {
     const errors: string[] = [];
 
