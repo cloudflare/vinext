@@ -100,8 +100,14 @@ export function createServerExternalsManifestPlugin(): Plugin {
 
         for (const item of Object.values(bundle)) {
           if (item.type !== "chunk") continue;
-          const chunk = item as { imports: string[]; dynamicImports: string[] };
-          for (const specifier of [...(chunk.imports ?? []), ...(chunk.dynamicImports ?? [])]) {
+          const chunk = item;
+          // In Rollup output, chunk.imports normally contains filenames of other
+          // chunks in the bundle. But externalized packages remain as bare npm
+          // specifiers (e.g. "react", "@mdx-js/react") since they were never
+          // bundled into chunk files. packageNameFromSpecifier filters out chunk
+          // filenames (relative/absolute paths) and extracts the package name from
+          // bare specifiers — which is exactly what the standalone BFS needs.
+          for (const specifier of [...chunk.imports, ...chunk.dynamicImports]) {
             const pkg = packageNameFromSpecifier(specifier);
             if (pkg) externals.add(pkg);
           }

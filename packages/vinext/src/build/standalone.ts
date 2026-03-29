@@ -130,9 +130,12 @@ function copyPackageAndRuntimeDeps(
     fs.cpSync(packageRoot, packageTarget, {
       recursive: true,
       dereference: true,
-      // Skip any nested node_modules/ — the BFS walk resolves deps at their
-      // correct hoisted location, so nested copies would be stale duplicates.
-      filter: (src) => path.basename(src) !== "node_modules",
+      // Skip any nested node_modules/ inside the package — the BFS walk
+      // resolves deps at their correct hoisted location, so nested copies
+      // would be stale duplicates. Check only the relative portion of the
+      // path (after packageRoot) so the source path's own node_modules
+      // ancestor doesn't accidentally filter out the package itself.
+      filter: (src) => !path.relative(packageRoot, src).includes(`node_modules`),
     });
 
     copied.add(entry.packageName);
@@ -260,6 +263,12 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   // the production build. This is the authoritative list of packages the server
   // bundle actually imports at runtime — determined by the bundler's own graph,
   // not regex scanning or package.json#dependencies.
+  //
+  // The manifest is always written to dist/server/vinext-externals.json regardless
+  // of whether the build is App Router (rsc + ssr sub-dirs) or Pages Router (ssr
+  // only). The plugin walks up from options.dir to find the "server" ancestor, so
+  // both dist/server (Pages Router) and dist/server/ssr (App Router SSR) resolve
+  // to the same dist/server output path.
   const initialPackages = readServerExternalsManifest(serverDir).filter(
     (name) => name !== "vinext",
   );

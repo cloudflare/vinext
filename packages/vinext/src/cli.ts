@@ -18,7 +18,7 @@ import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
@@ -370,9 +370,23 @@ async function buildApp() {
   const isApp = hasAppDir();
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
+    process.cwd(),
   );
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(process.cwd(), "dist");
+
+  // Pre-flight check: verify vinext's own dist/ exists before starting the build.
+  // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
+  // the full multi-minute Vite build completes, when emitStandaloneOutput runs.
+  if (outputMode === "standalone") {
+    const vinextDistDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
+    if (!fs.existsSync(vinextDistDir)) {
+      console.error(
+        `  Error: vinext dist/ not found at ${vinextDistDir}. Run \`pnpm run build\` in the vinext package first.`,
+      );
+      process.exit(1);
+    }
+  }
 
   // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
   const logger = parsed.verbose

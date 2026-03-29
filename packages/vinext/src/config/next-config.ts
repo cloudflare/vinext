@@ -838,4 +838,4 @@ function extractPluginsFromOptions(opts: any): MdxOptions | null {
   return null;
 }
 
-export { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD };
+export { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
