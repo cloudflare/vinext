@@ -80,6 +80,10 @@ If your `next.config.*` sets `output: "standalone"`, `vinext build` emits a self
 node dist/standalone/server.js
 ```
 
+Environment variables: `PORT` (default `3000`), `HOST` (default `0.0.0.0`).
+
+> **Note:** Next.js standalone uses `HOSTNAME` for the bind address, but vinext uses `HOST` to avoid collision with the system-set `HOSTNAME` variable on Linux. Update your deployment config accordingly.
+
 ### Starting a new vinext project
 
 Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.

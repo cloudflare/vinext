@@ -62,7 +62,10 @@ function readServerExternalsManifest(serverDir: string): string[] {
   }
   try {
     return JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as string[];
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[vinext] Warning: failed to parse ${manifestPath}, proceeding without externals manifest: ${String(err)}`,
+    );
     return [];
   }
 }
@@ -99,6 +102,10 @@ function copyPackageAndRuntimeDeps(
   initialPackages: string[],
   alreadyCopied?: Set<string>,
 ): string[] {
+  // Returns the full set of package names in `copied` after the BFS completes —
+  // including any entries that were already in `alreadyCopied` before this call.
+  // Callers that need to track incremental additions should diff against their
+  // own snapshot, or use the shared `alreadyCopied` set directly.
   const rootResolver = createRequire(path.join(root, "package.json"));
   const rootPkg = readPackageJson(path.join(root, "package.json"));
   const rootOptional = new Set(Object.keys(rootPkg.optionalDependencies ?? {}));
@@ -249,6 +256,9 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     fs.cpSync(publicDir, path.join(standaloneDir, "public"), {
       recursive: true,
       dereference: true,
+      // Defensive: public/ containing node_modules is extremely unlikely but
+      // filter for consistency with the other cpSync calls in this function.
+      filter: (src) => !path.relative(publicDir, src).split(path.sep).includes("node_modules"),
     });
   }
 
