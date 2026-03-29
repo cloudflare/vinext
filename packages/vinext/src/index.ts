@@ -3343,9 +3343,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Runs after the client bundle is written so compressed variants are
     // available for the production server's static file cache.
     //
-    // Auto-skipped when targeting edge platforms (Cloudflare Workers, Nitro)
+    // Build-time precompression: generate .br, .gz, .zst for hashed assets.
+    // Auto-enabled for Node.js targets, skipped for edge platforms
     // that handle compression at the CDN layer — precompressing would waste
-    // build time and upload bandwidth for files the CDN compresses itself.
+    // build time since the CDN re-compresses anyway.
     {
       name: "vinext:precompress",
       apply: "build",
@@ -3372,13 +3373,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const assetsDir = path.join(outDir, "assets");
           if (!fs.existsSync(assetsDir)) return;
 
-          const result = await precompressAssets(outDir);
+          const isTTY = process.stderr.isTTY;
+          let lastLineLen = 0;
+          const result = await precompressAssets(outDir, (completed, total, file) => {
+            if (!isTTY) return;
+            const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
+            const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
+            const maxFile = 30;
+            const fileLabel = file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
+            const line = `Compressing assets... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${fileLabel}`;
+            const padded = line.padEnd(lastLineLen);
+            lastLineLen = line.length;
+            process.stderr.write(`\r${padded}`);
+          });
+          if (isTTY) {
+            process.stderr.write(`\r${" ".repeat(lastLineLen)}\r`);
+          }
           if (result.filesCompressed > 0) {
             const ratio = (
               (1 - result.totalCompressedBytes / result.totalOriginalBytes) *
               100
             ).toFixed(1);
-            console.log(`  Precompressed ${result.filesCompressed} assets (${ratio}% smaller)`);
+            console.log(
+              `  Precompressed ${result.filesCompressed} assets (${ratio}% smaller with brotli)`,
+            );
           }
         },
       },
