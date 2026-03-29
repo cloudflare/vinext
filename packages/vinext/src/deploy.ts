@@ -1164,24 +1164,21 @@ async function runBuild(info: ProjectInfo): Promise<void> {
     vitePath = "vite";
   }
   const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
-  const { createBuilder, build } = (await import(/* @vite-ignore */ viteUrl)) as {
+  const { createBuilder } = (await import(/* @vite-ignore */ viteUrl)) as {
     createBuilder: typeof import("vite").createBuilder;
-    build: typeof import("vite").build;
   };
 
   // Use Vite's JS API for the build. The user's vite.config.ts (or our
   // generated one) has the cloudflare() plugin which handles the Worker
   // output format. We just need to trigger the build.
   //
-  // For App Router, createBuilder().buildApp() handles multi-environment builds.
-  // For Pages Router, a single build() call suffices (cloudflare plugin manages it).
-
-  if (info.isAppRouter) {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
-  } else {
-    await build({ root: info.root });
-  }
+  // Both App Router and Pages Router use createBuilder + buildApp() so that
+  // cloudflare() runs in its intended multi-environment mode and writes
+  // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
+  // config() hook's builder.buildApp override, so writeBundle never fires on
+  // the correct environment name.
+  const builder = await createBuilder({ root: info.root });
+  await builder.buildApp();
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────

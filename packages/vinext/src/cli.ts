@@ -384,8 +384,10 @@ async function buildApp() {
     }
   }
 
-  // Both App Router and Pages Router use createBuilder + buildApp() so that
-  // cloudflare() runs in its intended multi-environment mode.
+  // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
+  // use createBuilder + buildApp(). vinext() defines the appropriate environments
+  // in its config() hook for each case, so cloudflare() and the plain Node SSR
+  // build both work correctly.
   const config = buildViteConfig({}, logger);
   const builder = await vite.createBuilder(config);
   await builder.buildApp();
