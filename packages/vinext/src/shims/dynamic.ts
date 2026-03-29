@@ -97,11 +97,9 @@ function dynamic<P extends object = object>(
   if (!ssr) {
     if (isServer) {
       // On the server (SSR or RSC), just render the loading state or nothing
-      const SSRFalse = (_props: P) => {
-        return LoadingComponent
+      const SSRFalse = (_props: P) => LoadingComponent
           ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
           : null;
-      };
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
     }

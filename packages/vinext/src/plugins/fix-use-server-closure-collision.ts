@@ -33,7 +33,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     // Only JS/TS files
     if (!/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(id.split("?")[0])) return null;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     let ast: any;
     try {
       ast = parseAst(code);
@@ -41,7 +41,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
       return null;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function collectPatternNames(pattern: any, names: Set<string>) {
       if (!pattern) return;
       if (pattern.type === "Identifier") {
@@ -62,7 +62,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     // Check if a block body has 'use server' as its leading directive prologue.
     // Only the first contiguous run of string-literal expression statements
     // counts — a "use server" string mid-function is not a directive.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function hasUseServerDirective(body: any[]): boolean {
       for (const stmt of body) {
         if (
@@ -91,7 +91,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     const renamedRanges = new Set<string>();
     let changed = false;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function visitNode(node: any, ancestorNames: Set<string>) {
       if (!node || typeof node !== "object") return;
 
@@ -265,7 +265,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     //   - Never call s.update() on the same source range twice
     //
     // `parent` is the direct parent AST node, used to detect property contexts.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function renamingWalk(node: any, from: string, to: string, parent?: any) {
       if (!node || typeof node !== "object") return;
 
@@ -371,7 +371,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     //     know if ANY declaration of `from` exists in a nested function's scope
     //     (params already handled separately).
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function collectFunctionScopedNames(node: any, names: Set<string>) {
       if (!node || typeof node !== "object") return;
       // FunctionDeclaration: its name is a binding in the enclosing scope.
@@ -414,7 +414,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
     // declaration — regardless of kind — must stop the rename from descending
     // further, and by the server-function local-decl scan to detect all
     // possible collision sites (including class declarations in the body).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     function collectAllDeclaredNames(node: any, names: Set<string>) {
       if (!node || typeof node !== "object") return;
       if (node.type === "VariableDeclaration") {

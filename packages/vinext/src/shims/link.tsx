@@ -490,7 +490,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // Pages Router: use the Router singleton
       try {
         const routerModule = await import("next/router");
-        // eslint-disable-next-line -- vinext's Router shim accepts (url, as, options)
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- vinext's Router shim accepts (url, as, options)
         const Router = routerModule.default as any;
         if (replace) {
           await Router.replace(absoluteHref, undefined, { scroll });

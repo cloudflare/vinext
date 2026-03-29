@@ -59,6 +59,7 @@ export function isProxyFile(filePath: string): boolean {
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
  * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
  */
+// oxlint-disable-next-line typescript/no-unsafe-function-type
 export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath: string): Function {
   const isProxy = isProxyFile(filePath);
   const handler = isProxy ? (mod.proxy ?? mod.default) : (mod.middleware ?? mod.default);
@@ -71,6 +72,7 @@ export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath:
     );
   }
 
+  // oxlint-disable-next-line typescript/no-unsafe-function-type
   return handler as Function;
 }
 

@@ -671,6 +671,7 @@ async function probeWebpackConfig(
   };
 
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-function-type
     const result = await (config.webpack as Function)(mockConfig, mockOptions);
     const finalConfig = result ?? mockConfig;
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;

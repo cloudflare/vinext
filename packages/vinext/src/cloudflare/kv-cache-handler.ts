@@ -113,7 +113,7 @@ function validateTag(tag: string): string | null {
   // Block control characters and reserved separators used in our own key format.
   // Slash is allowed because revalidatePath() relies on pathname tags like
   // "/posts/hello" and "_N_T_/posts/hello".
-  // eslint-disable-next-line no-control-regex -- intentional: reject control chars in tags
+  // oxlint-disable-next-line no-control-regex -- intentional: reject control chars in tags
   if (/[\x00-\x1f\\:]/.test(tag)) return null;
   return tag;
 }

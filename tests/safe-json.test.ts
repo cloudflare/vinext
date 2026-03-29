@@ -219,7 +219,7 @@ describe("safeJsonStringify", () => {
       // We use Function() here intentionally in the test to verify the output
       // is valid JS — this is the exact context where it will be used (inside
       // a <script> tag).
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -241,7 +241,7 @@ describe("safeJsonStringify", () => {
       const result = safeJsonStringify(data);
 
       // Must be valid JS
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -263,7 +263,7 @@ describe("safeJsonStringify", () => {
         emoji: "\uD83D\uDE00", // grinning face
       };
       const result = safeJsonStringify(data);
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });
@@ -289,7 +289,7 @@ describe("safeJsonStringify", () => {
       const long = "x".repeat(100000) + "</script>" + "y".repeat(100000);
       const result = safeJsonStringify(long);
       expect(result).not.toContain("</script>");
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toBe(long);
     });
@@ -300,7 +300,7 @@ describe("safeJsonStringify", () => {
       // should remain as-is in the JSON (JSON.stringify already escapes the backslash).
       const input = "already escaped: \\u003c";
       const result = safeJsonStringify(input);
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toBe(input);
     });
@@ -312,7 +312,7 @@ describe("safeJsonStringify", () => {
         count: 42,
       };
       const result = safeJsonStringify(data);
-      // eslint-disable-next-line no-new-func, typescript-eslint/no-implied-eval
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
       const parsed = new Function(`return (${result})`)();
       expect(parsed).toEqual(data);
     });

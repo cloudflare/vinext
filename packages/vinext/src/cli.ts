@@ -163,7 +163,7 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
   const originalWarn = logger.warn.bind(logger);
 
   // Strip ANSI escape codes for pattern matching (keep originals for output).
-  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // eslint-disable-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // oxlint-disable-line no-control-regex
 
   logger.info = (msg: string, options?: import("vite").LogOptions) => {
     const plain = strip(msg);

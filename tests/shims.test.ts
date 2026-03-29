@@ -211,6 +211,7 @@ describe("next/navigation shim", () => {
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
         childSegments: ["explore"],
+        // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
     );
@@ -1272,7 +1273,7 @@ describe("next/server shim", () => {
     // unstable_cache scope. If cache.ts was already imported, the existing instance is
     // reused; if not, this standalone ALS is sufficient for the guard to work.
     if (!g[key]) g[key] = new AsyncLocalStorage();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     (g[key] as any).run(true, () => {
       expect(() => after(() => {})).toThrow(/unstable_cache/);
     });
@@ -2797,7 +2798,7 @@ describe("middleware codegen parity", () => {
       await import("../packages/vinext/src/server/middleware-codegen.js");
     // Eval the generated code and test it behaves identically to the runtime
     const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2922,7 +2923,7 @@ describe("middleware codegen parity", () => {
     const { generateSafeRegExpCode, generateMiddlewareMatcherCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2978,7 +2979,7 @@ describe("middleware codegen parity", () => {
     const { generateNormalizePathCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateNormalizePathCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn __normalizePath;");
     const __normalizePath = fn();
 
@@ -5915,8 +5916,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("ok", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("ok", {
         status: 200,
         headers: {
           "content-type": "text/plain",
@@ -5926,7 +5927,6 @@ describe("proxyExternalRequest", () => {
           // setting them on Response, so we test with headers that can be set.
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/test");
@@ -5944,9 +5944,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("Not Found", { status: 404 });
-    };
+    globalThis.fetch = async (_url: any, _init: any) => new Response("Not Found", { status: 404 });
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/missing");
@@ -6076,10 +6074,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      // Simulate an upstream that sent gzip-encoded content.
-      // Node.js fetch() auto-decompresses, but the original headers remain.
-      return new Response("decompressed body", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("decompressed body", {
         status: 200,
         headers: {
           "content-type": "application/json",
@@ -6088,7 +6084,6 @@ describe("proxyExternalRequest", () => {
           "x-custom": "keep",
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/data");
@@ -9260,9 +9255,7 @@ describe("handleImageOptimization", () => {
       transformImage: async (
         _body: ReadableStream,
         options: { width: number; format: string; quality: number },
-      ) => {
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
+      ) => new Response("transformed", { headers: { "Content-Type": options.format } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -9285,10 +9278,8 @@ describe("handleImageOptimization", () => {
           status: 200,
           headers: { "Content-Type": "image/jpeg" },
         }),
-      transformImage: async () => {
-        // Buggy transform that returns text/html
-        return new Response("transformed", { headers: { "Content-Type": "text/html" } });
-      },
+      transformImage: async () =>
+        new Response("transformed", { headers: { "Content-Type": "text/html" } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);

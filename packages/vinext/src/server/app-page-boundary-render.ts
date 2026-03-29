@@ -177,11 +177,13 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
     renderErrorBoundary(GlobalErrorComponent, children) {
       return createElement(ErrorBoundary, {
         fallback: GlobalErrorComponent,
+        // oxlint-disable-next-line react/no-children-prop
         children,
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
       return createElement(LayoutComponent as AppPageComponent, {
+        // oxlint-disable-next-line react/no-children-prop
         children,
         params: asyncParams,
       });

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- next/navigation is shimmed
+// oxlint-disable-next-line @typescript-eslint/no-require-imports -- next/navigation is shimmed
 import { usePathname } from "next/navigation";
 
 interface ErrorBoundaryProps {
