@@ -405,13 +405,15 @@ export function createSSRHandler(
             // Only allow paths explicitly listed in getStaticPaths
             const paths: Array<{ params: Record<string, string | string[]> }> =
               pathsResult?.paths ?? [];
-            const isValidPath = paths.some((p: { params: Record<string, string | string[]> }) => Object.entries(p.params).every(([key, val]) => {
+            const isValidPath = paths.some((p: { params: Record<string, string | string[]> }) =>
+              Object.entries(p.params).every(([key, val]) => {
                 const actual = params[key];
                 if (Array.isArray(val)) {
                   return Array.isArray(actual) && val.join("/") === actual.join("/");
                 }
                 return String(val) === String(actual);
-              }));
+              }),
+            );
 
             if (!isValidPath) {
               await renderErrorPage(

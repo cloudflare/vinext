@@ -82,7 +82,9 @@ export function createRscEmbedTransform(
  * HTML spec requires as="style" for <link rel="preload">.
  */
 export function fixPreloadAs(html: string): string {
-  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) => tag.replace(' as="stylesheet"', ' as="style"'));
+  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) =>
+    tag.replace(' as="stylesheet"', ' as="style"'),
+  );
 }
 
 /**
