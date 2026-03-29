@@ -78,7 +78,7 @@ export function generateNitroRouteRules(rows: RouteRow[]): NitroRouteRules {
  *   /docs/:slug+  -> /docs/**  (one or more segments — catch-all)
  *   /docs/:slug*  -> /docs/**  (zero or more segments — optional catch-all)
  *   /about        -> /about    (unchanged)
- *   /:a/:b        -> `/*`/`/*`  (consecutive single-segment params)
+ *   /:a/:b produces `/*`/`/*` (consecutive single-segment params)
  */
 export function convertToNitroPattern(pattern: string): string {
   return pattern
