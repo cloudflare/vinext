@@ -119,7 +119,9 @@ export class StaticFileCache {
       const cacheControl = isHashed
         ? "public, max-age=31536000, immutable"
         : "public, max-age=3600";
-      const etag = `W/"${fileInfo.size}-${fileInfo.mtimeMs}"`;
+      const etag =
+        (isHashed && etagFromFilenameHash(relativePath, ext)) ||
+        `W/"${fileInfo.size}-${fileInfo.mtimeMs}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const baseHeaders = {
@@ -220,6 +222,22 @@ export class StaticFileCache {
 
     return this.entries.get(pathname);
   }
+}
+
+/**
+ * Extract a stable weak ETag from a Vite hashed filename (e.g. `app-DqZc3R4n.js`).
+ * The hash is a content hash computed by the bundler — deterministic across
+ * identical builds regardless of filesystem timestamps.
+ *
+ * Must be a weak validator (W/) because the same tag is shared across
+ * content-encoded variants (original, .br, .gz, .zst) which are byte-different.
+ * Returns null if the filename doesn't contain a recognizable hash suffix,
+ * so the caller can fall back to mtime-based ETags.
+ */
+function etagFromFilenameHash(relativePath: string, ext: string): string | null {
+  const basename = path.basename(relativePath, ext);
+  const match = basename.match(/-([a-zA-Z0-9_-]{6,})$/);
+  return match ? `W/"${match[1]}"` : null;
 }
 
 function buildVariant(
