@@ -9,7 +9,6 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
-export { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD };
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
 
@@ -838,3 +837,5 @@ function extractPluginsFromOptions(opts: any): MdxOptions | null {
 
   return null;
 }
+
+export { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD };

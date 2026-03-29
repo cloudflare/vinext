@@ -80,6 +80,10 @@ function collectServerExternalPackages(serverDir: string): string[] {
   const packages = new Set<string>();
   const files = walkFiles(serverDir).filter((filePath) => /\.(c|m)?js$/.test(filePath));
 
+  // fromRE:             import { x } from "pkg"  /  export { x } from "pkg"
+  // importSideEffectRE: import "pkg"             (side-effect-only import)
+  // dynamicImportRE:    import("pkg")            (dynamic import)
+  // requireRE:          require("pkg")           (CommonJS require)
   const fromRE = /\bfrom\s*["']([^"']+)["']/g;
   const importSideEffectRE = /\bimport\s*["']([^"']+)["']/g;
   const dynamicImportRE = /import\(\s*["']([^"']+)["']\s*\)/g;

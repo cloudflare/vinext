@@ -8,6 +8,7 @@ export interface BuildManifestChunk {
   imports?: string[];
   dynamicImports?: string[];
   css?: string[];
+  assets?: string[];
 }
 
 /**
