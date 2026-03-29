@@ -1,3 +1,5 @@
+// oxlint-disable typescript/consistent-type-definitions
+
 /**
  * Minimal type augmentation for Vite's HMR API on ImportMeta.
  *
@@ -5,16 +7,16 @@
  * pulling in the full vite/client types, which would add CSS module
  * declarations and other globals inappropriate for a library package.
  */
-type ViteHotData = {
+interface ViteHotData {
   [key: string]: unknown;
-};
+}
 
-type ViteHotContext = {
+interface ViteHotContext {
   readonly data: ViteHotData;
   accept(): void;
   on(event: string, cb: (...args: unknown[]) => void): void;
-};
+}
 
-type ImportMeta = {
+interface ImportMeta {
   readonly hot?: ViteHotContext;
-};
+}
