@@ -124,7 +124,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
         // Also collect let/const/var/class/import declared as immediate children
         // of this node (e.g. top-level Program statements, or the direct body of
         // a BlockStatement) — those ARE in scope for everything in the same block.
-        const immediateStmts: any[] =
+        const immediateStmts =
           node.type === "Program" ? node.body : node.type === "BlockStatement" ? node.body : [];
         for (const stmt of immediateStmts) {
           if (stmt?.type === "VariableDeclaration") {
@@ -158,7 +158,7 @@ export const fixUseServerClosureCollisionPlugin: Plugin = {
       for (const p of node.params ?? []) collectPatternNames(p, namesForBody);
 
       // Check whether the body has the 'use server' directive.
-      const bodyStmts: any[] = node.body?.type === "BlockStatement" ? node.body.body : [];
+      const bodyStmts = node.body?.type === "BlockStatement" ? node.body.body : [];
       const isServerFn = hasUseServerDirective(bodyStmts);
 
       if (isServerFn) {

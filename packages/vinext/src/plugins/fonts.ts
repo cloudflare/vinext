@@ -528,7 +528,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           try {
             const parsed = parseStaticObjectLiteral(optionsStr);
             if (!parsed) return; // Contains dynamic expressions, skip
-            options = parsed as Record<string, any>;
+            options = parsed as Record<string, unknown>;
           } catch {
             return; // Can't parse options statically, skip
           }

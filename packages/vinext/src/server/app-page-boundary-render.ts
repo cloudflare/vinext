@@ -25,6 +25,7 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
 type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
@@ -190,6 +191,7 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
     },
     renderLayoutSegmentProvider(childSegments, children) {
       return createElement(
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         LayoutSegmentProvider as ComponentType<any>,
         { childSegments },
         children,

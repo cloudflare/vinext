@@ -35,7 +35,7 @@ export function LayoutSegmentProvider({
   const ctx = getLayoutSegmentContext();
   if (!ctx) {
     // Fallback: no context available (shouldn't happen in SSR/Browser)
-    return children as any;
+    return children;
   }
   return createElement(ctx.Provider, { value: childSegments }, children);
 }

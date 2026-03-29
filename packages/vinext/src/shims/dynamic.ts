@@ -35,6 +35,7 @@ type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 let DynamicErrorBoundary: any;
 function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
@@ -48,6 +49,7 @@ function getDynamicErrorBoundary() {
       { error: Error | null }
     >
   ) {
+    // oxlint-disable-next-line typescript/no-explicit-any
     constructor(props: any) {
       super(props);
       this.state = { error: null };

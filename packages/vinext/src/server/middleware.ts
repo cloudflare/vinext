@@ -437,12 +437,12 @@ export async function runMiddleware(
   let response: Response | undefined;
   try {
     response = await middlewareFn(nextRequest, fetchEvent);
-  } catch (e: any) {
+  } catch (e) {
     console.error("[vinext] Middleware error:", e);
     const message =
       process.env.NODE_ENV === "production"
         ? "Internal Server Error"
-        : "Middleware Error: " + (e?.message ?? String(e));
+        : "Middleware Error: " + (e instanceof Error ? e.message : String(e));
     return {
       continue: false,
       response: new Response(message, {

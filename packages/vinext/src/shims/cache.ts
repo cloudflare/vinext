@@ -677,6 +677,7 @@ interface UnstableCacheOptions {
  * Returns a new function that caches results. The cache key is derived
  * from keyParts + serialized arguments.
  */
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   fn: T,
   keyParts?: string[],

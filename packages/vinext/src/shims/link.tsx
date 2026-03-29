@@ -157,7 +157,7 @@ function prefetchUrl(href: string): void {
   if (prefetched.has(rscUrl)) return;
   prefetched.add(rscUrl);
 
-  const schedule = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
+  const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
@@ -165,7 +165,7 @@ function prefetchUrl(href: string): void {
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
         credentials: "include",
-        priority: "low" as any,
+        priority: "low" as const,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
       })
@@ -305,7 +305,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   forwardedRef,
 ) {
   // Extract locale from rest props
-  const { locale, ...restWithoutLocale } = rest as any;
+  const { locale, ...restWithoutLocale } = rest;
 
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")

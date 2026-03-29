@@ -316,6 +316,7 @@ async function resolveConfigValue(
  * Unwrap the config value from a loaded module namespace.
  */
 async function unwrapConfig(
+  // oxlint-disable-next-line typescript/no-explicit-any
   mod: any,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig> {
@@ -656,11 +657,13 @@ async function probeWebpackConfig(
     return { aliases: {}, mdx: null };
   }
 
+  // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
   const mockConfig = {
     context: root,
     resolve: { alias: {} as Record<string, unknown> },
     module: { rules: mockModuleRules },
+    // oxlint-disable-next-line typescript/no-explicit-any
     plugins: [] as any[],
   };
   const mockOptions = {
@@ -674,6 +677,7 @@ async function probeWebpackConfig(
     // oxlint-disable-next-line typescript/no-unsafe-function-type
     const result = await (config.webpack as Function)(mockConfig, mockOptions);
     const finalConfig = result ?? mockConfig;
+    // oxlint-disable-next-line typescript/no-explicit-any
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
@@ -762,6 +766,7 @@ export function detectNextIntlConfig(root: string, resolved: ResolvedNextConfig)
   }
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
   // Search through webpack rules for the MDX loader injected by @next/mdx
   for (const rule of rules) {
@@ -775,6 +780,7 @@ function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
  * Recursively search a webpack rule (which may have nested `oneOf` arrays)
  * for an MDX loader and extract its remark/rehype/recma plugin options.
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxLoaders(rule: any): MdxOptions | null {
   if (!rule) return null;
 
@@ -814,6 +820,7 @@ function isMdxLoader(loaderPath: string): boolean {
   );
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractPluginsFromOptions(opts: any): MdxOptions | null {
   if (!opts || typeof opts !== "object") return null;
 

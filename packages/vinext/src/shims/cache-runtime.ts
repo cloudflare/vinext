@@ -301,6 +301,7 @@ export function clearPrivateCache(): void {
  * @param variant - Cache variant: "" (default/shared), "remote", "private"
  * @returns A wrapper function that checks cache before calling the original
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 export function registerCachedFunction<T extends (...args: any[]) => Promise<any>>(
   fn: T,
   id: string,
@@ -316,6 +317,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const cachedFn = async (...args: any[]): Promise<any> => {
     const rsc = await getRscModule();
 
@@ -457,11 +459,13 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 // Helper: execute function within cache context
 // ---------------------------------------------------------------------------
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   fn: T,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-): Promise<any> {
+): Promise<Awaited<ReturnType<T>>> {
   const ctx: CacheContext = {
     tags: [],
     lifeConfigs: [],
@@ -502,11 +506,13 @@ function unwrapThenableObjects(value: unknown): unknown {
 
   // Detect thenable (Promise-like) with own enumerable properties —
   // this is the Object.assign(Promise.resolve(obj), obj) pattern.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   if (typeof (value as any).then === "function") {
     const keys = Object.keys(value);
     if (keys.length > 0) {
       const plain: Record<string, unknown> = {};
       for (const key of keys) {
+        // oxlint-disable-next-line typescript/no-explicit-any
         plain[key] = unwrapThenableObjects((value as any)[key]);
       }
       return plain;
@@ -518,6 +524,7 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;

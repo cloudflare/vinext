@@ -4,12 +4,12 @@ import React from "react";
 // oxlint-disable-next-line @typescript-eslint/no-require-imports -- next/navigation is shimmed
 import { usePathname } from "next/navigation";
 
-interface ErrorBoundaryProps {
+export interface ErrorBoundaryProps {
   fallback: React.ComponentType<{ error: Error; reset: () => void }>;
   children: React.ReactNode;
 }
 
-interface ErrorBoundaryState {
+export interface ErrorBoundaryState {
   error: Error | null;
 }
 
@@ -29,7 +29,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     // past error boundaries. Re-throw them so they bubble up to the
     // framework's HTTP access fallback / redirect handler.
     if (error && typeof error === "object" && "digest" in error) {
-      const digest = String((error as any).digest);
+      const digest = String(error.digest);
       if (
         digest === "NEXT_NOT_FOUND" || // legacy compat
         digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
@@ -103,7 +103,7 @@ class NotFoundBoundaryInner extends React.Component<
 
   static getDerivedStateFromError(error: Error): Partial<NotFoundBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
-      const digest = String((error as any).digest);
+      const digest = String(error.digest);
       if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;404")) {
         return { notFound: true };
       }

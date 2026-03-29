@@ -625,11 +625,12 @@ export function createSSRHandler(
 
                     // Re-render the page with fresh props inside fresh
                     // render sub-scopes so head/cache state cannot leak.
+                    // oxlint-disable-next-line typescript/no-explicit-any
                     let RegenApp: any = null;
                     const appPath = path.join(pagesDir, "_app");
                     if (findFileWithExtensions(appPath, matcher)) {
                       try {
-                        const appMod = (await runner.import(appPath)) as Record<string, any>;
+                        const appMod = (await runner.import(appPath)) as Record<string, unknown>;
                         RegenApp = appMod.default ?? null;
                       } catch {
                         // _app failed to load
@@ -908,10 +909,11 @@ hydrate();
 
         // Try to load custom _document.tsx
         const docPath = path.join(pagesDir, "_document");
+        // oxlint-disable-next-line typescript/no-explicit-any
         let DocumentComponent: any = null;
         if (findFileWithExtensions(docPath, matcher)) {
           try {
-            const docModule = (await runner.import(docPath)) as Record<string, any>;
+            const docModule = (await runner.import(docPath)) as Record<string, unknown>;
             DocumentComponent = docModule.default ?? null;
           } catch {
             // _document exists but failed to load
@@ -1064,6 +1066,7 @@ async function renderErrorPage(
       if (!ErrorComponent) continue;
 
       // Try to load _app.tsx to wrap the error page
+      // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
       if (findFileWithExtensions(appPathErr, matcher)) {
@@ -1108,6 +1111,7 @@ async function renderErrorPage(
 
       // Try custom _document
       let html: string;
+      // oxlint-disable-next-line typescript/no-explicit-any
       let DocumentComponent: any = null;
       const docPathErr = path.join(pagesDir, "_document");
       if (findFileWithExtensions(docPathErr, matcher)) {

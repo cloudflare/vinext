@@ -50,6 +50,7 @@ export interface UnifiedRequestContext
 
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   requestCache: WeakMap<(...args: any[]) => any, unknown>;
 }
 

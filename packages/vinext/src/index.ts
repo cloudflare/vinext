@@ -85,6 +85,8 @@ import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
+type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
 
@@ -321,7 +323,8 @@ const POSTCSS_CONFIG_FILES = [
  * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
  * parallel) all await the same in-flight scan rather than each starting their own.
  */
-const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
+// oxlint-disable-next-line typescript/no-explicit-any
+const _postcssCache = new Map<string, Promise<{ plugins: unknown[] } | undefined>>();
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
 const _tsconfigAliasCache = new Map<string, Record<string, string>>();
@@ -355,7 +358,10 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: any[] } | undefined> {
+// oxlint-disable-next-line typescript/no-explicit-any
+function resolvePostcssStringPlugins(
+  projectRoot: string,
+): Promise<{ plugins: unknown[] } | undefined> {
   if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
 
   const promise = _resolvePostcssStringPluginsUncached(projectRoot);
@@ -365,7 +371,8 @@ function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: an
 
 async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
-): Promise<{ plugins: any[] } | undefined> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+): Promise<{ plugins: unknown[] } | undefined> {
   // Find the PostCSS config file
   let configPath: string | null = null;
   for (const name of POSTCSS_CONFIG_FILES) {
@@ -380,6 +387,7 @@ async function _resolvePostcssStringPluginsUncached(
   }
 
   // Load the config file
+  // oxlint-disable-next-line typescript/no-explicit-any
   let config: any;
   try {
     if (
@@ -411,7 +419,7 @@ async function _resolvePostcssStringPluginsUncached(
     return undefined;
   }
   const hasStringPlugins = config.plugins.some(
-    (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
+    (p: unknown) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
   if (!hasStringPlugins) {
     return undefined;
@@ -420,7 +428,7 @@ async function _resolvePostcssStringPluginsUncached(
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
   const resolved = await Promise.all(
-    config.plugins.filter(Boolean).map(async (plugin: any) => {
+    config.plugins.filter(Boolean).map(async (plugin: unknown) => {
       if (typeof plugin === "string") {
         const resolved = req.resolve(plugin);
         const mod = await import(pathToFileURL(resolved).href);
@@ -1384,25 +1392,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
-        const pluginsFlat: any[] = [];
-        function flattenPlugins(arr: any[]) {
+        const pluginsFlat: unknown[] = [];
+        function flattenPlugins(arr: unknown[]) {
           for (const p of arr) {
             if (Array.isArray(p)) flattenPlugins(p);
             else if (p) pluginsFlat.push(p);
           }
         }
-        flattenPlugins((config.plugins as any[]) ?? []);
+        flattenPlugins((config.plugins as unknown[]) ?? []);
         hasCloudflarePlugin = pluginsFlat.some(
-          (p: any) =>
+          (p: unknown) =>
             p &&
             typeof p === "object" &&
+            "name" in p &&
             typeof p.name === "string" &&
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
         hasNitroPlugin = pluginsFlat.some(
-          (p: any) =>
+          (p: unknown) =>
             p &&
             typeof p === "object" &&
+            "name" in p &&
             typeof p.name === "string" &&
             (p.name === "nitro" || p.name.startsWith("nitro:")),
         );
@@ -1414,6 +1424,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // this and resolve the strings to actual plugin functions, then
         // inject via css.postcss so Vite uses the resolved plugins.
         // Only do this if the user hasn't already set css.postcss inline.
+        // oxlint-disable-next-line typescript/no-explicit-any
         let postcssOverride: { plugins: any[] } | undefined;
         if (!config.css?.postcss || typeof config.css.postcss === "string") {
           postcssOverride = await resolvePostcssStringPlugins(root);
@@ -1422,9 +1433,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
         // already configured. Applies remark/rehype plugins from next.config.
         hasUserMdxPlugin = pluginsFlat.some(
-          (p: any) =>
+          (p: unknown) =>
             p &&
             typeof p === "object" &&
+            "name" in p &&
             typeof p.name === "string" &&
             (p.name === "@mdx-js/rollup" || p.name === "mdx"),
         );
@@ -1827,7 +1839,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Assumes @vitejs/plugin-react top-level plugin names continue to use
           // the vite:react* prefix across supported versions.
           const reactRootPlugins = config.plugins.filter(
-            (p: any) => p && typeof p.name === "string" && p.name.startsWith("vite:react"),
+            (p: unknown) =>
+              p &&
+              typeof p === "object" &&
+              "name" in p &&
+              typeof p.name === "string" &&
+              p.name.startsWith("vite:react"),
           );
           const counts = new Map<string, number>();
           for (const plugin of reactRootPlugins) {
@@ -1853,7 +1870,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (rscPluginPromise) {
           // Count top-level RSC plugins (name === "rsc") — each call to
           // the rsc() factory produces exactly one plugin with this name.
-          const rscRootPlugins = config.plugins.filter((p: any) => p && p.name === "rsc");
+          const rscRootPlugins = config.plugins.filter(
+            (p: unknown) => p && typeof p === "object" && "name" in p && p.name === "rsc",
+          );
           if (rscRootPlugins.length > 1) {
             throw new Error(
               "[vinext] Duplicate @vitejs/plugin-rsc detected.\n" +
@@ -2103,7 +2122,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // which may not be tracked in Vite's module graph. Explicitly
       // sending full-reload ensures changes are always reflected in
       // the browser.
-      hotUpdate(options: { file: string; server: ViteDevServer; modules: any[] }) {
+      hotUpdate(options: { file: string; server: ViteDevServer; modules: unknown[] }) {
         if (!hasPagesDir || hasAppDir) return;
         if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
           options.server.environments.client.hot.send({ type: "full-reload" });
@@ -2186,7 +2205,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // BEFORE Vite's built-in middleware. This ensures all requests
         // (including /@*, /__vite*, /node_modules* paths) are validated
         // before Vite serves any content.
-        server.middlewares.use((req: any, res: any, next: any) => {
+        server.middlewares.use((req, res, next) => {
           const blockReason = validateDevRequest(
             {
               origin: req.headers.origin as string | undefined,
@@ -2308,6 +2327,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               };
 
               const _origWriteHead = res.writeHead.bind(res);
+              // oxlint-disable-next-line typescript/no-explicit-any
               res.writeHead = function (statusCode, ...args: any[]) {
                 // Normalise the optional headers argument (may be reason, headers object, or both).
                 let headers: Record<string, unknown> | undefined;
@@ -3063,8 +3083,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const ast = parseAst(code);
 
           // Check for file-level "use cache" directive
-          const cacheDirective = (ast.body as any[]).find(
-            (node: any) =>
+          const cacheDirective = ast.body.find(
+            (node) =>
               node.type === "ExpressionStatement" &&
               node.expression?.type === "Literal" &&
               typeof node.expression.value === "string" &&
@@ -3075,14 +3095,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Accepts any function-like node: FunctionDeclaration/Expression, ArrowFunctionExpression,
           // or MethodDefinition. MethodDefinition stores its FunctionExpression in `.value`, not
           // `.body`, so we unwrap it here rather than at each call site to keep the callee safe.
-          function nodeHasInlineCacheDirective(node: any): boolean {
+          function nodeHasInlineCacheDirective(node: ASTNode): boolean {
             if (!node || typeof node !== "object") return false;
             // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
             const fn = node.type === "MethodDefinition" ? node.value : node;
             // fn.body is a BlockStatement node ({type:"BlockStatement", body:Statement[]}), not
             // a raw array. Unwrap it. Arrow functions with expression bodies have a non-array
             // .body — the BlockStatement check handles that case (body.body would be undefined).
-            const stmts = fn?.body?.type === "BlockStatement" ? fn.body.body : null;
+            const stmts: ASTNode[] | null =
+              // oxlint-disable-next-line typescript/no-explicit-any
+              (fn as any)?.body?.type === "BlockStatement" ? (fn as any).body.body : null;
             if (Array.isArray(stmts)) {
               for (const stmt of stmts) {
                 if (
@@ -3097,7 +3119,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             return false;
           }
-          function astHasInlineCache(nodes: any[]): boolean {
+          function astHasInlineCache(nodes: ASTNode[]): boolean {
             for (const node of nodes) {
               if (!node || typeof node !== "object") continue;
               if (
@@ -3112,7 +3134,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Walk into variable declarations, export declarations, etc.
               for (const key of Object.keys(node)) {
                 if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-                const child = node[key];
+                const child = node[key as keyof typeof node] as ASTNode;
                 if (Array.isArray(child) && child.some((c) => c && typeof c === "object")) {
                   if (astHasInlineCache(child)) return true;
                 } else if (child && typeof child === "object" && child.type) {
@@ -3122,7 +3144,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             return false;
           }
-          const hasInlineCache = !cacheDirective && astHasInlineCache(ast.body as any[]);
+          const hasInlineCache = !cacheDirective && astHasInlineCache(ast.body);
 
           if (!cacheDirective && !hasInlineCache) return null;
 
@@ -3143,7 +3165,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // registerCachedFunction. Page default exports are wrapped directly
             // (they're leaf components). Layout/template defaults are excluded
             // because they receive {children} from the framework.
-            const directiveValue: string = cacheDirective.expression.value;
+            // oxlint-disable-next-line typescript/no-explicit-any
+            const directiveValue = (cacheDirective as any).expression.value;
             const variant =
               directiveValue === "use cache"
                 ? ""
@@ -3159,11 +3182,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const runtimeModuleUrl = pathToFileURL(
               resolveShimModulePath(shimsDir, "cache-runtime"),
             ).href;
-            const result = transformWrapExport(code, ast as any, {
-              runtime: (value: any, name: any) =>
+            const result = transformWrapExport(code, ast, {
+              runtime: (value: string, name: string) =>
                 `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
               rejectNonAsyncFunction: false,
-              filter: (name: any, meta: any) => {
+              filter: (name: string, meta: { isFunction?: boolean }) => {
                 // Skip non-functions (constants, types, etc.)
                 if (meta.isFunction === false) return false;
                 // Skip the default export on layout/template files — these
@@ -3211,9 +3234,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ).href;
 
             try {
-              const result = transformHoistInlineDirective(code, ast as any, {
+              const result = transformHoistInlineDirective(code, ast, {
                 directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value: any, name: any, meta: any) => {
+                runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
                   const directiveMatch = meta.directiveMatch[0];
                   const variant =
                     directiveMatch === "use cache"
@@ -3422,6 +3445,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (fs.existsSync(buildManifestPath)) {
             try {
               const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+              // oxlint-disable-next-line typescript/no-explicit-any
               for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
                 if (value && value.isEntry && value.file) {
                   clientEntryFile = manifestFileWithBase(value.file, clientBase);
@@ -3704,14 +3728,14 @@ function stripServerExports(code: string): string | null {
   const s = new MagicString(code);
   let changed = false;
 
-  for (const node of ast.body as any[]) {
+  for (const node of ast.body) {
     if (node.type !== "ExportNamedDeclaration") continue;
 
     // Case 1: export function name() {} / export async function name() {}
     // Case 2: export const/let/var name = ...
     if (node.declaration) {
       const decl = node.declaration;
-      if (decl.type === "FunctionDeclaration" && SERVER_EXPORTS.has(decl.id?.name)) {
+      if (decl.type === "FunctionDeclaration" && decl.id && SERVER_EXPORTS.has(decl.id.name)) {
         s.overwrite(
           node.start,
           node.end,
@@ -3731,11 +3755,12 @@ function stripServerExports(code: string): string | null {
 
     // Case 3: export { getServerSideProps } or export { getServerSideProps as gSSP }
     if (node.specifiers && node.specifiers.length > 0 && !node.source) {
-      const kept: any[] = [];
+      const kept: Extract<ASTNode, { type: "ExportSpecifier" }>[] = [];
       const stripped: string[] = [];
       for (const spec of node.specifiers) {
         // spec.local.name is the binding name, spec.exported.name is the export name
-        const exportedName = spec.exported?.name ?? spec.exported?.value;
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const exportedName = (spec.exported as any)?.name ?? (spec.exported as any)?.value;
         if (SERVER_EXPORTS.has(exportedName)) {
           stripped.push(exportedName);
         } else {
@@ -3747,6 +3772,7 @@ function stripServerExports(code: string): string | null {
         const parts: string[] = [];
         if (kept.length > 0) {
           const keptStr = kept
+            // oxlint-disable-next-line typescript/no-explicit-any
             .map((sp: any) => {
               const local = sp.local.name;
               const exported = sp.exported?.name ?? sp.exported?.value;
@@ -3774,6 +3800,7 @@ function stripServerExports(code: string): string | null {
  */
 function applyRedirects(
   pathname: string,
+  // oxlint-disable-next-line typescript/no-explicit-any
   res: any,
   redirects: NextRedirect[],
   ctx: RequestContext,
@@ -3881,6 +3908,7 @@ function applyRewrites(
  */
 function applyHeaders(
   pathname: string,
+  // oxlint-disable-next-line typescript/no-explicit-any
   res: any,
   headers: NextHeader[],
   ctx: RequestContext,

@@ -424,19 +424,19 @@ async function buildApp() {
           userTransformPlugins = flat.filter(
             (p): p is import("vite").Plugin =>
               !!p &&
-              typeof (p as any).name === "string" &&
+              typeof p.name === "string" &&
               // vinext and its sub-plugins — re-registered below
-              !(p as any).name.startsWith("vinext:") &&
+              !p.name.startsWith("vinext:") &&
               // @vitejs/plugin-react — auto-registered by vinext
-              !(p as any).name.startsWith("vite:react") &&
+              !p.name.startsWith("vite:react") &&
               // @vitejs/plugin-rsc and its sub-plugins — App Router only
-              !(p as any).name.startsWith("rsc:") &&
-              (p as any).name !== "vite-rsc-load-module-dev-proxy" &&
+              !p.name.startsWith("rsc:") &&
+              p.name !== "vite-rsc-load-module-dev-proxy" &&
               // vite-tsconfig-paths — auto-registered by vinext
-              (p as any).name !== "vite-tsconfig-paths" &&
+              p.name !== "vite-tsconfig-paths" &&
               // cloudflare() — injects multi-env environments block which
               // conflicts with the plain SSR build config below
-              !(p as any).name.startsWith("vite-plugin-cloudflare"),
+              !p.name.startsWith("vite-plugin-cloudflare"),
           );
         }
       }

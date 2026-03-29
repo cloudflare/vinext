@@ -287,6 +287,7 @@ export class KVCacheHandler implements CacheHandler {
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
     if (ctx) {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
       if (typeof revalidate === "number") {
         effectiveRevalidate = revalidate;

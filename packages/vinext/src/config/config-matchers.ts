@@ -1080,8 +1080,8 @@ export async function proxyExternalRequest(
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
-  } catch (e: any) {
-    if (e?.name === "AbortError") {
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
       console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
       return new Response("Gateway Timeout", { status: 504 });
     }
