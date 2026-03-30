@@ -130,6 +130,9 @@ function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | 
  * mounts, so its pre-paint effect never fires. By draining all effects
  * <= the committed renderId here, the winning transition cleans up after
  * any superseded ones, keeping the counter balanced.
+ *
+ * Invariant: each superseded navigation gets a commitClientNavigationState()
+ * to balance the activateNavigationSnapshot() from its renderNavigationPayload call.
  */
 function drainPrePaintEffects(upToRenderId: number): void {
   for (const [id, effect] of pendingNavigationPrePaintEffects) {
@@ -574,6 +577,7 @@ async function main(): Promise<void> {
       return;
     }
 
+    let _snapshotPending = false;
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
@@ -601,12 +605,14 @@ async function main(): Promise<void> {
         if (navId !== activeNavigationId) return;
         // Stage params only after confirming this navigation hasn't been superseded
         stageClientParams(cachedParams);
+        _snapshotPending = true; // Set before renderNavigationPayload
         await renderNavigationPayload(
           cachedPayload,
           cachedNavigationSnapshot,
           navigationCommitEffect,
           isSameRoute,
         );
+        _snapshotPending = false; // Cleared after successful commit
         return;
       }
 
@@ -677,14 +683,19 @@ async function main(): Promise<void> {
       // navigation hasn't been superseded (avoids stale cache entries).
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       stageClientParams(navParams);
+      _snapshotPending = true; // Set before renderNavigationPayload
       await renderNavigationPayload(
         rscPayload,
         navigationSnapshot,
         navigationCommitEffect,
         isSameRoute,
       );
+      _snapshotPending = false; // Cleared after successful commit
     } catch (error) {
-      commitClientNavigationState();
+      // Only decrement counter if snapshot was activated but not yet committed
+      if (_snapshotPending) {
+        commitClientNavigationState();
+      }
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
     }

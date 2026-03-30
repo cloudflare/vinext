@@ -386,7 +386,6 @@ export function prefetchRscResponse(rscUrl: string, fetchPromise: Promise<Respon
 
   // Add entry first, then evict to ensure we don't exceed the limit.
   // This handles the case where the new entry pushes us over capacity.
-  prefetched.add(rscUrl);
   cache.set(rscUrl, entry);
   evictPrefetchCacheIfNeeded();
 }
@@ -808,7 +807,13 @@ function isHashOnlyChange(href: string): boolean {
   try {
     const current = new URL(window.location.href);
     const next = new URL(href, window.location.href);
-    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
+    // Strip basePath from both pathnames for consistent comparison
+    // (matches how isSameRoute handles basePath in app-browser-entry.ts)
+    const strippedCurrentPath = stripBasePath(current.pathname, __basePath);
+    const strippedNextPath = stripBasePath(next.pathname, __basePath);
+    return (
+      strippedCurrentPath === strippedNextPath && current.search === next.search && next.hash !== ""
+    );
   } catch {
     return false;
   }
@@ -1073,12 +1078,11 @@ const _appRouter = {
   },
   prefetch(href: string): void {
     if (isServer) return;
-    // Prefetch the RSC payload for the target route and store in cache
+    // Prefetch the RSC payload for the target route and store in cache.
+    // Note: prefetchRscResponse handles adding to both cache and prefetchedUrls set.
     const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
-    const prefetched = getPrefetchedUrls();
-    if (prefetched.has(rscUrl)) return;
-    prefetched.add(rscUrl);
+    // prefetchRscResponse internally checks getPrefetchedUrls() and adds to the set.
     prefetchRscResponse(
       rscUrl,
       fetch(rscUrl, {

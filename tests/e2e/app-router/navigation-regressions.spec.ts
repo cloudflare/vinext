@@ -200,7 +200,10 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Start a slow navigation to a different param value
     // This will be superseded before it completes
-    const _slowNavPromise = page.click("#link-superseded", { timeout: 100 }).catch(() => {});
+    const _slowNavPromise = page.click("#link-superseded", { timeout: 100 }).catch((e: Error) => {
+      // Click may not complete if navigation is superseded — expected in this test
+      if (process.env.DEBUG) console.log("Slow click incomplete:", e.message);
+    });
 
     // Immediately navigate to a different route entirely (list)
     // This should supersede the slow navigation
