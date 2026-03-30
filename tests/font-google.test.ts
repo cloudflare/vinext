@@ -513,6 +513,44 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("does not produce double-comma when font options have a trailing comma", async () => {
+    // Regression test: Inter({ subsets: ["latin"], }) already has a trailing comma.
+    // injectSelfHostedCss must not prepend another ", " making the object literal
+    // {subsets: ["latin"],, _selfHostedCSS: "..."} which is a syntax error.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-trailing-comma");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      // Note the trailing comma after "latin": Inter({ subsets: ["latin"], })
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  subsets: ["latin"],`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+      // Must not have a double-comma — that would be a JS syntax error
+      expect(result.code).not.toMatch(/,\s*,/);
+      // Verify the generated code is syntactically valid by checking structure
+      expect(result.code).toContain('_selfHostedCSS: "');
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("self-hosts aliased lowercase font imports during build", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-alias");

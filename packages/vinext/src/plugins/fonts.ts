@@ -584,9 +584,15 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           // Inject _selfHostedCSS into the options object
           const escapedCSS = JSON.stringify(localCSS);
           const closingBrace = optionsStr.lastIndexOf("}");
+          const beforeBrace = optionsStr.slice(0, closingBrace).trim();
+          // Determine the separator to insert before the new property:
+          //   - Empty string if the object is empty ({ is the last non-whitespace char)
+          //   - Empty string if there's already a trailing comma (avoid double comma)
+          //   - ", " otherwise (before the new property)
+          const separator = beforeBrace.endsWith("{") || beforeBrace.endsWith(",") ? "" : ", ";
           const optionsWithCSS =
             optionsStr.slice(0, closingBrace) +
-            (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
+            separator +
             `_selfHostedCSS: ${escapedCSS}` +
             optionsStr.slice(closingBrace);
 
