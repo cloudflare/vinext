@@ -841,4 +841,30 @@ describe("resolveParentParams", () => {
     );
     expect(result).toEqual([{ category: "shoes" }]);
   });
+
+  it("returns empty array for a fully static route", async () => {
+    const route = mockRoute("/about/contact");
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array for a single-segment dynamic route", async () => {
+    const route = mockRoute("/:id");
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("resolves parent with catch-all child segment", async () => {
+    const parent = mockRoute("/shop/:category");
+    const child = mockRoute("/shop/:category/:rest+");
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "electronics" }],
+    };
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([{ category: "electronics" }]);
+  });
 });
