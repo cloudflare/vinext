@@ -34,6 +34,7 @@ function readPackageJson(packageJsonPath: string): PackageJson {
   return JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as PackageJson;
 }
 
+/** Returns both `dependencies` and `optionalDependencies` keys — the full set of potential runtime deps. */
 function runtimeDeps(pkg: PackageJson): string[] {
   return Object.keys({
     ...pkg.dependencies,
@@ -170,6 +171,13 @@ function copyPackageAndRuntimeDeps(
 function writeStandaloneServerEntry(filePath: string): void {
   // Uses import.meta.dirname (Node >= 21.2, vinext requires >= 22) so the
   // entry point is pure ESM — no need for CJS require() or __dirname.
+  //
+  // The static import of "vinext/server/prod-server" is intentional: that
+  // subpath is a documented export in vinext's package.json exports map and
+  // is always present in the standalone node_modules/vinext/dist tree
+  // (emitStandaloneOutput copies vinext's dist/ directory in full). A static
+  // import gives a clearer ERR_MODULE_NOT_FOUND at startup rather than a
+  // runtime error deep inside the server if the import were deferred.
   const content = `#!/usr/bin/env node
 import { join } from "node:path";
 import { startProdServer } from "vinext/server/prod-server";

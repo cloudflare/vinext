@@ -83,12 +83,16 @@ export function createServerExternalsManifestPlugin(): Plugin {
         // For App Router SSR: options.dir is dist/server/ssr.
         // We always want dist/server as the manifest location.
         if (!outDir) {
-          // The only sub-directory case is App Router SSR, which outputs to
-          // dist/server/ssr. For all other environments, options.dir is already
-          // dist/server. Using basename avoids the fragile walk-up heuristic
-          // which would misfire if a user's project path contains a directory
-          // named "server" above the dist output (e.g. /home/user/server/my-app/).
-          outDir = path.basename(dir) === "ssr" ? path.dirname(dir) : dir;
+          // The server bundle outputs to dist/server for all environments except
+          // App Router SSR, which outputs to dist/server/ssr. We always want
+          // dist/server as the manifest location. Rather than hard-coding "ssr",
+          // treat any sub-directory of dist/server (basename !== "server") as a
+          // sub-env and walk up one level. This handles any future sub-directory
+          // environments (e.g. "edge") without code changes.
+          // Note: using basename rather than a walk-up avoids misfiring when a
+          // user's project path contains a "server" segment above the dist output
+          // (e.g. /home/user/server/my-app/).
+          outDir = path.basename(dir) === "server" ? dir : path.dirname(dir);
         }
 
         for (const item of Object.values(bundle)) {
