@@ -132,31 +132,15 @@ export function invalidateAppRouteCache(): void {
 }
 
 export function collectInterceptTargetPatterns(routes: readonly AppRoute[]): string[] {
-  const uniqueInterceptTargetPatterns = new Map<string, string>();
-
-  for (const route of routes) {
-    for (const slot of route.parallelSlots) {
-      for (const intercept of slot.interceptingRoutes) {
-        const existingTargetPattern = uniqueInterceptTargetPatterns.get(intercept.pagePath);
-
-        if (
-          existingTargetPattern !== undefined &&
-          existingTargetPattern !== intercept.targetPattern
-        ) {
-          throw new Error(
-            `Intercepting route ${intercept.pagePath} resolves to multiple target patterns (${existingTargetPattern} and ${intercept.targetPattern}).`,
-          );
-        }
-
-        // Inherited slots can surface the same intercepting page on multiple
-        // child routes. De-dupe by page path so we only validate distinct
-        // physical intercept definitions while still rejecting real conflicts.
-        uniqueInterceptTargetPatterns.set(intercept.pagePath, intercept.targetPattern);
-      }
-    }
-  }
-
-  return Array.from(uniqueInterceptTargetPatterns.values());
+  return [
+    ...new Set(
+      routes.flatMap((route) =>
+        route.parallelSlots.flatMap((slot) =>
+          slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
+        ),
+      ),
+    ),
+  ];
 }
 
 /**
