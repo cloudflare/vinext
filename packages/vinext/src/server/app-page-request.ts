@@ -2,35 +2,35 @@ import type { AppPageSpecialError } from "./app-page-execution.js";
 
 export type AppPageParams = Record<string, string | string[]>;
 
-export interface ValidateAppPageDynamicParamsOptions {
+export type ValidateAppPageDynamicParamsOptions = {
   clearRequestContext: () => void;
   enforceStaticParamsOnly: boolean;
   generateStaticParams?: ((args: { params: AppPageParams }) => unknown) | null;
   isDynamicRoute: boolean;
   logGenerateStaticParamsError?: (error: unknown) => void;
   params: AppPageParams;
-}
+};
 
-export interface BuildAppPageElementOptions<TElement> {
+export type BuildAppPageElementOptions<TElement> = {
   buildPageElement: () => Promise<TElement>;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
-}
+};
 
-export interface BuildAppPageElementResult<TElement> {
+export type BuildAppPageElementResult<TElement> = {
   element: TElement | null;
   response: Response | null;
-}
+};
 
-export interface AppPageInterceptMatch<TPage = unknown> {
+export type AppPageInterceptMatch<TPage = unknown> = {
   matchedParams: AppPageParams;
   page: TPage;
   slotName: string;
   sourceRouteIndex: number;
-}
+};
 
-export interface ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> {
+export type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -52,12 +52,12 @@ export interface ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> {
     searchParams: URLSearchParams;
   }) => void;
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
-}
+};
 
-export interface ResolveAppPageInterceptResult<TInterceptOpts> {
+export type ResolveAppPageInterceptResult<TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
   response: Response | null;
-}
+};
 
 function areStaticParamsAllowed(
   params: AppPageParams,

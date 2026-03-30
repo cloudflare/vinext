@@ -22,7 +22,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { prerenderPages, prerenderApp, type PrerenderRouteResult } from "./prerender.js";
 
-export interface StaticExportOptions {
+export type StaticExportOptions = {
   /**
    * Absolute path to the pre-built Pages Router server bundle
    * (e.g. `dist/server/entry.js`).
@@ -38,9 +38,9 @@ export interface StaticExportOptions {
   outDir: string;
   /** Resolved next.config.js */
   config: ResolvedNextConfig;
-}
+};
 
-export interface StaticExportResult {
+export type StaticExportResult = {
   /** Number of HTML files generated */
   pageCount: number;
   /** Generated file paths (relative to outDir) */
@@ -49,7 +49,7 @@ export interface StaticExportResult {
   warnings: string[];
   /** Errors encountered (non-fatal, specific pages) */
   errors: Array<{ route: string; error: string }>;
-}
+};
 
 /**
  * Convert a `PrerenderResult` into the legacy `StaticExportResult` shape.
@@ -103,7 +103,7 @@ export async function staticExportPages(options: StaticExportOptions): Promise<S
   return toStaticExportResult(result.routes);
 }
 
-export interface AppStaticExportOptions {
+export type AppStaticExportOptions = {
   /** Discovered app routes */
   routes: AppRoute[];
   /**
@@ -115,7 +115,7 @@ export interface AppStaticExportOptions {
   outDir: string;
   /** Resolved next.config.js */
   config: ResolvedNextConfig;
-}
+};
 
 /**
  * Run static export for App Router.

@@ -1337,10 +1337,9 @@ describe("vinext:async-hooks-stub", () => {
       // string shape. This catches subtle syntax errors that string matching misses.
       // Strip the ES module `export` keyword so we can evaluate with new Function.
       const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
-      // oxlint-disable-next-line typescript-eslint/no-implied-eval -- evaluating generated source is the behavior under test
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- evaluating generated source is the behavior under test
       const ALS = new Function(cjsSource)() as new () => {
         getStore(): unknown;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
         run(store: unknown, fn: Function, ...args: unknown[]): unknown;
         exit(fn: () => unknown): unknown;
       };

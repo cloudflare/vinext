@@ -1,21 +1,21 @@
 import type { CachedRouteValue } from "../shims/cache.js";
 
-export interface RouteHandlerMiddlewareContext {
+export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
-}
+};
 
-export interface BuildRouteHandlerCachedResponseOptions {
+export type BuildRouteHandlerCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   isHead: boolean;
   revalidateSeconds: number;
-}
+};
 
-export interface FinalizeRouteHandlerResponseOptions {
+export type FinalizeRouteHandlerResponseOptions = {
   pendingCookies: string[];
   draftCookie?: string | null;
   isHead: boolean;
-}
+};
 
 function buildRouteHandlerCacheControl(
   cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],

@@ -8,39 +8,39 @@ import {
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
 
-interface PagesRedirectResult {
+type PagesRedirectResult = {
   destination: string;
   permanent?: boolean;
   statusCode?: number;
-}
+};
 
-interface PagesStaticPathsEntry {
+type PagesStaticPathsEntry = {
   params: Record<string, unknown>;
-}
+};
 
-interface PagesStaticPathsResult {
+type PagesStaticPathsResult = {
   fallback?: boolean | "blocking";
   paths?: PagesStaticPathsEntry[];
-}
+};
 
-interface PagesPagePropsResult {
+type PagesPagePropsResult = {
   props?: Record<string, unknown>;
   redirect?: PagesRedirectResult;
   notFound?: boolean;
   revalidate?: number;
-}
+};
 
-export interface PagesMutableGsspResponse extends PagesGsspResponse {
+export type PagesMutableGsspResponse = {
   headersSent: boolean;
-}
+} & PagesGsspResponse;
 
-export interface PagesGsspContextResponse {
+export type PagesGsspContextResponse = {
   req: unknown;
   res: PagesMutableGsspResponse;
   responsePromise: Promise<Response>;
-}
+};
 
-export interface PagesPageModule {
+export type PagesPageModule = {
   default?: unknown;
   getStaticPaths?: (context: {
     locales: string[];
@@ -62,9 +62,9 @@ export interface PagesPageModule {
     locales?: string[];
     defaultLocale?: string;
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
-}
+};
 
-export interface RenderPagesIsrHtmlOptions {
+export type RenderPagesIsrHtmlOptions = {
   buildId: string | null;
   cachedHtml: string;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
@@ -74,9 +74,9 @@ export interface RenderPagesIsrHtmlOptions {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
-}
+};
 
-export interface ResolvePagesPageDataOptions {
+export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
   buildId: string | null;
   createGsspReqRes: () => PagesGsspContextResponse;
@@ -102,19 +102,19 @@ export interface ResolvePagesPageDataOptions {
   sanitizeDestination: (destination: string) => string;
   triggerBackgroundRegeneration: (key: string, renderFn: () => Promise<void>) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
-}
+};
 
-export interface ResolvePagesPageDataRenderResult {
+export type ResolvePagesPageDataRenderResult = {
   kind: "render";
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
-}
+};
 
-export interface ResolvePagesPageDataResponseResult {
+export type ResolvePagesPageDataResponseResult = {
   kind: "response";
   response: Response;
-}
+};
 
 export type ResolvePagesPageDataResult =
   | ResolvePagesPageDataRenderResult

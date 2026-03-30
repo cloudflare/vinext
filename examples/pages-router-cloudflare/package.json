@@ -1,19 +1,20 @@
 {
   "name": "vinext-pages-router-cloudflare",
-  "type": "module",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "vp dev",
-    "build": "vp build",
-    "preview": "vp preview"
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "start": "vinext start",
+    "preview": "vinext start"
   },
   "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "vite": "catalog:",
     "vinext": "workspace:*",
-    "@cloudflare/vite-plugin": "catalog:",
+    "vite": "catalog:",
     "wrangler": "catalog:"
   },
   "devDependencies": {

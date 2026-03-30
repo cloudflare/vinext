@@ -1,21 +1,21 @@
-export interface NavigationSnapshot {
+export type NavigationSnapshot = {
   pathname: string;
   searchParams: [string, string][];
-}
+};
 
-export interface LegacyRscEmbedData {
+export type LegacyRscEmbedData = {
   rsc: string[];
   params?: Record<string, string | string[]>;
   nav?: NavigationSnapshot;
-}
+};
 
-export interface VinextBrowserGlobals {
+export type VinextBrowserGlobals = {
   __VINEXT_RSC__?: LegacyRscEmbedData;
   __VINEXT_RSC_CHUNKS__?: string[];
   __VINEXT_RSC_DONE__?: boolean;
   __VINEXT_RSC_PARAMS__?: Record<string, string | string[]>;
   __VINEXT_RSC_NAV__?: NavigationSnapshot;
-}
+};
 
 export function getVinextBrowserGlobal(): typeof globalThis & VinextBrowserGlobals {
   return globalThis as typeof globalThis & VinextBrowserGlobals;

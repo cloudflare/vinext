@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   track:
+    if: github.repository_owner == 'cloudflare'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

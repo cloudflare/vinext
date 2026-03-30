@@ -9,13 +9,13 @@
 
 import type { DomainLocale } from "../utils/domain-locale.js";
 
-export interface I18nContext {
+export type I18nContext = {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: readonly DomainLocale[];
   hostname?: string;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Fallback: read/write bare globalThis (unsafe for concurrent requests).

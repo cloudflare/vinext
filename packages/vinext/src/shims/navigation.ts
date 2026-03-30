@@ -92,6 +92,7 @@ function useChildSegments(): string[] {
   // This branch is only taken in SSR/Browser, never in RSC.
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
+    // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
     return React.useContext(ctx);
   } catch {
     return [];
@@ -102,11 +103,11 @@ function useChildSegments(): string[] {
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
 
-export interface NavigationContext {
+export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
-}
+};
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
 const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
@@ -136,12 +137,12 @@ type NavigationContextWithReadonlyCache = NavigationContext & {
 // ALS-backed state regardless of which instance was registered.
 // ---------------------------------------------------------------------------
 
-interface _StateAccessors {
+type _StateAccessors = {
   getServerContext: () => NavigationContext | null;
   setServerContext: (ctx: NavigationContext | null) => void;
   getInsertedHTMLCallbacks: () => Array<() => unknown>;
   clearInsertedHTMLCallbacks: () => void;
-}
+};
 
 export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
 const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
@@ -542,19 +543,7 @@ function syncCommittedUrlStateFromLocation(): boolean {
 }
 
 function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
-  const ctx = _getServerContext() as NavigationContextWithReadonlyCache | null;
-  if (ctx != null) {
-    const searchParams = ctx.searchParams;
-    if (ctx[_READONLY_SEARCH_PARAMS_SOURCE] !== searchParams) {
-      ctx[_READONLY_SEARCH_PARAMS_SOURCE] = searchParams;
-      ctx[_READONLY_SEARCH_PARAMS] = new ReadonlyURLSearchParams(searchParams);
-    }
-    return ctx[_READONLY_SEARCH_PARAMS]!;
-  }
-  if (_cachedEmptyServerSearchParams === null) {
-    _cachedEmptyServerSearchParams = new ReadonlyURLSearchParams();
-  }
-  return _cachedEmptyServerSearchParams;
+  return getClientNavigationState()?.cachedReadonlySearchParams ?? getServerSearchParamsSnapshot();
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +701,7 @@ export function usePathname(): string {
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const pathname = React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
@@ -732,11 +722,12 @@ export function usePathname(): string {
  */
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
-    // During SSR of "use client" components, the navigation context may not be set.
+    // During SSR for "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
     return getServerSearchParamsSnapshot();
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const searchParams = React.useSyncExternalStore(
     subscribeToNavigation,
     getSearchParamsSnapshot,
@@ -755,10 +746,11 @@ export function useParams<
   T extends Record<string, string | string[]> = Record<string, string | string[]>,
 >(): T {
   if (isServer) {
-    // During SSR of "use client" components, the navigation context may not be set.
+    // During SSR for "use client" components, the navigation context may not be set.
     return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const params = React.useSyncExternalStore(
     subscribeToNavigation,
     getClientParamsSnapshot as () => T,
@@ -901,7 +893,8 @@ function saveScrollPosition(): void {
  * This handler fires before the browser entry's popstate handler (because
  * navigation.ts is loaded before hydration completes), so we defer via a
  * microtask to give the browser entry handler a chance to set
- * __VINEXT_RSC_PENDING__ first.
+ * __VINEXT_RSC_PENDING__. Promise.resolve() schedules a microtask
+ * that runs after all synchronous event listeners have completed.
  */
 function restoreScrollPosition(state: unknown): void {
   if (state && typeof state === "object" && "__vinext_scrollY" in state) {

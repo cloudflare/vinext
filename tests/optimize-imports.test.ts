@@ -19,7 +19,7 @@ import vinext from "../packages/vinext/src/index.js";
 // ── Helpers ───────────────────────────────────────────────────
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
-// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+
 function unwrapHook(hook: any): ((...args: any[]) => any) | undefined {
   return typeof hook === "function" ? hook : hook?.handler;
 }
@@ -52,7 +52,7 @@ describe("vinext:optimize-imports plugin", () => {
     ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import { Slot } from "radix-ui";`;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
     const result = await (transform as any).call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
   });
@@ -64,7 +64,7 @@ describe("vinext:optimize-imports plugin", () => {
     ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import React from 'react';\nconst x = 1;`;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
     const result = await (transform as any).call(plugin, code, "/app/page.tsx");
     expect(result).toBeNull();
   });
@@ -81,7 +81,7 @@ describe("vinext:optimize-imports plugin", () => {
     // buildStart must be called first to initialize optimizedPackages
     const buildStart = unwrapHook((plugin as any).buildStart);
     if (buildStart) buildStart.call(plugin);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
     const result = await (transform as any).call(
       { ...plugin, environment: { name: "rsc" } },
       code,
@@ -642,7 +642,6 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
     return async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
   }
 
@@ -751,7 +750,7 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES — use it to hit the env guard
     const code = `import { Sun } from "lucide-react";`;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
     const result = await (transform as any).call(
       { ...plugin, environment: { name: "client" } },
       code,
@@ -884,7 +883,6 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
 
     const code = `import { Listbox as HeadlessListbox } from "antd";`;
@@ -929,7 +927,6 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
 
     const code = `import { Button } from "antd";`;
@@ -978,10 +975,8 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
 
     const rscCall = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
     const ssrCall = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
 
     // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
@@ -1041,11 +1036,9 @@ describe("vinext:optimize-imports transform", () => {
 
     // RSC environment: should use react-server entry → knows about RscButton
     const rscCall = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
     // SSR environment: should use import entry → knows about Button, not RscButton
     const ssrCall = async (code: string, id: string) =>
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
       await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
 
     // RSC: RscButton is exported from the react-server barrel → rewrite succeeds

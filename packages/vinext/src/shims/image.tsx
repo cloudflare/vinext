@@ -14,12 +14,12 @@ import React, { forwardRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
-export interface StaticImageData {
+export type StaticImageData = {
   src: string;
   height: number;
   width: number;
   blurDataURL?: string;
-}
+};
 
 /**
  * Image config injected at build time via Vite define.
@@ -92,7 +92,7 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   };
 }
 
-interface ImageProps {
+type ImageProps = {
   src: string | StaticImageData;
   alt: string;
   width?: number;
@@ -116,7 +116,7 @@ interface ImageProps {
   unoptimized?: boolean;
   overrideSrc?: string;
   loading?: "lazy" | "eager";
-}
+};
 
 /**
  * Sanitize a blurDataURL to prevent CSS injection.

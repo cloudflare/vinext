@@ -48,13 +48,13 @@ import {
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
-interface ServerActionResult {
+type ServerActionResult = {
   root: ReactNode;
   returnValue?: {
     ok: boolean;
     data: unknown;
   };
-}
+};
 
 type BrowserTreeState = {
   renderId: number;

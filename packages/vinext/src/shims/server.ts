@@ -230,7 +230,7 @@ export class NextResponse<_Body = unknown> extends Response {
 // NextURL — lightweight URL wrapper with pathname helpers
 // ---------------------------------------------------------------------------
 
-export interface NextURLConfig {
+export type NextURLConfig = {
   basePath?: string;
   nextConfig?: {
     i18n?: {
@@ -238,7 +238,7 @@ export interface NextURLConfig {
       defaultLocale: string;
     };
   };
-}
+};
 
 export class NextURL {
   /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
@@ -448,10 +448,10 @@ export class NextURL {
 // Cookie helpers (minimal implementations)
 // ---------------------------------------------------------------------------
 
-interface CookieEntry {
+type CookieEntry = {
   name: string;
   value: string;
-}
+};
 
 export class RequestCookies {
   private _headers: Headers;
@@ -653,7 +653,7 @@ export class ResponseCookies {
   }
 }
 
-interface CookieOptions {
+type CookieOptions = {
   path?: string;
   domain?: string;
   maxAge?: number;
@@ -661,17 +661,17 @@ interface CookieOptions {
   httpOnly?: boolean;
   secure?: boolean;
   sameSite?: "Strict" | "Lax" | "None";
-}
+};
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface MiddlewareResponseInit extends ResponseInit {
+export type MiddlewareResponseInit = {
   request?: {
     headers?: Headers;
   };
-}
+} & ResponseInit;
 
 export type NextMiddlewareResult = NextResponse | Response | null | undefined | void;
 
@@ -731,7 +731,7 @@ export function userAgent({ headers }: { headers: Headers }): UserAgent {
   return userAgentFromString(headers.get("user-agent") ?? undefined);
 }
 
-export interface UserAgent {
+export type UserAgent = {
   isBot: boolean;
   ua: string;
   browser: { name?: string; version?: string; major?: string };
@@ -739,7 +739,7 @@ export interface UserAgent {
   engine: { name?: string; version?: string };
   os: { name?: string; version?: string };
   cpu: { architecture?: string };
-}
+};
 
 /**
  * after() — schedule work after the response is sent.

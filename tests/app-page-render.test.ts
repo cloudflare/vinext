@@ -25,16 +25,18 @@ function createCommonOptions() {
     const message = error instanceof Error ? error.message : String(error);
     return new Response(`boundary:${message}`, { status: 200 });
   });
-  const renderLayoutSpecialError = vi.fn(async (specialError) => {
-    return new Response(`layout:${specialError.statusCode}`, {
-      status: specialError.statusCode,
-    });
-  });
-  const renderPageSpecialError = vi.fn(async (specialError) => {
-    return new Response(`page:${specialError.statusCode}`, {
-      status: specialError.statusCode,
-    });
-  });
+  const renderLayoutSpecialError = vi.fn(
+    async (specialError) =>
+      new Response(`layout:${specialError.statusCode}`, {
+        status: specialError.statusCode,
+      }),
+  );
+  const renderPageSpecialError = vi.fn(
+    async (specialError) =>
+      new Response(`page:${specialError.statusCode}`, {
+        status: specialError.statusCode,
+      }),
+  );
   const isrSet = vi.fn(async () => {});
 
   return {

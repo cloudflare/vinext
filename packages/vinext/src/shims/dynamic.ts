@@ -19,10 +19,10 @@
  */
 import React, { type ComponentType } from "react";
 
-interface DynamicOptions {
+type DynamicOptions = {
   loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
   ssr?: boolean;
-}
+};
 
 type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>;
 
@@ -35,6 +35,7 @@ type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 let DynamicErrorBoundary: any;
 function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
@@ -48,6 +49,7 @@ function getDynamicErrorBoundary() {
       { error: Error | null }
     >
   ) {
+    // oxlint-disable-next-line typescript/no-explicit-any
     constructor(props: any) {
       super(props);
       this.state = { error: null };
@@ -97,11 +99,10 @@ function dynamic<P extends object = object>(
   if (!ssr) {
     if (isServer) {
       // On the server (SSR or RSC), just render the loading state or nothing
-      const SSRFalse = (_props: P) => {
-        return LoadingComponent
+      const SSRFalse = (_props: P) =>
+        LoadingComponent
           ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
           : null;
-      };
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
     }

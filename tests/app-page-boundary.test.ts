@@ -186,9 +186,8 @@ describe("app page boundary helpers", () => {
 
   it("routes HTML boundary renders through the provided SSR callback", async () => {
     const createHtmlResponse = vi.fn(
-      async (rscStream: ReadableStream<Uint8Array>, status: number) => {
-        return new Response(`${status}:${await readText(rscStream)}`);
-      },
+      async (rscStream: ReadableStream<Uint8Array>, status: number) =>
+        new Response(`${status}:${await readText(rscStream)}`),
     );
 
     const response = await renderAppPageBoundaryResponse({

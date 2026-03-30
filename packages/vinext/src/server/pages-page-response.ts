@@ -1,27 +1,27 @@
 import React, { type ComponentType, type ReactNode } from "react";
 
-export interface PagesFontPreload {
+export type PagesFontPreload = {
   href: string;
   type: string;
-}
+};
 
-export interface PagesI18nRenderContext {
+export type PagesI18nRenderContext = {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: unknown;
-}
+};
 
-export interface PagesGsspResponse {
+export type PagesGsspResponse = {
   statusCode: number;
   getHeaders(): Record<string, string | number | boolean | string[]>;
-}
+};
 
-interface PagesStreamedHtmlResponse extends Response {
+type PagesStreamedHtmlResponse = {
   __vinextStreamedHtmlResponse?: boolean;
-}
+} & Response;
 
-export interface RenderPagesPageResponseOptions {
+export type RenderPagesPageResponseOptions = {
   assetTags: string;
   buildId: string | null;
   clearSsrContext: () => void;
@@ -57,7 +57,7 @@ export interface RenderPagesPageResponseOptions {
   routePattern: string;
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
-}
+};
 
 function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");

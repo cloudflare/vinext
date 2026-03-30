@@ -486,12 +486,11 @@ describe("vinext:google-fonts plugin", () => {
 
     // Mock fetch for Inter only
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => {
-      return new Response("@font-face { font-family: 'Inter'; }", {
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; }", {
         status: 200,
         headers: { "content-type": "text/css" },
       });
-    };
 
     try {
       const transform = unwrapHook(plugin.transform);

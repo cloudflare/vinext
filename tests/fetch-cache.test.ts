@@ -503,12 +503,13 @@ describe("fetch cache shim", () => {
     }
 
     // Make the upstream return a 500 error for the background refetch
-    fetchMock.mockImplementationOnce(async () => {
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "content-type": "text/plain" },
-      });
-    });
+    fetchMock.mockImplementationOnce(
+      async () =>
+        new Response("Internal Server Error", {
+          status: 500,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
 
     // Should return stale data immediately (stale-while-revalidate)
     const res2 = await fetch("https://api.example.com/revalidate-error-test", {
@@ -2024,16 +2025,17 @@ describe("fetch cache shim", () => {
 
   describe("Set-Cookie header stripping", () => {
     it("does not include Set-Cookie in cached response headers", async () => {
-      fetchMock.mockImplementationOnce(async () => {
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-            "set-cookie": "session=abc123; Path=/; HttpOnly",
-            "x-custom": "keep-me",
-          },
-        });
-      });
+      fetchMock.mockImplementationOnce(
+        async () =>
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "set-cookie": "session=abc123; Path=/; HttpOnly",
+              "x-custom": "keep-me",
+            },
+          }),
+      );
 
       // First request — response has Set-Cookie
       const res1 = await fetch("https://api.example.com/set-cookie-test", {

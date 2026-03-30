@@ -68,7 +68,7 @@ const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", impo
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
-export interface AppRouterConfig {
+export type AppRouterConfig = {
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -93,7 +93,7 @@ export interface AppRouterConfig {
    * `virtual:vinext-server-entry` when this flag is set.
    */
   hasPagesDir?: boolean;
-}
+};
 
 /**
  * Generate the virtual RSC entry module.
@@ -174,14 +174,14 @@ export function generateRscEntry(
     const templateVars = route.templates.map((t) => getImportVar(t));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
     const slotEntries = route.parallelSlots.map((slot) => {
-      const interceptEntries = slot.interceptingRoutes.map((ir) => {
-        return `        {
+      const interceptEntries = slot.interceptingRoutes.map(
+        (ir) => `        {
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           page: ${getImportVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
-        }`;
-      });
+        }`,
+      );
       return `      ${JSON.stringify(slot.name)}: {
         page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},

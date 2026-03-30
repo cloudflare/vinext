@@ -33,10 +33,10 @@ export { readPrerenderSecret } from "./server-manifest.js";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
-export interface PrerenderResult {
+export type PrerenderResult = {
   /** One entry per route (including skipped/error routes). */
   routes: PrerenderRouteResult[];
-}
+};
 
 export type PrerenderRouteResult =
   | {
@@ -77,7 +77,7 @@ export type PrerenderProgressCallback = (update: {
   status: PrerenderRouteResult["status"];
 }) => void;
 
-export interface PrerenderOptions {
+export type PrerenderOptions = {
   /**
    * 'default' — prerender static/ISR routes; skip SSR routes
    * 'export'  — same as default but SSR routes are errors
@@ -110,9 +110,9 @@ export interface PrerenderOptions {
    * multiple phases and write a single unified manifest itself.
    */
   skipManifest?: boolean;
-}
+};
 
-export interface PrerenderPagesOptions extends PrerenderOptions {
+export type PrerenderPagesOptions = {
   /** Discovered page routes (non-API). */
   routes: Route[];
   /** Discovered API routes. */
@@ -127,16 +127,16 @@ export interface PrerenderPagesOptions extends PrerenderOptions {
    * `runPrerender` passes a shared `_prodServer` instead.
    */
   pagesBundlePath?: string;
-}
+} & PrerenderOptions;
 
-export interface PrerenderAppOptions extends PrerenderOptions {
+export type PrerenderAppOptions = {
   /** Discovered app routes. */
   routes: AppRoute[];
   /**
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    */
   rscBundlePath: string;
-}
+} & PrerenderOptions;
 
 // ─── Internal option extensions ───────────────────────────────────────────────
 // These types extend the public option interfaces with an internal `_prodServer`

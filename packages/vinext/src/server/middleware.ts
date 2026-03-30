@@ -59,6 +59,7 @@ export function isProxyFile(filePath: string): boolean {
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
  * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
  */
+// oxlint-disable-next-line typescript/no-unsafe-function-type
 export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath: string): Function {
   const isProxy = isProxyFile(filePath);
   const handler = isProxy ? (mod.proxy ?? mod.default) : (mod.middleware ?? mod.default);
@@ -71,6 +72,7 @@ export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath:
     );
   }
 
+  // oxlint-disable-next-line typescript/no-unsafe-function-type
   return handler as Function;
 }
 
@@ -343,7 +345,7 @@ function compileMatcherPattern(pattern: string): RegExp | null {
 }
 
 /** Result of running middleware. */
-export interface MiddlewareResult {
+export type MiddlewareResult = {
   /** Whether to continue to the route handler. */
   continue: boolean;
   /** If set, redirect to this URL. */
@@ -360,7 +362,7 @@ export interface MiddlewareResult {
   response?: Response;
   /** Promises registered via event.waitUntil() during middleware execution */
   waitUntilPromises?: Promise<unknown>[];
-}
+};
 
 /**
  * Load and execute middleware for a given request.
@@ -435,12 +437,12 @@ export async function runMiddleware(
   let response: Response | undefined;
   try {
     response = await middlewareFn(nextRequest, fetchEvent);
-  } catch (e: any) {
+  } catch (e) {
     console.error("[vinext] Middleware error:", e);
     const message =
       process.env.NODE_ENV === "production"
         ? "Internal Server Error"
-        : "Middleware Error: " + (e?.message ?? String(e));
+        : "Middleware Error: " + (e instanceof Error ? e.message : String(e));
     return {
       continue: false,
       response: new Response(message, {

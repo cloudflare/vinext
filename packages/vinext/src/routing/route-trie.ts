@@ -12,13 +12,13 @@
  * branches fall through to catch-all alternatives.
  */
 
-export interface TrieNode<R> {
+export type TrieNode<R> = {
   staticChildren: Map<string, TrieNode<R>>;
   dynamicChild: { paramName: string; node: TrieNode<R> } | null;
   catchAllChild: { paramName: string; route: R } | null;
   optionalCatchAllChild: { paramName: string; route: R } | null;
   route: R | null;
-}
+};
 
 function createNode<R>(): TrieNode<R> {
   return {

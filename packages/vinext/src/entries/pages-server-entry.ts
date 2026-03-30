@@ -64,9 +64,10 @@ export async function generateServerEntry(
     return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
   });
 
-  const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
-    return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`;
-  });
+  const apiRouteEntries = apiRoutes.map(
+    (r: Route, i: number) =>
+      `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
+  );
 
   // Check for _app and _document
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
