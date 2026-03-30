@@ -252,21 +252,26 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
  * the production bundle.
  */
+/** Map of route patterns to generateStaticParams functions (or null/undefined). */
+export type StaticParamsMap = Record<
+  string,
+  | ((opts: {
+      params: Record<string, string | string[]>;
+    }) => Promise<Record<string, string | string[]>[]>)
+  | null
+  | undefined
+>;
+
 export async function resolveParentParams(
   childRoute: AppRoute,
   routeIndex: ReadonlyMap<string, AppRoute>,
-  staticParamsMap: Record<
-    string,
-    | ((opts: {
-        params: Record<string, string | string[]>;
-      }) => Promise<Record<string, string | string[]>[]>)
-    | null
-    | undefined
-  >,
+  staticParamsMap: StaticParamsMap,
 ): Promise<Record<string, string | string[]>[]> {
   const { patternParts } = childRoute;
 
-  // Find the last dynamic segment — only segments before it are "parents".
+  // The last dynamic segment belongs to the child route itself — its params
+  // are resolved by the child's own generateStaticParams. We only collect
+  // params from earlier (parent) dynamic segments.
   let lastDynamicIdx = -1;
   for (let i = patternParts.length - 1; i >= 0; i--) {
     if (patternParts[i].startsWith(":")) {
@@ -275,20 +280,18 @@ export async function resolveParentParams(
     }
   }
 
-  type ParentSegment = {
-    params: string[];
-    generateStaticParams: (opts: {
-      params: Record<string, string | string[]>;
-    }) => Promise<Record<string, string | string[]>[]>;
-  };
+  type GenerateStaticParamsFn = (opts: {
+    params: Record<string, string | string[]>;
+  }) => Promise<Record<string, string | string[]>[]>;
 
-  const parentSegments: ParentSegment[] = [];
+  const parentSegments: GenerateStaticParamsFn[] = [];
 
+  let prefixPattern = "";
   for (let i = 0; i < lastDynamicIdx; i++) {
+    prefixPattern += "/" + patternParts[i];
     const part = patternParts[i];
     if (!part.startsWith(":")) continue;
 
-    const prefixPattern = "/" + patternParts.slice(0, i + 1).join("/");
     const parentRoute = routeIndex.get(prefixPattern);
     // TODO: layout-level generateStaticParams — a layout segment can define
     // generateStaticParams without a corresponding page file, so parentRoute
@@ -299,11 +302,7 @@ export async function resolveParentParams(
     if (parentRoute?.pagePath) {
       const fn = staticParamsMap[prefixPattern];
       if (typeof fn === "function") {
-        const paramName = part.replace(/^:/, "").replace(/[+*]$/, "");
-        parentSegments.push({
-          params: [paramName],
-          generateStaticParams: fn,
-        });
+        parentSegments.push(fn);
       }
     }
   }
@@ -311,10 +310,10 @@ export async function resolveParentParams(
   if (parentSegments.length === 0) return [];
 
   let currentParams: Record<string, string | string[]>[] = [{}];
-  for (const segment of parentSegments) {
+  for (const generateStaticParams of parentSegments) {
     const nextParams: Record<string, string | string[]>[] = [];
     for (const parentParams of currentParams) {
-      const results = await segment.generateStaticParams({ params: parentParams });
+      const results = await generateStaticParams({ params: parentParams });
       if (Array.isArray(results)) {
         for (const result of results) {
           nextParams.push({ ...parentParams, ...result });
@@ -696,14 +695,7 @@ export async function prerenderApp({
   const serverDir = path.dirname(rscBundlePath);
 
   let rscHandler: (request: Request) => Promise<Response>;
-  let staticParamsMap: Record<
-    string,
-    | ((opts: {
-        params: Record<string, string | string[]>;
-      }) => Promise<Record<string, string | string[]>[]>)
-    | null
-    | undefined
-  > = {};
+  let staticParamsMap: StaticParamsMap = {};
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;

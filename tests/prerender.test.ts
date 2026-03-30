@@ -16,6 +16,7 @@ import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from ".
 import {
   resolveParentParams,
   type PrerenderRouteResult,
+  type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
@@ -751,15 +752,6 @@ function mockRoute(pattern: string, opts: { pagePath?: string | null } = {}): Ap
     patternParts: parts,
   };
 }
-
-type StaticParamsMap = Record<
-  string,
-  | ((opts: {
-      params: Record<string, string | string[]>;
-    }) => Promise<Record<string, string | string[]>[]>)
-  | null
-  | undefined
->;
 
 function routeIndexFrom(routes: AppRoute[]): ReadonlyMap<string, AppRoute> {
   return new Map(routes.map((r) => [r.pattern, r]));
