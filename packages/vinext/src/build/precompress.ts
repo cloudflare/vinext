@@ -98,12 +98,17 @@ export async function precompressAssets(
   }
 
   // Process in chunks to bound concurrent CPU-heavy compressions
+  let processed = 0;
   for (let i = 0; i < filePaths.length; i += CONCURRENCY) {
     const chunk = filePaths.slice(i, i + CONCURRENCY);
     await Promise.all(
       chunk.map(async (fullPath) => {
         const content = await fsp.readFile(fullPath);
-        if (content.length < MIN_SIZE) return;
+        processed++;
+        if (content.length < MIN_SIZE) {
+          onProgress?.(processed, filePaths.length, path.basename(fullPath));
+          return;
+        }
 
         result.filesCompressed++;
         result.totalOriginalBytes += content.length;
@@ -136,7 +141,7 @@ export async function precompressAssets(
         await Promise.all(writes);
 
         result.totalCompressedBytes += brContent.length;
-        onProgress?.(result.filesCompressed, filePaths.length, path.basename(fullPath));
+        onProgress?.(processed, filePaths.length, path.basename(fullPath));
       }),
     );
   }

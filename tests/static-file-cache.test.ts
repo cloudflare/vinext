@@ -104,13 +104,32 @@ describe("StaticFileCache", () => {
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=3600");
   });
 
-  it("generates weak etag from size and mtime", async () => {
+  it("generates weak etag from filename hash for hashed assets", async () => {
     await writeFile(clientDir, "assets/app-abc123.css", ".body { margin: 0; }");
 
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/app-abc123.css");
 
-    // Etag should be W/"<size>-<mtime>" format (like sirv)
+    // Hashed assets use the content hash from the filename
+    expect(entry!.etag).toBe('W/"abc123"');
+  });
+
+  it("falls back to mtime etag for non-hashed files", async () => {
+    await writeFile(clientDir, "favicon.ico", "icon");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/favicon.ico");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+(\.\d+)?"$/);
+  });
+
+  it("falls back to mtime etag for assets without hash suffix", async () => {
+    await writeFile(clientDir, "assets/logo.svg", "<svg></svg>");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/assets/logo.svg");
+
+    // No hash in filename — falls back to mtime-based ETag
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+(\.\d+)?"$/);
   });
 

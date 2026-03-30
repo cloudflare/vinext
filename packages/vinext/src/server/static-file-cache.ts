@@ -236,8 +236,11 @@ export class StaticFileCache {
  */
 function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
-  const match = basename.match(/-([a-zA-Z0-9_-]{6,})$/);
-  return match ? `W/"${match[1]}"` : null;
+  const lastDash = basename.lastIndexOf("-");
+  if (lastDash === -1 || lastDash === basename.length - 1) return null;
+  const suffix = basename.slice(lastDash + 1);
+  // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers
+  return suffix.length >= 6 && suffix.length <= 12 ? `W/"${suffix}"` : null;
 }
 
 function buildVariant(
