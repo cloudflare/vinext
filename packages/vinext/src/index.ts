@@ -819,18 +819,19 @@ export type VinextOptions = {
    */
   react?: VitePluginReactOptions | boolean;
   /**
-   * Control build-time precompression of static assets (.br, .gz, .zst).
+   * Enable build-time precompression of static assets (.br, .gz, .zst).
    *
-   * - `'auto'` (default): enabled for Node.js production server targets,
-   *   disabled when deploying to edge platforms (Cloudflare Workers, Nitro)
-   *   that handle compression at the CDN layer.
-   * - `true`: always precompress, regardless of deployment target.
-   * - `false`: never precompress.
+   * When enabled, hashed assets in the client build are precompressed at
+   * build time so the production server can serve them without on-the-fly
+   * compression overhead.
    *
-   * Can also be disabled via `--no-precompress` CLI flag or
-   * `VINEXT_NO_PRECOMPRESS=1` environment variable.
+   * Disabled by default. Not useful when deploying to edge platforms
+   * (Cloudflare Workers, Nitro) that handle compression at the CDN layer.
+   *
+   * Can also be enabled via `--precompress` CLI flag.
+   * @default false
    */
-  precompress?: "auto" | boolean;
+  precompress?: boolean;
   /**
    * Experimental vinext-only feature flags.
    */
@@ -3344,9 +3345,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // available for the production server's static file cache.
     //
     // Build-time precompression: generate .br, .gz, .zst for hashed assets.
-    // Auto-enabled for Node.js targets, skipped for edge platforms
-    // that handle compression at the CDN layer — precompressing would waste
-    // build time since the CDN re-compresses anyway.
+    // Opt-in via `precompress: true` in plugin options or `--precompress`
+    // CLI flag. Not useful for edge platforms (Cloudflare Workers, Nitro)
+    // that handle compression at the CDN layer.
     {
       name: "vinext:precompress",
       apply: "build",
@@ -3357,13 +3358,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         async handler(outputOptions) {
           if (this.environment?.name !== "client") return;
 
-          // Resolve the precompress option: 'auto' (default) defers to
-          // deployment target detection; explicit true/false overrides.
-          const opt = options.precompress ?? "auto";
-          if (opt === false) return;
-          if (process.env.VINEXT_NO_PRECOMPRESS === "1") return;
-
-          if (opt === "auto" && (hasCloudflarePlugin || hasNitroPlugin)) return;
+          if (!options.precompress && process.env.VINEXT_PRECOMPRESS !== "1") return;
 
           const outDir = outputOptions.dir;
           if (!outDir) return;
