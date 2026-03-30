@@ -254,7 +254,7 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
-  allRoutes: AppRoute[],
+  routeIndex: ReadonlyMap<string, AppRoute>,
   staticParamsMap: Record<
     string,
     | ((opts: {
@@ -264,7 +264,16 @@ export async function resolveParentParams(
     | undefined
   >,
 ): Promise<Record<string, string | string[]>[]> {
-  const patternParts = childRoute.pattern.split("/").filter(Boolean);
+  const { patternParts } = childRoute;
+
+  // Find the last dynamic segment — only segments before it are "parents".
+  let lastDynamicIdx = -1;
+  for (let i = patternParts.length - 1; i >= 0; i--) {
+    if (patternParts[i].startsWith(":")) {
+      lastDynamicIdx = i;
+      break;
+    }
+  }
 
   type ParentSegment = {
     params: string[];
@@ -275,15 +284,12 @@ export async function resolveParentParams(
 
   const parentSegments: ParentSegment[] = [];
 
-  for (let i = 0; i < patternParts.length; i++) {
+  for (let i = 0; i < lastDynamicIdx; i++) {
     const part = patternParts[i];
     if (!part.startsWith(":")) continue;
 
-    const isLastDynamicPart = !patternParts.slice(i + 1).some((p) => p.startsWith(":"));
-    if (isLastDynamicPart) break;
-
     const prefixPattern = "/" + patternParts.slice(0, i + 1).join("/");
-    const parentRoute = allRoutes.find((r) => r.pattern === prefixPattern);
+    const parentRoute = routeIndex.get(prefixPattern);
     // TODO: layout-level generateStaticParams — a layout segment can define
     // generateStaticParams without a corresponding page file, so parentRoute
     // may be undefined here even though the layout exports generateStaticParams.
@@ -804,6 +810,8 @@ export async function prerenderApp({
       },
     });
 
+    const routeIndex = new Map(routes.map((r) => [r.pattern, r]));
+
     // ── Collect URLs to render ────────────────────────────────────────────────
     type UrlToRender = {
       urlPath: string;
@@ -887,7 +895,7 @@ export async function prerenderApp({
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, routes, staticParamsMap);
+          const parentParamSets = await resolveParentParams(route, routeIndex, staticParamsMap);
           let paramSets: Record<string, string | string[]>[] | null;
 
           if (parentParamSets.length > 0) {

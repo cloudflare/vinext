@@ -761,17 +761,21 @@ type StaticParamsMap = Record<
   | undefined
 >;
 
+function routeIndexFrom(routes: AppRoute[]): ReadonlyMap<string, AppRoute> {
+  return new Map(routes.map((r) => [r.pattern, r]));
+}
+
 describe("resolveParentParams", () => {
   it("returns empty array when route has no parent dynamic segments", async () => {
     const route = mockRoute("/blog/:slug");
-    const result = await resolveParentParams(route, [route], {});
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
     expect(result).toEqual([]);
   });
 
   it("returns empty array when parent route has no pagePath", async () => {
     const parent = mockRoute("/shop/:category", { pagePath: null });
     const child = mockRoute("/shop/:category/:item");
-    const result = await resolveParentParams(child, [parent, child], {});
+    const result = await resolveParentParams(child, routeIndexFrom([parent, child]), {});
     expect(result).toEqual([]);
   });
 
@@ -779,7 +783,11 @@ describe("resolveParentParams", () => {
     const parent = mockRoute("/shop/:category");
     const child = mockRoute("/shop/:category/:item");
     const staticParamsMap: StaticParamsMap = {};
-    const result = await resolveParentParams(child, [parent, child], staticParamsMap);
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
     expect(result).toEqual([]);
   });
 
@@ -789,7 +797,11 @@ describe("resolveParentParams", () => {
     const staticParamsMap: StaticParamsMap = {
       "/shop/:category": async () => [{ category: "electronics" }, { category: "clothing" }],
     };
-    const result = await resolveParentParams(child, [parent, child], staticParamsMap);
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
     expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
   });
 
@@ -804,7 +816,11 @@ describe("resolveParentParams", () => {
         return [{ d: "y" }, { d: "z" }];
       },
     };
-    const result = await resolveParentParams(child, [grandparent, parent, child], staticParamsMap);
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([grandparent, parent, child]),
+      staticParamsMap,
+    );
     expect(result).toEqual([
       { b: "1", d: "x" },
       { b: "2", d: "y" },
@@ -818,7 +834,11 @@ describe("resolveParentParams", () => {
     const staticParamsMap: StaticParamsMap = {
       "/shop/:category": async () => [{ category: "shoes" }],
     };
-    const result = await resolveParentParams(child, [parent, child], staticParamsMap);
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
     expect(result).toEqual([{ category: "shoes" }]);
   });
 });
