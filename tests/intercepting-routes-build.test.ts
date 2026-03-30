@@ -31,6 +31,9 @@ describe("App Router intercepting routes in production builds", () => {
   });
 
   it("builds when an inherited modal slot intercepts the same target route as a standalone page", async () => {
+    // Ported from Next.js route interception behavior:
+    // test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-intercept-build-"));
     tmpDirs.push(root);
 

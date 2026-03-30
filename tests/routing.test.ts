@@ -10,6 +10,7 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
   appRouter,
+  collectInterceptTargetPatterns,
   matchAppRoute,
   invalidateAppRouteCache,
   type AppRoute,
@@ -1128,6 +1129,47 @@ describe("matchAppRoute - URL matching", () => {
         galleryModal?.interceptingRoutes[0]?.pagePath,
       );
     });
+  });
+
+  it("rejects a single intercepting page resolving to multiple target patterns", () => {
+    const firstRoute = makeTestAppRoute("/feed", ["feed"]);
+    const secondRoute = makeTestAppRoute("/feed/nested", ["feed", "nested"]);
+
+    const slot = {
+      name: "modal",
+      ownerDir: "/tmp/app/feed/@modal",
+      pagePath: null,
+      defaultPath: null,
+      layoutPath: null,
+      loadingPath: null,
+      errorPath: null,
+      interceptingRoutes: [
+        {
+          convention: ".",
+          targetPattern: "/photos/:id",
+          pagePath: "/tmp/app/feed/@modal/(.)photo/[id]/page.tsx",
+          params: ["id"],
+        },
+      ],
+      layoutIndex: -1,
+    } satisfies AppRoute["parallelSlots"][number];
+
+    firstRoute.parallelSlots = [slot];
+    secondRoute.parallelSlots = [
+      {
+        ...slot,
+        interceptingRoutes: [
+          {
+            ...slot.interceptingRoutes[0],
+            targetPattern: "/photos/:slug",
+          },
+        ],
+      },
+    ];
+
+    expect(() => collectInterceptTargetPatterns([firstRoute, secondRoute])).toThrow(
+      /resolves to multiple target patterns/,
+    );
   });
 
   it("intercepting route pages are not standalone routes", async () => {

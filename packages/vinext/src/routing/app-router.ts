@@ -131,6 +131,34 @@ export function invalidateAppRouteCache(): void {
   cachedPageExtensionsKey = null;
 }
 
+export function collectInterceptTargetPatterns(routes: readonly AppRoute[]): string[] {
+  const uniqueInterceptTargetPatterns = new Map<string, string>();
+
+  for (const route of routes) {
+    for (const slot of route.parallelSlots) {
+      for (const intercept of slot.interceptingRoutes) {
+        const existingTargetPattern = uniqueInterceptTargetPatterns.get(intercept.pagePath);
+
+        if (
+          existingTargetPattern !== undefined &&
+          existingTargetPattern !== intercept.targetPattern
+        ) {
+          throw new Error(
+            `Intercepting route ${intercept.pagePath} resolves to multiple target patterns (${existingTargetPattern} and ${intercept.targetPattern}).`,
+          );
+        }
+
+        // Inherited slots can surface the same intercepting page on multiple
+        // child routes. De-dupe by page path so we only validate distinct
+        // physical intercept definitions while still rejecting real conflicts.
+        uniqueInterceptTargetPatterns.set(intercept.pagePath, intercept.targetPattern);
+      }
+    }
+  }
+
+  return Array.from(uniqueInterceptTargetPatterns.values());
+}
+
 /**
  * Scan the app/ directory and return a list of routes.
  */
@@ -173,18 +201,7 @@ export async function appRouter(
   routes.push(...slotSubRoutes);
 
   validateRoutePatterns(routes.map((route) => route.pattern));
-  const uniqueInterceptTargetPatterns = new Map<string, string>();
-  for (const route of routes) {
-    for (const slot of route.parallelSlots) {
-      for (const intercept of slot.interceptingRoutes) {
-        // Inherited slots can surface the same intercepting page on multiple
-        // child routes. De-dupe by page path so we only validate distinct
-        // physical intercept definitions while still rejecting real conflicts.
-        uniqueInterceptTargetPatterns.set(intercept.pagePath, intercept.targetPattern);
-      }
-    }
-  }
-  validateRoutePatterns(Array.from(uniqueInterceptTargetPatterns.values()));
+  validateRoutePatterns(collectInterceptTargetPatterns(routes));
 
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort(compareRoutes);
@@ -242,7 +259,11 @@ function discoverSlotSubRoutes(
         // that useSelectedLayoutSegments() sees the correct segment list at runtime.
         rawSegments: string[];
         // Pre-computed URL parts, params, isDynamic from convertSegmentsToRouteParts.
-        converted: { urlSegments: string[]; params: string[]; isDynamic: boolean };
+        converted: {
+          urlSegments: string[];
+          params: string[];
+          isDynamic: boolean;
+        };
         slotPages: Map<string, string>;
       }
     >();
