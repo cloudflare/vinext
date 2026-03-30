@@ -85,6 +85,7 @@ export function getLayoutSegmentContext(): React.Context<string[]> | null {
  * Read the child segments below the current layout from context.
  * Returns [] if no context is available (RSC environment, outside React tree).
  */
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 function useChildSegments(): string[] {
   const ctx = getLayoutSegmentContext();
   if (!ctx) return [];
@@ -92,12 +93,12 @@ function useChildSegments(): string[] {
   // This branch is only taken in SSR/Browser, never in RSC.
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
-    // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
     return React.useContext(ctx);
   } catch {
     return [];
   }
 }
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
 // ---------------------------------------------------------------------------
 // Server-side request context (set by the RSC entry before rendering)
@@ -230,19 +231,19 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
 export const PREFETCH_CACHE_TTL = 30_000;
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
-export interface CachedRscResponse {
+export type CachedRscResponse = {
   buffer: ArrayBuffer;
   contentType: string;
   paramsHeader: string | null;
   url: string;
-}
+};
 
-export interface PrefetchCacheEntry {
+export type PrefetchCacheEntry = {
   response?: Response;
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
   timestamp: number;
-}
+};
 
 /**
  * Convert a pathname (with optional query/hash) to its .rsc URL.
@@ -602,11 +603,11 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 // during a startTransition so they see the destination, not the stale URL.
 // ---------------------------------------------------------------------------
 
-export interface ClientNavigationRenderSnapshot {
+export type ClientNavigationRenderSnapshot = {
   pathname: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
-}
+};
 
 const _CLIENT_NAV_RENDER_CTX_KEY = Symbol.for("vinext.clientNavigationRenderContext");
 type _ClientNavRenderGlobal = typeof globalThis & {
@@ -625,6 +626,7 @@ export function getClientNavigationRenderContext(): React.Context<ClientNavigati
   return globalState[_CLIENT_NAV_RENDER_CTX_KEY] ?? null;
 }
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | null {
   const ctx = getClientNavigationRenderContext();
   if (!ctx || typeof React.useContext !== "function") return null;
@@ -634,6 +636,7 @@ function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | n
     return null;
   }
 }
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
 export function createClientNavigationRenderSnapshot(
   href: string,
@@ -713,6 +716,7 @@ function subscribeToNavigation(cb: () => void): () => void {
 // Hooks
 // ---------------------------------------------------------------------------
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
@@ -725,7 +729,6 @@ export function usePathname(): string {
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
-  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const pathname = React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
@@ -740,7 +743,9 @@ export function usePathname(): string {
   }
   return pathname;
 }
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the current search params as a read-only URLSearchParams.
  */
@@ -751,7 +756,6 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     return getServerSearchParamsSnapshot();
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
-  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const searchParams = React.useSyncExternalStore(
     subscribeToNavigation,
     getSearchParamsSnapshot,
@@ -762,7 +766,9 @@ export function useSearchParams(): ReadonlyURLSearchParams {
   }
   return searchParams;
 }
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the dynamic params for the current route.
  */
@@ -774,7 +780,6 @@ export function useParams<
     return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
-  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   const params = React.useSyncExternalStore(
     subscribeToNavigation,
     getClientParamsSnapshot as () => T,
@@ -785,6 +790,7 @@ export function useParams<
   }
   return params;
 }
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
 /**
  * Check if a href is an external URL (any URL scheme per RFC 3986, or protocol-relative).

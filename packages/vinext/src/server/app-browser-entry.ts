@@ -63,11 +63,11 @@ type BrowserTreeState = {
 };
 type NavigationKind = "navigate" | "traverse" | "refresh";
 type HistoryUpdateMode = "push" | "replace";
-interface VisitedResponseCacheEntry {
+type VisitedResponseCacheEntry = {
   params: Record<string, string | string[]>;
   expiresAt: number;
   response: CachedRscResponse;
-}
+};
 
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
