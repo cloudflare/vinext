@@ -245,13 +245,6 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
   return `${clean}.html`;
 }
 
-/**
- * Resolve parent dynamic segment params for a route.
- * Handles top-down generateStaticParams resolution for nested dynamic routes.
- *
- * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
- * the production bundle.
- */
 /** Map of route patterns to generateStaticParams functions (or null/undefined). */
 export type StaticParamsMap = Record<
   string,
@@ -262,6 +255,13 @@ export type StaticParamsMap = Record<
   | undefined
 >;
 
+/**
+ * Resolve parent dynamic segment params for a route.
+ * Handles top-down generateStaticParams resolution for nested dynamic routes.
+ *
+ * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
+ * the production bundle.
+ */
 export async function resolveParentParams(
   childRoute: AppRoute,
   routeIndex: ReadonlyMap<string, AppRoute>,
@@ -288,8 +288,8 @@ export async function resolveParentParams(
 
   let prefixPattern = "";
   for (let i = 0; i < lastDynamicIdx; i++) {
-    prefixPattern += "/" + patternParts[i];
     const part = patternParts[i];
+    prefixPattern += "/" + part;
     if (!part.startsWith(":")) continue;
 
     const parentRoute = routeIndex.get(prefixPattern);
