@@ -26,6 +26,38 @@ export default defineConfig({
       typeCheck: true,
       denyWarnings: true,
     },
+    plugins: ["typescript", "unicorn", "import", "react"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      "typescript/consistent-type-definitions": ["error", "type"],
+      "@typescript-eslint/no-unsafe-function-type": "error",
+      "@typescript-eslint/no-unused-vars": "error",
+      "@typescript-eslint/no-redeclare": "error",
+      "@typescript-eslint/no-implied-eval": "error",
+
+      "unicorn/prefer-node-protocol": "error",
+
+      "import/first": "error",
+      "import/no-duplicates": "error",
+
+      "no-new-func": "error",
+      "no-implied-eval": "error",
+      "arrow-body-style": ["error", "as-needed"],
+
+      "react/exhaustive-deps": "error",
+      "react/no-array-index-key": "error",
+      "react/rules-of-hooks": "error",
+      "react/self-closing-comp": "error",
+    },
+    overrides: [
+      {
+        files: ["**.spec.ts", "**.test.ts"],
+        rules: {
+          "@typescript-eslint/no-explicit-any": "off",
+          "@typescript-eslint/no-unsafe-function-type": "off",
+        },
+      },
+    ],
   },
   test: {
     // GitHub Actions reporter adds inline failure annotations in PR diffs.

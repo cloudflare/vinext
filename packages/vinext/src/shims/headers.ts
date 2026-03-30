@@ -21,14 +21,14 @@ import {
 // Request context
 // ---------------------------------------------------------------------------
 
-export interface HeadersContext {
+export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
   mutableCookies?: RequestCookies;
   readonlyCookies?: RequestCookies;
   readonlyHeaders?: Headers;
-}
+};
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
@@ -605,11 +605,11 @@ export function getDraftModeCookieHeader(): string | null {
   return header;
 }
 
-interface DraftModeResult {
+type DraftModeResult = {
   isEnabled: boolean;
   enable(): void;
   disable(): void;
-}
+};
 
 /**
  * Draft mode — check/toggle via a `__prerender_bypass` cookie.

@@ -11,6 +11,8 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { flushSync } from "react-dom";
 import { hydrateRoot } from "react-dom/client";
+import "../client/instrumentation-client.js";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   PREFETCH_CACHE_TTL,
   getPrefetchCache,
@@ -27,13 +29,13 @@ import {
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
-interface ServerActionResult {
+type ServerActionResult = {
   root: ReactNode;
   returnValue?: {
     ok: boolean;
     data: unknown;
   };
-}
+};
 
 let reactRoot: Root | null = null;
 
@@ -104,7 +106,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
   if (paramsHeader) {
     try {
-      params = JSON.parse(paramsHeader) as Record<string, string | string[]>;
+      params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
       setClientParams(params);
     } catch {
       // Ignore malformed param headers and continue with hydration.
@@ -179,7 +181,7 @@ async function main(): Promise<void> {
   registerServerActionCallback();
 
   const rscStream = await readInitialRscStream();
-  const root = await createFromReadableStream(rscStream);
+  const root = createFromReadableStream(rscStream);
 
   reactRoot = hydrateRoot(
     document,
@@ -188,6 +190,7 @@ async function main(): Promise<void> {
   );
 
   window.__VINEXT_RSC_ROOT__ = reactRoot;
+  window.__VINEXT_HYDRATED_AT = performance.now();
 
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
@@ -243,7 +246,7 @@ async function main(): Promise<void> {
       const paramsHeader = navResponse.headers.get("X-Vinext-Params");
       if (paramsHeader) {
         try {
-          setClientParams(JSON.parse(paramsHeader));
+          setClientParams(JSON.parse(decodeURIComponent(paramsHeader)));
         } catch {
           setClientParams({});
         }
@@ -262,6 +265,7 @@ async function main(): Promise<void> {
   };
 
   window.addEventListener("popstate", () => {
+    notifyAppRouterTransitionStart(window.location.href, "traverse");
     const pendingNavigation =
       window.__VINEXT_RSC_NAVIGATE__?.(window.location.href) ?? Promise.resolve();
     window.__VINEXT_RSC_PENDING__ = pendingNavigation;

@@ -11,6 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
+import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
@@ -91,6 +92,7 @@ function useChildSegments(): string[] {
   // This branch is only taken in SSR/Browser, never in RSC.
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
+    // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
     return React.useContext(ctx);
   } catch {
     return [];
@@ -101,11 +103,11 @@ function useChildSegments(): string[] {
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
 
-export interface NavigationContext {
+export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
-}
+};
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
 const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
@@ -122,31 +124,69 @@ type NavigationContextWithReadonlyCache = NavigationContext & {
 //
 // On the server: state functions are set by navigation-state.ts at import time.
 // On the client: _serverContext falls back to null (hooks use window instead).
+//
+// Global accessor pattern (issue #688):
+// Vite's multi-environment dev mode can create separate module instances of
+// this file for the SSR entry vs "use client" components. When that happens,
+// _registerStateAccessors only updates the SSR entry's instance, leaving the
+// "use client" instance with the default (null) fallbacks.
+//
+// To fix this, navigation-state.ts also stores the accessors on globalThis
+// via Symbol.for, and the defaults here check for that global before falling
+// back to module-level state. This ensures all module instances can reach the
+// ALS-backed state regardless of which instance was registered.
 // ---------------------------------------------------------------------------
+
+type _StateAccessors = {
+  getServerContext: () => NavigationContext | null;
+  setServerContext: (ctx: NavigationContext | null) => void;
+  getInsertedHTMLCallbacks: () => Array<() => unknown>;
+  clearInsertedHTMLCallbacks: () => void;
+};
+
+export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
+const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
+type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
+
+function _getGlobalAccessors(): _StateAccessors | undefined {
+  return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
+}
 
 let _serverContext: NavigationContext | null = null;
 let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
 
 // These are overridden by navigation-state.ts on the server to use ALS.
-let _getServerContext = (): NavigationContext | null => _serverContext;
-let _setServerContext = (ctx: NavigationContext | null): void => {
-  _serverContext = ctx;
+// The defaults check globalThis for cross-module-instance access (issue #688).
+let _getServerContext = (): NavigationContext | null => {
+  const g = _getGlobalAccessors();
+  return g ? g.getServerContext() : _serverContext;
 };
-let _getInsertedHTMLCallbacks = (): Array<() => unknown> => _serverInsertedHTMLCallbacks;
+let _setServerContext = (ctx: NavigationContext | null): void => {
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.setServerContext(ctx);
+  } else {
+    _serverContext = ctx;
+  }
+};
+let _getInsertedHTMLCallbacks = (): Array<() => unknown> => {
+  const g = _getGlobalAccessors();
+  return g ? g.getInsertedHTMLCallbacks() : _serverInsertedHTMLCallbacks;
+};
 let _clearInsertedHTMLCallbacks = (): void => {
-  _serverInsertedHTMLCallbacks = [];
+  const g = _getGlobalAccessors();
+  if (g) {
+    g.clearInsertedHTMLCallbacks();
+  } else {
+    _serverInsertedHTMLCallbacks = [];
+  }
 };
 
 /**
  * Register ALS-backed state accessors. Called by navigation-state.ts on import.
  * @internal
  */
-export function _registerStateAccessors(accessors: {
-  getServerContext: () => NavigationContext | null;
-  setServerContext: (ctx: NavigationContext | null) => void;
-  getInsertedHTMLCallbacks: () => Array<() => unknown>;
-  clearInsertedHTMLCallbacks: () => void;
-}): void {
+export function _registerStateAccessors(accessors: _StateAccessors): void {
   _getServerContext = accessors.getServerContext;
   _setServerContext = accessors.setServerContext;
   _getInsertedHTMLCallbacks = accessors.getInsertedHTMLCallbacks;
@@ -189,10 +229,10 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
 
-export interface PrefetchCacheEntry {
+export type PrefetchCacheEntry = {
   response: Response;
   timestamp: number;
-}
+};
 
 /**
  * Convert a pathname (with optional query/hash) to its .rsc URL.
@@ -364,6 +404,7 @@ export function usePathname(): string {
     return _getServerContext()?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
@@ -380,6 +421,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     // Return a safe fallback — the client will hydrate with the real value.
     return getServerSearchParamsSnapshot();
   }
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getSearchParamsSnapshot,
@@ -397,6 +439,7 @@ export function useParams<
     // During SSR of "use client" components, the navigation context may not be set.
     return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
+  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
   return React.useSyncExternalStore(
     subscribeToNavigation,
     getClientParamsSnapshot as () => T,
@@ -537,6 +580,9 @@ async function navigateImpl(
   }
 
   const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  // Match Next.js: App Router reports navigation start before dispatching,
+  // including hash-only navigations that short-circuit after URL update.
+  notifyAppRouterTransitionStart(fullHref, mode);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {

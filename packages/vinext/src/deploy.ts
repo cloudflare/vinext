@@ -34,7 +34,7 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface DeployOptions {
+export type DeployOptions = {
   /** Project root directory */
   root: string;
   /** Deploy to preview environment (default: production) */
@@ -57,7 +57,7 @@ export interface DeployOptions {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
-}
+};
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
@@ -106,7 +106,7 @@ export function parseDeployArgs(args: string[]) {
 
 // ─── Project Detection ──────────────────────────────────────────────────────
 
-interface ProjectInfo {
+type ProjectInfo = {
   root: string;
   isAppRouter: boolean;
   isPagesRouter: boolean;
@@ -127,7 +127,7 @@ interface ProjectInfo {
   hasCodeHike: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
-}
+};
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
@@ -666,6 +666,13 @@ export default {
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(request, ctx);
 
+        // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
+        if (result.waitUntilPromises?.length) {
+          for (const p of result.waitUntilPromises) {
+            ctx.waitUntil(p);
+          }
+        }
+
         if (!result.continue) {
           if (result.redirectUrl) {
             const redirectHeaders = new Headers({ Location: result.redirectUrl });
@@ -992,10 +999,10 @@ export default defineConfig({
 
 // ─── Dependency Management ───────────────────────────────────────────────────
 
-interface MissingDep {
+type MissingDep = {
   name: string;
   version: string;
-}
+};
 
 /**
  * Check if a package is resolvable from a given root directory using
@@ -1065,11 +1072,11 @@ const detectPackageManager = _detectPackageManager;
 
 // ─── File Writing ────────────────────────────────────────────────────────────
 
-interface GeneratedFile {
+type GeneratedFile = {
   path: string;
   content: string;
   description: string;
-}
+};
 
 /**
  * Check whether an existing vite.config file already imports and uses the
@@ -1163,32 +1170,29 @@ async function runBuild(info: ProjectInfo): Promise<void> {
     vitePath = "vite";
   }
   const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
-  const { createBuilder, build } = (await import(/* @vite-ignore */ viteUrl)) as {
+  const { createBuilder } = (await import(/* @vite-ignore */ viteUrl)) as {
     createBuilder: typeof import("vite").createBuilder;
-    build: typeof import("vite").build;
   };
 
   // Use Vite's JS API for the build. The user's vite.config.ts (or our
   // generated one) has the cloudflare() plugin which handles the Worker
   // output format. We just need to trigger the build.
   //
-  // For App Router, createBuilder().buildApp() handles multi-environment builds.
-  // For Pages Router, a single build() call suffices (cloudflare plugin manages it).
-
-  if (info.isAppRouter) {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
-  } else {
-    await build({ root: info.root });
-  }
+  // Both App Router and Pages Router use createBuilder + buildApp() so that
+  // cloudflare() runs in its intended multi-environment mode and writes
+  // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
+  // config() hook's builder.buildApp override, so writeBundle never fires on
+  // the correct environment name.
+  const builder = await createBuilder({ root: info.root });
+  await builder.buildApp();
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-export interface WranglerDeployArgs {
+export type WranglerDeployArgs = {
   args: string[];
   env: string | undefined;
-}
+};
 
 export function buildWranglerDeployArgs(
   options: Pick<DeployOptions, "preview" | "env">,

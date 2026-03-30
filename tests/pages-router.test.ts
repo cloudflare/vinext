@@ -27,6 +27,10 @@ type ClientBuildManifestEntry = {
   assets?: string[];
 };
 
+function getBuildBundlerOptions(result: any) {
+  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -81,7 +85,7 @@ function unwrapStartedProdServer(
   return "server" in result ? result.server : result;
 }
 
-interface CapturedStreamResponse {
+type CapturedStreamResponse = {
   body: Buffer;
   headers: IncomingHttpHeaders;
   statusCode: number;
@@ -90,7 +94,7 @@ interface CapturedStreamResponse {
   snapshot: Buffer;
   rawBody: Buffer;
   rawSnapshot: Buffer;
-}
+};
 
 function createResponseDecoder(
   contentEncoding: string | string[] | undefined,
@@ -221,6 +225,18 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Hello, vinext!");
     expect(html).toContain("This is a Pages Router app running on Vite.");
     expect(html).toContain("Go to About");
+  });
+
+  it("sets optimizeDeps.entries for pages and instrumentation hooks so deps are discovered at startup", () => {
+    const entries = server.config.optimizeDeps?.entries;
+
+    expect(entries).toBeDefined();
+    expect(Array.isArray(entries)).toBe(true);
+
+    const glob = (entries as string[]).join(",");
+    expect(glob).toMatch(/pages\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(glob).toContain("instrumentation.ts");
+    expect(glob).toContain("instrumentation-client.ts");
   });
 
   it("resolves tsconfig path aliases (@/ imports)", async () => {
@@ -1393,20 +1409,21 @@ describe("Plugin config", () => {
     const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
 
     expect(result.build).toBeDefined();
-    expect(result.build.rollupOptions).toBeDefined();
-    expect(result.build.rollupOptions.onwarn).toBeDefined();
+    const bundlerOptions = getBuildBundlerOptions(result);
+    expect(bundlerOptions).toBeDefined();
+    expect(bundlerOptions.onwarn).toBeDefined();
 
     const defaultHandler = vi.fn();
 
     // "use client" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
     expect(defaultHandler).not.toHaveBeenCalled();
 
     // "use server" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use server" was ignored' },
       defaultHandler,
     );
@@ -1417,13 +1434,13 @@ describe("Plugin config", () => {
       code: "MODULE_LEVEL_DIRECTIVE",
       message: '"use strict" was ignored',
     };
-    result.build.rollupOptions.onwarn(otherDirectiveWarning, defaultHandler);
+    bundlerOptions.onwarn(otherDirectiveWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherDirectiveWarning);
 
     // Other warning codes should pass through to the default handler
     defaultHandler.mockClear();
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherWarning);
   });
 
@@ -1439,10 +1456,11 @@ describe("Plugin config", () => {
       build: { rollupOptions: { onwarn: userOnwarn } },
     });
 
+    const bundlerOptions = getBuildBundlerOptions(result);
     const defaultHandler = vi.fn();
 
     // "use client" should still be suppressed (user handler NOT called)
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
@@ -1451,12 +1469,12 @@ describe("Plugin config", () => {
 
     // Other warnings should be forwarded to the user's handler
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(userOnwarn).toHaveBeenCalledWith(otherWarning, defaultHandler);
     expect(defaultHandler).not.toHaveBeenCalled();
   });
 
-  it("registers vinext:mdx proxy plugin with enforce pre for correct ordering", () => {
+  it("registers vinext:mdx proxy plugin with enforce pre for correct ordering", async () => {
     const plugins = vinext() as any[];
     const mdxProxy = plugins.find((p) => p.name === "vinext:mdx");
     expect(mdxProxy).toBeDefined();
@@ -1466,10 +1484,10 @@ describe("Plugin config", () => {
     expect(typeof mdxProxy.transform).toBe("function");
     // Proxy should be inert when no MDX files are detected (mdxDelegate is null)
     expect(mdxProxy.config({}, { command: "build", mode: "production" })).toBeUndefined();
-    expect(mdxProxy.transform("code", "./foo.ts", {})).toBeUndefined();
+    await expect(mdxProxy.transform("code", "./foo.ts", {})).resolves.toBeUndefined();
   });
 
-  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", () => {
+  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", async () => {
     // @mdx-js/rollup strips the query before matching the file extension, so
     // it would compile "foo.mdx?raw" as MDX and return compiled JSX instead of
     // raw text. The proxy must short-circuit on any id that contains "?".
@@ -1477,9 +1495,59 @@ describe("Plugin config", () => {
     const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
 
     // Common query-param import patterns that must be skipped
-    expect(mdxProxy.transform("# hello", "/app/content.mdx?raw", {})).toBeUndefined();
-    expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).toBeUndefined();
-    expect(mdxProxy.transform("# hello", "/app/page.mdx?inline", {})).toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
+    ).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
+    ).resolves.toBeUndefined();
+    // Additional query variations
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    // Edge case: query value contains .mdx but isn't the extension
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
+    ).resolves.toBeUndefined();
+  });
+
+  it("vinext:mdx lazily compiles plain .mdx imports that were not pre-detected", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-mdx-lazy-"));
+
+    try {
+      await fsp.writeFile(
+        path.join(tmpDir, "package.json"),
+        JSON.stringify({ name: "vinext-mdx-lazy", private: true, type: "module" }),
+      );
+
+      const plugins = vinext({ appDir: tmpDir }) as any[];
+      const configPlugin = plugins.find((p) => p.name === "vinext:config");
+      const mdxProxy = plugins.find((p) => p.name === "vinext:mdx");
+
+      await configPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+
+      const result = await mdxProxy.transform(
+        `---
+title: "Second Post"
+---
+
+export const marker = "mdx-evaluated";
+
+# Hello <span>world</span>
+`,
+        path.join(tmpDir, "content", "post.mdx"),
+        {},
+      );
+
+      expect(result).toBeDefined();
+      expect(result.code).toContain("mdx-evaluated");
+      expect(result.code).not.toContain('title: "Second Post"');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("vinext:mdx proxy logic — ?raw guard prevents delegate from compiling query imports", () => {

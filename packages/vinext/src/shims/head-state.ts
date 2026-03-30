@@ -21,9 +21,9 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-export interface HeadState {
+export type HeadState = {
   ssrHeadChildren: React.ReactNode[];
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.head.als");
 const _FALLBACK_KEY = Symbol.for("vinext.head.fallback");

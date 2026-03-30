@@ -129,3 +129,75 @@ describe("flushPreloads", () => {
     expect(result).toEqual([]);
   });
 });
+
+// ─── RSC async component path ────────────────────────────────────────────
+//
+// React 19.x exports React.lazy from the react-server condition, so the
+// `typeof React.lazy !== "function"` guard does NOT trigger in current
+// React. The AsyncServerDynamic path is defensive forward-compatibility
+// code for hypothetical future React versions that strip lazy from RSC.
+//
+// We verify it here by temporarily stubbing React.lazy to undefined,
+// simulating the react-server environment of older or stripped React builds.
+
+describe("next/dynamic RSC async component path (React.lazy unavailable)", () => {
+  it("returns an async component (DynamicAsyncServer) when React.lazy is not a function", () => {
+    const originalLazy = React.lazy;
+    try {
+      // @ts-expect-error — simulating react-server condition where lazy is absent
+      React.lazy = undefined;
+
+      const DynamicRsc = dynamic(() => Promise.resolve({ default: Hello }));
+      expect(DynamicRsc.displayName).toBe("DynamicAsyncServer");
+    } finally {
+      React.lazy = originalLazy;
+    }
+  });
+
+  it("async component resolves and renders the dynamically loaded component", async () => {
+    const originalLazy = React.lazy;
+    try {
+      // @ts-expect-error — simulating react-server condition where lazy is absent
+      React.lazy = undefined;
+
+      const DynamicRsc = dynamic(() => Promise.resolve({ default: Hello }));
+      // The returned component is an async function — call it directly as RSC would
+      const element = await (DynamicRsc as unknown as (props: object) => Promise<unknown>)({});
+      // Should return a React element rendered from Hello
+      expect(element).toBeTruthy();
+      expect((element as React.ReactElement).type).toBe(Hello);
+    } finally {
+      React.lazy = originalLazy;
+    }
+  });
+
+  it("async component handles modules exporting bare component (no default)", async () => {
+    const originalLazy = React.lazy;
+    try {
+      // @ts-expect-error — simulating react-server condition where lazy is absent
+      React.lazy = undefined;
+
+      const DynamicRsc = dynamic(() => Promise.resolve(Hello as any));
+      const element = await (DynamicRsc as unknown as (props: object) => Promise<unknown>)({});
+      expect((element as React.ReactElement).type).toBe(Hello);
+    } finally {
+      React.lazy = originalLazy;
+    }
+  });
+
+  it("async component ignores LoadingComponent (defers to parent Suspense boundary)", () => {
+    const originalLazy = React.lazy;
+    try {
+      // @ts-expect-error — simulating react-server condition where lazy is absent
+      React.lazy = undefined;
+
+      // LoadingComponent is passed but should be silently ignored in RSC path
+      const DynamicRsc = dynamic(() => Promise.resolve({ default: Hello }), {
+        loading: LoadingSpinner,
+      });
+      expect(DynamicRsc.displayName).toBe("DynamicAsyncServer");
+    } finally {
+      React.lazy = originalLazy;
+    }
+  });
+});

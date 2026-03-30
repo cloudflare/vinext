@@ -99,7 +99,7 @@ This will:
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
-vinext supports both Vite 7 and Vite 8. If you bring custom Vite config or plugins from an older setup, note that Vite 8 now defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. Prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency only breaks on Vite 8 because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
+vinext targets Vite 8, which defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. If you bring custom Vite config or plugins from an older setup, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency breaks because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
@@ -556,7 +556,7 @@ These are intentional exclusions:
 
 These benchmarks measure **compilation and bundling speed**, not production serving performance. Next.js and vinext have fundamentally different default approaches: Next.js statically pre-renders pages at build time (making builds slower but production serving faster for static content), while vinext server-renders all pages on each request. To make the comparison apples-to-apples, the benchmark app uses `export const dynamic = "force-dynamic"` to disable Next.js static pre-rendering — both frameworks are doing the same work: compiling, bundling, and preparing server-rendered routes.
 
-The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools. We compare Next.js 16 (Turbopack) against vinext on both Vite 7 (Rollup) and Vite 8 (Rolldown). Turbopack and Rolldown both parallelize across cores, so results on machines with more cores may differ significantly.
+The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools. We compare Next.js (Turbopack) against vinext (Vite 8). Both Turbopack and Rolldown parallelize across cores, so results on machines with more cores may differ significantly.
 
 We measure three things:
 

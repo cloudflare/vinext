@@ -34,20 +34,23 @@ import type {
  *
  * Each field group is documented with its source shim module.
  */
-export interface UnifiedRequestContext
-  extends
-    VinextHeadersShimState,
-    I18nState,
-    NavigationState,
-    CacheState,
-    PrivateCacheState,
-    FetchCacheState,
-    RouterState,
-    HeadState {
+export type UnifiedRequestContext = {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
-}
+
+  // ── cache-for-request.ts ──────────────────────────────────────────
+  /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  requestCache: WeakMap<(...args: any[]) => any, unknown>;
+} & VinextHeadersShimState &
+  I18nState &
+  NavigationState &
+  CacheState &
+  PrivateCacheState &
+  FetchCacheState &
+  RouterState &
+  HeadState;
 
 // ---------------------------------------------------------------------------
 // ALS setup — stored on globalThis via Symbol.for so all Vite environments
@@ -92,6 +95,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     _privateCache: null,
     currentRequestTags: [],
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    requestCache: new WeakMap(),
     ssrContext: null,
     ssrHeadChildren: [],
     ...opts,
@@ -129,9 +133,11 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), the
-  // _privateCache Map, and object fields (headersContext, i18nContext,
-  // serverContext, ssrContext, executionContext, requestScopedCacheLife)
-  // still share references with the parent until replaced. The mutate
+  // _privateCache Map, requestCache WeakMap, and object fields (headersContext,
+  // i18nContext, serverContext, ssrContext, executionContext,
+  // requestScopedCacheLife) still share references with the parent until
+  // replaced. requestCache is intentionally shared — nested scopes within
+  // the same request should see the same cached values. The mutate
   // callback must replace those reference-typed slices (for example
   // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
   // example `ctx.currentRequestTags.push(...)`) or the parent scope will

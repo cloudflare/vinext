@@ -17,16 +17,16 @@ import { runWithNavigationContext } from "../shims/navigation-state.js";
 import { safeJsonStringify } from "./html.js";
 import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
 
-export interface FontPreload {
+export type FontPreload = {
   href: string;
   type: string;
-}
+};
 
-export interface FontData {
+export type FontData = {
   links?: string[];
   styles?: string[];
   preloads?: FontPreload[];
-}
+};
 
 type ClientRequire = (id: string) => Promise<unknown>;
 

@@ -2,7 +2,7 @@
 
 A dashboard for viewing vinext performance benchmarks, built with the App Router on Cloudflare Workers.
 
-Compares build times and metrics across Next.js 16 (Turbopack), vinext (Rollup), and vinext (Rolldown) on every merge to main.
+Compares build times and metrics across Next.js (Turbopack) and vinext (Vite 8) on every merge to main.
 
 Uses a D1 database for benchmark storage and Tailwind CSS for styling.
 

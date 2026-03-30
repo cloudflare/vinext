@@ -1,54 +1,54 @@
-export interface AppPageMiddlewareContext {
+export type AppPageMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
-}
+};
 
-export interface AppPageResponseTiming {
+export type AppPageResponseTiming = {
   compileEnd?: number;
   handlerStart: number;
   renderEnd?: number;
   responseKind: "html" | "rsc";
-}
+};
 
-export interface AppPageResponsePolicy {
+export type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
-}
+};
 
-interface ResolveAppPageResponsePolicyBaseOptions {
+type ResolveAppPageResponsePolicyBaseOptions = {
   isDynamicError: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProduction: boolean;
   revalidateSeconds: number | null;
-}
+};
 
-export interface ResolveAppPageRscResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
+export type ResolveAppPageRscResponsePolicyOptions = {
   dynamicUsedDuringBuild: boolean;
-}
+} & ResolveAppPageResponsePolicyBaseOptions;
 
-export interface ResolveAppPageHtmlResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
+export type ResolveAppPageHtmlResponsePolicyOptions = {
   dynamicUsedDuringRender: boolean;
-}
+} & ResolveAppPageResponsePolicyBaseOptions;
 
-export interface AppPageHtmlResponsePolicy extends AppPageResponsePolicy {
+export type AppPageHtmlResponsePolicy = {
   shouldWriteToCache: boolean;
-}
+} & AppPageResponsePolicy;
 
-export interface BuildAppPageRscResponseOptions {
+export type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
-}
+};
 
-export interface BuildAppPageHtmlResponseOptions {
+export type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
   fontLinkHeader?: string;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
-}
+};
 
 const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
@@ -167,7 +167,9 @@ export function buildAppPageRscResponse(
   });
 
   if (options.params && Object.keys(options.params).length > 0) {
-    headers.set("X-Vinext-Params", JSON.stringify(options.params));
+    // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
+    // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
+    headers.set("X-Vinext-Params", encodeURIComponent(JSON.stringify(options.params)));
   }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);

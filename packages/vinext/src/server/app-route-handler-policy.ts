@@ -5,22 +5,22 @@ import {
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
 
-export interface AppRouteHandlerModule extends RouteHandlerModule {
+export type AppRouteHandlerModule = {
   dynamic?: string;
   revalidate?: unknown;
-}
+} & RouteHandlerModule;
 
 type AppRouteHandlerFunction = (...args: unknown[]) => unknown;
 
-export interface ResolvedAppRouteHandlerMethod {
+export type ResolvedAppRouteHandlerMethod = {
   allowHeaderForOptions: string;
   exportedMethods: RouteHandlerHttpMethod[];
   handlerFn: AppRouteHandlerFunction | undefined;
   isAutoHead: boolean;
   shouldAutoRespondToOptions: boolean;
-}
+};
 
-export interface AppRouteHandlerCacheReadOptions {
+export type AppRouteHandlerCacheReadOptions = {
   dynamicConfig?: string;
   handlerFn: unknown;
   isAutoHead: boolean;
@@ -28,9 +28,9 @@ export interface AppRouteHandlerCacheReadOptions {
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
-}
+};
 
-export interface AppRouteHandlerResponseCacheOptions {
+export type AppRouteHandlerResponseCacheOptions = {
   dynamicConfig?: string;
   dynamicUsedInHandler: boolean;
   handlerSetCacheControl: boolean;
@@ -38,7 +38,7 @@ export interface AppRouteHandlerResponseCacheOptions {
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
-}
+};
 
 export type AppRouteHandlerSpecialError =
   | {

@@ -211,6 +211,7 @@ describe("next/navigation shim", () => {
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
         childSegments: ["explore"],
+        // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
     );
@@ -1272,7 +1273,7 @@ describe("next/server shim", () => {
     // unstable_cache scope. If cache.ts was already imported, the existing instance is
     // reused; if not, this standalone ALS is sufficient for the guard to work.
     if (!g[key]) g[key] = new AsyncLocalStorage();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     (g[key] as any).run(true, () => {
       expect(() => after(() => {})).toThrow(/unstable_cache/);
     });
@@ -2705,6 +2706,89 @@ describe("normalizePath", () => {
   });
 });
 
+// ── escapePathDelimiters / decodePathParams ────────────────────────────────
+// Ported from Next.js: packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
+// and packages/next/src/server/lib/router-utils/decode-path-params.ts
+
+describe("escapePathDelimiters", () => {
+  let escapePathDelimiters: (segment: string, escapeEncoded?: boolean) => string;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    escapePathDelimiters = mod.escapePathDelimiters;
+  });
+
+  it("re-encodes forward slash", () => {
+    expect(escapePathDelimiters("admin/panel")).toBe("admin%2Fpanel");
+  });
+
+  it("re-encodes hash and question mark", () => {
+    expect(escapePathDelimiters("foo#bar")).toBe("foo%23bar");
+    expect(escapePathDelimiters("foo?bar")).toBe("foo%3Fbar");
+  });
+
+  it("re-encodes already-encoded delimiters when escapeEncoded is true", () => {
+    expect(escapePathDelimiters("admin%2Fpanel", true)).toBe("admin%252Fpanel");
+    expect(escapePathDelimiters("foo%23bar", true)).toBe("foo%2523bar");
+    expect(escapePathDelimiters("foo%3Fbar", true)).toBe("foo%253Fbar");
+    expect(escapePathDelimiters("foo%5Cbar", true)).toBe("foo%255Cbar");
+  });
+
+  it("leaves non-delimiter characters unchanged", () => {
+    expect(escapePathDelimiters("café")).toBe("café");
+    expect(escapePathDelimiters("hello world")).toBe("hello world");
+  });
+});
+
+describe("decodePathParams", () => {
+  let decodePathParams: (pathname: string) => string;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    decodePathParams = mod.decodePathParams;
+  });
+
+  it("decodes non-ASCII characters within segments", () => {
+    expect(decodePathParams("/caf%C3%A9")).toBe("/café");
+    expect(decodePathParams("/%E6%97%A5%E6%9C%AC%E8%AA%9E")).toBe("/日本語");
+  });
+
+  it("preserves encoded slashes (%2F) - does not change path structure", () => {
+    expect(decodePathParams("/admin%2Fpanel")).toBe("/admin%2Fpanel");
+  });
+
+  it("preserves encoded hash (%23) and question mark (%3F)", () => {
+    expect(decodePathParams("/foo%23bar")).toBe("/foo%23bar");
+    expect(decodePathParams("/foo%3Fbar")).toBe("/foo%3Fbar");
+  });
+
+  it("decodes encoded backslash (%5C) since it is not a path delimiter", () => {
+    // Backslash is not a URL path delimiter (browsers normalize \ to / before
+    // sending). The escapePathDelimiters function only re-encodes /, #, and ?.
+    // %5C is decoded to \ and left as-is, matching Next.js behavior.
+    expect(decodePathParams("/foo%5Cbar")).toBe("/foo\\bar");
+  });
+
+  it("decodes mixed paths correctly", () => {
+    // Non-ASCII decoded, structural delimiters preserved
+    expect(decodePathParams("/caf%C3%A9/admin%2Fpanel")).toBe("/café/admin%2Fpanel");
+  });
+
+  it("handles already-decoded paths", () => {
+    expect(decodePathParams("/about")).toBe("/about");
+    expect(decodePathParams("/foo/bar/baz")).toBe("/foo/bar/baz");
+  });
+
+  it("handles malformed percent-encoding gracefully", () => {
+    // Should not throw, just return the segment as-is
+    expect(decodePathParams("/%E0%A4%A")).toBe("/%E0%A4%A");
+  });
+
+  it("handles root path", () => {
+    expect(decodePathParams("/")).toBe("/");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Codegen parity tests (verify generated code matches runtime behavior)
 
@@ -2714,7 +2798,7 @@ describe("middleware codegen parity", () => {
       await import("../packages/vinext/src/server/middleware-codegen.js");
     // Eval the generated code and test it behaves identically to the runtime
     const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2839,7 +2923,7 @@ describe("middleware codegen parity", () => {
     const { generateSafeRegExpCode, generateMiddlewareMatcherCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2895,7 +2979,7 @@ describe("middleware codegen parity", () => {
     const { generateNormalizePathCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateNormalizePathCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn __normalizePath;");
     const __normalizePath = fn();
 
@@ -3204,6 +3288,60 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).toContain("/login");
     expect(result.redirectStatus).toBe(307);
+  });
+
+  it("runMiddleware bubbles up waitUntil promises in result", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("background-work");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return Response.redirect("http://localhost/login", 307);
+        },
+        config: { matcher: ["/protected"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/protected");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    // The most critical behavior: waitUntil promises must appear in the result
+    // so the runtime (e.g. Cloudflare Workers ctx.waitUntil) can keep them alive.
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBeDefined();
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
+  });
+
+  it("runMiddleware bubbles up waitUntil promises on continue: true path", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("analytics");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return NextResponse.next();
+        },
+        config: { matcher: ["/dashboard"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/dashboard");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
   });
 
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
@@ -5778,8 +5916,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("ok", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("ok", {
         status: 200,
         headers: {
           "content-type": "text/plain",
@@ -5789,7 +5927,6 @@ describe("proxyExternalRequest", () => {
           // setting them on Response, so we test with headers that can be set.
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/test");
@@ -5807,9 +5944,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("Not Found", { status: 404 });
-    };
+    globalThis.fetch = async (_url: any, _init: any) => new Response("Not Found", { status: 404 });
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/missing");
@@ -5939,10 +6074,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      // Simulate an upstream that sent gzip-encoded content.
-      // Node.js fetch() auto-decompresses, but the original headers remain.
-      return new Response("decompressed body", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("decompressed body", {
         status: 200,
         headers: {
           "content-type": "application/json",
@@ -5951,7 +6084,6 @@ describe("proxyExternalRequest", () => {
           "x-custom": "keep",
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/data");
@@ -9123,9 +9255,7 @@ describe("handleImageOptimization", () => {
       transformImage: async (
         _body: ReadableStream,
         options: { width: number; format: string; quality: number },
-      ) => {
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
+      ) => new Response("transformed", { headers: { "Content-Type": options.format } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -9148,10 +9278,8 @@ describe("handleImageOptimization", () => {
           status: 200,
           headers: { "Content-Type": "image/jpeg" },
         }),
-      transformImage: async () => {
-        // Buggy transform that returns text/html
-        return new Response("transformed", { headers: { "Content-Type": "text/html" } });
-      },
+      transformImage: async () =>
+        new Response("transformed", { headers: { "Content-Type": "text/html" } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -10869,5 +10997,66 @@ describe("isSafeAttrName", () => {
     expect(isSafeAttrName("")).toBe(false);
     expect(isSafeAttrName("123")).toBe(false);
     expect(isSafeAttrName("-foo")).toBe(false);
+  });
+});
+
+// ── has/missing condition value matching (anchored regex) ──────────────────
+
+describe("checkHasConditions value anchoring", () => {
+  let checkHasConditions: Function;
+  let requestContextFromRequest: Function;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/config/config-matchers.js");
+    checkHasConditions = mod.checkHasConditions;
+    requestContextFromRequest = mod.requestContextFromRequest;
+  });
+
+  it("exact value matches fully", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
+  });
+
+  it("does not match substring (anchored regex prevents partial match)", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=not-admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("does not match superstring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin-temp" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("regex patterns still work with anchoring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { "x-lang": "en-US" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "header", key: "x-lang", value: "en.*" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
   });
 });

@@ -22,6 +22,19 @@ test.describe("Cloudflare Workers Hydration", () => {
     void consoleErrors;
   });
 
+  // Regression test for https://github.com/cloudflare/vinext/issues/695
+  // createFromReadableStream was awaited before hydrateRoot, blocking effects.
+  test("useEffect fires after RSC hydration", async ({ page, consoleErrors }) => {
+    await page.goto(`${BASE}/effect-test`);
+
+    // useEffect should fire and update the status from "effect-pending" to "effect-fired"
+    await expect(page.locator('[data-testid="effect-status"]')).toHaveText("effect-fired", {
+      timeout: 10_000,
+    });
+
+    void consoleErrors;
+  });
+
   test("page with timestamp hydrates without mismatch", async ({ page, consoleErrors }) => {
     // This test specifically verifies the fix for GitHub issue #61.
     // The home page has a timestamp that would cause hydration mismatch

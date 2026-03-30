@@ -25,7 +25,7 @@ export function buildExtensionGlob(stem: string, extensions: readonly string[]):
   return `${stem}.{${extensions.join(",")}}`;
 }
 
-export interface ValidFileMatcher {
+export type ValidFileMatcher = {
   extensions: string[];
   dottedExtensions: string[];
   extensionRegex: RegExp;
@@ -35,7 +35,7 @@ export interface ValidFileMatcher {
   isAppLayoutFile(filePath: string): boolean;
   isAppDefaultFile(filePath: string): boolean;
   stripExtension(filePath: string): string;
-}
+};
 
 /**
  * Ported in spirit from Next.js createValidFileMatcher:

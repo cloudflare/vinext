@@ -526,6 +526,7 @@ describe("unified-request-context", () => {
       expect(ctx.executionContext).toBeNull();
       expect(ctx.ssrContext).toBeNull();
       expect(ctx.ssrHeadChildren).toEqual([]);
+      expect(ctx.requestCache).toBeInstanceOf(WeakMap);
     });
 
     it("merges partial overrides", () => {

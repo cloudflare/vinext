@@ -11,19 +11,19 @@ type AppPageCacheSetter = (
 ) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 
-export interface AppPageCacheRenderResult {
+export type AppPageCacheRenderResult = {
   html: string;
   rscData: ArrayBuffer;
   tags: string[];
-}
+};
 
-export interface BuildAppPageCachedResponseOptions {
+export type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   isRscRequest: boolean;
   revalidateSeconds: number;
-}
+};
 
-export interface ReadAppPageCacheResponseOptions {
+export type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   isRscRequest: boolean;
@@ -35,9 +35,9 @@ export interface ReadAppPageCacheResponseOptions {
   revalidateSeconds: number;
   renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
-}
+};
 
-export interface FinalizeAppPageHtmlCacheResponseOptions {
+export type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   getPageTags: () => string[];
@@ -47,9 +47,9 @@ export interface FinalizeAppPageHtmlCacheResponseOptions {
   isrSet: AppPageCacheSetter;
   revalidateSeconds: number;
   waitUntil?: (promise: Promise<void>) => void;
-}
+};
 
-export interface ScheduleAppPageRscCacheWriteOptions {
+export type ScheduleAppPageRscCacheWriteOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
@@ -60,7 +60,7 @@ export interface ScheduleAppPageRscCacheWriteOptions {
   isrSet: AppPageCacheSetter;
   revalidateSeconds: number;
   waitUntil?: (promise: Promise<void>) => void;
-}
+};
 
 function buildAppPageCacheControl(
   cacheState: BuildAppPageCachedResponseOptions["cacheState"],

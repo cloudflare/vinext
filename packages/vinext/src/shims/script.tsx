@@ -15,7 +15,7 @@
 import React, { useEffect, useRef } from "react";
 import { escapeInlineContent } from "./head.js";
 
-export interface ScriptProps {
+export type ScriptProps = {
   /** Script source URL */
   src?: string;
   /** Loading strategy. Default: "afterInteractive" */
@@ -46,7 +46,7 @@ export interface ScriptProps {
   integrity?: string;
   /** Additional attributes */
   [key: string]: unknown;
-}
+};
 
 // Track scripts that have already been loaded to avoid duplicates
 const loadedScripts = new Set<string>();

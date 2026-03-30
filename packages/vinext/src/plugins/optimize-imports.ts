@@ -43,18 +43,18 @@ function astName(node: { name?: string; value?: string | boolean | number | null
 type ExportsValue = string | { [condition: string]: ExportsValue };
 
 /** Minimal package.json shape for entry point resolution. */
-interface PackageJson {
+type PackageJson = {
   name?: string;
   exports?: Record<string, ExportsValue>;
   module?: string;
   main?: string;
-}
+};
 
-interface BarrelExportEntry {
+type BarrelExportEntry = {
   source: string;
   isNamespace: boolean;
   originalName?: string;
-}
+};
 
 type BarrelExportMap = Map<string, BarrelExportEntry>;
 
@@ -65,7 +65,7 @@ type DeclarationNode = {
 };
 
 /** Caches used by the optimize-imports plugin, scoped to a plugin instance. */
-interface BarrelCaches {
+type BarrelCaches = {
   /** Barrel export maps keyed by resolved entry file path. */
   exportMapCache: Map<string, BarrelExportMap>;
   /**
@@ -76,7 +76,7 @@ interface BarrelCaches {
    * already environment-keyed via the "rsc:"/"ssr:" prefix on its cache keys.
    */
   subpkgOrigin: Map<string, Map<string, string>>;
-}
+};
 
 // Shared with Vite's internal AST node types (not publicly exported)
 type AstBodyNode = {
@@ -222,10 +222,10 @@ function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): s
  * Result of resolving a package, including the directory and parsed package.json.
  * Used internally by resolvePackageInfo.
  */
-interface PackageInfo {
+type PackageInfo = {
   pkgDir: string;
   pkgJson: PackageJson;
-}
+};
 
 /**
  * Resolve a package name to its directory and parsed package.json.

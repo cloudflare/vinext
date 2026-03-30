@@ -63,7 +63,7 @@ function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
   });
 }
 
-export interface ProdServerOptions {
+export type ProdServerOptions = {
   /** Port to listen on */
   port?: number;
   /** Host to bind to */
@@ -72,7 +72,7 @@ export interface ProdServerOptions {
   outDir?: string;
   /** Disable compression (default: false) */
   noCompression?: boolean;
-}
+};
 
 /** Content types that benefit from compression. */
 const COMPRESSIBLE_TYPES = new Set([
@@ -683,17 +683,17 @@ export async function startProdServer(options: ProdServerOptions = {}) {
 
 // ─── App Router Production Server ─────────────────────────────────────────────
 
-interface AppRouterServerOptions {
+type AppRouterServerOptions = {
   port: number;
   host: string;
   clientDir: string;
   rscEntryPath: string;
   compress: boolean;
-}
+};
 
-interface WorkerAppRouterEntry {
+type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
-}
+};
 
 function createNodeExecutionContext(): ExecutionContextLike {
   return {
@@ -907,13 +907,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
 // ─── Pages Router Production Server ───────────────────────────────────────────
 
-interface PagesRouterServerOptions {
+type PagesRouterServerOptions = {
   port: number;
   host: string;
   clientDir: string;
   serverEntryPath: string;
   compress: boolean;
-}
+};
 
 /**
  * Start the Pages Router production server.
@@ -1185,6 +1185,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(webRequest, undefined);
+
+        // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
+        // Must run BEFORE the !result.continue check so promises survive redirect/response paths
+        // (e.g. Clerk auth redirecting unauthenticated users).
+        if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
+          void Promise.allSettled(result.waitUntilPromises);
+        }
 
         if (!result.continue) {
           if (result.redirectUrl) {

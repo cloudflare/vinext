@@ -25,6 +25,7 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
 type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
@@ -35,7 +36,7 @@ type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 
-export interface AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> {
+export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
   error?: TModule | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
@@ -46,9 +47,9 @@ export interface AppPageBoundaryRoute<TModule extends AppPageModule = AppPageMod
   pattern?: string;
   routeSegments?: readonly string[];
   unauthorized?: TModule | null;
-}
+};
 
-interface AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> {
+type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
@@ -71,29 +72,26 @@ interface AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = App
     params: AppPageParams,
   ) => string[];
   rootLayouts: readonly (TModule | null | undefined)[];
-}
+};
 
-export interface RenderAppPageHttpAccessFallbackOptions<
-  TModule extends AppPageModule = AppPageModule,
-> extends AppPageBoundaryRenderCommonOptions<TModule> {
-  boundaryComponent?: AppPageComponent | null;
-  layoutModules?: readonly (TModule | null | undefined)[] | null;
-  matchedParams: AppPageParams;
-  rootForbiddenModule?: TModule | null;
-  rootNotFoundModule?: TModule | null;
-  rootUnauthorizedModule?: TModule | null;
-  route?: AppPageBoundaryRoute<TModule> | null;
-  statusCode: number;
-}
+export type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> =
+  {
+    boundaryComponent?: AppPageComponent | null;
+    layoutModules?: readonly (TModule | null | undefined)[] | null;
+    matchedParams: AppPageParams;
+    rootForbiddenModule?: TModule | null;
+    rootNotFoundModule?: TModule | null;
+    rootUnauthorizedModule?: TModule | null;
+    route?: AppPageBoundaryRoute<TModule> | null;
+    statusCode: number;
+  } & AppPageBoundaryRenderCommonOptions<TModule>;
 
-export interface RenderAppPageErrorBoundaryOptions<
-  TModule extends AppPageModule = AppPageModule,
-> extends AppPageBoundaryRenderCommonOptions<TModule> {
+export type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
   error: unknown;
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;
   sanitizeErrorForClient: (error: Error) => Error;
-}
+} & AppPageBoundaryRenderCommonOptions<TModule>;
 
 function getDefaultExport<TModule extends AppPageModule>(
   module: TModule | null | undefined,
@@ -177,17 +175,20 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
     renderErrorBoundary(GlobalErrorComponent, children) {
       return createElement(ErrorBoundary, {
         fallback: GlobalErrorComponent,
+        // oxlint-disable-next-line react/no-children-prop
         children,
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
       return createElement(LayoutComponent as AppPageComponent, {
+        // oxlint-disable-next-line react/no-children-prop
         children,
         params: asyncParams,
       });
     },
     renderLayoutSegmentProvider(childSegments, children) {
       return createElement(
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         LayoutSegmentProvider as ComponentType<any>,
         { childSegments },
         children,

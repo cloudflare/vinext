@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findInstrumentationFile } from "../packages/vinext/src/server/instrumentation.js";
+import {
+  findInstrumentationClientFile,
+  findInstrumentationFile,
+} from "../packages/vinext/src/server/instrumentation.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 // The runInstrumentation/reportRequestError describe blocks re-import via
@@ -51,6 +54,51 @@ describe("findInstrumentationFile", () => {
 
   it("returns null when no instrumentation file exists", () => {
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("findInstrumentationClientFile", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-"));
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the path when a file exists at root", () => {
+    fs.writeFileSync(path.join(tmpDir, "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+  });
+
+  it("prefers root over src/ directory (priority order)", () => {
+    fs.writeFileSync(path.join(tmpDir, "instrumentation-client.ts"), "");
+    fs.mkdirSync(path.join(tmpDir, "src"));
+    fs.writeFileSync(path.join(tmpDir, "src", "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+  });
+
+  it("falls back to src/ directory", () => {
+    fs.mkdirSync(path.join(tmpDir, "src"));
+    fs.writeFileSync(path.join(tmpDir, "src", "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "src", "instrumentation-client.ts"));
+  });
+
+  it("returns null when no instrumentation-client file exists", () => {
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBeNull();
   });

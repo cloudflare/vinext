@@ -22,12 +22,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface TPROptions {
+export type TPROptions = {
   /** Project root directory. */
   root: string;
   /** Traffic coverage percentage (0–100). Default: 90. */
@@ -36,9 +35,9 @@ export interface TPROptions {
   limit: number;
   /** Analytics lookback window in hours. Default: 24. */
   window: number;
-}
+};
 
-export interface TPRResult {
+export type TPRResult = {
   /** Total unique page paths found in analytics. */
   totalPaths: number;
   /** Number of pages successfully pre-rendered and uploaded. */
@@ -49,31 +48,31 @@ export interface TPRResult {
   durationMs: number;
   /** If TPR was skipped, the reason. */
   skipped?: string;
-}
+};
 
-interface TrafficEntry {
+type TrafficEntry = {
   path: string;
   requests: number;
-}
+};
 
-interface SelectedRoutes {
+type SelectedRoutes = {
   routes: TrafficEntry[];
   totalRequests: number;
   coveredRequests: number;
   coveragePercent: number;
-}
+};
 
-interface PrerenderResult {
+type PrerenderResult = {
   html: string;
   status: number;
   headers: Record<string, string>;
-}
+};
 
-interface WranglerConfig {
+type WranglerConfig = {
   accountId?: string;
   kvNamespaceId?: string;
   customDomain?: string;
-}
+};
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
 
@@ -608,8 +607,7 @@ async function prerenderRoutes(
  * to the current module (works whether vinext is installed or linked).
  */
 function startLocalServer(root: string, port: number): ChildProcess {
-  const thisDir = fileURLToPath(new URL(".", import.meta.url));
-  const prodServerPath = path.resolve(thisDir, "..", "server", "prod-server.js");
+  const prodServerPath = path.resolve(import.meta.dirname, "..", "server", "prod-server.js");
   const outDir = path.join(root, "dist");
 
   // Escape backslashes for Windows paths inside the JS string

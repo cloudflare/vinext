@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
+import vinext from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
@@ -37,14 +37,14 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 // To fix this, we resolve Vite dynamically from `process.cwd()` at runtime
 // using `createRequire`. This ensures we always use the project's Vite.
 
-interface ViteModule {
+type ViteModule = {
   createServer: typeof import("vite").createServer;
   build: typeof import("vite").build;
   createBuilder: typeof import("vite").createBuilder;
   createLogger: typeof import("vite").createLogger;
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
   version: string;
-}
+};
 
 let _viteModule: ViteModule | null = null;
 
@@ -90,7 +90,7 @@ const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.met
 const command = process.argv[2];
 const rawArgs = process.argv.slice(3);
 
-interface ParsedArgs {
+type ParsedArgs = {
   port?: number;
   hostname?: string;
   help?: boolean;
@@ -98,7 +98,7 @@ interface ParsedArgs {
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
   prerenderAll?: boolean;
-}
+};
 
 function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {};
@@ -163,7 +163,7 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
   const originalWarn = logger.warn.bind(logger);
 
   // Strip ANSI escape codes for pattern matching (keep originals for output).
-  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // eslint-disable-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // oxlint-disable-line no-control-regex
 
   logger.info = (msg: string, options?: import("vite").LogOptions) => {
     const plain = strip(msg);
@@ -358,6 +358,10 @@ async function buildApp() {
   applyViteConfigCompatibility(process.cwd());
 
   const vite = await loadVite();
+  const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
+
+  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
+    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
@@ -380,12 +384,15 @@ async function buildApp() {
     }
   }
 
-  if (isApp) {
-    // App Router: use createBuilder for multi-environment RSC builds
-    const config = buildViteConfig({}, logger);
-    const builder = await vite.createBuilder(config);
-    await builder.buildApp();
+  // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
+  // use createBuilder + buildApp(). vinext() defines the appropriate environments
+  // in its config() hook for each case, so cloudflare() and the plain Node SSR
+  // build both work correctly.
+  const config = buildViteConfig({}, logger);
+  const builder = await vite.createBuilder(config);
+  await builder.buildApp();
 
+  if (isApp) {
     // Hybrid app (both app/ and pages/ directories): also build the Pages Router
     // SSR bundle so the prerender phase can render Pages Router routes.
     // The App Router multi-env build (buildApp) doesn't include the Pages Router
@@ -417,19 +424,19 @@ async function buildApp() {
           userTransformPlugins = flat.filter(
             (p): p is import("vite").Plugin =>
               !!p &&
-              typeof (p as any).name === "string" &&
+              typeof p.name === "string" &&
               // vinext and its sub-plugins — re-registered below
-              !(p as any).name.startsWith("vinext:") &&
+              !p.name.startsWith("vinext:") &&
               // @vitejs/plugin-react — auto-registered by vinext
-              !(p as any).name.startsWith("vite:react") &&
+              !p.name.startsWith("vite:react") &&
               // @vitejs/plugin-rsc and its sub-plugins — App Router only
-              !(p as any).name.startsWith("rsc:") &&
-              (p as any).name !== "vite-rsc-load-module-dev-proxy" &&
+              !p.name.startsWith("rsc:") &&
+              p.name !== "vite-rsc-load-module-dev-proxy" &&
               // vite-tsconfig-paths — auto-registered by vinext
-              (p as any).name !== "vite-tsconfig-paths" &&
+              p.name !== "vite-tsconfig-paths" &&
               // cloudflare() — injects multi-env environments block which
               // conflicts with the plain SSR build config below
-              !(p as any).name.startsWith("vite-plugin-cloudflare"),
+              !p.name.startsWith("vite-plugin-cloudflare"),
           );
         }
       }
@@ -445,54 +452,14 @@ async function buildApp() {
           outDir: "dist/server",
           emptyOutDir: false, // preserve RSC artefacts from buildApp()
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          ...withBuildBundlerOptions({
             output: {
               entryFileNames: "entry.js",
             },
-          },
+          }),
         },
       });
     }
-  } else {
-    // Pages Router: client + SSR builds.
-    // Use buildViteConfig() so that when a vite.config exists we don't
-    // duplicate the vinext() plugin.
-    console.log("  Building client...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/client",
-            manifest: true,
-            ssrManifest: true,
-            rollupOptions: {
-              input: "virtual:vinext-client-entry",
-              output: clientOutputConfig,
-              treeshake: clientTreeshakeConfig,
-            },
-          },
-        },
-        logger,
-      ),
-    );
-
-    console.log("  Building server...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/server",
-            ssr: "virtual:vinext-server-entry",
-            rollupOptions: {
-              output: {
-                entryFileNames: "entry.js",
-              },
-            },
-          },
-        },
-        logger,
-      ),
-    );
   }
 
   const nextConfig = await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd());

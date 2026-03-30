@@ -8,23 +8,23 @@
  */
 import { createContext } from "react";
 
-export interface NavigateOptions {
+export type NavigateOptions = {
   scroll?: boolean;
-}
+};
 
-export interface PrefetchOptions {
+export type PrefetchOptions = {
   kind?: unknown;
   onInvalidate?: () => void;
-}
+};
 
-export interface AppRouterInstance {
+export type AppRouterInstance = {
   back(): void;
   forward(): void;
   refresh(): void;
   push(href: string, options?: NavigateOptions): void;
   replace(href: string, options?: NavigateOptions): void;
   prefetch(href: string, options?: PrefetchOptions): void;
-}
+};
 
 export const AppRouterContext = createContext<AppRouterInstance | null>(null);
 export const GlobalLayoutRouterContext = createContext<unknown>(null);

@@ -8,7 +8,7 @@ import {
 type HeaderValue = string | string[] | undefined;
 type HeaderBag = Headers | Record<string, HeaderValue> | undefined;
 
-interface LocaleRedirectOptions {
+type LocaleRedirectOptions = {
   headers?: HeaderBag;
   nextConfig: {
     basePath?: string;
@@ -21,15 +21,15 @@ interface LocaleRedirectOptions {
     pathname: string;
     search?: string;
   };
-}
+};
 
-export interface PagesI18nRequestInfo {
+export type PagesI18nRequestInfo = {
   locale: string;
   url: string;
   hadPrefix: boolean;
   domainLocale?: DomainLocale;
   redirectUrl?: string;
-}
+};
 
 function readHeader(headers: HeaderBag, name: string): string | undefined {
   if (!headers) return undefined;

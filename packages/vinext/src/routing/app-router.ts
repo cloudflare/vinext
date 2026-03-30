@@ -24,7 +24,7 @@ import {
 import { validateRoutePatterns } from "./route-validation.js";
 import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
-export interface InterceptingRoute {
+export type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
@@ -33,9 +33,9 @@ export interface InterceptingRoute {
   pagePath: string;
   /** Parameter names for dynamic segments */
   params: string[];
-}
+};
 
-export interface ParallelSlot {
+export type ParallelSlot = {
   /** Slot name (e.g. "team" from @team) */
   name: string;
   /** Absolute path to the @slot directory that owns this slot. Internal routing metadata. */
@@ -58,9 +58,9 @@ export interface ParallelSlot {
    * necessarily the innermost layout. -1 means "innermost" (legacy default).
    */
   layoutIndex: number;
-}
+};
 
-export interface AppRoute {
+export type AppRoute = {
   /** URL pattern, e.g. "/" or "/about" or "/blog/:slug" */
   pattern: string;
   /** Absolute file path to the page component */
@@ -118,7 +118,7 @@ export interface AppRoute {
   params: string[];
   /** Pre-split pattern segments (computed once at scan time, reused per request) */
   patternParts: string[];
-}
+};
 
 // Cache for app routes
 let cachedRoutes: AppRoute[] | null = null;

@@ -47,10 +47,10 @@ import {
 } from "./seed-cache-shared.js";
 
 /** Loaded manifest + pre-built route lookup. Returned as a unit so they can't desync. */
-interface LoadedManifest {
+type LoadedManifest = {
   manifest: PrerenderManifest;
   lookup: Map<string, PrerenderManifestRoute>;
-}
+};
 
 // ─── Module-scope state (persists for the life of the isolate) ───────────────
 
@@ -93,8 +93,10 @@ export async function seedRouteFromAssets(
     const existing = await getCacheHandler().get(htmlKey);
     if (existing) return;
 
-    // Dedup concurrent cold hits — between the await above and this sync check,
-    // no other microtask can interleave, so at most one caller creates the promise.
+    // Dedup concurrent cold hits — two callers can both pass the cache-miss
+    // check above (they interleave on the await), but after resuming from
+    // await, execution is synchronous until the next yield. So at most one
+    // caller creates the seeding promise; the second joins it here.
     const inflight = seedInFlight.get(htmlKey);
     if (inflight) {
       await inflight;

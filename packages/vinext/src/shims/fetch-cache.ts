@@ -162,10 +162,10 @@ function stripMultipartBoundary(contentType: string): string {
   return keptParams.length > 0 ? `${normalizedType}; ${keptParams.join("; ")}` : normalizedType;
 }
 
-interface SerializedBodyResult {
+type SerializedBodyResult = {
   bodyChunks: string[];
   canonicalizedContentType?: string;
-}
+};
 
 async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
   chunks: Uint8Array[];
@@ -414,13 +414,14 @@ async function buildFetchCacheKey(
 // Types
 // ---------------------------------------------------------------------------
 
-interface NextFetchOptions {
+type NextFetchOptions = {
   revalidate?: number | false;
   tags?: string[];
-}
+};
 
 // Extend the standard RequestInit to include `next`
 declare global {
+  // oxlint-disable-next-line typescript/consistent-type-definitions
   interface RequestInit {
     next?: NextFetchOptions;
   }
@@ -465,9 +466,9 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // Uses Symbol.for() on globalThis so the storage is shared across Vite's
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
-export interface FetchCacheState {
+export type FetchCacheState = {
   currentRequestTags: string[];
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");

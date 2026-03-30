@@ -10,19 +10,19 @@ import type { CachedAppPageValue } from "../shims/cache.js";
 
 // ─── Manifest types ──────────────────────────────────────────────────────────
 
-export interface PrerenderManifest {
+export type PrerenderManifest = {
   buildId: string;
   trailingSlash?: boolean;
   routes: PrerenderManifestRoute[];
-}
+};
 
-export interface PrerenderManifestRoute {
+export type PrerenderManifestRoute = {
   route: string;
   status: string;
   revalidate?: number | false;
   path?: string;
   router?: "app" | "pages";
-}
+};
 
 // ─── Cache value construction ────────────────────────────────────────────────
 

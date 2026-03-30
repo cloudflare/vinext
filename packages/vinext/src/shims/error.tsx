@@ -7,11 +7,11 @@
  */
 import React from "react";
 
-interface ErrorProps {
+type ErrorProps = {
   statusCode: number;
   title?: string;
   withDarkMode?: boolean;
-}
+};
 
 function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
   const defaultTitle =

@@ -43,11 +43,11 @@ type AppPageCacheSetter = (
   tags: string[],
 ) => Promise<void>;
 
-interface AppPageRequestCacheLife {
+type AppPageRequestCacheLife = {
   revalidate?: number;
-}
+};
 
-export interface RenderAppPageLifecycleOptions {
+export type RenderAppPageLifecycleOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
@@ -92,7 +92,7 @@ export interface RenderAppPageLifecycleOptions {
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   waitUntil?: (promise: Promise<void>) => void;
   element: ReactNode;
-}
+};
 
 function buildResponseTiming(
   options: Pick<RenderAppPageLifecycleOptions, "handlerStart" | "isProduction"> & {

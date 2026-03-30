@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vite-plus/test";
 import { buildRouteTrie, trieMatch } from "../packages/vinext/src/routing/route-trie.js";
 
-interface TestRoute {
+type TestRoute = {
   pattern: string;
   patternParts: string[];
-}
+};
 
 function r(pattern: string): TestRoute {
   const parts = pattern === "/" ? [] : pattern.split("/").filter(Boolean);

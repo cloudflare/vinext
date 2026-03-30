@@ -23,10 +23,10 @@ import {
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "../shims/request-context.js";
 
-export interface ISRCacheEntry {
+export type ISRCacheEntry = {
   value: CacheHandlerValue;
   isStale: boolean;
-}
+};
 
 /**
  * Get a cache entry with staleness information.
