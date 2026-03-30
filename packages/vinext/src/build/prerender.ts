@@ -252,7 +252,7 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
  * the production bundle.
  */
-async function resolveParentParams(
+export async function resolveParentParams(
   childRoute: AppRoute,
   allRoutes: AppRoute[],
   staticParamsMap: Record<
