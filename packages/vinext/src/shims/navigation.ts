@@ -543,7 +543,31 @@ function syncCommittedUrlStateFromLocation(): boolean {
 }
 
 function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
-  return getClientNavigationState()?.cachedReadonlySearchParams ?? getServerSearchParamsSnapshot();
+  const ctx = _getServerContext() as NavigationContextWithReadonlyCache | null;
+
+  if (!ctx) {
+    // No server context available - return cached empty instance
+    if (_cachedEmptyServerSearchParams === null) {
+      _cachedEmptyServerSearchParams = new ReadonlyURLSearchParams();
+    }
+    return _cachedEmptyServerSearchParams;
+  }
+
+  const source = ctx.searchParams;
+  const cached = ctx[_READONLY_SEARCH_PARAMS];
+  const cachedSource = ctx[_READONLY_SEARCH_PARAMS_SOURCE];
+
+  // Return cached wrapper if source hasn't changed
+  if (cached && cachedSource === source) {
+    return cached;
+  }
+
+  // Create and cache new wrapper
+  const readonly = new ReadonlyURLSearchParams(source);
+  ctx[_READONLY_SEARCH_PARAMS] = readonly;
+  ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
+
+  return readonly;
 }
 
 // ---------------------------------------------------------------------------
