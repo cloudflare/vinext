@@ -34,12 +34,12 @@ function mockReq(
   return { headers, method } as unknown as IncomingMessage;
 }
 
-interface CapturedResponse {
+type CapturedResponse = {
   status: number;
   headers: Record<string, string | string[]>;
   body: Buffer;
   ended: Promise<void>;
-}
+};
 
 /**
  * Create a mock response that captures writeHead + streamed/ended body data.

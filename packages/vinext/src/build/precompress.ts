@@ -39,12 +39,12 @@ const MIN_SIZE = 1024;
 /** Max files to compress concurrently (avoids memory spikes). */
 const CONCURRENCY = Math.min(os.availableParallelism(), 16);
 
-export interface PrecompressResult {
+export type PrecompressResult = {
   filesCompressed: number;
   totalOriginalBytes: number;
   /** Sum of brotli-compressed sizes (used for compression ratio reporting). */
   totalCompressedBytes: number;
-}
+};
 
 /**
  * Walk a directory recursively, yielding relative paths for regular files.

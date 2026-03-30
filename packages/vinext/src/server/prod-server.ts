@@ -517,10 +517,10 @@ async function tryServeStatic(
   return true;
 }
 
-interface ResolvedFile {
+type ResolvedFile = {
   path: string;
   size: number;
-}
+};
 
 /**
  * Resolve the actual file to serve, trying extension-less HTML fallbacks.

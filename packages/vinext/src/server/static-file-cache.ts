@@ -46,16 +46,16 @@ export const CONTENT_TYPES: Record<string, string> = {
 const BUFFER_THRESHOLD = 64 * 1024;
 
 /** A servable file variant with pre-computed response headers. */
-export interface FileVariant {
+export type FileVariant = {
   /** Absolute file path (used for streaming large files). */
   path: string;
   /** Pre-computed response headers. */
   headers: Record<string, string>;
   /** In-memory buffer for small files (below BUFFER_THRESHOLD). */
   buffer?: Buffer;
-}
+};
 
-export interface StaticFileEntry {
+export type StaticFileEntry = {
   /** Weak ETag for conditional request matching. */
   etag: string;
   /** Pre-computed headers for 304 Not Modified response. */
@@ -68,7 +68,7 @@ export interface StaticFileEntry {
   gz?: FileVariant;
   /** Zstandard precompressed variant, if .zst file exists. */
   zst?: FileVariant;
-}
+};
 
 /**
  * In-memory cache of static file metadata, populated once at server startup.
