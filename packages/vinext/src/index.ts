@@ -73,6 +73,8 @@ import {
   generateGoogleFontsVirtualModule,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
+  _findBalancedObject,
+  _findCallEnd,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -4024,5 +4026,6 @@ export { _postcssCache };
 export { hasMdxFiles as _hasMdxFiles };
 export { _mdxScanCache };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
+export { _findBalancedObject, _findCallEnd };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
