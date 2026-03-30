@@ -1076,6 +1076,60 @@ describe("matchAppRoute - URL matching", () => {
     expect(intercept.pagePath).toContain("(...)photos");
   });
 
+  it("allows inherited intercepting slots to reuse the same target pattern", async () => {
+    await withTempDir("vinext-app-intercept-inherited-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "intercepting-routes", "photo", "[id]"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "intercepting-routes", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "intercepting-routes", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "photo", "[id]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+
+      const galleryRoute = routes.find((route) => route.pattern === "/intercepting-routes");
+      const detailRoute = routes.find(
+        (route) => route.pattern === "/intercepting-routes/photo/:id",
+      );
+
+      expect(galleryRoute).toBeDefined();
+      expect(detailRoute).toBeDefined();
+
+      const galleryModal = galleryRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      const detailModal = detailRoute!.parallelSlots.find((slot) => slot.name === "modal");
+
+      expect(galleryModal?.interceptingRoutes[0]?.targetPattern).toBe(
+        "/intercepting-routes/photo/:id",
+      );
+      expect(detailModal?.interceptingRoutes[0]?.targetPattern).toBe(
+        "/intercepting-routes/photo/:id",
+      );
+      expect(detailModal?.interceptingRoutes[0]?.pagePath).toBe(
+        galleryModal?.interceptingRoutes[0]?.pagePath,
+      );
+    });
+  });
+
   it("intercepting route pages are not standalone routes", async () => {
     invalidateAppRouteCache();
     const routes = await appRouter(APP_FIXTURE_DIR);

@@ -173,13 +173,18 @@ export async function appRouter(
   routes.push(...slotSubRoutes);
 
   validateRoutePatterns(routes.map((route) => route.pattern));
-  validateRoutePatterns(
-    routes.flatMap((route) =>
-      route.parallelSlots.flatMap((slot) =>
-        slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
-      ),
-    ),
-  );
+  const uniqueInterceptTargetPatterns = new Map<string, string>();
+  for (const route of routes) {
+    for (const slot of route.parallelSlots) {
+      for (const intercept of slot.interceptingRoutes) {
+        // Inherited slots can surface the same intercepting page on multiple
+        // child routes. De-dupe by page path so we only validate distinct
+        // physical intercept definitions while still rejecting real conflicts.
+        uniqueInterceptTargetPatterns.set(intercept.pagePath, intercept.targetPattern);
+      }
+    }
+  }
+  validateRoutePatterns(Array.from(uniqueInterceptTargetPatterns.values()));
 
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort(compareRoutes);

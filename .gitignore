@@ -3,6 +3,7 @@ dist/
 out/
 *.tsbuildinfo
 .vite/
+.vinext/
 .turbo/
 .ecosystem-test/
 .next/
