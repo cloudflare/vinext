@@ -551,6 +551,74 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("self-hosts font calls with nested-brace options (e.g. axes: { wght: 400 })", async () => {
+    // Regression: namedCallRe used \{[^}]*\} which stopped at the first '}'
+    // inside a nested object, so calls with nested braces were silently skipped.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-nested");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+
+      // Named-import form with a nested axes object
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      // _selfHostedCSS must have been injected — without the fix this was absent
+      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("@font-face");
+      // Verify the injected object is syntactically valid (no double-comma)
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("self-hosts namespace member calls with nested-brace options", async () => {
+    // Same regression as above but for the memberCallRe path (fonts.Inter({...}))
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-nested-member");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+
+      const code = [
+        `import fonts from 'next/font/google';`,
+        `const inter = fonts.Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("self-hosts aliased lowercase font imports during build", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-alias");

@@ -602,15 +602,91 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         }
 
         if (isBuild) {
-          const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+          /**
+           * Scan `code` forward from `searchStart` for a `{...}` object literal
+           * that may contain nested braces.  Returns `[objStart, objEnd]` (both
+           * are absolute indices into `code`) where `code[objStart] === '{'` and
+           * `code[objEnd - 1] === '}'`, or `null` if no balanced object is found.
+           *
+           * Strings (single-quoted, double-quoted, backtick) are skipped so that
+           * brace characters inside string values do not affect the depth count.
+           */
+          function findBalancedObject(searchStart: number): [number, number] | null {
+            let i = searchStart;
+            // Skip leading whitespace before the opening brace
+            while (
+              i < code.length &&
+              (code[i] === " " || code[i] === "\t" || code[i] === "\n" || code[i] === "\r")
+            ) {
+              i++;
+            }
+            if (i >= code.length || code[i] !== "{") return null;
+            const objStart = i;
+            let depth = 0;
+            while (i < code.length) {
+              const ch = code[i];
+              if (ch === "{") {
+                depth++;
+                i++;
+              } else if (ch === "}") {
+                depth--;
+                i++;
+                if (depth === 0) return [objStart, i];
+              } else if (ch === '"' || ch === "'" || ch === "`") {
+                // Skip string literal
+                const quote = ch;
+                i++;
+                while (i < code.length) {
+                  const sc = code[i];
+                  if (sc === "\\") {
+                    i += 2; // skip escaped character
+                  } else if (sc === quote) {
+                    i++;
+                    break;
+                  } else {
+                    i++;
+                  }
+                }
+              } else {
+                i++;
+              }
+            }
+            return null; // unbalanced
+          }
+
+          // Match: Identifier( — where the argument starts with {
+          // The regex intentionally does NOT capture the options object; we use
+          // findBalancedObject() to handle nested braces correctly.
+          const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
           let namedCallMatch;
           while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
-            const [fullMatch, localName, optionsStr] = namedCallMatch;
+            const [fullMatch, localName] = namedCallMatch;
             const importedName = fontLocals.get(localName);
             if (!importedName) continue;
 
             const callStart = namedCallMatch.index;
-            const callEnd = callStart + fullMatch.length;
+            // The regex consumed up to (but not including) the '{' due to the
+            // lookahead — find the balanced object starting at the lookahead pos.
+            const openParenEnd = callStart + fullMatch.length;
+            const objRange = findBalancedObject(openParenEnd);
+            if (!objRange) continue;
+            const [, objEnd] = objRange;
+            const optionsStr = code.slice(objRange[0], objEnd);
+
+            // Expect ')' after optional whitespace following the closing '}'
+            let closeParenIdx = objEnd;
+            while (
+              closeParenIdx < code.length &&
+              (code[closeParenIdx] === " " ||
+                code[closeParenIdx] === "\t" ||
+                code[closeParenIdx] === "\n" ||
+                code[closeParenIdx] === "\r")
+            ) {
+              closeParenIdx++;
+            }
+            if (code[closeParenIdx] !== ")") continue;
+            const callEnd = closeParenIdx + 1;
+
             if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
               continue;
             }
@@ -624,15 +700,34 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             );
           }
 
+          // Match: Identifier.Identifier( — where the argument starts with {
           const memberCallRe =
-            /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+            /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
           let memberCallMatch;
           while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
-            const [fullMatch, objectName, propName, optionsStr] = memberCallMatch;
+            const [fullMatch, objectName, propName] = memberCallMatch;
             if (!proxyObjectLocals.has(objectName)) continue;
 
             const callStart = memberCallMatch.index;
-            const callEnd = callStart + fullMatch.length;
+            const openParenEnd = callStart + fullMatch.length;
+            const objRange = findBalancedObject(openParenEnd);
+            if (!objRange) continue;
+            const [, objEnd] = objRange;
+            const optionsStr = code.slice(objRange[0], objEnd);
+
+            let closeParenIdx = objEnd;
+            while (
+              closeParenIdx < code.length &&
+              (code[closeParenIdx] === " " ||
+                code[closeParenIdx] === "\t" ||
+                code[closeParenIdx] === "\n" ||
+                code[closeParenIdx] === "\r")
+            ) {
+              closeParenIdx++;
+            }
+            if (code[closeParenIdx] !== ")") continue;
+            const callEnd = closeParenIdx + 1;
+
             if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
               continue;
             }
