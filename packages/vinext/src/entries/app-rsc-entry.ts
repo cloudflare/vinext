@@ -1888,7 +1888,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       if (actionRedirect) {
         const actionPendingCookies = getAndClearPendingCookies();
         const actionDraftCookie = getDraftModeCookieHeader();
-        setHeadersContext(null);
+        
+        // Refresh headers context for the redirect target. We don't clear it
+        // entirely because the RSC stream is consumed lazily and async
+        // components need a live context during consumption.
+        setHeadersContext(headersContextFromRequest(request));
         setNavigationContext(null);
         
         // Try to pre-render the redirect target for soft RSC navigation.
@@ -1942,13 +1946,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-redirect-status": String(actionRedirect.status),
                 "x-action-rsc-prerender": "1",
               };
+
+              if (Object.keys(redirectParams).length > 0) {
+                redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
+              }
+
               const redirectResponse = new Response(rscStream, {
                 status: 200,
                 headers: redirectHeaders,
               });
               
               // Append cookies (collected after rendering, not duplicated)
-              if (redirectPendingCookies.length > 0 || redirectDraftCookie) {
+              if (actionPendingCookies.length > 0 || actionDraftCookie || redirectPendingCookies.length > 0 || redirectDraftCookie) {
+                for (const cookie of actionPendingCookies) {
+                  redirectResponse.headers.append("Set-Cookie", cookie);
+                }
+                if (actionDraftCookie) redirectResponse.headers.append("Set-Cookie", actionDraftCookie);
                 for (const cookie of redirectPendingCookies) {
                   redirectResponse.headers.append("Set-Cookie", cookie);
                 }
@@ -1960,7 +1973,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
         } catch (preRenderErr) {
           // If pre-rendering fails (e.g., auth guard, missing data, unmatched route),
-          // clean up navigation context and fall through to hard redirect.
+          // clean up contexts and fall through to hard redirect.
+          setHeadersContext(null);
           setNavigationContext(null);
           console.error("[vinext] Failed to pre-render redirect target:", preRenderErr);
         }

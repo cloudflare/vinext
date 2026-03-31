@@ -305,7 +305,7 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
 type NavigationListener = () => void;
 const _listeners: Set<NavigationListener> = new Set();
 
-function notifyListeners(): void {
+export function notifyListeners(): void {
   for (const fn of _listeners) fn();
 }
 

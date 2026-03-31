@@ -16,6 +16,7 @@ import {
   PREFETCH_CACHE_TTL,
   getPrefetchCache,
   getPrefetchedUrls,
+  notifyListeners,
   setClientParams,
   setNavigationContext,
   toRscUrl,
@@ -172,26 +173,29 @@ function registerServerActionCallback(): void {
               window.history.replaceState(null, "", actionRedirect);
             }
 
+            // Notify subscribers (usePathname, useSearchParams, etc)
+            notifyListeners();
+
+            // Read params from response header (same as normal RSC navigation)
+            let params = {};
+            const paramsHeader = fetchResponse.headers.get("X-Vinext-Params");
+            if (paramsHeader) {
+              try {
+                params = JSON.parse(decodeURIComponent(paramsHeader));
+              } catch {
+                // Ignore malformed params
+              }
+            }
+
             // Update client-side navigation context so usePathname(), useSearchParams(),
             // and useParams() return the correct values for the redirect target.
             const redirectUrl = new URL(actionRedirect, window.location.origin);
             setNavigationContext({
               pathname: redirectUrl.pathname,
               searchParams: redirectUrl.searchParams,
-              params: {}, // params will be populated by the RSC stream consumption
+              params,
             });
-
-            // Read params from response header (same as normal RSC navigation)
-            const paramsHeader = fetchResponse.headers.get("X-Vinext-Params");
-            if (paramsHeader) {
-              try {
-                setClientParams(JSON.parse(decodeURIComponent(paramsHeader)));
-              } catch {
-                setClientParams({});
-              }
-            } else {
-              setClientParams({});
-            }
+            setClientParams(params);
 
             // Handle return value if present
             if (result.returnValue) {
