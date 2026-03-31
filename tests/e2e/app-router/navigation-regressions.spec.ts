@@ -198,11 +198,14 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
       (window as any).__CANCELLED_NAV_MARKER__ = "active";
     });
 
+    // Verify the element exists before clicking — if the fixture is renamed,
+    // we want a clear failure instead of silently skipping the superseded click.
+    await expect(page.locator("#link-superseded")).toBeVisible();
+
     // Start a slow navigation to a different param value
     // This will be superseded before it completes
-    const _slowNavPromise = page.click("#link-superseded", { timeout: 100 }).catch((e: Error) => {
+    const _slowNavPromise = page.click("#link-superseded", { timeout: 100 }).catch(() => {
       // Click may not complete if navigation is superseded — expected in this test
-      if (process.env.DEBUG) console.log("Slow click incomplete:", e.message);
     });
 
     // Immediately navigate to a different route entirely (list)

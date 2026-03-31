@@ -73,6 +73,11 @@ const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 
+// These are plain module-level variables, unlike ClientNavigationState in
+// navigation.ts which uses Symbol.for to survive multiple Vite module instances.
+// The browser entry is loaded exactly once (via the RSC plugin's generated
+// bootstrap), so module-level state is safe here. If that assumption ever
+// changes, these should be migrated to a Symbol.for-backed global.
 let nextNavigationRenderId = 0;
 let activeNavigationId = 0;
 const pendingNavigationCommits = new Map<number, () => void>();
@@ -139,8 +144,10 @@ function drainPrePaintEffects(upToRenderId: number): void {
     if (id <= upToRenderId) {
       pendingNavigationPrePaintEffects.delete(id);
       if (id === upToRenderId) {
+        // Winning navigation: run its actual pre-paint effect
         effect();
       } else {
+        // Superseded navigation: balance its activateNavigationSnapshot()
         commitClientNavigationState();
       }
     }

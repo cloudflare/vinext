@@ -316,6 +316,9 @@ function evictPrefetchCacheIfNeeded(): void {
  * Store a prefetched RSC response in the cache.
  * Enforces a maximum cache size to prevent unbounded memory growth on
  * link-heavy pages.
+ *
+ * NB: Caller is responsible for managing getPrefetchedUrls() — this
+ * function only stores the response in the prefetch cache.
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
   evictPrefetchCacheIfNeeded();
@@ -1079,10 +1082,13 @@ const _appRouter = {
   prefetch(href: string): void {
     if (isServer) return;
     // Prefetch the RSC payload for the target route and store in cache.
-    // Note: prefetchRscResponse handles adding to both cache and prefetchedUrls set.
+    // We must add to prefetchedUrls manually for deduplication.
+    // prefetchRscResponse only manages the cache Map, not the URL set.
     const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
-    // prefetchRscResponse internally checks getPrefetchedUrls() and adds to the set.
+    const prefetched = getPrefetchedUrls();
+    if (prefetched.has(rscUrl)) return;
+    prefetched.add(rscUrl);
     prefetchRscResponse(
       rscUrl,
       fetch(rscUrl, {
