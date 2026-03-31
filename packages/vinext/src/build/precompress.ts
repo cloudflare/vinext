@@ -36,8 +36,12 @@ const COMPRESSIBLE_EXTENSIONS = new Set([
 /** Below this size, compression overhead exceeds savings. */
 const MIN_SIZE = 1024;
 
-/** Max files to compress concurrently (avoids memory spikes). */
-const CONCURRENCY = Math.min(os.availableParallelism(), 16);
+/**
+ * Past ~8 parallel files, mixed-size asset sets spend more time queueing zlib
+ * work than making forward progress. Keep the batch size bounded even on
+ * higher-core machines.
+ */
+const CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
 export type PrecompressResult = {
   filesCompressed: number;
@@ -97,16 +101,15 @@ export async function precompressAssets(
     filePaths.push(path.join(assetsDir, relativePath));
   }
 
-  // Process in chunks to bound concurrent CPU-heavy compressions
   let processed = 0;
   for (let i = 0; i < filePaths.length; i += CONCURRENCY) {
     const chunk = filePaths.slice(i, i + CONCURRENCY);
     await Promise.all(
       chunk.map(async (fullPath) => {
         const content = await fsp.readFile(fullPath);
-        processed++;
+        const completed = ++processed;
         if (content.length < MIN_SIZE) {
-          onProgress?.(processed, filePaths.length, path.basename(fullPath));
+          onProgress?.(completed, filePaths.length, path.basename(fullPath));
           return;
         }
 
@@ -141,7 +144,7 @@ export async function precompressAssets(
         await Promise.all(writes);
 
         result.totalBrotliBytes += brContent.length;
-        onProgress?.(processed, filePaths.length, path.basename(fullPath));
+        onProgress?.(completed, filePaths.length, path.basename(fullPath));
       }),
     );
   }
