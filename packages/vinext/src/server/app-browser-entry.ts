@@ -21,6 +21,7 @@ import { hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
+  __basePath,
   activateNavigationSnapshot,
   commitClientNavigationState,
   consumePrefetchResponse,
@@ -593,9 +594,6 @@ async function main(): Promise<void> {
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
       // startTransition hangs in Firefox when replacing the entire tree.
-      // Strip basePath from both sides for robust comparison (handles edge cases
-      // like navigating between bare URL and basePath-prefixed URL).
-      const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
       const isSameRoute =
         stripBasePath(url.pathname, __basePath) ===
         stripBasePath(window.location.pathname, __basePath);
@@ -628,7 +626,7 @@ async function main(): Promise<void> {
       if (navigationKind !== "refresh") {
         const prefetchedResponse = consumePrefetchResponse(rscUrl);
         if (prefetchedResponse) {
-          navResponse = restoreRscResponse(prefetchedResponse);
+          navResponse = restoreRscResponse(prefetchedResponse, false);
           navResponseUrl = prefetchedResponse.url;
         }
       }

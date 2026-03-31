@@ -237,6 +237,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
 
+    // App Router: scroll is handled inside navigateClientSide (called above).
+    // Pages Router: scroll manually since pushState/popstate doesn't auto-scroll.
     if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function" && scroll) {
       window.scrollTo(0, 0);
     }

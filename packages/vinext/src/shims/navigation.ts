@@ -218,7 +218,7 @@ export function setNavigationContext(ctx: NavigationContext | null): void {
 const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
-const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
 // ---------------------------------------------------------------------------
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
@@ -285,7 +285,6 @@ export function getPrefetchedUrls(): Set<string> {
 /**
  * Evict prefetch cache entries if at capacity.
  * First sweeps expired entries, then falls back to FIFO eviction.
- * Shared by storePrefetchResponse() and prefetchRscResponse().
  */
 function evictPrefetchCacheIfNeeded(): void {
   const cache = getPrefetchCache();
@@ -313,16 +312,32 @@ function evictPrefetchCacheIfNeeded(): void {
 }
 
 /**
- * Store a prefetched RSC response in the cache.
- * Enforces a maximum cache size to prevent unbounded memory growth on
- * link-heavy pages.
+ * Store a prefetched RSC response in the cache by snapshotting it to an
+ * ArrayBuffer.  The snapshot completes asynchronously; during that window
+ * the entry is marked `pending` so consumePrefetchResponse() will skip it
+ * (the caller falls back to a fresh fetch, which is acceptable).
+ *
+ * Prefer prefetchRscResponse() for new call-sites — it handles the full
+ * prefetch lifecycle including dedup.  storePrefetchResponse() is kept for
+ * backward compatibility and test helpers.
  *
  * NB: Caller is responsible for managing getPrefetchedUrls() — this
  * function only stores the response in the prefetch cache.
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
   evictPrefetchCacheIfNeeded();
-  getPrefetchCache().set(rscUrl, { response, timestamp: Date.now() });
+  const entry: PrefetchCacheEntry = { timestamp: Date.now() };
+  entry.pending = snapshotRscResponse(response)
+    .then((snapshot) => {
+      entry.snapshot = snapshot;
+    })
+    .catch(() => {
+      getPrefetchCache().delete(rscUrl);
+    })
+    .finally(() => {
+      entry.pending = undefined;
+    });
+  getPrefetchCache().set(rscUrl, entry);
 }
 
 /**
@@ -343,14 +358,19 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
  * Reconstruct a Response from a cached RSC snapshot.
  * Creates a new Response with the original ArrayBuffer so createFromFetch
  * can consume the stream from scratch.
+ *
+ * @param copy - When true (default), copies the ArrayBuffer so the cached
+ *   snapshot remains replayable (needed for the visited-response cache).
+ *   Pass false for single-consumption paths (e.g. prefetch cache entries
+ *   that are deleted after consumption) to avoid the extra allocation.
  */
-export function restoreRscResponse(cached: CachedRscResponse): Response {
+export function restoreRscResponse(cached: CachedRscResponse, copy = true): Response {
   const headers = new Headers({ "content-type": cached.contentType });
   if (cached.paramsHeader != null) {
     headers.set("X-Vinext-Params", cached.paramsHeader);
   }
 
-  return new Response(cached.buffer.slice(0), {
+  return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
     headers,
   });
@@ -387,8 +407,9 @@ export function prefetchRscResponse(rscUrl: string, fetchPromise: Promise<Respon
       entry.pending = undefined;
     });
 
-  // Add entry first, then evict to ensure we don't exceed the limit.
-  // This handles the case where the new entry pushes us over capacity.
+  // Insert the new entry before evicting. FIFO evicts from the front of the
+  // Map (oldest insertion order), so the just-appended entry is safe — only
+  // entries inserted before it are candidates for removal.
   cache.set(rscUrl, entry);
   evictPrefetchCacheIfNeeded();
 }
@@ -416,9 +437,6 @@ export function consumePrefetchResponse(rscUrl: string): CachedRscResponse | nul
     return entry.snapshot;
   }
 
-  // Legacy: raw Response entries (from storePrefetchResponse)
-  // These can't be consumed synchronously as snapshots — skip them.
-  // The navigation code will re-fetch.
   return null;
 }
 
@@ -860,12 +878,13 @@ export function commitClientNavigationState(): void {
   const state = getClientNavigationState();
   if (!state) return;
 
-  if (import.meta.env?.DEV && state.navigationSnapshotActiveCount <= 0) {
-    console.warn(
-      "[vinext] navigationSnapshotActiveCount already at 0 — possible activate/commit pairing mismatch",
-    );
+  // Only decrement the snapshot counter if a snapshot was previously activated.
+  // Several code paths call commit without a prior activateNavigationSnapshot()
+  // — hash-only changes (navigateClientSide), Pages Router popstate, and
+  // patched history.pushState/replaceState — which legitimately have count == 0.
+  if (state.navigationSnapshotActiveCount > 0) {
+    state.navigationSnapshotActiveCount -= 1;
   }
-  state.navigationSnapshotActiveCount = Math.max(0, state.navigationSnapshotActiveCount - 1);
 
   const urlChanged = syncCommittedUrlStateFromLocation();
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
