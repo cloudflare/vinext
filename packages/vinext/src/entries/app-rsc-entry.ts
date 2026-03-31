@@ -1956,7 +1956,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 headers: redirectHeaders,
               });
               
-              // Append cookies (collected after rendering, not duplicated)
+              // Append cookies collected from action and redirect phases
               if (actionPendingCookies.length > 0 || actionDraftCookie || redirectPendingCookies.length > 0 || redirectDraftCookie) {
                 for (const cookie of actionPendingCookies) {
                   redirectResponse.headers.append("Set-Cookie", cookie);

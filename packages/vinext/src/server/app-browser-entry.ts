@@ -173,17 +173,14 @@ function registerServerActionCallback(): void {
               window.history.replaceState(null, "", actionRedirect);
             }
 
-            // Notify subscribers (usePathname, useSearchParams, etc)
-            notifyListeners();
-
             // Read params from response header (same as normal RSC navigation)
-            let params = {};
             const paramsHeader = fetchResponse.headers.get("X-Vinext-Params");
+            let params: Record<string, string> = {};
             if (paramsHeader) {
               try {
                 params = JSON.parse(decodeURIComponent(paramsHeader));
               } catch {
-                // Ignore malformed params
+                params = {};
               }
             }
 
@@ -196,6 +193,7 @@ function registerServerActionCallback(): void {
               params,
             });
             setClientParams(params);
+            notifyListeners();
 
             // Handle return value if present
             if (result.returnValue) {
