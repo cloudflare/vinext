@@ -64,6 +64,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { fixUseServerWrappedExportsPlugin } from "./plugins/fix-use-server-wrapped-exports.js";
 import { fixUseServerClosureCollisionPlugin } from "./plugins/fix-use-server-closure-collision.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
@@ -1050,6 +1051,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
+    // Fix file-level "use server" exports that wrap an inline async action
+    // (e.g. next-safe-action) before plugin-rsc validates export shapes.
+    fixUseServerWrappedExportsPlugin,
     // Fix 'use server' closure variable collision with local declarations.
     // See packages/vinext/src/plugins/fix-use-server-closure-collision.ts for details.
     fixUseServerClosureCollisionPlugin,
