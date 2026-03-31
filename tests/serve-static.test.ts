@@ -309,6 +309,33 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.body.length).toBe(0); // no body on 304
   });
 
+  it("returns 304 when If-None-Match contains the ETag in a comma-separated list", async () => {
+    await writeFile(clientDir, "assets/cached-list-aaa111.js", "cached content");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/assets/cached-list-aaa111.js");
+    const etag = entry!.etag;
+
+    const req = mockReq(undefined, {
+      "if-none-match": `W/"other", ${etag}, W/"another"`,
+    });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/cached-list-aaa111.js",
+      true,
+      cache,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(304);
+    expect(captured.body.length).toBe(0);
+  });
+
   it("returns 200 when If-None-Match does not match", async () => {
     await writeFile(clientDir, "assets/stale-bbb222.js", "new content");
 

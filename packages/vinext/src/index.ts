@@ -3343,8 +3343,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Build-time precompression: generate .br, .gz, .zst for hashed assets.
     // Runs after the client bundle is written so compressed variants are
     // available for the production server's static file cache.
-    //
-    // Build-time precompression: generate .br, .gz, .zst for hashed assets.
     // Opt-in via `precompress: true` in plugin options or `--precompress`
     // CLI flag. Not useful for edge platforms (Cloudflare Workers, Nitro)
     // that handle compression at the CDN layer.
@@ -3385,10 +3383,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             process.stderr.write(`\r${" ".repeat(lastLineLen)}\r`);
           }
           if (result.filesCompressed > 0) {
-            const ratio = (
-              (1 - result.totalCompressedBytes / result.totalOriginalBytes) *
-              100
-            ).toFixed(1);
+            const ratio = ((1 - result.totalBrotliBytes / result.totalOriginalBytes) * 100).toFixed(
+              1,
+            );
             console.log(
               `  Precompressed ${result.filesCompressed} assets (${ratio}% smaller with brotli)`,
             );

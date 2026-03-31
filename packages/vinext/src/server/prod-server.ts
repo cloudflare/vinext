@@ -212,6 +212,15 @@ function omitHeadersCaseInsensitive(
   return filtered;
 }
 
+function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  if (ifNoneMatch === "*") return true;
+  return ifNoneMatch
+    .split(",")
+    .map((value) => value.trim())
+    .some((value) => value === etag);
+}
+
 function stripHeaders(
   headersRecord: Record<string, string | string[]>,
   names: readonly string[],
@@ -409,7 +418,8 @@ async function tryServeStatic(
     if (!entry) return false;
 
     // 304 Not Modified: string compare against pre-computed ETag
-    if (req.headers["if-none-match"] === entry.etag) {
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)) {
       if (extraHeaders) {
         res.writeHead(304, { ...entry.notModifiedHeaders, ...extraHeaders });
       } else {

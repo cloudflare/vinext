@@ -43,7 +43,7 @@ export type PrecompressResult = {
   filesCompressed: number;
   totalOriginalBytes: number;
   /** Sum of brotli-compressed sizes (used for compression ratio reporting). */
-  totalCompressedBytes: number;
+  totalBrotliBytes: number;
 };
 
 /**
@@ -81,7 +81,7 @@ export async function precompressAssets(
   const result: PrecompressResult = {
     filesCompressed: 0,
     totalOriginalBytes: 0,
-    totalCompressedBytes: 0,
+    totalBrotliBytes: 0,
   };
 
   // Collect compressible file paths, then read + compress in bounded chunks
@@ -140,7 +140,7 @@ export async function precompressAssets(
         }
         await Promise.all(writes);
 
-        result.totalCompressedBytes += brContent.length;
+        result.totalBrotliBytes += brContent.length;
         onProgress?.(processed, filePaths.length, path.basename(fullPath));
       }),
     );

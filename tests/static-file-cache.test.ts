@@ -120,7 +120,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/favicon.ico");
 
-    expect(entry!.etag).toMatch(/^W\/"\d+-\d+(\.\d+)?"$/);
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
   it("falls back to mtime etag for assets without hash suffix", async () => {
@@ -130,7 +130,16 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/assets/logo.svg");
 
     // No hash in filename — falls back to mtime-based ETag
-    expect(entry!.etag).toMatch(/^W\/"\d+-\d+(\.\d+)?"$/);
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+  });
+
+  it("does not treat non-hash suffixes as hashed asset etags", async () => {
+    await writeFile(clientDir, "assets/my-library-v2.0.0.js", "export {};");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/assets/my-library-v2.0.0.js");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
   // ── Precompressed variants ─────────────────────────────────────

@@ -104,7 +104,7 @@ describe("precompressAssets", () => {
 
     expect(result.filesCompressed).toBe(0);
     expect(result.totalOriginalBytes).toBe(0);
-    expect(result.totalCompressedBytes).toBe(0);
+    expect(result.totalBrotliBytes).toBe(0);
   });
 
   it("compresses CSS files alongside JS", async () => {
@@ -189,7 +189,7 @@ describe("precompressAssets", () => {
 
     expect(result.totalOriginalBytes).toBe(jsContent.length);
     // Compressed should be smaller than original for repetitive content
-    expect(result.totalCompressedBytes).toBeGreaterThan(0);
-    expect(result.totalCompressedBytes).toBeLessThan(result.totalOriginalBytes);
+    expect(result.totalBrotliBytes).toBeGreaterThan(0);
+    expect(result.totalBrotliBytes).toBeLessThan(result.totalOriginalBytes);
   });
 });

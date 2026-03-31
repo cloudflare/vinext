@@ -49,6 +49,8 @@ const BUFFER_THRESHOLD = 64 * 1024;
 export type FileVariant = {
   /** Absolute file path (used for streaming large files). */
   path: string;
+  /** Uncompressed or encoded byte size for buffer-threshold decisions. */
+  size: number;
   /** Pre-computed response headers. */
   headers: Record<string, string>;
   /** In-memory buffer for small files (below BUFFER_THRESHOLD). */
@@ -121,7 +123,7 @@ export class StaticFileCache {
         : "public, max-age=3600";
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
-        `W/"${fileInfo.size}-${fileInfo.mtimeMs}"`;
+        `W/"${fileInfo.size}-${Math.trunc(fileInfo.mtimeMs / 1000)}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const baseHeaders = {
@@ -133,6 +135,7 @@ export class StaticFileCache {
       // Pre-compute original variant headers
       const original: FileVariant = {
         path: fileInfo.fullPath,
+        size: fileInfo.size,
         headers: { ...baseHeaders, "Content-Length": String(fileInfo.size) },
       };
 
@@ -193,8 +196,7 @@ export class StaticFileCache {
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
         if (!variant || bufferedPaths.has(variant.path)) continue;
         bufferedPaths.add(variant.path);
-        const size = parseInt(variant.headers["Content-Length"], 10);
-        if (size <= BUFFER_THRESHOLD) {
+        if (variant.size <= BUFFER_THRESHOLD) {
           bufferReads.push(
             fsp.readFile(variant.path).then((buf) => {
               variant.buffer = buf;
@@ -240,7 +242,9 @@ function etagFromFilenameHash(relativePath: string, ext: string): string | null 
   if (lastDash === -1 || lastDash === basename.length - 1) return null;
   const suffix = basename.slice(lastDash + 1);
   // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers
-  return suffix.length >= 6 && suffix.length <= 12 ? `W/"${suffix}"` : null;
+  return suffix.length >= 6 && suffix.length <= 12 && /^[A-Za-z0-9_-]+$/.test(suffix)
+    ? `W/"${suffix}"`
+    : null;
 }
 
 function buildVariant(
@@ -250,6 +254,7 @@ function buildVariant(
 ): FileVariant {
   return {
     path: info.fullPath,
+    size: info.size,
     headers: {
       ...baseHeaders,
       "Content-Encoding": encoding,
