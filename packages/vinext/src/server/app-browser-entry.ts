@@ -594,6 +594,10 @@ async function main(): Promise<void> {
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
       // startTransition hangs in Firefox when replacing the entire tree.
+      // NB: During rapid navigations, window.location.pathname may not reflect
+      // the previous navigation's URL yet (URL commit is deferred). This could
+      // cause misclassification (synchronous instead of startTransition or vice
+      // versa), resulting in slightly less smooth transitions but correct behavior.
       const isSameRoute =
         stripBasePath(url.pathname, __basePath) ===
         stripBasePath(window.location.pathname, __basePath);
@@ -697,7 +701,9 @@ async function main(): Promise<void> {
       );
       _snapshotPending = false; // Cleared after successful commit
     } catch (error) {
-      // Only decrement counter if snapshot was activated but not yet committed
+      // Only decrement counter if snapshot was activated but not yet committed.
+      // NB: This relies on renderNavigationPayload being the last await before
+      // _snapshotPending = false. Adding code between them risks double-decrement.
       if (_snapshotPending) {
         commitClientNavigationState();
       }

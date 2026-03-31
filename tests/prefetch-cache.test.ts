@@ -52,7 +52,17 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
   const prefetched = getPrefetchedUrls();
   for (let i = 0; i < count; i++) {
     const key = `${keyPrefix}${i}.rsc`;
-    cache.set(key, { response: new Response(`body-${i}`), timestamp });
+    const body = `body-${i}`;
+    const buffer = new TextEncoder().encode(body).buffer;
+    cache.set(key, {
+      snapshot: {
+        buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        url: key,
+      },
+      timestamp,
+    });
     prefetched.add(key);
   }
 }

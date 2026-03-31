@@ -239,7 +239,6 @@ export type CachedRscResponse = {
 };
 
 export type PrefetchCacheEntry = {
-  response?: Response;
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
   timestamp: number;
