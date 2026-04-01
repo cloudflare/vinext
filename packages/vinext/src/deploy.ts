@@ -1059,6 +1059,7 @@ function installDeps(root: string, deps: MissingDep[]): void {
   execFileSync(pm, [...pmArgs, ...depSpecs], {
     cwd: root,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
 }
 
@@ -1210,6 +1211,10 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
     cwd: root,
     stdio: "pipe",
     encoding: "utf-8",
+    // On Windows, .bin/wrangler is a .cmd wrapper; execFileSync can't run
+    // it without a shell.  Enabling shell only on win32 keeps the
+    // no-shell-injection guarantee on other platforms.
+    shell: process.platform === "win32",
   };
 
   const { args, env } = buildWranglerDeployArgs(options);
@@ -1275,7 +1280,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log(
         `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
       );
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
     }
   }
   const missingDeps = getMissingDeps(info);
