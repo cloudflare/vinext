@@ -104,6 +104,12 @@ function applyClientParams(params: Record<string, string | string[]>): void {
 }
 
 function stageClientParams(params: Record<string, string | string[]>): void {
+  // NB: latestClientParams diverges from ClientNavigationState.clientParams
+  // between staging and commit. Server action snapshots (updateBrowserTree at
+  // line 533) read latestClientParams, so a server action fired during this
+  // window would get the pending (not yet committed) params. This is acceptable
+  // because the commit effect fires synchronously in the same React commit phase,
+  // keeping the window vanishingly small.
   latestClientParams = params;
   replaceClientParamsWithoutNotify(params);
 }
