@@ -436,6 +436,9 @@ async function tryServeStatic(
     // compression. This is correct for current callers (image optimization passes
     // compress=false, and images are never precompressed). If a future caller
     // needs precompressed variants without on-the-fly compression, split the flag.
+    // NOTE: HAS_ZSTD is intentionally not checked here — we're serving a
+    // pre-existing .zst file from disk, not calling zstdCompress() at runtime.
+    // The HAS_ZSTD guard only matters for the slow-path's on-the-fly compression.
     const rawAe = compress ? req.headers["accept-encoding"] : undefined;
     const ae = typeof rawAe === "string" ? rawAe.toLowerCase() : undefined;
     const variant = ae
@@ -495,11 +498,21 @@ async function tryServeStatic(
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   const etag = `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
+  const baseType = ct.split(";")[0].trim();
+  const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
 
   // 304 Not Modified — parity with the fast (cache) path.
+  // Include Vary: Accept-Encoding when the content type is compressible so
+  // shared caches don't collapse compressed and uncompressed representations.
   const ifNoneMatch = req.headers["if-none-match"];
   if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, etag)) {
-    res.writeHead(304, { ETag: etag, "Cache-Control": cacheControl, ...extraHeaders });
+    const notModifiedHeaders: Record<string, string | string[]> = {
+      ETag: etag,
+      "Cache-Control": cacheControl,
+      ...(isCompressible ? { Vary: "Accept-Encoding" } : undefined),
+      ...extraHeaders,
+    };
+    res.writeHead(304, notModifiedHeaders);
     res.end();
     return true;
   }
@@ -511,8 +524,7 @@ async function tryServeStatic(
     ...extraHeaders,
   };
 
-  const baseType = ct.split(";")[0].trim();
-  if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
+  if (isCompressible) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
       // Content-Length omitted intentionally: compressed size isn't known
