@@ -107,7 +107,6 @@ export async function precompressAssets(
     await Promise.all(
       chunk.map(async (fullPath) => {
         const content = await fsp.readFile(fullPath);
-        onProgress?.(++processed, filePaths.length, path.basename(fullPath));
         if (content.length < MIN_SIZE) return;
 
         result.filesCompressed++;
@@ -143,6 +142,10 @@ export async function precompressAssets(
         result.totalBrotliBytes += brContent.length;
       }),
     );
+    // Report progress once per chunk to avoid non-deterministic ordering
+    // within Promise.all (smaller files complete before larger ones).
+    processed += chunk.length;
+    onProgress?.(processed, filePaths.length, path.basename(chunk[chunk.length - 1]));
   }
 
   return result;

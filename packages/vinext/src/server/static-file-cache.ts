@@ -123,7 +123,7 @@ export class StaticFileCache {
         : "public, max-age=3600";
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
-        `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
+        `W/"${fileInfo.size}-${Math.trunc(fileInfo.mtimeMs / 1000)}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const baseHeaders = {
@@ -169,10 +169,12 @@ export class StaticFileCache {
       }
 
       // Register under the URL pathname (leading /)
+      // NOTE: aliases below share the same entry by reference, so all header
+      // mutations (e.g. Vary above) must happen before registration.
       const pathname = "/" + relativePath;
       entries.set(pathname, entry);
 
-      // Register HTML fallback aliases
+      // Register HTML fallback aliases (same entry object — no duplication)
       if (ext === ".html") {
         if (relativePath.endsWith("/index.html")) {
           const dirPath = "/" + relativePath.slice(0, -"/index.html".length);

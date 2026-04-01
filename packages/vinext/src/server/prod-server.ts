@@ -432,6 +432,10 @@ async function tryServeStatic(
     // Pick the best precompressed variant: zstd → br → gzip → original.
     // Each variant has pre-computed headers — zero string building.
     // Encoding tokens are case-insensitive per RFC 9110; lowercase once.
+    // NOTE: compress=false skips precompressed variants too, not just on-the-fly
+    // compression. This is correct for current callers (image optimization passes
+    // compress=false, and images are never precompressed). If a future caller
+    // needs precompressed variants without on-the-fly compression, split the flag.
     const rawAe = compress ? req.headers["accept-encoding"] : undefined;
     const ae = typeof rawAe === "string" ? rawAe.toLowerCase() : undefined;
     const variant = ae
