@@ -498,9 +498,12 @@ async function tryServeStatic(
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
-  // behaviour and survives deploys). Fall back to mtime for non-hashed files.
+  // behaviour and survives deploys). Use resolved.path (not pathname) so that
+  // ext and the hash extraction both come from the same file — they can diverge
+  // after HTML fallback (e.g. /assets/widget-abc123 → widget-abc123.html).
+  // Fall back to mtime for non-hashed files.
   const etag =
-    (isHashed && etagFromFilenameHash(pathname, ext)) ||
+    (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
     `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
   const baseType = ct.split(";")[0].trim();
   const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
