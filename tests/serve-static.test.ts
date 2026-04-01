@@ -595,4 +595,74 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
     expect(served).toBe(false);
   });
+
+  // ── Slow path 304 (conditional requests) ───────────────────────
+
+  it("slow path returns 304 for hashed asset with matching filename-hash ETag", async () => {
+    await writeFile(clientDir, "assets/etag-slow-abc123.js", "etag content");
+
+    // The slow path computes a filename-hash ETag for /assets/* files.
+    // Derive the expected ETag the same way etagFromFilenameHash does.
+    const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(req, res, clientDir, "/assets/etag-slow-abc123.js", true);
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(304);
+    expect(captured.body.length).toBe(0);
+    expect(captured.headers["ETag"]).toBe('W/"abc123"');
+    expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("slow path returns 200 when ETag does not match", async () => {
+    await writeFile(clientDir, "assets/etag-slow-miss-xyz999.js", "fresh content");
+
+    const req = mockReq(undefined, { "if-none-match": 'W/"stale-etag"' });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/etag-slow-miss-xyz999.js",
+      true,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.body.length).toBeGreaterThan(0);
+  });
+
+  it("slow path 304 includes Vary: Accept-Encoding for compressible content", async () => {
+    await writeFile(clientDir, "assets/vary-slow-abc123.js", "vary content");
+
+    const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/assets/vary-slow-abc123.js", true);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers["Vary"]).toBe("Accept-Encoding");
+  });
+
+  it("slow path 304 omits Vary for non-compressible content (compress=false)", async () => {
+    await writeFile(clientDir, "photo.jpg", Buffer.alloc(100, 0xff));
+
+    // jpg mtime-based etag — we need to stat the file to get the right etag
+    const stat = await fsp.stat(path.join(clientDir, "photo.jpg"));
+    const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs / 1000)}"`;
+
+    const req = mockReq(undefined, { "if-none-match": etag });
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/photo.jpg", false);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers["Vary"]).toBeUndefined();
+  });
 });
