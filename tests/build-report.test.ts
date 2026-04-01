@@ -14,6 +14,7 @@ import {
   extractExportConstString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
+  detectsDynamicApiUsage,
   classifyPagesRoute,
   classifyAppRoute,
   buildReportRows,
@@ -22,6 +23,7 @@ import {
 } from "../packages/vinext/src/build/report.js";
 import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
+import { matchRouteGlob } from "../packages/vinext/src/build/run-prerender.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
 const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
@@ -325,6 +327,113 @@ export { getStaticProps } from "./shared";
   });
 });
 
+// ─── detectsDynamicApiUsage ────────────────────────────────────────────────────
+
+describe("detectsDynamicApiUsage", () => {
+  it("detects headers import from next/headers", () => {
+    const code = `import { headers } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects cookies import from next/headers", () => {
+    const code = `import { cookies } from 'next/headers';\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects connection import from next/server", () => {
+    const code = `import { connection } from "next/server";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("does not detect connection from next/headers (wrong module)", () => {
+    const code = `import { connection } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("detects multiple dynamic imports from next/headers", () => {
+    const code = `import { headers, cookies } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects unstable_noStore from next/cache", () => {
+    const code = `import { unstable_noStore } from "next/cache";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects noStore from next/cache", () => {
+    const code = `import { noStore } from "next/cache";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects draftMode from next/headers", () => {
+    const code = `import { draftMode } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("returns false when no dynamic APIs are imported", () => {
+    const code = `import { cache } from "next/cache";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("returns false for unrelated imports", () => {
+    const code = `import { useState } from "react";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("returns false for empty code", () => {
+    expect(detectsDynamicApiUsage("")).toBe(false);
+  });
+
+  // ── Edge cases ──────────────────────────────────────────────────────────────
+
+  it("ignores commented-out imports", () => {
+    const code = `// import { headers } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("ignores block-commented imports", () => {
+    const code = `/* import { headers } from "next/headers"; */\nexport default function Page() {}`;
+    // Block comments don't start with `import` at line start, so the ^ anchor skips them
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("detects aliased imports (headers as h)", () => {
+    const code = `import { headers as h } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("detects multi-line imports", () => {
+    const code = `import {\n  headers,\n  cookies,\n} from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("returns false for type-only imports (import type { ... })", () => {
+    const code = `import type { headers } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("returns false for inline type modifier (import { type cookies })", () => {
+    const code = `import { type cookies } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("detects value import alongside inline type modifier", () => {
+    // Mixed import: type-only + value — the value import should still trigger detection
+    const code = `import { type RequestCookies, cookies } from "next/headers";\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(true);
+  });
+
+  it("returns false for require() calls", () => {
+    const code = `const { headers } = require("next/headers");\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+
+  it("returns false for dynamic import() calls", () => {
+    const code = `const { headers } = await import("next/headers");\nexport default function Page() {}`;
+    expect(detectsDynamicApiUsage(code)).toBe(false);
+  });
+});
+
 // ─── classifyPagesRoute (integration — real fixture files) ────────────────────
 
 describe("classifyPagesRoute", () => {
@@ -410,6 +519,13 @@ describe("classifyAppRoute", () => {
   it("classifies revalidate=Infinity page as static", () => {
     const pagePath = path.join(FIXTURES_APP, "revalidate-infinity-test", "page.tsx");
     expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
+  });
+
+  it("classifies page importing dynamic APIs (headers/cookies) as ssr", () => {
+    // headers-test/page.tsx imports { headers, cookies } from "next/headers"
+    // — no explicit dynamic/revalidate config, but heuristic detects dynamic API usage
+    const pagePath = path.join(FIXTURES_APP, "headers-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "ssr" });
   });
 });
 
@@ -580,8 +696,8 @@ describe("formatBuildReport", () => {
     ];
     const out = formatBuildReport(rows);
     expect(out).toContain("? Unknown");
-    expect(out).toContain("could not be classified");
-    expect(out).toContain("future release");
+    expect(out).toContain("could not be fully classified");
+    expect(out).toContain("without running the build");
   });
 
   it("produces the full expected format for a mixed set of routes", () => {
@@ -601,6 +717,305 @@ describe("formatBuildReport", () => {
     expect(out).toContain("└ ƒ /dashboard");
     // Legend is alphabetical: API, Dynamic, ISR, Static
     expect(out).toContain("λ API  ƒ Dynamic  ◐ ISR  ○ Static");
+  });
+});
+
+// ─── formatBuildReport prerender annotations ─────────────────────────────────
+
+describe("formatBuildReport prerender annotations", () => {
+  it("shows [prerendered] for rendered routes", () => {
+    const rows = [{ pattern: "/", type: "static" as const, prerenderStatus: "rendered" as const }];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("[prerendered]");
+  });
+
+  it("shows [prerendered: N paths] for dynamic routes with paths", () => {
+    const rows = [
+      {
+        pattern: "/blog/:slug",
+        type: "isr" as const,
+        revalidate: 60,
+        prerenderStatus: "rendered" as const,
+        prerenderPaths: ["/blog/foo", "/blog/bar", "/blog/baz"],
+      },
+    ];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("[prerendered: 3 paths]");
+  });
+
+  it("shows singular [prerendered: 1 path] for single path", () => {
+    const rows = [
+      {
+        pattern: "/blog/:slug",
+        type: "isr" as const,
+        revalidate: 60,
+        prerenderStatus: "rendered" as const,
+        prerenderPaths: ["/blog/only"],
+      },
+    ];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("[prerendered: 1 path]");
+  });
+
+  it("shows [skipped] for skipped routes", () => {
+    const rows = [
+      { pattern: "/dashboard", type: "ssr" as const, prerenderStatus: "skipped" as const },
+    ];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("[skipped]");
+  });
+
+  it("shows [error] for error routes", () => {
+    const rows = [{ pattern: "/broken", type: "ssr" as const, prerenderStatus: "error" as const }];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("[error]");
+  });
+
+  it("shows prerender summary when prerender data is present", () => {
+    const rows = [
+      { pattern: "/", type: "static" as const, prerenderStatus: "rendered" as const },
+      { pattern: "/about", type: "static" as const, prerenderStatus: "rendered" as const },
+      { pattern: "/dashboard", type: "ssr" as const, prerenderStatus: "skipped" as const },
+    ];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("Prerender: 2 prerendered, 1 skipped");
+  });
+
+  it("does not show prerender summary when no prerender data", () => {
+    const rows = [{ pattern: "/", type: "static" as const }];
+    const out = formatBuildReport(rows);
+    expect(out).not.toContain("Prerender:");
+  });
+});
+
+// ─── buildReportRows prerender enrichment ─────────────────────────────────────
+
+describe("buildReportRows prerender enrichment", () => {
+  // Helper to create a minimal AppRoute with all required fields
+  const makeAppRoute = (overrides: {
+    pattern: string;
+    pagePath: string | null;
+    isDynamic?: boolean;
+    params?: string[];
+  }) => ({
+    pattern: overrides.pattern,
+    patternParts: overrides.pattern.split("/").filter(Boolean),
+    pagePath: overrides.pagePath,
+    routePath: null,
+    isDynamic: overrides.isDynamic ?? false,
+    params: overrides.params ?? [],
+    layouts: [],
+    templates: [],
+    parallelSlots: [],
+    loadingPath: null,
+    errorPath: null,
+    layoutErrorPaths: [],
+    notFoundPath: null,
+    notFoundPaths: [],
+    forbiddenPath: null,
+    unauthorizedPath: null,
+    routeSegments: [],
+    layoutTreePositions: [],
+  });
+
+  it("populates prerenderStatus from prerenderResult", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/",
+        pagePath: path.join(FIXTURES_APP, "static-test", "page.tsx"),
+      }),
+    ];
+    const prerenderResult = {
+      routes: [
+        {
+          route: "/",
+          status: "rendered" as const,
+          outputFiles: ["index.html"],
+          revalidate: false as const,
+          router: "app" as const,
+        },
+      ],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].prerenderStatus).toBe("rendered");
+  });
+
+  it("collects prerenderPaths for dynamic routes", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/blog/:slug",
+        pagePath: path.join(FIXTURES_APP, "blog", "[slug]", "page.tsx"),
+        isDynamic: true,
+        params: ["slug"],
+      }),
+    ];
+    const prerenderResult = {
+      routes: [
+        {
+          route: "/blog/:slug",
+          status: "rendered" as const,
+          outputFiles: ["blog/foo.html"],
+          revalidate: false as const,
+          path: "/blog/foo",
+          router: "app" as const,
+        },
+        {
+          route: "/blog/:slug",
+          status: "rendered" as const,
+          outputFiles: ["blog/bar.html"],
+          revalidate: false as const,
+          path: "/blog/bar",
+          router: "app" as const,
+        },
+      ],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].prerenderPaths).toEqual(["/blog/foo", "/blog/bar"]);
+  });
+
+  it("upgrades unknown to static when speculatively rendered", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/mystery",
+        pagePath: "/nonexistent/page.tsx",
+      }),
+    ];
+    const prerenderResult = {
+      routes: [
+        {
+          route: "/mystery",
+          status: "rendered" as const,
+          outputFiles: ["mystery.html"],
+          revalidate: false as const,
+          router: "app" as const,
+        },
+      ],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].type).toBe("static");
+    expect(rows[0].prerendered).toBe(true);
+    expect(rows[0].prerenderStatus).toBe("rendered");
+  });
+
+  it("populates prerenderStatus=skipped for skipped routes", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/dashboard",
+        pagePath: path.join(FIXTURES_APP, "dynamic-test", "page.tsx"),
+      }),
+    ];
+    const prerenderResult = {
+      routes: [{ route: "/dashboard", status: "skipped" as const, reason: "dynamic" as const }],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].prerenderStatus).toBe("skipped");
+  });
+
+  it("populates prerenderStatus=error for error routes", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/broken",
+        pagePath: path.join(FIXTURES_APP, "dynamic-test", "page.tsx"),
+      }),
+    ];
+    const prerenderResult = {
+      routes: [{ route: "/broken", status: "error" as const, error: "render failed" }],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].prerenderStatus).toBe("error");
+  });
+
+  it("rendered status takes priority over error for same route", () => {
+    const appRoutes = [
+      makeAppRoute({
+        pattern: "/blog/:slug",
+        pagePath: path.join(FIXTURES_APP, "blog", "[slug]", "page.tsx"),
+        isDynamic: true,
+        params: ["slug"],
+      }),
+    ];
+    const prerenderResult = {
+      routes: [
+        {
+          route: "/blog/:slug",
+          status: "rendered" as const,
+          outputFiles: ["blog/ok.html"],
+          revalidate: false as const,
+          path: "/blog/ok",
+          router: "app" as const,
+        },
+        { route: "/blog/:slug", status: "error" as const, error: "one path failed" },
+      ],
+    };
+    const rows = buildReportRows({ appRoutes, prerenderResult });
+    expect(rows[0].prerenderStatus).toBe("rendered");
+  });
+});
+
+// ─── formatBuildReport speculative-render note ────────────────────────────────
+
+describe("formatBuildReport speculative-render note", () => {
+  it("shows speculative prerender note when prerendered flag is set", () => {
+    const rows = [
+      {
+        pattern: "/mystery",
+        type: "static" as const,
+        prerendered: true,
+        prerenderStatus: "rendered" as const,
+      },
+    ];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("confirmed by speculative prerender");
+  });
+
+  it("does not show speculative note when no prerendered routes", () => {
+    const rows = [{ pattern: "/", type: "static" as const, prerenderStatus: "rendered" as const }];
+    const out = formatBuildReport(rows);
+    expect(out).not.toContain("confirmed by speculative prerender");
+  });
+});
+
+// ─── matchRouteGlob ───────────────────────────────────────────────────────────
+
+describe("matchRouteGlob", () => {
+  it("matches exact paths", () => {
+    expect(matchRouteGlob("/about", "/about")).toBe(true);
+    expect(matchRouteGlob("/about", "/other")).toBe(false);
+  });
+
+  it("matches * within a single segment", () => {
+    expect(matchRouteGlob("/api/hello", "/api/*")).toBe(true);
+    expect(matchRouteGlob("/api/v1/hello", "/api/*")).toBe(false);
+  });
+
+  it("matches ** across segments", () => {
+    expect(matchRouteGlob("/api/v1/hello", "/api/**")).toBe(true);
+    expect(matchRouteGlob("/api/hello", "/api/**")).toBe(true);
+  });
+
+  it("matches root path", () => {
+    expect(matchRouteGlob("/", "/")).toBe(true);
+    expect(matchRouteGlob("/about", "/")).toBe(false);
+  });
+
+  it("handles special regex characters in patterns", () => {
+    expect(matchRouteGlob("/blog/(group)/page", "/blog/(group)/page")).toBe(true);
+    expect(matchRouteGlob("/blog/[slug]", "/blog/[slug]")).toBe(true);
+  });
+
+  it("matches route param patterns with *", () => {
+    expect(matchRouteGlob("/blog/:slug", "/blog/*")).toBe(true);
+    expect(matchRouteGlob("/blog/:slug/comments", "/blog/*/comments")).toBe(true);
+  });
+
+  it("escapes dot correctly (. should not match any character)", () => {
+    expect(matchRouteGlob("/files/data.json", "/files/*.json")).toBe(true);
+    expect(matchRouteGlob("/files/dataxjson", "/files/*.json")).toBe(false);
+  });
+
+  it("matches patterns with both * and **", () => {
+    expect(matchRouteGlob("/api/v1/users", "/api/**/users")).toBe(true);
+    expect(matchRouteGlob("/api/v1/v2/users", "/api/**/users")).toBe(true);
   });
 });
 

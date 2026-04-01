@@ -4208,3 +4208,17 @@ export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { _findBalancedObject, _findCallEnd };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
+
+// Public prerender API
+export {
+  runPrerender,
+  PrerenderProgress,
+  compileRouteGlob,
+  matchRouteGlob,
+} from "./build/run-prerender.js";
+export type { RunPrerenderOptions } from "./build/run-prerender.js";
+export type {
+  PrerenderResult,
+  PrerenderRouteResult,
+  PrerenderProgressCallback,
+} from "./build/prerender.js";

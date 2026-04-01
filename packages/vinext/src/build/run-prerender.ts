@@ -31,7 +31,7 @@ import {
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
-import { findDir } from "./report.js";
+import { findDir, classifyAppRoute, classifyPagesRoute, SYMBOLS } from "./report.js";
 import { startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
@@ -41,20 +41,47 @@ import { startProdServer } from "../server/prod-server.js";
  *
  * Writes a single updating line to stderr using \r so it doesn't interleave
  * with Vite's stdout output. Automatically clears on finish().
+ *
+ * Shows phase labels, real-time status breakdown, elapsed time, and render rate.
  */
 export class PrerenderProgress {
   private isTTY = process.stderr.isTTY;
   private lastLineLen = 0;
+  private startTime = Date.now();
+  private phase = "";
+  private rendered = 0;
+  private skipped = 0;
+  private errors = 0;
 
-  update(completed: number, total: number, route: string): void {
+  setPhase(label: string): void {
+    this.phase = label;
+  }
+
+  update(
+    completed: number,
+    total: number,
+    route: string,
+    status?: "rendered" | "skipped" | "error",
+  ): void {
+    if (status === "rendered") this.rendered++;
+    else if (status === "skipped") this.skipped++;
+    else if (status === "error") this.errors++;
+
     if (!this.isTTY) return;
-    const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
-    const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
-    // Truncate long route names to keep the line under ~80 chars
-    const maxRoute = 40;
+    const pct = total > 0 ? Math.min(Math.floor((completed / total) * 100), 100) : 0;
+    const filled = Math.floor(pct / 5);
+    const bar = `[${"█".repeat(filled)}${"░".repeat(20 - filled)}]`;
+    const maxRoute = 30;
     const routeLabel = route.length > maxRoute ? "…" + route.slice(-(maxRoute - 1)) : route;
-    const line = `Prerendering routes... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${routeLabel}`;
-    // Pad to overwrite previous line, then carriage-return (no newline)
+    const elapsed = (Date.now() - this.startTime) / 1000;
+    const rate = elapsed > 0 ? (completed / elapsed).toFixed(1) : "0.0";
+    const phaseLabel = this.phase ? `${this.phase} ` : "";
+    const statusParts: string[] = [];
+    if (this.rendered > 0) statusParts.push(`${this.rendered} rendered`);
+    if (this.skipped > 0) statusParts.push(`${this.skipped} skipped`);
+    if (this.errors > 0) statusParts.push(`${this.errors} error${this.errors !== 1 ? "s" : ""}`);
+    const statusStr = statusParts.length > 0 ? `  (${statusParts.join(", ")})` : "";
+    const line = `  ${phaseLabel}${bar} ${String(completed).padStart(String(total).length)}/${total}${statusStr}  ${rate} routes/s  ${routeLabel}`;
     const padded = line.padEnd(this.lastLineLen);
     this.lastLineLen = line.length;
     process.stderr.write(`\r${padded}`);
@@ -62,12 +89,74 @@ export class PrerenderProgress {
 
   finish(rendered: number, skipped: number, errors: number): void {
     if (this.isTTY) {
-      // Clear the progress line
       process.stderr.write(`\r${" ".repeat(this.lastLineLen)}\r`);
     }
-    const errorPart = errors > 0 ? `, ${errors} error${errors !== 1 ? "s" : ""}` : "";
-    console.log(`  Prerendered ${rendered} routes (${skipped} skipped${errorPart}).`);
+    const elapsed = (Date.now() - this.startTime) / 1000;
+    const total = rendered + skipped + errors;
+    const rate = elapsed > 0 ? (total / elapsed).toFixed(1) : "0.0";
+    const parts: string[] = [];
+    if (rendered > 0) parts.push(`${rendered} rendered`);
+    if (skipped > 0) parts.push(`${skipped} skipped`);
+    if (errors > 0) parts.push(`${errors} error${errors !== 1 ? "s" : ""}`);
+    const breakdown = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+    const timeStr = elapsed >= 1 ? ` in ${elapsed.toFixed(1)}s` : "";
+    const noun = total === 1 ? "route" : "routes";
+    console.log(`  Prerendered ${total} ${noun}${timeStr}${breakdown} — ${rate} routes/s`);
   }
+}
+
+// ─── Route filtering helpers ─────────────────────────────────────────────────
+
+/**
+ * Compile a glob pattern into a RegExp.
+ * Supports `*` (matches any characters except `/`) and `**` (matches anything including `/`).
+ */
+export function compileRouteGlob(pattern: string): RegExp {
+  // Use a Unicode placeholder that won't appear in route patterns to
+  // distinguish ** from * during the replacement chain.
+  const DOUBLE_STAR = "\uFFFF";
+  const regexStr = pattern
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, DOUBLE_STAR) // placeholder for **
+    .replace(/\*/g, "[^/]*") // * matches within segment
+    .replace(new RegExp(DOUBLE_STAR, "g"), ".*"); // ** matches across segments
+  return new RegExp(`^${regexStr}$`);
+}
+
+/**
+ * Test if a route pattern matches a glob pattern.
+ * For repeated matching against the same globs, prefer `compileRouteGlob`
+ * to compile once and reuse the resulting RegExp.
+ */
+export function matchRouteGlob(route: string, pattern: string): boolean {
+  return compileRouteGlob(pattern).test(route);
+}
+
+/**
+ * Create a filter function from include/exclude glob patterns.
+ * Compiles each pattern once upfront and returns a predicate.
+ */
+function createRouteFilter(
+  includeRoutes?: string[],
+  excludeRoutes?: string[],
+): ((pattern: string) => boolean) | null {
+  if (
+    (!includeRoutes || includeRoutes.length === 0) &&
+    (!excludeRoutes || excludeRoutes.length === 0)
+  ) {
+    return null;
+  }
+  const includeRegexes = includeRoutes?.map(compileRouteGlob);
+  const excludeRegexes = excludeRoutes?.map(compileRouteGlob);
+  return (pattern: string) => {
+    if (includeRegexes && includeRegexes.length > 0) {
+      if (!includeRegexes.some((re) => re.test(pattern))) return false;
+    }
+    if (excludeRegexes && excludeRegexes.length > 0) {
+      if (excludeRegexes.some((re) => re.test(pattern))) return false;
+    }
+    return true;
+  };
 }
 
 // ─── Shared runner ────────────────────────────────────────────────────────────
@@ -93,6 +182,31 @@ export type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /**
+   * Only prerender routes matching these glob patterns.
+   * Uses `*` (single segment) and `**` (any depth). Matched against the
+   * route's pattern string (e.g. `/blog/*` matches route `/blog/:slug`).
+   * When set, only matching routes are rendered; others are skipped.
+   */
+  includeRoutes?: string[];
+  /**
+   * Skip routes matching these glob patterns.
+   * Uses `*` (single segment) and `**` (any depth). For example,
+   * `/api/**` excludes all API routes. Applied after `includeRoutes`.
+   */
+  excludeRoutes?: string[];
+  /**
+   * When true, scan and classify routes but do not actually render them.
+   * Prints a table of routes that would be prerendered and returns null.
+   * Useful for previewing what would be prerendered.
+   */
+  dryRun?: boolean;
+  /**
+   * Progress callback for external consumers who want to track
+   * prerender progress programmatically (instead of the built-in TTY
+   * progress bar).
+   */
+  onProgress?: import("./prerender.js").PrerenderProgressCallback;
 };
 
 /**
@@ -140,6 +254,59 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // In export mode, SSR routes and any dynamic routes without static params are
   // build errors rather than silently skipped.
   const mode = config.output === "export" ? "export" : "default";
+
+  // Compile route filters once upfront (null when no filtering needed).
+  const routeFilter = createRouteFilter(options.includeRoutes, options.excludeRoutes);
+
+  // ── Dry-run mode ──────────────────────────────────────────────────────────
+  // Scan and classify routes without starting any servers or rendering anything.
+  if (options.dryRun) {
+    console.log("  Dry run — routes that would be prerendered:\n");
+    let renderCount = 0;
+    let skipCount = 0;
+
+    if (appDir) {
+      let routes = await appRouter(appDir, config.pageExtensions);
+      if (routeFilter) routes = routes.filter((r) => routeFilter(r.pattern));
+      for (const route of routes) {
+        const { type } = classifyAppRoute(route.pagePath, route.routePath, route.isDynamic);
+        const sym = SYMBOLS[type] ?? "?";
+        const action = type === "api" || type === "ssr" ? "skip" : "render";
+        console.log(`    ${sym} ${route.pattern}  → ${action}`);
+        if (action === "render") renderCount++;
+        else skipCount++;
+      }
+    }
+
+    if (pagesDir) {
+      let [pageRoutes, apiRoutes_] = await Promise.all([
+        pagesRouter(pagesDir, config.pageExtensions),
+        apiRouter(pagesDir, config.pageExtensions),
+      ]);
+      if (routeFilter) {
+        pageRoutes = pageRoutes.filter((r) => routeFilter(r.pattern));
+        apiRoutes_ = apiRoutes_.filter((r) => routeFilter(r.pattern));
+      }
+
+      for (const route of pageRoutes) {
+        const { type } = classifyPagesRoute(route.filePath);
+        const sym = SYMBOLS[type] ?? "?";
+        const action = type === "api" || type === "ssr" ? "skip" : "render";
+        console.log(`    ${sym} ${route.pattern}  → ${action}`);
+        if (action === "render") renderCount++;
+        else skipCount++;
+      }
+      for (const route of apiRoutes_) {
+        console.log(`    λ ${route.pattern}  → skip`);
+        skipCount++;
+      }
+    }
+
+    const skipPart = skipCount > 0 ? `, ${skipCount} skipped` : "";
+    console.log(`\n  ${renderCount} routes would be rendered${skipPart}`);
+    return null;
+  }
+
   const allRoutes: PrerenderRouteResult[] = [];
 
   // Count total renderable URLs across both phases upfront so we can show a
@@ -192,7 +359,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
     // ── App Router phase ──────────────────────────────────────────────────────
     if (appDir) {
-      const routes = await appRouter(appDir, config.pageExtensions);
+      progress.setPhase("App Router");
+      let routes = await appRouter(appDir, config.pageExtensions);
+      // Apply route filtering
+      if (routeFilter) routes = routes.filter((r) => routeFilter(r.pattern));
 
       // We don't know the exact render-queue size until prerenderApp starts, so
       // use the progress callback's `total` to update our combined total on the
@@ -208,13 +378,21 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
         ...(sharedProdServer ? { _prodServer: sharedProdServer } : {}),
-        onProgress: ({ total, route }) => {
+        onProgress: (update) => {
+          const { total, route, status } = update;
           if (appTotal === 0) {
             appTotal = total;
             totalUrls += total;
           }
           completedUrls += 1;
-          progress.update(completedUrls, totalUrls, route);
+          progress.update(completedUrls, totalUrls, route, status);
+          try {
+            options.onProgress?.(update);
+          } catch (err: unknown) {
+            process.stderr.write(
+              `[vinext] onProgress callback error: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
         },
       });
 
@@ -223,10 +401,16 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
     // ── Pages Router phase ────────────────────────────────────────────────────
     if (pagesDir) {
-      const [pageRoutes, apiRoutes] = await Promise.all([
+      progress.setPhase("Pages Router");
+      let [pageRoutes, apiRoutes] = await Promise.all([
         pagesRouter(pagesDir, config.pageExtensions),
         apiRouter(pagesDir, config.pageExtensions),
       ]);
+      // Apply route filtering
+      if (routeFilter) {
+        pageRoutes = pageRoutes.filter((r) => routeFilter(r.pattern));
+        apiRoutes = apiRoutes.filter((r) => routeFilter(r.pattern));
+      }
 
       let pagesTotal = 0;
       const result = await prerenderPages({
@@ -245,13 +429,21 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
               pagesBundlePath:
                 options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
             }),
-        onProgress: ({ total, route }) => {
+        onProgress: (update) => {
+          const { total, route, status } = update;
           if (pagesTotal === 0) {
             pagesTotal = total;
             totalUrls += total;
           }
           completedUrls += 1;
-          progress.update(completedUrls, totalUrls, route);
+          progress.update(completedUrls, totalUrls, route, status);
+          try {
+            options.onProgress?.(update);
+          } catch (err: unknown) {
+            process.stderr.write(
+              `[vinext] onProgress callback error: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
         },
       });
 
