@@ -1918,13 +1918,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               // Build and render the redirect target page
               // Pre-render the redirect target's RSC payload so the client can
               // apply it as a soft navigation (matching Next.js behavior).
-              // 
-              // Note: This pre-rendered response bypasses the middleware pipeline.
-              // Middleware does not execute for the redirect target — only the
-              // original action request goes through middleware. This is a known
-              // limitation tracked for future work. If middleware needs to run
-              // for the redirect target (e.g., auth, cookies, headers), use a
-              // hard redirect or restructure the flow.
+              //
+              // Note: Middleware request matching does not run for the redirect
+              // target — only the original action request goes through middleware.
+              // However, middleware response headers (Set-Cookie, custom headers)
+              // from the original request are merged into the redirect response.
+              // If middleware request matching is needed for the redirect target
+              // (e.g., auth checks, conditional headers), use a hard redirect.
               const redirectElement = buildPageElement(
                 redirectRoute,
                 redirectParams,
@@ -1956,15 +1956,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
-              if (Object.keys(redirectParams).length > 0) {
-                redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
-              }
+              redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
                 status: 200,
                 headers: redirectHeaders,
               });
-              
+
               // Append cookies collected from action and redirect phases
               if (actionPendingCookies.length > 0 || actionDraftCookie || redirectPendingCookies.length > 0 || redirectDraftCookie) {
                 for (const cookie of actionPendingCookies) {
@@ -1977,7 +1975,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 if (redirectDraftCookie) redirectResponse.headers.append("Set-Cookie", redirectDraftCookie);
               }
 
-              return redirectResponse;
+              // Apply middleware response headers (Set-Cookie, custom headers, etc.)
+              // to the redirect response. This ensures middleware-set headers are
+              // preserved even though the redirect target bypasses the middleware
+              // pipeline. Note: middleware request matching still doesn't run for
+              // the redirect target — this only merges headers from the original
+              // action request's middleware execution.
+              return __applyRouteHandlerMiddlewareContext(redirectResponse, _mwCtx);
             }
           }
         } catch (preRenderErr) {
