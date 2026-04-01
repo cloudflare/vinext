@@ -106,7 +106,7 @@ function applyClientParams(params: Record<string, string | string[]>): void {
 function stageClientParams(params: Record<string, string | string[]>): void {
   // NB: latestClientParams diverges from ClientNavigationState.clientParams
   // between staging and commit. Server action snapshots (updateBrowserTree at
-  // line 533) read latestClientParams, so a server action fired during this
+  // lines 544/558) read latestClientParams, so a server action fired during this
   // window would get the pending (not yet committed) params. This is acceptable
   // because the commit effect fires synchronously in the same React commit phase,
   // keeping the window vanishingly small.
@@ -621,14 +621,14 @@ async function main(): Promise<void> {
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
-        // Keep params local until the final stale-navigation gate.
-        // Check stale-navigation before createFromFetch — createFromFetch parses
-        // the RSC flight stream and is non-trivial; bailing out before it also
-        // prevents a superseded navigation's error from hard-navigating to a stale
-        // URL (the outer catch now guards on navId, but early return is cleaner).
+        // Check stale-navigation before and after createFromFetch. The pre-check
+        // avoids wasted parse work; the post-check catches supersessions that
+        // occur during the await. createFromFetch on a buffered response is fast
+        // but still async, so the window exists.
         if (navId !== activeNavigationId) return;
         const cachedParams = cachedRoute.params;
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
+        if (navId !== activeNavigationId) return;
         const cachedPayload = await createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );
