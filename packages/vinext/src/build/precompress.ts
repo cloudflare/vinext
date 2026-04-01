@@ -107,6 +107,9 @@ export async function precompressAssets(
     await Promise.all(
       chunk.map(async (fullPath) => {
         const content = await fsp.readFile(fullPath);
+        // readFile already done before this check — stat()-first would save
+        // the read for tiny files but costs an extra syscall per file;
+        // sub-1KB hashed assets are rare enough that read-first is cheaper.
         if (content.length < MIN_SIZE) return;
 
         // Compress all variants concurrently within each file

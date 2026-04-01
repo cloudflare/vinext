@@ -828,7 +828,9 @@ export type VinextOptions = {
    * Disabled by default. Not useful when deploying to edge platforms
    * (Cloudflare Workers, Nitro) that handle compression at the CDN layer.
    *
-   * Can also be enabled via `--precompress` CLI flag.
+   * Can also be enabled via the `--precompress` CLI flag or by setting the
+   * `VINEXT_PRECOMPRESS=1` environment variable (useful for CI pipelines
+   * that need to enable precompression without modifying vite.config.ts).
    * @default false
    */
   precompress?: boolean;
