@@ -691,6 +691,9 @@ export function buildTprKVPairs(
 
     const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
 
+    // For revalidating entries: 30-day TTL matches runtime KVCacheHandler.set().
+    // For non-revalidating entries: runtime uses no TTL (entries persist indefinitely),
+    // but TPR uses a 24h fallback so pre-warmed entries don't accumulate forever.
     const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
 
     const entry = {
@@ -867,14 +870,17 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
 
   // ── 10. Upload to KV ──────────────────────────────────────────
   // Read buildId from the BUILD_ID file written by vinext:build-id plugin.
-  let buildId: string | undefined;
+  let buildId: string;
   try {
     buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
   } catch {
-    // Best-effort — proceed without buildId, but warn since keys won't match runtime
+    // BUILD_ID is written by vinext:build-id during every production build.
+    // If missing, the build output is likely corrupted or incomplete.
+    // Proceeding without buildId would write keys that never match runtime.
     console.warn(
-      "  TPR: Could not read BUILD_ID from dist/server/ — KV keys may not match runtime",
+      "  TPR: Could not read BUILD_ID from dist/server/ — KV keys will not match runtime. Skipping KV upload.",
     );
+    return skip("BUILD_ID not found in dist/server/ — build output may be incomplete");
   }
 
   try {

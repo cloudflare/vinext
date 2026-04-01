@@ -1123,10 +1123,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Load next.config.js if present (always from project root, not src/),
         // unless vinext({ nextConfig }) explicitly overrides it.
         // Guard: resolve nextConfig only once per plugin instance. In Vite's
-        // multi-environment build the config hook fires once per environment,
-        // so without this guard resolveBuildId() would generate a fresh random
-        // UUID for each environment, causing different buildId values to be
+        // multi-environment build the config hook fires once per environment;
+        // without this guard, resolveNextConfig() → resolveBuildId() generates
+        // a fresh random UUID each time, causing different buildId values to be
         // baked into the RSC, SSR, and client bundles.
+        // Note: fileMatcher, instrumentationPath, etc. are intentionally set
+        // outside this guard — they are cheap and deterministic, and keeping
+        // them here ensures they reflect the final resolved root on every call.
         if (!nextConfig) {
           const phase =
             env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;

@@ -58,7 +58,11 @@ describe("TPR KV key format", () => {
     expect(pairs[0].expiration_ttl).toBe(24 * 3600);
   });
 
-  it("works without buildId", () => {
+  it("buildTprKVPairs accepts undefined buildId (documents key format; runTPR now fails fast if BUILD_ID is missing)", () => {
+    // Note: runTPR() skips the KV upload entirely when BUILD_ID is missing, so
+    // this no-buildId path is not reachable in production. The test preserves
+    // coverage of isrCacheKey's no-buildId format in case the helper is used
+    // independently.
     const pairs = buildTprKVPairs(entry("/page"), undefined, 60);
     expect(pairs[0].key).toBe(`cache:${isrCacheKey("app", "/page")}:html`);
     expect(pairs[0].key).toBe("cache:app:/page:html");
