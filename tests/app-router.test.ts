@@ -366,6 +366,37 @@ describe("App Router integration", () => {
     expect(html).toMatch(/data-testid="segment"[^>]*>null</);
   });
 
+  // --- parallelRoutesKey support ---
+  // These tests verify the segmentMap context migration works end-to-end.
+  // Until PR 2 populates per-slot segment data, useSelectedLayoutSegments("team")
+  // returns [] (key absent in segmentMap → fallback). This is structurally correct.
+
+  it("useSelectedLayoutSegments('team') returns [] for flat slot (no per-slot wiring yet)", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>null</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] for flat slot", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments() (default children) still returns correct segments after migration", async () => {
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // children segments below the dashboard layout should include "settings"
+    expect(html).toMatch(/data-testid="segments"[^>]*>\[&quot;settings&quot;\]/);
+  });
+
   // --- Intercepting routes ---
 
   it("renders full photo page on direct navigation (SSR)", async () => {
