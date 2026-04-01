@@ -3404,6 +3404,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
             })().catch((error) => {
               pendingPrecompressError = error;
+              // Log immediately so the error isn't invisible if closeBundle
+              // never fires (e.g. a crash in a later SSR build plugin).
+              console.error("[vinext] Precompression failed:", error);
             });
           },
         },

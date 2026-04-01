@@ -494,10 +494,20 @@ async function tryServeStatic(
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const etag = `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
+
+  // 304 Not Modified — parity with the fast (cache) path.
+  const ifNoneMatch = req.headers["if-none-match"];
+  if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, etag)) {
+    res.writeHead(304, { ETag: etag, "Cache-Control": cacheControl, ...extraHeaders });
+    res.end();
+    return true;
+  }
 
   const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
     "Cache-Control": cacheControl,
+    ETag: etag,
     ...extraHeaders,
   };
 
@@ -551,31 +561,32 @@ async function tryServeStatic(
 type ResolvedFile = {
   path: string;
   size: number;
+  mtimeMs: number;
 };
 
 /**
  * Resolve the actual file to serve, trying extension-less HTML fallbacks.
- * Returns the resolved path + size, or null if not found.
+ * Returns the resolved path + size + mtime, or null if not found.
  */
 async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | null> {
   const stat = await statIfFile(staticFile);
-  if (stat) return { path: staticFile, size: stat.size };
+  if (stat) return { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs };
 
   const htmlFallback = staticFile + ".html";
   const htmlStat = await statIfFile(htmlFallback);
-  if (htmlStat) return { path: htmlFallback, size: htmlStat.size };
+  if (htmlStat) return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
 
   const indexFallback = path.join(staticFile, "index.html");
   const indexStat = await statIfFile(indexFallback);
-  if (indexStat) return { path: indexFallback, size: indexStat.size };
+  if (indexStat) return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
 
   return null;
 }
 
-async function statIfFile(filePath: string): Promise<{ size: number } | null> {
+async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
   try {
     const stat = await fsp.stat(filePath);
-    return stat.isFile() ? { size: stat.size } : null;
+    return stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : null;
   } catch {
     return null;
   }
