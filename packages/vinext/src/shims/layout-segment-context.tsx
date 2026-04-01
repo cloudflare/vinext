@@ -41,7 +41,6 @@ export function LayoutSegmentProvider({
   if (!ctx) {
     // No context available — expected only in RSC environment, not SSR/browser.
     return children;
-    return children;
   }
   return createElement(ctx.Provider, { value: segmentMap }, children);
 }
