@@ -1996,7 +1996,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -2013,7 +2014,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
