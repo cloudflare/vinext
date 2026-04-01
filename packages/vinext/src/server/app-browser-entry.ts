@@ -326,6 +326,7 @@ function updateBrowserTree(
   navigationSnapshot: ClientNavigationRenderSnapshot,
   renderId: number,
   useTransitionMode: boolean,
+  snapshotActivated = false,
 ): void {
   const setter = getBrowserTreeStateSetter();
 
@@ -333,13 +334,18 @@ function updateBrowserTree(
     setter({ renderId, node: resolvedNode, navigationSnapshot });
   };
 
-  // Balance the activate/commit pairing if the async payload rejects
-  // after activateNavigationSnapshot() was called in renderNavigationPayload.
+  // Balance the activate/commit pairing if the async payload rejects after
+  // activateNavigationSnapshot() was called. Only decrement when snapshotActivated
+  // is true — server action callers skip renderNavigationPayload entirely and
+  // never call activateNavigationSnapshot(), so decrementing there would corrupt
+  // the counter for any concurrent RSC navigation.
   const handleAsyncError = () => {
     pendingNavigationPrePaintEffects.delete(renderId);
     const resolve = pendingNavigationCommits.get(renderId);
     pendingNavigationCommits.delete(renderId);
-    commitClientNavigationState();
+    if (snapshotActivated) {
+      commitClientNavigationState();
+    }
     resolve?.();
   };
 
@@ -383,7 +389,7 @@ function renderNavigationPayload(
   // Wrap updateBrowserTree in try-catch to ensure counter is decremented
   // if a synchronous error occurs before the async promise chain is established.
   try {
-    updateBrowserTree(payload, navigationSnapshot, renderId, useTransition);
+    updateBrowserTree(payload, navigationSnapshot, renderId, useTransition, true);
   } catch (error) {
     // Clean up pending state and decrement counter on synchronous error.
     pendingNavigationPrePaintEffects.delete(renderId);
@@ -529,10 +535,11 @@ function registerServerActionCallback(): void {
     // Note: Server actions update the tree via updateBrowserTree directly (not
     // renderNavigationPayload) because they stay on the same URL. This means
     // activateNavigationSnapshot is not called, so hooks use useSyncExternalStore
-    // values directly. This is correct for the current server action flow, but if
-    // server actions ever trigger URL changes (redirects handled via RSC payload
-    // instead of hard redirects), this would need to use renderNavigationPayload()
-    // to properly activate/commit the navigation snapshot.
+    // values directly. snapshotActivated is intentionally omitted (defaults false)
+    // so handleAsyncError skips commitClientNavigationState() — decrementing an
+    // unincremented counter would corrupt it for concurrent RSC navigations.
+    // If server actions ever trigger URL changes via RSC payload (instead of hard
+    // redirects), this would need renderNavigationPayload() + snapshotActivated=true.
     if (isServerActionResult(result)) {
       updateBrowserTree(
         result.root,
@@ -547,6 +554,7 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
+    // Same reasoning as above: snapshotActivated omitted intentionally.
     updateBrowserTree(
       result,
       createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
@@ -592,10 +600,12 @@ async function main(): Promise<void> {
     }
 
     let _snapshotPending = false;
+    // Hoist navId above try so the catch block can guard against hard-navigating
+    // to a stale URL when this navigation has already been superseded.
+    const navId = ++activeNavigationId;
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
-      const navId = ++activeNavigationId;
       // Use startTransition for same-route navigations (searchParam changes)
       // so React keeps the old UI visible during the transition. For cross-route
       // navigations (different pathname), use synchronous updates — React's
@@ -611,7 +621,12 @@ async function main(): Promise<void> {
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
       if (cachedRoute) {
-        // Keep params local until the final stale-navigation gate
+        // Keep params local until the final stale-navigation gate.
+        // Check stale-navigation before createFromFetch — createFromFetch parses
+        // the RSC flight stream and is non-trivial; bailing out before it also
+        // prevents a superseded navigation's error from hard-navigating to a stale
+        // URL (the outer catch now guards on navId, but early return is cleaner).
+        if (navId !== activeNavigationId) return;
         const cachedParams = cachedRoute.params;
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
         const cachedPayload = await createFromFetch<ReactNode>(
@@ -728,6 +743,9 @@ async function main(): Promise<void> {
         _snapshotPending = false;
         commitClientNavigationState();
       }
+      // Don't hard-navigate to a stale URL if this navigation was superseded by
+      // a newer one — the newer navigation is already in flight and would be clobbered.
+      if (navId !== activeNavigationId) return;
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
     }
@@ -762,6 +780,7 @@ async function main(): Promise<void> {
         const rscPayload = await createFromFetch<ReactNode>(
           fetch(toRscUrl(window.location.pathname + window.location.search)),
         );
+        // HMR updates skip renderNavigationPayload — no snapshot activated.
         updateBrowserTree(
           rscPayload,
           createClientNavigationRenderSnapshot(window.location.href, latestClientParams),

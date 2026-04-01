@@ -358,6 +358,11 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
  * Creates a new Response with the original ArrayBuffer so createFromFetch
  * can consume the stream from scratch.
  *
+ * NOTE: The reconstructed Response always has `url === ""` — the Response
+ * constructor does not accept a `url` option, and `response.url` is read-only
+ * set by the fetch infrastructure. Callers that need the original URL should
+ * read it from `cached.url` directly rather than from the restored Response.
+ *
  * @param copy - When true (default), copies the ArrayBuffer so the cached
  *   snapshot remains replayable (needed for the visited-response cache).
  *   Pass false for single-consumption paths (e.g. prefetch cache entries
