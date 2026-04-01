@@ -35,7 +35,7 @@ const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLConte
  * Arrays are mutable (`string[]`) to match Next.js's public API return type
  * without requiring `as` casts. The map itself is Readonly — no key addition.
  */
-export type SegmentMap = { readonly children: string[] } & Readonly<Record<string, string[]>>;
+export type SegmentMap = Readonly<Record<string, string[]>> & { readonly children: string[] };
 
 type _LayoutSegmentGlobal = typeof globalThis & {
   [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<SegmentMap> | null;
