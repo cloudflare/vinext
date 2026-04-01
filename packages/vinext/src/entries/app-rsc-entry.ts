@@ -1947,8 +1947,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -1956,6 +1956,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
