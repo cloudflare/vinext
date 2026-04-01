@@ -210,7 +210,7 @@ describe("next/navigation shim", () => {
 
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
-        childSegments: ["explore"],
+        segmentMap: { children: ["explore"] },
         // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
@@ -262,6 +262,81 @@ describe("next/navigation shim", () => {
     // Outside a React tree, no LayoutSegmentProvider wraps us,
     // so there are no child segments → null.
     expect(useSelectedLayoutSegment()).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments() accepts parallelRoutesKey and returns matching segments", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    // Outside a React tree, returns [] regardless of key.
+    const result = nav.useSelectedLayoutSegments("team");
+    expect(result).toEqual([]);
+  });
+
+  it("useSelectedLayoutSegment() accepts parallelRoutesKey and returns null outside React tree", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    const result = nav.useSelectedLayoutSegment("team");
+    expect(result).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments(parallelRoutesKey) returns per-slot segments via segmentMap", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments, useSelectedLayoutSegment } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const childrenSegs = useSelectedLayoutSegments();
+      const teamSegs = useSelectedLayoutSegments("team");
+      const teamSeg = useSelectedLayoutSegment("team");
+      return createElement(
+        "div",
+        null,
+        createElement("span", { id: "children" }, JSON.stringify(childrenSegs)),
+        createElement("span", { id: "team" }, JSON.stringify(teamSegs)),
+        createElement("span", { id: "team-singular" }, teamSeg ?? "null"),
+      );
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog", "hello"], team: ["settings"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    // React SSR HTML-encodes " as &quot; in text content
+    const Q = "&quot;";
+    expect(html).toContain(`<span id="children">[${Q}blog${Q},${Q}hello${Q}]</span>`);
+    expect(html).toContain(`<span id="team">[${Q}settings${Q}]</span>`);
+    expect(html).toContain('<span id="team-singular">settings</span>');
+  });
+
+  it("useSelectedLayoutSegments(unknownKey) returns [] for missing slot", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const segs = useSelectedLayoutSegments("nonexistent");
+      return createElement("span", null, JSON.stringify(segs));
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    expect(html).toContain("[]");
   });
 });
 

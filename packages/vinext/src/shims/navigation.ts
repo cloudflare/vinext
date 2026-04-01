@@ -26,8 +26,18 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 // still line up if Vite loads this shim through multiple resolved module IDs.
 const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
 const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+
+/**
+ * Map of parallel route key → child segments below the current layout.
+ * The "children" key is always present (the default parallel route).
+ * Named parallel routes add their own keys (e.g., "team", "analytics").
+ */
+export type SegmentMap = { readonly children: readonly string[] } & Readonly<
+  Record<string, readonly string[]>
+>;
+
 type _LayoutSegmentGlobal = typeof globalThis & {
-  [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<string[]> | null;
+  [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<SegmentMap> | null;
   [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
     ((callback: () => unknown) => void) | null
   > | null;
@@ -70,22 +80,23 @@ export const ServerInsertedHTMLContext: React.Context<
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).
  */
-export function getLayoutSegmentContext(): React.Context<string[]> | null {
+export function getLayoutSegmentContext(): React.Context<SegmentMap> | null {
   if (typeof React.createContext !== "function") return null;
 
   const globalState = globalThis as _LayoutSegmentGlobal;
   if (!globalState[_LAYOUT_SEGMENT_CTX_KEY]) {
-    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<string[]>([]);
+    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<SegmentMap>({ children: [] });
   }
 
   return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
 }
 
 /**
- * Read the child segments below the current layout from context.
- * Returns [] if no context is available (RSC environment, outside React tree).
+ * Read the child segments for a parallel route below the current layout.
+ * Returns [] if no context is available (RSC environment, outside React tree)
+ * or if the requested key is not present in the segment map.
  */
-function useChildSegments(): string[] {
+function useChildSegments(parallelRoutesKey: string = "children"): readonly string[] {
   const ctx = getLayoutSegmentContext();
   if (!ctx) return [];
   // useContext is safe here because if createContext exists, useContext does too.
@@ -93,7 +104,8 @@ function useChildSegments(): string[] {
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
     // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks
-    return React.useContext(ctx);
+    const segmentMap = React.useContext(ctx);
+    return segmentMap[parallelRoutesKey] ?? [];
   } catch {
     return [];
   }
@@ -714,12 +726,8 @@ export function useRouter() {
  *
  * @param parallelRoutesKey - Which parallel route to read (default: "children")
  */
-export function useSelectedLayoutSegment(
-  // parallelRoutesKey is accepted for API compat but not yet supported —
-  // vinext doesn't implement parallel routes with separate segment tracking.
-  _parallelRoutesKey?: string,
-): string | null {
-  const segments = useSelectedLayoutSegments(_parallelRoutesKey);
+export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null {
+  const segments = useSelectedLayoutSegments(parallelRoutesKey);
   return segments.length > 0 ? segments[0] : null;
 }
 
@@ -727,19 +735,14 @@ export function useSelectedLayoutSegment(
  * Returns all active segments below the layout where it's called.
  *
  * Each layout in the App Router tree wraps its children with a
- * LayoutSegmentProvider whose value is the remaining route tree segments
- * (including route groups, with dynamic params resolved to actual values
- * and catch-all segments joined with "/"). This hook reads those segments
- * directly from context.
+ * LayoutSegmentProvider whose value is a map of parallel route key to
+ * segment arrays. The "children" key is the default parallel route.
  *
  * @param parallelRoutesKey - Which parallel route to read (default: "children")
  */
-export function useSelectedLayoutSegments(
-  // parallelRoutesKey is accepted for API compat but not yet supported —
-  // vinext doesn't implement parallel routes with separate segment tracking.
-  _parallelRoutesKey?: string,
-): string[] {
-  return useChildSegments();
+export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[] {
+  // Cast away readonly for public API compat — Next.js returns mutable string[]
+  return useChildSegments(parallelRoutesKey) as string[];
 }
 
 export { ReadonlyURLSearchParams };
