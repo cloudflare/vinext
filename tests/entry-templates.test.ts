@@ -16,7 +16,9 @@ import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.j
 import type { AppRouterConfig } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
+import { generateServerEntry as generatePagesServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -293,6 +295,35 @@ describe("Pages Router entry templates", () => {
     expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
     expect(code).not.toContain("const promise = renderFn()");
     expect(code).not.toContain("ctx.waitUntil(promise)");
+  });
+
+  it("direct pages server entry generation exports precompiled config matchers", async () => {
+    const code = await generatePagesServerEntry(
+      PAGES_FIXTURE_DIR,
+      {
+        pageExtensions: ["tsx", "ts", "jsx", "js"],
+        basePath: "",
+        trailingSlash: false,
+        redirects: [{ source: "/old/:slug", destination: "/new/:slug", permanent: false }],
+        rewrites: {
+          beforeFiles: [{ source: "/before/:path*", destination: "/after/:path*" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        headers: [{ source: "/api/:path*", headers: [{ key: "X-Test", value: "1" }] }],
+        i18n: null,
+        images: {},
+      } as any,
+      createValidFileMatcher(["tsx", "ts", "jsx", "js"]),
+      null,
+      null,
+    );
+
+    expect(code).toContain("export const vinextCompiledConfig = {");
+    expect(code).toContain("redirects:");
+    expect(code).toContain("rewrites:");
+    expect(code).toContain("headers:");
+    expect(code).toContain("/^");
   });
 
   it("server entry seeds the main Pages Router unified context with executionContext", async () => {

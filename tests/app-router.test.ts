@@ -2578,6 +2578,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       ],
     });
     expect(code).toContain("__configRedirects");
+    expect(code).toContain("__compiledRedirects");
     expect(code).toContain("matchRedirect");
     expect(code).toContain("/old-about");
     expect(code).toContain("/old-blog/:slug");
@@ -2593,6 +2594,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       },
     });
     expect(code).toContain("__configRewrites");
+    expect(code).toContain("__compiledRewrites");
     expect(code).toContain("matchRewrite");
     expect(code).toContain("beforeFiles");
     expect(code).toContain("afterFiles");
@@ -2607,6 +2609,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
+    expect(code).toContain("__compiledHeaders");
     expect(code).toContain("matchHeaders");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
@@ -2677,7 +2680,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
     // The redirect check should appear before middleware and route matching
-    const redirectIdx = code.indexOf("matchRedirect(__redirPathname");
+    const redirectIdx = code.indexOf(
+      "matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects)",
+    );
     const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
     expect(redirectIdx).toBeGreaterThan(-1);
     expect(routeMatchIdx).toBeGreaterThan(-1);

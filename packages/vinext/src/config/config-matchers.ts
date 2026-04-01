@@ -8,6 +8,11 @@
 import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 
+export type CompiledConfigPattern = {
+  re: RegExp;
+  paramNames: string[];
+};
+
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
  *
@@ -21,7 +26,7 @@ import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-
  * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
  * skip it on subsequent requests too without re-running the scanner.
  */
-const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
+const _compiledPatternCache = new Map<string, CompiledConfigPattern | null>();
 
 /**
  * Cache for compiled header source regexes in matchHeaders.
@@ -641,6 +646,83 @@ function extractConstraint(str: string, re: RegExp): string | null {
   return str.slice(start, i - 1);
 }
 
+function usesRegexBranch(pattern: string): boolean {
+  return (
+    pattern.includes("(") ||
+    pattern.includes("\\") ||
+    /:[\w-]+[*+][^/]/.test(pattern) ||
+    /:[\w-]+\./.test(pattern)
+  );
+}
+
+function execCompiledConfigPattern(
+  pathname: string,
+  compiled: CompiledConfigPattern,
+): Record<string, string> | null {
+  const match = compiled.re.exec(pathname);
+  if (!match) return null;
+  const params: Record<string, string> = Object.create(null);
+  for (let i = 0; i < compiled.paramNames.length; i++) {
+    params[compiled.paramNames[i]] = match[i + 1] ?? "";
+  }
+  return params;
+}
+
+/**
+ * Pre-compile a Next.js config pattern into a RegExp + param-name list.
+ *
+ * Returns `null` for simple segment-based patterns (no groups, backslashes,
+ * catch-all suffixes, or dot-after-param) — these are already fast via the
+ * runtime segment matcher and don't benefit from regex compilation. Also
+ * returns `null` if the compiled regex is rejected by `safeRegExp`.
+ */
+export function compileConfigPattern(pattern: string): CompiledConfigPattern | null {
+  if (!usesRegexBranch(pattern)) return null;
+
+  try {
+    const paramNames: string[] = [];
+    const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+    let regexStr = "";
+    let tok: RegExpExecArray | null;
+
+    while ((tok = tokenRe.exec(pattern)) !== null) {
+      if (tok[1] !== undefined) {
+        const name = tok[1];
+        const rest = pattern.slice(tokenRe.lastIndex);
+        if (rest.startsWith("*") || rest.startsWith("+")) {
+          const quantifier = rest[0];
+          tokenRe.lastIndex += 1;
+          const constraint = extractConstraint(pattern, tokenRe);
+          paramNames.push(name);
+          if (constraint !== null) {
+            regexStr += `(${constraint})`;
+          } else {
+            regexStr += quantifier === "*" ? "(.*)" : "(.+)";
+          }
+        } else {
+          const constraint = extractConstraint(pattern, tokenRe);
+          paramNames.push(name);
+          regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+        }
+      } else if (tok[0] === ".") {
+        regexStr += "\\.";
+      } else {
+        regexStr += tok[0];
+      }
+    }
+
+    const re = safeRegExp("^" + regexStr + "$");
+    return re ? { re, paramNames } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function compileHeaderSourcePattern(source: string): RegExp | null {
+  const escaped = escapeHeaderSource(source);
+  return safeRegExp("^" + escaped + "$");
+}
+
 /**
  * Match a Next.js config pattern (from redirects/rewrites sources) against a pathname.
  * Returns matched params or null.
@@ -664,68 +746,15 @@ export function matchConfigPattern(
   // The last condition catches simple params with literal suffixes (e.g. "/:slug.md")
   // where the param name is followed by a dot — the simple matcher would treat
   // "slug.md" as the param name and match any single segment regardless of suffix.
-  if (
-    pattern.includes("(") ||
-    pattern.includes("\\") ||
-    /:[\w-]+[*+][^/]/.test(pattern) ||
-    /:[\w-]+\./.test(pattern)
-  ) {
+  if (usesRegexBranch(pattern)) {
     try {
-      // Look up the compiled regex in the module-level cache. Patterns come
-      // from next.config.js and are static, so we only need to compile each
-      // one once across the lifetime of the worker/server process.
       let compiled = _compiledPatternCache.get(pattern);
       if (compiled === undefined) {
-        // Cache miss — compile the pattern now and store the result.
-        // Param names may contain hyphens (e.g. :auth-method, :sign-in).
-        const paramNames: string[] = [];
-        // Single-pass conversion with procedural suffix handling. The tokenizer
-        // matches only simple, non-overlapping tokens; quantifier/constraint
-        // suffixes after :param are consumed procedurally to avoid polynomial
-        // backtracking in the regex engine.
-        let regexStr = "";
-        const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
-        let tok: RegExpExecArray | null;
-        while ((tok = tokenRe.exec(pattern)) !== null) {
-          if (tok[1] !== undefined) {
-            const name = tok[1];
-            const rest = pattern.slice(tokenRe.lastIndex);
-            // Check for quantifier (* or +) with optional constraint
-            if (rest.startsWith("*") || rest.startsWith("+")) {
-              const quantifier = rest[0];
-              tokenRe.lastIndex += 1;
-              const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
-              if (constraint !== null) {
-                regexStr += `(${constraint})`;
-              } else {
-                regexStr += quantifier === "*" ? "(.*)" : "(.+)";
-              }
-            } else {
-              // Check for inline constraint without quantifier
-              const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
-              regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
-            }
-          } else if (tok[0] === ".") {
-            regexStr += "\\.";
-          } else {
-            regexStr += tok[0];
-          }
-        }
-        const re = safeRegExp("^" + regexStr + "$");
-        // Store null for rejected patterns so we don't re-run isSafeRegex.
-        compiled = re ? { re, paramNames } : null;
+        compiled = compileConfigPattern(pattern);
         _compiledPatternCache.set(pattern, compiled);
       }
       if (!compiled) return null;
-      const match = compiled.re.exec(pathname);
-      if (!match) return null;
-      const params: Record<string, string> = Object.create(null);
-      for (let i = 0; i < compiled.paramNames.length; i++) {
-        params[compiled.paramNames[i]] = match[i + 1] ?? "";
-      }
-      return params;
+      return execCompiledConfigPattern(pathname, compiled);
     } catch {
       // Fall through to segment-based matching
     }
@@ -808,6 +837,7 @@ export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
   ctx: RequestContext,
+  compiledPatterns?: Array<CompiledConfigPattern | null>,
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
@@ -895,7 +925,10 @@ export function matchRedirect(
       // the locale-static match wins. Stop scanning.
       break;
     }
-    const params = matchConfigPattern(pathname, redirect.source);
+    const compiled = compiledPatterns?.[origIdx];
+    const params = compiled
+      ? execCompiledConfigPattern(pathname, compiled)
+      : matchConfigPattern(pathname, redirect.source);
     if (params) {
       const conditionParams =
         redirect.has || redirect.missing
@@ -928,9 +961,14 @@ export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  compiledPatterns?: Array<CompiledConfigPattern | null>,
 ): string | null {
-  for (const rewrite of rewrites) {
-    const params = matchConfigPattern(pathname, rewrite.source);
+  for (let i = 0; i < rewrites.length; i++) {
+    const rewrite = rewrites[i];
+    const compiled = compiledPatterns?.[i];
+    const params = compiled
+      ? execCompiledConfigPattern(pathname, compiled)
+      : matchConfigPattern(pathname, rewrite.source);
     if (params) {
       const conditionParams =
         rewrite.has || rewrite.missing
@@ -1127,16 +1165,23 @@ export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
   ctx: RequestContext,
+  compiledSources?: Array<RegExp | null>,
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
-  for (const rule of headers) {
-    // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
-    // pure functions of rule.source and the result never changes between requests.
-    let sourceRegex = _compiledHeaderSourceCache.get(rule.source);
+  for (let i = 0; i < headers.length; i++) {
+    const rule = headers[i];
+    // Two-tier source lookup: the precompiled array (from buildPrecompiledConfigPatterns,
+    // passed by callers that hold a PrecompiledConfigPatterns object) is checked first.
+    // The module-level cache (_compiledHeaderSourceCache) is the fallback for callers
+    // that don't supply a precompiled array. escapeHeaderSource() + safeRegExp() are
+    // pure functions of rule.source so the compiled RegExp never changes between requests.
+    let sourceRegex = compiledSources?.[i];
     if (sourceRegex === undefined) {
-      const escaped = escapeHeaderSource(rule.source);
-      sourceRegex = safeRegExp("^" + escaped + "$");
-      _compiledHeaderSourceCache.set(rule.source, sourceRegex);
+      sourceRegex = _compiledHeaderSourceCache.get(rule.source);
+      if (sourceRegex === undefined) {
+        sourceRegex = compileHeaderSourcePattern(rule.source);
+        _compiledHeaderSourceCache.set(rule.source, sourceRegex);
+      }
     }
     if (sourceRegex && sourceRegex.test(pathname)) {
       if (rule.has || rule.missing) {

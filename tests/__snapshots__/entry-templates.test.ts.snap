@@ -965,6 +965,9 @@ const __i18nConfig = null;
 const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
+const __compiledRedirects = [];
+const __compiledRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+const __compiledHeaders = [];
 const __allowedOrigins = [];
 
 
@@ -1281,7 +1284,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -1374,7 +1377,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -1409,7 +1412,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -1679,7 +1682,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -1694,7 +1702,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -3159,6 +3172,9 @@ const __i18nConfig = null;
 const __configRedirects = [{"source":"/old","destination":"/new","permanent":true}];
 const __configRewrites = {"beforeFiles":[{"source":"/api/:path*","destination":"/backend/:path*"}],"afterFiles":[],"fallback":[]};
 const __configHeaders = [{"source":"/api/:path*","headers":[{"key":"X-Custom","value":"test"}]}];
+const __compiledRedirects = [null];
+const __compiledRewrites = { beforeFiles: [null], afterFiles: [], fallback: [] };
+const __compiledHeaders = [/^\\/api\\/[^/]+.*$/];
 const __allowedOrigins = ["https://example.com"];
 
 
@@ -3475,7 +3491,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         if (pathname.startsWith("/base")) pathname = pathname.slice("/base".length) || "/";
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -3571,7 +3587,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -3606,7 +3622,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -3876,7 +3892,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -3891,7 +3912,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -5365,6 +5391,9 @@ const __i18nConfig = null;
 const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
+const __compiledRedirects = [];
+const __compiledRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+const __compiledHeaders = [];
 const __allowedOrigins = [];
 
 
@@ -5681,7 +5710,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -5774,7 +5803,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -5809,7 +5838,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -6079,7 +6108,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -6094,7 +6128,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -7589,6 +7628,9 @@ const __i18nConfig = null;
 const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
+const __compiledRedirects = [];
+const __compiledRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+const __compiledHeaders = [];
 const __allowedOrigins = [];
 
 
@@ -7908,7 +7950,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -8001,7 +8043,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -8036,7 +8078,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -8306,7 +8348,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -8321,7 +8368,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -9793,6 +9845,9 @@ const __i18nConfig = null;
 const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
+const __compiledRedirects = [];
+const __compiledRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+const __compiledHeaders = [];
 const __allowedOrigins = [];
 
 
@@ -10109,7 +10164,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -10202,7 +10257,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -10237,7 +10292,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -10507,7 +10562,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -10522,7 +10582,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -12216,6 +12281,9 @@ const __i18nConfig = null;
 const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
+const __compiledRedirects = [];
+const __compiledRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+const __compiledHeaders = [];
 const __allowedOrigins = [];
 
 
@@ -12532,7 +12600,7 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx, __compiledHeaders);
         for (const h of extraHeaders) {
           // Use append() for headers where multiple values must coexist
           // (Vary, Set-Cookie). Using set() on these would destroy
@@ -12625,7 +12693,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
     const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
+    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx, __compiledRedirects);
     if (__redir) {
       const __redirDest = sanitizeDestination(
         __basePath &&
@@ -12795,7 +12863,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx, __compiledRewrites.beforeFiles);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -13065,7 +13133,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
+    const __afterRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.afterFiles,
+      __postMwReqCtx,
+      __compiledRewrites.afterFiles,
+    );
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -13080,7 +13153,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
+    const __fallbackRewritten = matchRewrite(
+      cleanPathname,
+      __configRewrites.fallback,
+      __postMwReqCtx,
+      __compiledRewrites.fallback,
+    );
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);
@@ -13751,6 +13829,11 @@ const buildId = "test-build-id";
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false},{"source":"/redirect-before-middleware-rewrite","destination":"/about","permanent":false},{"source":"/redirect-before-middleware-response","destination":"/about","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]},{"source":"/headers-before-middleware-rewrite","headers":[{"key":"X-Rewrite-Source-Header","value":"1"}]}],"i18n":null,"images":{}};
+export const vinextCompiledConfig = {
+  redirects: [null, null, null, null],
+  rewrites: { beforeFiles: [null, null, null], afterFiles: [null, null], fallback: [null] },
+  headers: [/^\\/api\\/(.*)$/, /^\\/about$/, /^\\/about$/, /^\\/ssr$/, /^\\/headers-before-middleware-rewrite$/],
+};
 
 function isrGet(key) {
   return __sharedIsrGet(key);

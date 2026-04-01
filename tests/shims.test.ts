@@ -5080,6 +5080,37 @@ describe("matchConfigPattern compiled pattern cache", () => {
   });
 });
 
+describe("compileConfigPattern", () => {
+  it("extracts a reusable compiled regex and param names for regex-branch patterns", async () => {
+    const { compileConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const compiled = compileConfigPattern(
+      "/:locale(en|es|fr|id|ja|ko|pt-br|pt|ro|ta|tr|uk|zh-cn|zh-tw)?/security",
+    );
+
+    expect(compiled).not.toBeNull();
+    expect(compiled?.paramNames).toEqual(["locale"]);
+    expect(compiled?.re).toBeInstanceOf(RegExp);
+    expect(compiled?.re.exec("/en/security")?.[1]).toBe("en");
+  });
+});
+
+describe("compileHeaderSourcePattern", () => {
+  it("compiles header source patterns for build-time reuse", async () => {
+    const { compileHeaderSourcePattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const compiled = compileHeaderSourcePattern("/api/:path*");
+
+    expect(compiled).toBeInstanceOf(RegExp);
+    expect(compiled?.test("/api/users")).toBe(true);
+    expect(compiled?.test("/about")).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // matchRedirect locale-static index tests
 // Verifies the O(1) locale-prefix optimization in matchRedirect.

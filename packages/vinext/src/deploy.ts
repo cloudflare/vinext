@@ -524,7 +524,13 @@ import {
 } from "vinext/config/config-matchers";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
+import {
+  renderPage,
+  handleApiRoute,
+  runMiddleware,
+  vinextConfig,
+  vinextCompiledConfig,
+} from "virtual:vinext-server-entry";
 
 interface Env {
   ASSETS: Fetcher;
@@ -548,6 +554,9 @@ const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const compiledRedirects = vinextCompiledConfig?.redirects;
+const compiledRewrites = vinextCompiledConfig?.rewrites;
+const compiledHeaders = vinextCompiledConfig?.headers;
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
   contentDispositionType: vinextConfig.images.contentDispositionType,
@@ -637,7 +646,7 @@ export default {
 
       // ── 3. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx, compiledRedirects);
         if (redirect) {
           const dest = sanitizeDestination(
             basePath &&
@@ -732,7 +741,7 @@ export default {
       // Middleware headers take precedence: skip config keys already set
       // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
-        const matched = matchHeaders(pathname, configHeaders, reqCtx);
+        const matched = matchHeaders(pathname, configHeaders, reqCtx, compiledHeaders);
         for (const h of matched) {
           const lk = h.key.toLowerCase();
           if (lk === "set-cookie") {
@@ -756,7 +765,12 @@ export default {
 
       // ��─ 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+          compiledRewrites?.beforeFiles,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -776,7 +790,12 @@ export default {
 
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.afterFiles,
+          postMwReqCtx,
+          compiledRewrites?.afterFiles,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -793,7 +812,12 @@ export default {
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
+          const fallbackRewrite = matchRewrite(
+            resolvedPathname,
+            configRewrites.fallback,
+            postMwReqCtx,
+            compiledRewrites?.fallback,
+          );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
