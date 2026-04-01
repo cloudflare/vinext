@@ -1665,8 +1665,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -1674,6 +1674,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -1711,7 +1714,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -1719,6 +1723,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -1728,7 +1733,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
@@ -3978,8 +3983,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -3987,6 +3992,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -4024,7 +4032,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -4032,6 +4041,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -4041,7 +4051,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
@@ -6297,8 +6307,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -6306,6 +6316,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -6343,7 +6356,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -6351,6 +6365,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -6360,7 +6375,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
@@ -8640,8 +8655,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -8649,6 +8664,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -8686,7 +8704,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -8694,6 +8713,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -8703,7 +8723,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
@@ -10957,8 +10977,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -10966,6 +10986,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -11003,7 +11026,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -11011,6 +11035,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -11020,7 +11045,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client
@@ -13627,8 +13652,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
-              const redirectHeaders = { 
-                "Content-Type": "text/x-component; charset=utf-8", 
+              const redirectHeaders = {
+                "Content-Type": "text/x-component; charset=utf-8",
                 "Vary": "RSC, Accept",
                 "x-action-redirect": actionRedirect.url,
                 "x-action-redirect-type": actionRedirect.type,
@@ -13636,6 +13661,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 "x-action-rsc-prerender": "1",
               };
 
+              // Always include X-Vinext-Params header (even if empty) so the
+              // client can correctly parse useParams() for the redirect target.
+              // For routes without dynamic params, this will be "{}".
               redirectHeaders["X-Vinext-Params"] = encodeURIComponent(JSON.stringify(redirectParams));
 
               const redirectResponse = new Response(rscStream, {
@@ -13673,7 +13701,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
 
         // Fallback: external URL or unmatched route — client will hard-navigate.
-        // Clean up navigation context before returning.
+        // Clean up both contexts before returning.
+        setHeadersContext(null);
         setNavigationContext(null);
         const redirectHeaders = {
           "Content-Type": "text/x-component; charset=utf-8",
@@ -13681,6 +13710,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
@@ -13690,7 +13720,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           if (actionDraftCookie) fallbackResponse.headers.append("Set-Cookie", actionDraftCookie);
         }
-        return fallbackResponse;
+        return __applyRouteHandlerMiddlewareContext(fallbackResponse, _mwCtx);
       }
 
       // After the action, re-render the current page so the client

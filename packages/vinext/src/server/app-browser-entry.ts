@@ -214,6 +214,11 @@ function registerServerActionCallback(): void {
             "[vinext] RSC navigation failed, falling back to hard redirect:",
             rscParseErr,
           );
+          // Ensure transient redirect navigation state is cleared before
+          // forcing a full-page navigation fallback.
+          setNavigationContext(null);
+          setClientParams({});
+          notifyListeners();
         }
       }
 

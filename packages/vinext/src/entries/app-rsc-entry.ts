@@ -2005,6 +2005,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({})),
         };
         const fallbackResponse = new Response(null, { status: 200, headers: redirectHeaders });
         // Append cookies for fallback case
