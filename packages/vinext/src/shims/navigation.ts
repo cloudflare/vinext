@@ -31,10 +31,11 @@ const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLConte
  * Map of parallel route key → child segments below the current layout.
  * The "children" key is always present (the default parallel route).
  * Named parallel routes add their own keys (e.g., "team", "analytics").
+ *
+ * Arrays are mutable (`string[]`) to match Next.js's public API return type
+ * without requiring `as` casts. The map itself is Readonly — no key addition.
  */
-export type SegmentMap = { readonly children: readonly string[] } & Readonly<
-  Record<string, readonly string[]>
->;
+export type SegmentMap = { readonly children: string[] } & Readonly<Record<string, string[]>>;
 
 type _LayoutSegmentGlobal = typeof globalThis & {
   [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<SegmentMap> | null;
@@ -96,7 +97,7 @@ export function getLayoutSegmentContext(): React.Context<SegmentMap> | null {
  * Returns [] if no context is available (RSC environment, outside React tree)
  * or if the requested key is not present in the segment map.
  */
-function useChildSegments(parallelRoutesKey: string = "children"): readonly string[] {
+function useChildSegments(parallelRoutesKey: string = "children"): string[] {
   const ctx = getLayoutSegmentContext();
   if (!ctx) return [];
   // useContext is safe here because if createContext exists, useContext does too.
@@ -741,8 +742,7 @@ export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | n
  * @param parallelRoutesKey - Which parallel route to read (default: "children")
  */
 export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[] {
-  // Cast away readonly for public API compat — Next.js returns mutable string[]
-  return useChildSegments(parallelRoutesKey) as string[];
+  return useChildSegments(parallelRoutesKey);
 }
 
 export { ReadonlyURLSearchParams };
