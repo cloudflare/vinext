@@ -80,3 +80,18 @@ export async function redirectWithActionState(
   }
   return { success: true };
 }
+
+/**
+ * Server action for useActionState that redirects back to the same page.
+ * Tests that form state resets properly after a same-route redirect.
+ */
+export async function redirectToSelf(
+  _prevState: { success: boolean; error?: string },
+  formData: FormData,
+): Promise<{ success: boolean; error?: string }> {
+  const shouldRedirect = formData.get("redirect") === "true";
+  if (shouldRedirect) {
+    redirect("/action-self-redirect");
+  }
+  return { success: true };
+}

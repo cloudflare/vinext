@@ -216,4 +216,29 @@ test.describe("useActionState", () => {
     await expect(page).toHaveURL(/\/action-state-test$/);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
   });
+
+  test("useActionState: same-route redirect resets form state", async ({ page }) => {
+    await page.goto(`${BASE}/action-self-redirect`);
+    await expect(page.locator("h1")).toHaveText("Action Self-Redirect Test");
+    await waitForHydration(page);
+
+    // Initial state should be { success: false }
+    await expect(async () => {
+      const stateText = await page.locator('[data-testid="state"]').textContent();
+      expect(stateText).toContain('"success":false');
+    }).toPass({ timeout: 5_000 });
+
+    // Click the submit button — should redirect back to same page
+    await page.click('[data-testid="submit-btn"]');
+
+    // Should stay on the same page (soft navigation)
+    await expect(page).toHaveURL(/\/action-self-redirect$/);
+
+    // State should reset to initial { success: false }, not retain previous value
+    // This matches Next.js behavior where redirect causes tree remount
+    await expect(async () => {
+      const stateText = await page.locator('[data-testid="state"]').textContent();
+      expect(stateText).toContain('"success":false');
+    }).toPass({ timeout: 5_000 });
+  });
 });

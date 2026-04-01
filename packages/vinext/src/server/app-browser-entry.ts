@@ -161,18 +161,6 @@ function registerServerActionCallback(): void {
           });
 
           if (isServerActionResult(result)) {
-            // Update the React tree with the redirect target's RSC payload
-            startTransition(() => {
-              getReactRoot().render(result.root);
-            });
-
-            // Update the browser URL without a reload
-            if (redirectType === "push") {
-              window.history.pushState(null, "", actionRedirect);
-            } else {
-              window.history.replaceState(null, "", actionRedirect);
-            }
-
             // Read params from response header (same as normal RSC navigation)
             const paramsHeader = fetchResponse.headers.get("X-Vinext-Params");
             let params: Record<string, string> = {};
@@ -186,14 +174,32 @@ function registerServerActionCallback(): void {
 
             // Update client-side navigation context so usePathname(), useSearchParams(),
             // and useParams() return the correct values for the redirect target.
+            // This is done inside startTransition to ensure context is only updated
+            // after successful RSC parsing — if parsing fails, we fall back to hard
+            // redirect without leaving navigation in an inconsistent state.
             const redirectUrl = new URL(actionRedirect, window.location.origin);
-            setNavigationContext({
-              pathname: redirectUrl.pathname,
-              searchParams: redirectUrl.searchParams,
-              params,
+
+            // Update the React tree with the redirect target's RSC payload
+            startTransition(() => {
+              getReactRoot().render(result.root);
+
+              // Update navigation context inside the transition so it stays in sync
+              // with the rendered tree
+              setNavigationContext({
+                pathname: redirectUrl.pathname,
+                searchParams: redirectUrl.searchParams,
+                params,
+              });
+              setClientParams(params);
+              notifyListeners();
             });
-            setClientParams(params);
-            notifyListeners();
+
+            // Update the browser URL without a reload
+            if (redirectType === "push") {
+              window.history.pushState(null, "", actionRedirect);
+            } else {
+              window.history.replaceState(null, "", actionRedirect);
+            }
 
             // Handle return value if present
             if (result.returnValue) {

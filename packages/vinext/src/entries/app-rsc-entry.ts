@@ -1916,6 +1916,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               });
 
               // Build and render the redirect target page
+              // Pre-render the redirect target's RSC payload so the client can
+              // apply it as a soft navigation (matching Next.js behavior).
+              // 
+              // Note: This pre-rendered response bypasses the middleware pipeline.
+              // Middleware does not execute for the redirect target — only the
+              // original action request goes through middleware. This is a known
+              // limitation tracked for future work. If middleware needs to run
+              // for the redirect target (e.g., auth, cookies, headers), use a
+              // hard redirect or restructure the flow.
               const redirectElement = buildPageElement(
                 redirectRoute,
                 redirectParams,
