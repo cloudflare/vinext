@@ -631,7 +631,11 @@ async function main(): Promise<void> {
         // Check stale-navigation before and after createFromFetch. The pre-check
         // avoids wasted parse work; the post-check catches supersessions that
         // occur during the await. createFromFetch on a buffered response is fast
-        // but still async, so the window exists.
+        // but still async, so the window exists. The non-cached path (below) places
+        // its heavyweight async steps (fetch, snapshotRscResponse, createFromFetch)
+        // between navId checks consistently; the cached path omits the check between
+        // createClientNavigationRenderSnapshot (synchronous) and createFromFetch
+        // because there is no await in that gap.
         if (navId !== activeNavigationId) return;
         const cachedParams = cachedRoute.params;
         // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
@@ -728,12 +732,10 @@ async function main(): Promise<void> {
 
       if (navId !== activeNavigationId) return;
 
-      // Store visited response and stage params only after confirming this
-      // navigation hasn't been superseded (avoids stale cache entries).
-      // Set _snapshotPending before stageClientParams for the same reason as
-      // the cached path above: ensures params are only staged as part of an
-      // in-flight snapshot.
-      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
+      // Stage params only after confirming this navigation hasn't been superseded
+      // (avoids stale cache entries). Set _snapshotPending before stageClientParams
+      // for the same reason as the cached path above: ensures params are only staged
+      // as part of an in-flight snapshot.
       _snapshotPending = true; // Set before renderNavigationPayload
       stageClientParams(navParams); // NB: if this throws, outer catch hard-navigates, resetting all JS state
       try {
@@ -751,6 +753,11 @@ async function main(): Promise<void> {
         // catch from double-decrementing navigationSnapshotActiveCount.
         _snapshotPending = false;
       }
+      // Store the visited response only after renderNavigationPayload succeeds.
+      // If we stored it before and renderNavigationPayload threw, a future
+      // back/forward navigation could replay a snapshot from a navigation that
+      // never actually rendered successfully.
+      storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       return;
     } catch (error) {
       // Only decrement counter if snapshot was activated but not yet committed.
