@@ -107,11 +107,8 @@ export async function precompressAssets(
     await Promise.all(
       chunk.map(async (fullPath) => {
         const content = await fsp.readFile(fullPath);
-        const completed = ++processed;
-        if (content.length < MIN_SIZE) {
-          onProgress?.(completed, filePaths.length, path.basename(fullPath));
-          return;
-        }
+        onProgress?.(++processed, filePaths.length, path.basename(fullPath));
+        if (content.length < MIN_SIZE) return;
 
         result.filesCompressed++;
         result.totalOriginalBytes += content.length;
@@ -144,7 +141,6 @@ export async function precompressAssets(
         await Promise.all(writes);
 
         result.totalBrotliBytes += brContent.length;
-        onProgress?.(completed, filePaths.length, path.basename(fullPath));
       }),
     );
   }

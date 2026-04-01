@@ -458,7 +458,10 @@ async function tryServeStatic(
       res.end(variant.buffer);
     } else {
       pipeline(fs.createReadStream(variant.path), res, (err) => {
-        if (err) res.destroy(err);
+        if (err) {
+          console.error(`[vinext] Static file stream error for ${variant.path}:`, err.message);
+          res.destroy(err);
+        }
       });
     }
     return true;
@@ -496,7 +499,6 @@ async function tryServeStatic(
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
-      const compressor = createCompressor(encoding);
       res.writeHead(200, {
         ...baseHeaders,
         "Content-Encoding": encoding,
@@ -506,8 +508,12 @@ async function tryServeStatic(
         res.end();
         return true;
       }
+      const compressor = createCompressor(encoding);
       pipeline(fs.createReadStream(resolved.path), compressor, res, (err) => {
-        if (err) res.destroy(err);
+        if (err) {
+          console.error(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+          res.destroy(err);
+        }
       });
       return true;
     }
@@ -522,7 +528,10 @@ async function tryServeStatic(
     return true;
   }
   pipeline(fs.createReadStream(resolved.path), res, (err) => {
-    if (err) res.destroy(err);
+    if (err) {
+      console.error(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+      res.destroy(err);
+    }
   });
   return true;
 }

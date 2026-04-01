@@ -123,7 +123,7 @@ export class StaticFileCache {
         : "public, max-age=3600";
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
-        `W/"${fileInfo.size}-${Math.trunc(fileInfo.mtimeMs / 1000)}"`;
+        `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const baseHeaders = {
@@ -190,22 +190,25 @@ export class StaticFileCache {
     // For small compressed variants (e.g. a 50KB JS bundle → ~15KB brotli),
     // res.end(buffer) is ~2x faster than createReadStream().pipe() because
     // it skips fd open/close and stream plumbing overhead.
-    const bufferReads: Promise<void>[] = [];
+    // Reads are chunked at 64 concurrent to avoid fd exhaustion on large projects.
+    const toBuffer: FileVariant[] = [];
     const bufferedPaths = new Set<string>();
     for (const entry of entries.values()) {
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
         if (!variant || bufferedPaths.has(variant.path)) continue;
         bufferedPaths.add(variant.path);
         if (variant.size <= BUFFER_THRESHOLD) {
-          bufferReads.push(
-            fsp.readFile(variant.path).then((buf) => {
-              variant.buffer = buf;
-            }),
-          );
+          toBuffer.push(variant);
         }
       }
     }
-    await Promise.all(bufferReads);
+    for (let i = 0; i < toBuffer.length; i += 64) {
+      await Promise.all(
+        toBuffer.slice(i, i + 64).map(async (v) => {
+          v.buffer = await fsp.readFile(v.path);
+        }),
+      );
+    }
 
     return new StaticFileCache(entries);
   }
@@ -241,7 +244,8 @@ function etagFromFilenameHash(relativePath: string, ext: string): string | null 
   const lastDash = basename.lastIndexOf("-");
   if (lastDash === -1 || lastDash === basename.length - 1) return null;
   const suffix = basename.slice(lastDash + 1);
-  // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers
+  // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers.
+  // If Rolldown changes its hash length, update this range.
   return suffix.length >= 6 && suffix.length <= 12 && /^[A-Za-z0-9_-]+$/.test(suffix)
     ? `W/"${suffix}"`
     : null;
