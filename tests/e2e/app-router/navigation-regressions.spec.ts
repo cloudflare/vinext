@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
 
+// Hardcoded BASE URL matches the convention used in all other E2E test files in
+// this directory (navigation.spec.ts, server-client-only.spec.ts, after.spec.ts,
+// etc.). Port 4174 is the vite preview default for the app-basic fixture.
 const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {

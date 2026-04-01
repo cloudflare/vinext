@@ -79,6 +79,12 @@ const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 // The browser entry is loaded exactly once (via the RSC plugin's generated
 // bootstrap), so module-level state is safe here. If that assumption ever
 // changes, these should be migrated to a Symbol.for-backed global.
+//
+// The most severe consequence of multiple instances would be Map fragmentation:
+// pendingNavigationCommits and pendingNavigationPrePaintEffects would split
+// across instances, so drainPrePaintEffects in one instance could never drain
+// effects queued by the other, permanently leaking navigationSnapshotActiveCount
+// and causing hooks to prefer stale snapshot values indefinitely.
 let nextNavigationRenderId = 0;
 let activeNavigationId = 0;
 const pendingNavigationCommits = new Map<number, () => void>();
@@ -628,8 +634,10 @@ async function main(): Promise<void> {
         // but still async, so the window exists.
         if (navId !== activeNavigationId) return;
         const cachedParams = cachedRoute.params;
+        // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
+        // wrapping only) — no stale-navigation recheck needed between here and the
+        // next await.
         const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
-        if (navId !== activeNavigationId) return;
         const cachedPayload = await createFromFetch<ReactNode>(
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );
