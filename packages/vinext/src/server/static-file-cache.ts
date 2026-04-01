@@ -193,15 +193,18 @@ export class StaticFileCache {
     // res.end(buffer) is ~2x faster than createReadStream().pipe() because
     // it skips fd open/close and stream plumbing overhead.
     // Reads are chunked at 64 concurrent to avoid fd exhaustion on large projects.
+    // Deduplicate at the entry level first: HTML aliases share the same
+    // StaticFileEntry by reference, so entries.values() yields duplicates for
+    // paths like /about and /about.html. Deduping entries avoids iterating
+    // their variants multiple times on sites with many HTML pages.
     const toBuffer: FileVariant[] = [];
-    const bufferedPaths = new Set<string>();
+    const seenEntries = new Set<StaticFileEntry>();
     for (const entry of entries.values()) {
+      if (seenEntries.has(entry)) continue;
+      seenEntries.add(entry);
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
-        if (!variant || bufferedPaths.has(variant.path)) continue;
-        bufferedPaths.add(variant.path);
-        if (variant.size <= BUFFER_THRESHOLD) {
-          toBuffer.push(variant);
-        }
+        if (!variant || variant.size > BUFFER_THRESHOLD) continue;
+        toBuffer.push(variant);
       }
     }
     for (let i = 0; i < toBuffer.length; i += 64) {
@@ -241,7 +244,7 @@ export class StaticFileCache {
  * Returns null if the filename doesn't contain a recognizable hash suffix,
  * so the caller can fall back to mtime-based ETags.
  */
-function etagFromFilenameHash(relativePath: string, ext: string): string | null {
+export function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
   const lastDash = basename.lastIndexOf("-");
   if (lastDash === -1 || lastDash === basename.length - 1) return null;

@@ -24,7 +24,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
-import { StaticFileCache, CONTENT_TYPES } from "./static-file-cache.js";
+import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {
   matchRedirect,
   matchRewrite,
@@ -497,7 +497,11 @@ async function tryServeStatic(
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
-  const etag = `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
+  // Use a filename-hash ETag for hashed assets (matches the fast-path cache
+  // behaviour and survives deploys). Fall back to mtime for non-hashed files.
+  const etag =
+    (isHashed && etagFromFilenameHash(pathname, ext)) ||
+    `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
   const baseType = ct.split(";")[0].trim();
   const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
 
