@@ -615,13 +615,18 @@ async function main(): Promise<void> {
         // Stage params only after confirming this navigation hasn't been superseded
         stageClientParams(cachedParams);
         _snapshotPending = true; // Set before renderNavigationPayload
-        await renderNavigationPayload(
-          cachedPayload,
-          cachedNavigationSnapshot,
-          navigationCommitEffect,
-          isSameRoute,
-        );
-        _snapshotPending = false; // Cleared after successful commit
+        try {
+          await renderNavigationPayload(
+            cachedPayload,
+            cachedNavigationSnapshot,
+            navigationCommitEffect,
+            isSameRoute,
+          );
+        } finally {
+          // Always clear _snapshotPending so the outer catch does not
+          // double-decrement if renderNavigationPayload throws.
+          _snapshotPending = false;
+        }
         return;
       }
 
@@ -693,18 +698,28 @@ async function main(): Promise<void> {
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       stageClientParams(navParams);
       _snapshotPending = true; // Set before renderNavigationPayload
-      await renderNavigationPayload(
-        rscPayload,
-        navigationSnapshot,
-        navigationCommitEffect,
-        isSameRoute,
-      );
-      _snapshotPending = false; // Cleared after successful commit
+      try {
+        await renderNavigationPayload(
+          rscPayload,
+          navigationSnapshot,
+          navigationCommitEffect,
+          isSameRoute,
+        );
+      } finally {
+        // Always clear _snapshotPending after renderNavigationPayload returns or
+        // throws. renderNavigationPayload's inner catch already calls
+        // commitClientNavigationState() on synchronous errors and re-throws, so
+        // the outer catch must not call it again. Clearing here prevents the outer
+        // catch from double-decrementing navigationSnapshotActiveCount.
+        _snapshotPending = false;
+      }
+      return;
     } catch (error) {
       // Only decrement counter if snapshot was activated but not yet committed.
-      // NB: This relies on renderNavigationPayload being the last await before
-      // _snapshotPending = false. Adding code between them risks double-decrement.
+      // renderNavigationPayload clears _snapshotPending (via its inner try-finally)
+      // before re-throwing, so this guard correctly skips the double-decrement case.
       if (_snapshotPending) {
+        _snapshotPending = false;
         commitClientNavigationState();
       }
       console.error("[vinext] RSC navigation error:", error);
