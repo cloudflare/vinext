@@ -649,7 +649,7 @@ async function main(): Promise<void> {
         // Ordering _snapshotPending first makes the intent explicit — params are
         // staged as part of an in-flight snapshot, not as a standalone side-effect.
         _snapshotPending = true; // Set before renderNavigationPayload
-        stageClientParams(cachedParams);
+        stageClientParams(cachedParams); // NB: if this throws, outer catch hard-navigates, resetting all JS state
         try {
           await renderNavigationPayload(
             cachedPayload,
@@ -735,7 +735,7 @@ async function main(): Promise<void> {
       // in-flight snapshot.
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
       _snapshotPending = true; // Set before renderNavigationPayload
-      stageClientParams(navParams);
+      stageClientParams(navParams); // NB: if this throws, outer catch hard-navigates, resetting all JS state
       try {
         await renderNavigationPayload(
           rscPayload,
