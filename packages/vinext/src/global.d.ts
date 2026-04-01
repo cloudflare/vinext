@@ -18,6 +18,7 @@
 
 import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
+import type { CachedRscResponse, PrefetchCacheEntry } from "./shims/navigation";
 
 // ---------------------------------------------------------------------------
 // Window globals — browser-side state shared across module boundaries
@@ -83,8 +84,17 @@ declare global {
      *
      * @param href - The destination URL (may be absolute or relative).
      * @param redirectDepth - Internal parameter used to detect redirect loops.
+     * @param navigationKind - Internal hint for traversal vs regular navigation.
+     * @param historyUpdateMode - Internal hint for when history should publish.
      */
-    __VINEXT_RSC_NAVIGATE__: ((href: string, redirectDepth?: number) => Promise<void>) | undefined;
+    __VINEXT_RSC_NAVIGATE__:
+      | ((
+          href: string,
+          redirectDepth?: number,
+          navigationKind?: "navigate" | "traverse" | "refresh",
+          historyUpdateMode?: "push" | "replace",
+        ) => Promise<void>)
+      | undefined;
 
     /**
      * A Promise that resolves when the current in-flight popstate RSC navigation
@@ -101,9 +111,7 @@ declare global {
      * Lazily initialised on `window` by `shims/navigation.ts` so the same Map
      * instance is shared between the navigation shim and the Link component.
      */
-    __VINEXT_RSC_PREFETCH_CACHE__:
-      | Map<string, { response: Response; timestamp: number }>
-      | undefined;
+    __VINEXT_RSC_PREFETCH_CACHE__: Map<string, PrefetchCacheEntry> | undefined;
 
     /**
      * Set of RSC URLs that have already been prefetched (or are in-flight).

@@ -19,6 +19,7 @@
  */
 
 import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
+import { navigateClientSide } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath } from "./url-utils.js";
 
@@ -223,13 +224,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
     // Navigate client-side
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: RSC navigation. Await so scroll happens after new content renders.
-      if (replace) {
-        window.history.replaceState(null, "", url);
-      } else {
-        window.history.pushState(null, "", url);
-      }
-      await window.__VINEXT_RSC_NAVIGATE__(url);
+      // App Router: use the shared navigator so URL/history publish stays
+      // aligned with the committed RSC tree.
+      await navigateClientSide(url, replace ? "replace" : "push", scroll);
     } else {
       // Pages Router: use router or fallback
       if (replace) {
@@ -240,7 +237,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
 
-    if (scroll) {
+    // App Router: scroll is handled inside navigateClientSide (called above).
+    // Pages Router: scroll manually since pushState/popstate doesn't auto-scroll.
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function" && scroll) {
       window.scrollTo(0, 0);
     }
   }
