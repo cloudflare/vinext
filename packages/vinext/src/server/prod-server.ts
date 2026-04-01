@@ -502,8 +502,11 @@ async function tryServeStatic(
   const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
 
   // 304 Not Modified — parity with the fast (cache) path.
-  // Include Vary: Accept-Encoding when the content type is compressible so
-  // shared caches don't collapse compressed and uncompressed representations.
+  // Include Vary: Accept-Encoding only when compress=true AND the content type
+  // is compressible. When compress=false (e.g. image optimization caller),
+  // Vary is intentionally omitted — matching the fast-path behaviour where
+  // compress=false also skips all compressed variants.
+  // Spreading undefined is a no-op in object literals (ES2018+).
   const ifNoneMatch = req.headers["if-none-match"];
   if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, etag)) {
     const notModifiedHeaders: Record<string, string | string[]> = {
