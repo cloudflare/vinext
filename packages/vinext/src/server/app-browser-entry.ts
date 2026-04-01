@@ -105,11 +105,12 @@ function applyClientParams(params: Record<string, string | string[]>): void {
 
 function stageClientParams(params: Record<string, string | string[]>): void {
   // NB: latestClientParams diverges from ClientNavigationState.clientParams
-  // between staging and commit. Server action snapshots (updateBrowserTree at
-  // lines 544/558) read latestClientParams, so a server action fired during this
-  // window would get the pending (not yet committed) params. This is acceptable
-  // because the commit effect fires synchronously in the same React commit phase,
-  // keeping the window vanishingly small.
+  // between staging and commit. Server action snapshots (updateBrowserTree
+  // calls inside registerServerActionCallback) read latestClientParams, so a
+  // server action fired during this window would get the pending (not yet
+  // committed) params. This is acceptable because the commit effect fires
+  // synchronously in the same React commit phase, keeping the window
+  // vanishingly small.
   latestClientParams = params;
   replaceClientParamsWithoutNotify(params);
 }
@@ -633,9 +634,14 @@ async function main(): Promise<void> {
           Promise.resolve(restoreRscResponse(cachedRoute.response)),
         );
         if (navId !== activeNavigationId) return;
-        // Stage params only after confirming this navigation hasn't been superseded
-        stageClientParams(cachedParams);
+        // Stage params only after confirming this navigation hasn't been superseded.
+        // Set _snapshotPending before stageClientParams: if renderNavigationPayload
+        // throws synchronously, its inner catch calls commitClientNavigationState()
+        // which would flush pendingClientParams for a route that never rendered.
+        // Ordering _snapshotPending first makes the intent explicit — params are
+        // staged as part of an in-flight snapshot, not as a standalone side-effect.
         _snapshotPending = true; // Set before renderNavigationPayload
+        stageClientParams(cachedParams);
         try {
           await renderNavigationPayload(
             cachedPayload,
@@ -716,9 +722,12 @@ async function main(): Promise<void> {
 
       // Store visited response and stage params only after confirming this
       // navigation hasn't been superseded (avoids stale cache entries).
+      // Set _snapshotPending before stageClientParams for the same reason as
+      // the cached path above: ensures params are only staged as part of an
+      // in-flight snapshot.
       storeVisitedResponseSnapshot(rscUrl, responseSnapshot, navParams);
-      stageClientParams(navParams);
       _snapshotPending = true; // Set before renderNavigationPayload
+      stageClientParams(navParams);
       try {
         await renderNavigationPayload(
           rscPayload,
