@@ -9,7 +9,15 @@ import {
   encodeReply,
   setServerCallback,
 } from "@vitejs/plugin-rsc/browser";
-import { flushSync } from "react-dom";
+import {
+  createElement,
+  Fragment,
+  startTransition,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
@@ -122,6 +130,65 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   return rscResponse.body;
 }
 
+// ---------------------------------------------------------------------------
+// NavigationRoot — persistent wrapper for concurrent RSC navigation
+//
+// startTransition(() => root.render(newTree)) does NOT correctly prevent
+// Suspense fallbacks from flashing during navigation. When root.render()
+// replaces the entire fiber tree, React has no "previously committed content"
+// to hold onto — new Suspense boundaries in the incoming tree may flash their
+// fallbacks before their content resolves.
+//
+// The correct fix: hold RSC content in React state inside a persistent
+// component. startTransition(() => setState(newContent)) inside a persistent
+// component tells React to keep that component's current committed output
+// visible until the new render (including all Suspense boundaries) is fully
+// resolved, then commit atomically. This is how Next.js App Router prevents
+// loading-boundary flashes during client navigation.
+// ---------------------------------------------------------------------------
+
+// Exposed by NavigationRoot. Returns a Promise that resolves once the
+// transition commits to the DOM — callers can await it to know when the
+// new content is actually visible (used by navigateRsc so that
+// __VINEXT_RSC_PENDING__ resolves at the right time for scroll restoration).
+let _scheduleRscUpdate: ((content: ReactNode) => Promise<void>) | null = null;
+
+function NavigationRoot({ initial }: { initial: ReactNode }) {
+  const [content, setContent] = useState<ReactNode>(initial);
+  // useTransition gives us isPending so we know exactly when a transition
+  // has committed. We use that to resolve the promise returned to navigateRsc,
+  // which in turn lets __VINEXT_RSC_PENDING__ resolve at the right moment for
+  // scroll restoration (restoreScrollPosition in navigation.ts awaits it).
+  const [isPending, startTransitionHook] = useTransition();
+  const resolveRef = useRef<(() => void) | null>(null);
+
+  // After each commit: if a transition just completed, resolve the waiter.
+  // useEffect runs after the browser has painted the committed tree, which
+  // is the correct point for scroll restoration to apply.
+  useEffect(() => {
+    if (!isPending && resolveRef.current) {
+      const resolve = resolveRef.current;
+      resolveRef.current = null;
+      resolve();
+    }
+  });
+
+  _scheduleRscUpdate = (newContent: ReactNode): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      // Overwrite any prior pending resolve — if a second navigation fires
+      // before the first commits, the first waiter is abandoned (acceptable).
+      resolveRef.current = resolve;
+      startTransitionHook(() => {
+        setContent(newContent);
+      });
+    });
+  };
+
+  // Fragment wrapper: renders content directly with no extra DOM nodes so
+  // the hydration output is identical to the server-rendered HTML.
+  return createElement(Fragment, null, content);
+}
+
 function registerServerActionCallback(): void {
   setServerCallback(async (id, args) => {
     const temporaryReferences = createTemporaryReferenceSet();
@@ -164,7 +231,13 @@ function registerServerActionCallback(): void {
     });
 
     if (isServerActionResult(result)) {
-      getReactRoot().render(result.root);
+      // Route through NavigationRoot so root.render() doesn't destroy the wrapper.
+      // Server action results are fully resolved so startTransition commits promptly.
+      if (_scheduleRscUpdate) {
+        void _scheduleRscUpdate(result.root);
+      } else {
+        getReactRoot().render(result.root);
+      }
       if (result.returnValue) {
         if (!result.returnValue.ok) throw result.returnValue.data;
         return result.returnValue.data;
@@ -172,7 +245,11 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    getReactRoot().render(result as ReactNode);
+    if (_scheduleRscUpdate) {
+      void _scheduleRscUpdate(result as ReactNode);
+    } else {
+      getReactRoot().render(result as ReactNode);
+    }
     return result;
   });
 }
@@ -183,9 +260,12 @@ async function main(): Promise<void> {
   const rscStream = await readInitialRscStream();
   const root = createFromReadableStream(rscStream);
 
+  // Hydrate with NavigationRoot so subsequent navigations go through setState
+  // transitions rather than root.render() replacements. NavigationRoot's
+  // Fragment wrapper renders identical DOM to the SSR HTML — no hydration mismatch.
   reactRoot = hydrateRoot(
     document,
-    root as ReactNode,
+    createElement(NavigationRoot, { initial: root as ReactNode }),
     import.meta.env.DEV ? { onCaughtError() {} } : undefined,
   );
 
@@ -254,10 +334,43 @@ async function main(): Promise<void> {
         setClientParams({});
       }
 
-      const rscPayload = await createFromFetch(Promise.resolve(navResponse));
-      flushSync(() => {
-        getReactRoot().render(rscPayload as ReactNode);
+      // Buffer the full RSC response body before passing it to createFromFetch.
+      //
+      // Without buffering, createFromFetch receives a streaming response and
+      // creates React elements with "lazy" chunks for async server components.
+      // When React renders these, Suspense boundaries suspend and React commits
+      // the fallback first (short content), then the resolved content in a
+      // second pass. This causes two problems:
+      //   1. Suspense fallback flash — the fallback is briefly visible between
+      //      the shell commit and the resolved-content commit.
+      //   2. Scroll restoration jank — restoreScrollPosition sees a page that
+      //      is too short to reach the saved scroll position on the first attempt.
+      //
+      // By fully buffering the response, all RSC rows are available before the
+      // flight parser runs. createFromFetch returns a fully-resolved React tree
+      // with no lazy chunks. React renders and commits the complete content in
+      // a single pass — no Suspense suspension, no partial commits, no flash.
+      //
+      // The tradeoff: the old content stays visible for the full server response
+      // time (e.g. 400ms for a slow async component). This matches Next.js App
+      // Router's "keep old UI visible until new content is ready" contract.
+      const responseBody = await navResponse.arrayBuffer();
+      const bufferedResponse = new Response(responseBody, {
+        headers: navResponse.headers,
+        status: navResponse.status,
+        statusText: navResponse.statusText,
       });
+      const rscPayload = await createFromFetch(Promise.resolve(bufferedResponse));
+      // Await the transition commit so __VINEXT_RSC_PENDING__ resolves only
+      // after the new content is painted (needed for scroll restoration).
+      if (_scheduleRscUpdate) {
+        await _scheduleRscUpdate(rscPayload as ReactNode);
+      } else {
+        // Fallback: shouldn't occur after hydration completes.
+        startTransition(() => {
+          getReactRoot().render(rscPayload as ReactNode);
+        });
+      }
     } catch (error) {
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
@@ -282,6 +395,7 @@ async function main(): Promise<void> {
         const rscPayload = await createFromFetch(
           fetch(toRscUrl(window.location.pathname + window.location.search)),
         );
+        // HMR bypasses NavigationRoot for immediate code-change feedback.
         getReactRoot().render(rscPayload as ReactNode);
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);

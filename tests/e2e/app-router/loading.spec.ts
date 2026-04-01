@@ -2,6 +2,13 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
+async function waitForHydration(page: import("@playwright/test").Page) {
+  await expect(async () => {
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
+    expect(ready).toBe(true);
+  }).toPass({ timeout: 10_000 });
+}
+
 test.describe("Loading boundaries (loading.tsx)", () => {
   test("slow page eventually renders content", async ({ page }) => {
     await page.goto(`${BASE}/slow`);
@@ -44,5 +51,36 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     await expect(page.locator("h1")).toHaveText("Slow Page", {
       timeout: 10_000,
     });
+  });
+
+  /**
+   * Client navigation to a slow page works end-to-end.
+   *
+   * Note: showing loading.tsx during client navigation to a new route is
+   * correct Next.js behavior — React shows the Suspense boundary for a
+   * route segment that has never been rendered before. The regression we
+   * guard against (issue #639) is *partial* UI flash where content *outside*
+   * a Suspense boundary updates before content *inside* it is ready. That
+   * scenario is covered in navigation-flows.spec.ts.
+   */
+  test("client navigation to slow page completes without full reload", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("h1")).toHaveText("Welcome to App Router");
+    await waitForHydration(page);
+
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    // Client-navigate — do NOT use page.goto() (that is a hard/SSR navigation).
+    await page.click('[data-testid="slow-link"]');
+
+    // The slow page has a 2s server delay; wait up to 10s total.
+    await expect(page.locator("h1")).toHaveText("Slow Page", { timeout: 10_000 });
+    await expect(page.locator("main > p")).toHaveText("This page has a loading boundary.");
+
+    // Confirm no full-page reload occurred.
+    const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
+    expect(marker).toBe(true);
   });
 });

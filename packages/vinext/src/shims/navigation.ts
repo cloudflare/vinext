@@ -538,18 +538,28 @@ function restoreScrollPosition(state: unknown): void {
     void Promise.resolve().then(() => {
       const pending: Promise<void> | null = window.__VINEXT_RSC_PENDING__ ?? null;
 
+      // Retry scrollTo until the page is tall enough to reach the target.
+      //
+      // The first attempt may land short when a Suspense boundary was not
+      // previously in the committed tree (e.g. navigating back to a page with
+      // an async list). React commits the Suspense fallback first (short
+      // content, max-scroll = 0), then commits the resolved content in a
+      // second pass. Each rAF retry gives newly-committed content a chance to
+      // be in the DOM so the scroll can reach its target.
+      const scrollWithRetry = (deadline: number) => {
+        window.scrollTo(x, y);
+        if (Math.abs(window.scrollY - y) > 2 && Date.now() < deadline) {
+          requestAnimationFrame(() => scrollWithRetry(deadline));
+        }
+      };
+
       if (pending) {
-        // Wait for the RSC navigation to finish rendering, then scroll.
         void pending.then(() => {
-          requestAnimationFrame(() => {
-            window.scrollTo(x, y);
-          });
+          requestAnimationFrame(() => scrollWithRetry(Date.now() + 1500));
         });
       } else {
         // No RSC navigation in flight (Pages Router or already settled).
-        requestAnimationFrame(() => {
-          window.scrollTo(x, y);
-        });
+        requestAnimationFrame(() => scrollWithRetry(Date.now() + 1500));
       }
     });
   }
@@ -912,6 +922,14 @@ export function unauthorized(): never {
 
 // Listen for popstate on the client
 if (!isServer) {
+  // Disable the browser's built-in scroll restoration so it doesn't override
+  // our manual restoration. The browser's 'auto' mode fires asynchronously and
+  // can reset scroll to 0 after our rAF-based restoration already set the
+  // correct position. We own scroll restoration entirely via restoreScrollPosition.
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
   window.addEventListener("popstate", (event) => {
     notifyListeners();
     // Restore scroll position for back/forward navigation

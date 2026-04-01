@@ -9,6 +9,9 @@ export default function HomePage() {
         <Link href="/about">Go to About</Link>
         <Link href="/blog/hello-world">Go to Blog</Link>
         <Link href="/dashboard">Go to Dashboard</Link>
+        <Link href="/slow" data-testid="slow-link">
+          Go to Slow
+        </Link>
         <Link href="/headers-test" data-testid="headers-test-link">
           Go to Headers Test
         </Link>
