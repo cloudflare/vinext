@@ -43,7 +43,10 @@ export type WrapAppPageBoundaryElementOptions<
   matchedParams: AppPageParams;
   renderErrorBoundary: (component: TGlobalErrorComponent, children: TElement) => TElement;
   renderLayout: (component: TLayoutComponent, children: TElement, params: unknown) => TElement;
-  renderLayoutSegmentProvider?: (childSegments: TChildSegments, children: TElement) => TElement;
+  renderLayoutSegmentProvider?: (
+    segmentMap: { children: TChildSegments },
+    children: TElement,
+  ) => TElement;
   resolveChildSegments?: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -156,7 +159,7 @@ export function wrapAppPageBoundaryElement<
           treePosition,
           options.matchedParams,
         );
-        element = options.renderLayoutSegmentProvider(childSegments, element);
+        element = options.renderLayoutSegmentProvider({ children: childSegments }, element);
       }
     }
   }

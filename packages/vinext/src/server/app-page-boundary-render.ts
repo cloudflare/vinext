@@ -186,11 +186,11 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
         params: asyncParams,
       });
     },
-    renderLayoutSegmentProvider(childSegments, children) {
+    renderLayoutSegmentProvider(segmentMap, children) {
       return createElement(
         // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         LayoutSegmentProvider as ComponentType<any>,
-        { childSegments },
+        { segmentMap },
         children,
       );
     },

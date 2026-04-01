@@ -1014,7 +1014,7 @@ async function buildPageElement(route, params, opts, searchParams) {
 
   // Wrap page with empty segment provider so useSelectedLayoutSegments()
   // returns [] when called from inside a page component (leaf node).
-  element = createElement(LayoutSegmentProvider, { childSegments: [] }, element);
+  element = createElement(LayoutSegmentProvider, { segmentMap: { children: [] } }, element);
 
   // Add metadata + viewport head tags (React 19 hoists title/meta/link to <head>)
   // Next.js always injects charset and default viewport even when no metadata/viewport
@@ -1172,7 +1172,7 @@ async function buildPageElement(route, params, opts, searchParams) {
       // components rendered inside the layout's own JSX.
       const treePos = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
       const childSegs = __resolveChildSegments(route.routeSegments || [], treePos, params);
-      element = createElement(LayoutSegmentProvider, { childSegments: childSegs }, element);
+      element = createElement(LayoutSegmentProvider, { segmentMap: { children: childSegs } }, element);
     }
   }
 
