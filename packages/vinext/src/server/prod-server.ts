@@ -463,7 +463,9 @@ async function tryServeStatic(
     } else {
       pipeline(fs.createReadStream(variant.path), res, (err) => {
         if (err) {
-          console.error(`[vinext] Static file stream error for ${variant.path}:`, err.message);
+          // Headers already sent — can't write a 500. Destroy the connection
+          // so the client sees a reset instead of a truncated response.
+          console.warn(`[vinext] Static file stream error for ${variant.path}:`, err.message);
           res.destroy(err);
         }
       });
@@ -503,6 +505,8 @@ async function tryServeStatic(
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
+      // Content-Length omitted intentionally: compressed size isn't known
+      // ahead of time, so Node.js uses chunked transfer encoding.
       res.writeHead(200, {
         ...baseHeaders,
         "Content-Encoding": encoding,
@@ -515,7 +519,9 @@ async function tryServeStatic(
       const compressor = createCompressor(encoding);
       pipeline(fs.createReadStream(resolved.path), compressor, res, (err) => {
         if (err) {
-          console.error(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+          // Headers already sent — can't write a 500. Destroy the connection
+          // so the client sees a reset instead of a truncated response.
+          console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
           res.destroy(err);
         }
       });
@@ -533,7 +539,9 @@ async function tryServeStatic(
   }
   pipeline(fs.createReadStream(resolved.path), res, (err) => {
     if (err) {
-      console.error(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+      // Headers already sent — can't write a 500. Destroy the connection
+      // so the client sees a reset instead of a truncated response.
+      console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
       res.destroy(err);
     }
   });

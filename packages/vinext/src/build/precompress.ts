@@ -109,9 +109,6 @@ export async function precompressAssets(
         const content = await fsp.readFile(fullPath);
         if (content.length < MIN_SIZE) return;
 
-        result.filesCompressed++;
-        result.totalOriginalBytes += content.length;
-
         // Compress all variants concurrently within each file
         const compressions: Promise<Buffer>[] = [
           brotliCompress(content, {
@@ -139,11 +136,17 @@ export async function precompressAssets(
         }
         await Promise.all(writes);
 
+        // Increment counters only after all writes succeed, so partial
+        // failures (e.g. ENOSPC mid-write) don't inflate the reported totals.
+        result.filesCompressed++;
+        result.totalOriginalBytes += content.length;
         result.totalBrotliBytes += brContent.length;
       }),
     );
     // Report progress once per chunk to avoid non-deterministic ordering
     // within Promise.all (smaller files complete before larger ones).
+    // Progress tracks all files (including skipped ones below MIN_SIZE),
+    // which differs from filesCompressed (only files actually compressed).
     processed += chunk.length;
     onProgress?.(processed, filePaths.length, path.basename(chunk[chunk.length - 1]));
   }

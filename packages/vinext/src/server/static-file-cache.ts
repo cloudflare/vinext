@@ -123,7 +123,7 @@ export class StaticFileCache {
         : "public, max-age=3600";
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
-        `W/"${fileInfo.size}-${Math.trunc(fileInfo.mtimeMs / 1000)}"`;
+        `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const baseHeaders = {
