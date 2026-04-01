@@ -3216,6 +3216,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
+    // read the build identifier without depending on the prerender manifest.
+    {
+      name: "vinext:build-id",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options) {
+          const envName = this.environment?.name;
+          if (envName !== "rsc" && envName !== "ssr") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
+        },
+      },
+    },
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
     // The prerender secret is used by prod-server.ts to authenticate requests to
     // the internal /__vinext/prerender/* endpoints, which are only reachable during

@@ -874,12 +874,10 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 10. Upload to KV ──────────────────────────────────────────
-  // Read buildId from prerender manifest so KV keys match the runtime format.
+  // Read buildId from the BUILD_ID file written by vinext:build-id plugin.
   let buildId: string | undefined;
   try {
-    const manifestPath = path.join(root, "dist", "server", "vinext-prerender.json");
-    const raw = fs.readFileSync(manifestPath, "utf-8");
-    buildId = JSON.parse(raw).buildId;
+    buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
   } catch {
     // Best-effort — proceed without buildId
   }
