@@ -27,7 +27,8 @@ import {
   findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
-import { runTPR } from "./cloudflare/tpr.js";
+import { runTPR, parseWranglerConfig } from "./cloudflare/tpr.js";
+import { seedKVCacheFromPrerender } from "./cloudflare/seed-kv-cache.js";
 import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
@@ -57,6 +58,8 @@ export type DeployOptions = {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
+  /** Skip seeding pre-rendered routes into KV cache at deploy time */
+  noSeedCache?: boolean;
 };
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
@@ -74,6 +77,7 @@ const deployArgOptions = {
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
   "tpr-window": { type: "string" },
+  "no-seed-cache": { type: "boolean", default: false },
 } as const;
 
 export function parseDeployArgs(args: string[]) {
@@ -101,6 +105,7 @@ export function parseDeployArgs(args: string[]) {
     tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
     tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
     tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
+    noSeedCache: values["no-seed-cache"],
   };
 }
 
@@ -1357,6 +1362,39 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
     if (tprResult.skipped) {
       console.log(`  TPR: Skipped (${tprResult.skipped})`);
+    }
+  }
+
+  // Step 6c: Seed KV cache with pre-rendered routes (automatic when KV is configured)
+  if (!options.noSeedCache) {
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    if (apiToken) {
+      const wranglerConfig = parseWranglerConfig(root);
+      if (wranglerConfig?.kvNamespaceId) {
+        const accountId = wranglerConfig.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+        if (accountId) {
+          console.log("\n  Seeding KV cache with pre-rendered routes...");
+          try {
+            const seedResult = await seedKVCacheFromPrerender({
+              root,
+              accountId,
+              namespaceId: wranglerConfig.kvNamespaceId,
+              apiToken,
+            });
+
+            if (seedResult.skipped) {
+              console.log(`  KV seed: Skipped (${seedResult.skipped})`);
+            } else {
+              console.log(
+                `  KV seed: ${seedResult.seededRoutes} routes → ${seedResult.kvPairsUploaded} KV pairs in ${(seedResult.durationMs / 1000).toFixed(1)}s`,
+              );
+            }
+          } catch (err) {
+            // Non-fatal: deployment continues even if seeding fails
+            console.warn(`  KV seed: Failed (${err instanceof Error ? err.message : String(err)})`);
+          }
+        }
+      }
     }
   }
 
