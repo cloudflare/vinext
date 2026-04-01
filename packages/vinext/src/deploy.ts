@@ -119,6 +119,8 @@ type ProjectInfo = {
   projectName: string;
   /** Pages that use `revalidate` (ISR) */
   hasISR: boolean;
+  /** next.config.js sets output: 'export' (full static export) */
+  isStaticExport: boolean;
   /** package.json has "type": "module" */
   hasTypeModule: boolean;
   /** .mdx files detected in app/ or pages/ */
@@ -222,6 +224,9 @@ export function detectProject(root: string): ProjectInfo {
   // Detect ISR usage (rough heuristic: search for `revalidate` exports)
   const hasISR = detectISR(root, isAppRouter);
 
+  // Detect output: 'export' in next.config
+  const isStaticExport = detectStaticExport(root);
+
   // Detect "type": "module" in package.json
   const hasTypeModule = pkg?.type === "module";
 
@@ -250,11 +255,40 @@ export function detectProject(root: string): ProjectInfo {
     hasWrangler,
     projectName,
     hasISR,
+    isStaticExport,
     hasTypeModule,
     hasMDX,
     hasCodeHike,
     nativeModulesToStub,
   };
+}
+
+/**
+ * Heuristic: does the next.config file set `output: 'export'`?
+ *
+ * Limitations (consistent with detectISR): variable indirection like
+ * `const o = "export"; { output: o }` is not detected. Template-literal
+ * syntax (`output: \`export\``) is also not detected (uncommon in configs).
+ */
+export function detectStaticExport(root: string): boolean {
+  const configNames = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  for (const name of configNames) {
+    const configPath = path.join(root, name);
+    if (fs.existsSync(configPath)) {
+      try {
+        const content = fs.readFileSync(configPath, "utf-8");
+        // Strip comments to avoid matching commented-out config.
+        const stripped = content
+          .replace(/\/\/.*$/gm, "") // single-line comments
+          .replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
+        // Match output: "export" or output: 'export' (enforcing matching quotes).
+        return /output\s*:\s*(?:"export"|'export')/.test(stripped);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
 }
 
 function detectISR(root: string, isAppRouter: boolean): boolean {
@@ -396,8 +430,18 @@ export function generateWranglerConfig(info: ProjectInfo): string {
     name: info.projectName,
     compatibility_date: today,
     compatibility_flags: ["nodejs_compat"],
-    main: "./worker/index.ts",
-    assets: {
+  };
+
+  if (info.isStaticExport) {
+    // Static export: serve pre-rendered files directly — no worker needed.
+    // Cloudflare's built-in asset serving handles everything.
+    config.assets = {
+      directory: "dist/client",
+      not_found_handling: "404-page",
+    };
+  } else {
+    config.main = "./worker/index.ts";
+    config.assets = {
       // Wrangler 4.69+ requires `directory` when `assets` is an object.
       // The @cloudflare/vite-plugin always writes static assets to dist/client/.
       directory: "dist/client",
@@ -405,22 +449,22 @@ export function generateWranglerConfig(info: ProjectInfo): string {
       // Expose static assets to the Worker via env.ASSETS so the image
       // optimization handler can fetch source images programmatically.
       binding: "ASSETS",
-    },
+    };
     // Cloudflare Images binding for next/image optimization.
     // Enables resize, format negotiation (AVIF/WebP), and quality transforms
     // at the edge. No user setup needed — wrangler creates the binding automatically.
-    images: {
+    config.images = {
       binding: "IMAGES",
-    },
-  };
+    };
 
-  if (info.hasISR) {
-    config.kv_namespaces = [
-      {
-        binding: "VINEXT_CACHE",
-        id: "<your-kv-namespace-id>",
-      },
-    ];
+    if (info.hasISR) {
+      config.kv_namespaces = [
+        {
+          binding: "VINEXT_CACHE",
+          id: "<your-kv-namespace-id>",
+        },
+      ];
+    }
   }
 
   return JSON.stringify(config, null, 2) + "\n";
@@ -1112,7 +1156,7 @@ export function getFilesToGenerate(info: ProjectInfo): GeneratedFile[] {
     });
   }
 
-  if (!info.hasWorkerEntry) {
+  if (!info.hasWorkerEntry && !info.isStaticExport) {
     const workerContent = info.isAppRouter
       ? generateAppRouterWorkerEntry(info.hasISR)
       : generatePagesRouterWorkerEntry();

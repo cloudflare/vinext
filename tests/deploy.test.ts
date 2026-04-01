@@ -19,6 +19,7 @@ import {
   viteConfigHasCloudflarePlugin,
   hasWranglerConfig,
   formatMissingCloudflarePluginError,
+  detectStaticExport,
 } from "../packages/vinext/src/deploy.js";
 import {
   detectPackageManager,
@@ -288,6 +289,127 @@ describe("detectProject", () => {
     const info = detectProject(tmpDir);
     expect(info.hasISR).toBe(false);
   });
+
+  it("detects output: 'export' in next.config.mjs", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(true);
+  });
+
+  it('detects output:"export" without spaces', () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default {output:"export"};`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(true);
+  });
+
+  it("isStaticExport is false when no export config", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default {};`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("detects output: 'export' in next.config.ts", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "next.config.ts",
+      `const config = { output: 'export' };\nexport default config;`,
+    );
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(true);
+  });
+
+  it("detects output: 'export' in next.config.cjs", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.cjs", `module.exports = { output: "export" };`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(true);
+  });
+
+  it("does not detect commented-out output: 'export'", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `// output: "export"\nexport default {};`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("does not detect output: 'standalone' as static export", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "standalone" };`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("isStaticExport is false when no next.config exists", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("handles empty next.config.js gracefully", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.js", "");
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("prefers next.config.ts over next.config.mjs for static export detection", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.ts", `export default {};`);
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    // .ts is checked first and has no output: "export", so result is false
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("does not detect output: 'export' inside block comments", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `/* output: "export" */\nexport default {};`);
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+
+  it("does not detect output: 'export' inside multiline block comments", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "next.config.mjs",
+      "/*\n * Previously: output: 'export'\n */\nexport default {};",
+    );
+    const info = detectProject(tmpDir);
+    expect(info.isStaticExport).toBe(false);
+  });
+});
+
+// ─── detectStaticExport (direct) ────────────────────────────────────────────
+
+describe("detectStaticExport", () => {
+  it('returns true for output: "export"', () => {
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    expect(detectStaticExport(tmpDir)).toBe(true);
+  });
+
+  it("returns false when no next.config exists", () => {
+    expect(detectStaticExport(tmpDir)).toBe(false);
+  });
+
+  it('returns false for output: "standalone"', () => {
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "standalone" };`);
+    expect(detectStaticExport(tmpDir)).toBe(false);
+  });
+
+  it("strips block comments before matching", () => {
+    writeFile(tmpDir, "next.config.mjs", `/* output: "export" */ export default {};`);
+    expect(detectStaticExport(tmpDir)).toBe(false);
+  });
+
+  it("strips single-line comments before matching", () => {
+    writeFile(tmpDir, "next.config.mjs", `// output: "export"\nexport default {};`);
+    expect(detectStaticExport(tmpDir)).toBe(false);
+  });
 });
 
 // ─── generateWranglerConfig ─────────────────────────────────────────────────
@@ -362,6 +484,67 @@ describe("generateWranglerConfig", () => {
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
 
+    expect(parsed.images).toBeDefined();
+    expect(parsed.images.binding).toBe("IMAGES");
+  });
+
+  it("generates static-only config when isStaticExport is true", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    // No worker entry — Cloudflare serves static files directly
+    expect(parsed.main).toBeUndefined();
+    // Uses 404-page handling instead of routing all requests to worker
+    expect(parsed.assets.not_found_handling).toBe("404-page");
+    // No ASSETS binding needed (no worker to bind to)
+    expect(parsed.assets.binding).toBeUndefined();
+    // Still has directory for asset serving
+    expect(parsed.assets.directory).toBe("dist/client");
+    // No image optimization binding
+    expect(parsed.images).toBeUndefined();
+  });
+
+  it("omits KV namespace for static exports even with ISR-like patterns", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    writeFile(
+      tmpDir,
+      "app/page.tsx",
+      "export const revalidate = 30;\nexport default function() { return <div/> }",
+    );
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    expect(parsed.kv_namespaces).toBeUndefined();
+  });
+
+  it("static export config still includes $schema, compatibility_date, and compatibility_flags", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
+    const today = new Date().toISOString().split("T")[0];
+    expect(parsed.compatibility_date).toBe(today);
+    expect(parsed.compatibility_flags).toContain("nodejs_compat");
+  });
+
+  it("non-static config has main, ASSETS binding, and images (regression guard)", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default {};`);
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    expect(parsed.main).toBe("./worker/index.ts");
+    expect(parsed.assets.binding).toBe("ASSETS");
+    expect(parsed.assets.not_found_handling).toBe("none");
     expect(parsed.images).toBeDefined();
     expect(parsed.images.binding).toBe("IMAGES");
   });
@@ -1095,6 +1278,36 @@ describe("getFilesToGenerate", () => {
     const viteFile = files.find((f) => f.description === "vite.config.ts");
     expect(viteFile).toBeDefined();
     expect(viteFile!.content).not.toContain("plugin-rsc");
+  });
+
+  it("skips worker/index.ts for static exports", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    const files = getFilesToGenerate(info);
+
+    const workerFile = files.find((f) => f.description === "worker/index.ts");
+    expect(workerFile).toBeUndefined();
+  });
+
+  it("still generates wrangler.jsonc for static exports", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    const files = getFilesToGenerate(info);
+
+    const wranglerFile = files.find((f) => f.description === "wrangler.jsonc");
+    expect(wranglerFile).toBeDefined();
+  });
+
+  it("still generates vite.config.ts for static exports", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `export default { output: "export" };`);
+    const info = detectProject(tmpDir);
+    const files = getFilesToGenerate(info);
+
+    const viteFile = files.find((f) => f.description === "vite.config.ts");
+    expect(viteFile).toBeDefined();
   });
 });
 

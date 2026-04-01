@@ -1808,7 +1808,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           !hasCloudflarePlugin &&
           !hasNitroPlugin &&
           hasWranglerConfig(root) &&
-          !options.disableAppRouter
+          !options.disableAppRouter &&
+          nextConfig.output !== "export"
         ) {
           throw new Error(
             formatMissingCloudflarePluginError({
