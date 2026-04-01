@@ -490,28 +490,26 @@ function getClientNavigationState(): ClientNavigationState | null {
   if (isServer) return null;
 
   const globalState = window as ClientNavigationGlobal;
-  if (!globalState[_CLIENT_NAV_STATE_KEY]) {
-    globalState[_CLIENT_NAV_STATE_KEY] = {
-      listeners: new Set<NavigationListener>(),
-      cachedSearch: window.location.search,
-      cachedReadonlySearchParams: new ReadonlyURLSearchParams(window.location.search),
-      cachedPathname: stripBasePath(window.location.pathname, __basePath),
-      clientParams: {},
-      clientParamsJson: "{}",
-      pendingClientParams: null,
-      pendingClientParamsJson: null,
-      // NB: These capture the currently installed history methods, not guaranteed
-      // native ones. If a third-party library (analytics, router) has already patched
-      // history methods before this module loads, we intentionally preserve that
-      // wrapper. With Symbol.for global state, the first module instance to load wins.
-      originalPushState: window.history.pushState.bind(window.history),
-      originalReplaceState: window.history.replaceState.bind(window.history),
-      patchInstalled: false,
-      hasPendingNavigationUpdate: false,
-      suppressUrlNotifyCount: 0,
-      navigationSnapshotActiveCount: 0,
-    };
-  }
+  globalState[_CLIENT_NAV_STATE_KEY] ??= {
+    listeners: new Set<NavigationListener>(),
+    cachedSearch: window.location.search,
+    cachedReadonlySearchParams: new ReadonlyURLSearchParams(window.location.search),
+    cachedPathname: stripBasePath(window.location.pathname, __basePath),
+    clientParams: {},
+    clientParamsJson: "{}",
+    pendingClientParams: null,
+    pendingClientParamsJson: null,
+    // NB: These capture the currently installed history methods, not guaranteed
+    // native ones. If a third-party library (analytics, router) has already patched
+    // history methods before this module loads, we intentionally preserve that
+    // wrapper. With Symbol.for global state, the first module instance to load wins.
+    originalPushState: window.history.pushState.bind(window.history),
+    originalReplaceState: window.history.replaceState.bind(window.history),
+    patchInstalled: false,
+    hasPendingNavigationUpdate: false,
+    suppressUrlNotifyCount: 0,
+    navigationSnapshotActiveCount: 0,
+  };
 
   return globalState[_CLIENT_NAV_STATE_KEY]!;
 }
