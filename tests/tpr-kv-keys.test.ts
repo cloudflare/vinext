@@ -35,29 +35,27 @@ describe("TPR KV key format", () => {
     const parsed = JSON.parse(pairs[0].value);
 
     expect(parsed.revalidateAt).not.toBeNull();
-    // TTL = 10x 30s = 300s
-    expect(pairs[0].expiration_ttl).toBe(300);
+    // TTL matches the runtime KVCacheHandler: flat 30-day max, regardless of revalidate period.
+    // (Tying TTL to 10x revalidate would evict low-traffic pages before they could be reused.)
+    expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
   });
 
   it("falls back to defaultRevalidateSeconds when header is absent", () => {
     const pairs = buildTprKVPairs(entry("/about"), buildId, 120);
-    // TTL = 10x 120s = 1200s
-    expect(pairs[0].expiration_ttl).toBe(1200);
-  });
-
-  it("clamps TTL to minimum 60 seconds", () => {
-    const pairs = buildTprKVPairs(entry("/fast", { "x-vinext-revalidate": "1" }), buildId, 60);
-    // 10x 1s = 10s, clamped up to 60s
-    expect(pairs[0].expiration_ttl).toBe(60);
-  });
-
-  it("clamps TTL to maximum 30 days", () => {
-    const pairs = buildTprKVPairs(
-      entry("/archive", { "x-vinext-revalidate": "999999" }),
-      buildId,
-      60,
-    );
+    // TTL is flat 30 days — same strategy as runtime KVCacheHandler.set()
     expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
+  });
+
+  it("uses flat 30-day TTL even for very short revalidate windows", () => {
+    const pairs = buildTprKVPairs(entry("/fast", { "x-vinext-revalidate": "1" }), buildId, 60);
+    // KV TTL is decoupled from revalidation interval to prevent premature eviction.
+    expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
+  });
+
+  it("uses 24-hour fallback TTL when revalidation is disabled", () => {
+    const pairs = buildTprKVPairs(entry("/archive", { "x-vinext-revalidate": "0" }), buildId, 60);
+    // revalidateSeconds === 0 means no revalidation — use 24h fallback TTL
+    expect(pairs[0].expiration_ttl).toBe(24 * 3600);
   });
 
   it("works without buildId", () => {

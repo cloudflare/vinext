@@ -1122,21 +1122,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Load next.config.js if present (always from project root, not src/),
         // unless vinext({ nextConfig }) explicitly overrides it.
-        const phase = env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
-        let rawConfig: NextConfig | null;
-        if (options.nextConfig) {
-          const diskConfigPath = findNextConfigPath(root);
-          if (diskConfigPath && !warnedInlineNextConfigOverride) {
-            warnedInlineNextConfigOverride = true;
-            console.warn(
-              `[vinext] vinext({ nextConfig }) overrides ${path.basename(diskConfigPath)}. Remove one of the config sources to avoid drift.`,
-            );
+        // Guard: resolve nextConfig only once per plugin instance. In Vite's
+        // multi-environment build the config hook fires once per environment,
+        // so without this guard resolveBuildId() would generate a fresh random
+        // UUID for each environment, causing different buildId values to be
+        // baked into the RSC, SSR, and client bundles.
+        if (!nextConfig) {
+          const phase =
+            env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
+          let rawConfig: NextConfig | null;
+          if (options.nextConfig) {
+            const diskConfigPath = findNextConfigPath(root);
+            if (diskConfigPath && !warnedInlineNextConfigOverride) {
+              warnedInlineNextConfigOverride = true;
+              console.warn(
+                `[vinext] vinext({ nextConfig }) overrides ${path.basename(diskConfigPath)}. Remove one of the config sources to avoid drift.`,
+              );
+            }
+            rawConfig = await resolveNextConfigInput(options.nextConfig, phase);
+          } else {
+            rawConfig = await loadNextConfig(root, phase);
           }
-          rawConfig = await resolveNextConfigInput(options.nextConfig, phase);
-        } else {
-          rawConfig = await loadNextConfig(root, phase);
+          nextConfig = await resolveNextConfig(rawConfig, root);
         }
-        nextConfig = await resolveNextConfig(rawConfig, root);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
@@ -3227,7 +3235,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         order: "post",
         handler(options) {
           const envName = this.environment?.name;
-          if (envName !== "rsc" && envName !== "ssr") return;
+          if (envName !== "rsc") return;
 
           const outDir = options.dir;
           if (!outDir) return;

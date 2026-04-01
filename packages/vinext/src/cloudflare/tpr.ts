@@ -24,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { isrCacheKey } from "../server/isr-cache.js";
+import { ENTRY_PREFIX } from "./kv-cache-handler.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -660,14 +661,8 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
 
 // ─── KV Upload ───────────────────────────────────────────────────────────────
 
-/** Must match ENTRY_PREFIX in kv-cache-handler.ts */
-const ENTRY_PREFIX = "cache:";
-
 /** KV bulk API accepts up to 10,000 pairs per request */
 const KV_BATCH_SIZE = 10_000;
-
-/** Minimum KV expiration TTL (Cloudflare minimum is 60 seconds) */
-const MIN_KV_TTL_SECONDS = 60;
 
 /** Maximum KV expiration TTL: 30 days */
 const MAX_KV_TTL_SECONDS = 30 * 24 * 3600;
@@ -696,10 +691,7 @@ export function buildTprKVPairs(
 
     const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
 
-    const kvTtl =
-      revalidateSeconds > 0
-        ? Math.max(Math.min(revalidateSeconds * 10, MAX_KV_TTL_SECONDS), MIN_KV_TTL_SECONDS)
-        : 24 * 3600;
+    const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
 
     const entry = {
       value: {
@@ -879,7 +871,10 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   try {
     buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
   } catch {
-    // Best-effort — proceed without buildId
+    // Best-effort — proceed without buildId, but warn since keys won't match runtime
+    console.warn(
+      "  TPR: Could not read BUILD_ID from dist/server/ — KV keys may not match runtime",
+    );
   }
 
   try {

@@ -92,7 +92,7 @@ type KVCacheEntry = {
 const TAG_PREFIX = "__tag:";
 
 /** Key prefix for cache entries. */
-const ENTRY_PREFIX = "cache:";
+export const ENTRY_PREFIX = "cache:";
 
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
