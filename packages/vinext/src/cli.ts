@@ -403,7 +403,11 @@ async function buildApp() {
       const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
       console.log("  Upgrading React for RSC compatibility...");
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], {
+        cwd: process.cwd(),
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
     }
   }
 
@@ -567,13 +571,25 @@ async function lint() {
   try {
     if (hasEslint && hasNextLintConfig) {
       console.log("  Using eslint (with existing config)\n");
-      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync("npx", ["eslint", "."], {
+        cwd,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
     } else if (hasOxlint) {
       console.log("  Using oxlint\n");
-      execFileSync("npx", ["oxlint", "."], { cwd, stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync("npx", ["oxlint", "."], {
+        cwd,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
     } else if (hasEslint) {
       console.log("  Using eslint\n");
-      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync("npx", ["eslint", "."], {
+        cwd,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +

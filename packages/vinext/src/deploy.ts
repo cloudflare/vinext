@@ -1280,7 +1280,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log(
         `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
       );
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], {
+        cwd: root,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
     }
   }
   const missingDeps = getMissingDeps(info);
