@@ -152,8 +152,7 @@ function stageClientParams(params: Record<string, string | string[]>): void {
   // read latestClientParams, so a
   // server action fired during this window would get the pending (not yet
   // committed) params. This is acceptable because the commit effect fires
-  // synchronously in the same React commit phase, keeping the window
-  // vanishingly small.
+  // before hooks observe the new URL state, keeping the window vanishingly small.
   latestClientParams = params;
   replaceClientParamsWithoutNotify(params);
 }
