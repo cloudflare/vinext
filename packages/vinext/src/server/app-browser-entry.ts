@@ -179,7 +179,6 @@ function registerServerActionCallback(): void {
             // redirect without leaving navigation in an inconsistent state.
             const redirectUrl = new URL(actionRedirect, window.location.origin);
 
-            // Update the React tree with the redirect target's RSC payload
             startTransition(() => {
               getReactRoot().render(result.root);
 
@@ -191,15 +190,17 @@ function registerServerActionCallback(): void {
                 params,
               });
               setClientParams(params);
+
+              // Keep the browser URL update atomic with the tree update.
+              // If render() throws, the URL will not have changed yet.
+              if (redirectType === "push") {
+                window.history.pushState(null, "", actionRedirect);
+              } else {
+                window.history.replaceState(null, "", actionRedirect);
+              }
+
               notifyListeners();
             });
-
-            // Update the browser URL without a reload
-            if (redirectType === "push") {
-              window.history.pushState(null, "", actionRedirect);
-            } else {
-              window.history.replaceState(null, "", actionRedirect);
-            }
 
             // Handle return value if present
             if (result.returnValue) {

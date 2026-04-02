@@ -1892,6 +1892,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         // Refresh headers context for the redirect target. We don't clear it
         // entirely because the RSC stream is consumed lazily and async
         // components need a live context during consumption.
+        //
+        // Note: this context is derived from the original POST action request,
+        // not a synthetic GET to the redirect target. Server components that
+        // call headers() during the pre-render may see action-request headers
+        // such as x-rsc-action and multipart/form-data metadata.
         setHeadersContext(headersContextFromRequest(request));
         setNavigationContext(null);
         
