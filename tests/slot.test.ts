@@ -135,16 +135,16 @@ describe("slot primitives", () => {
 
   it("Slot throws the notFound signal for an unmatched slot sentinel", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
-    const renderPromise = renderHtml(
-      createContextProvider(
-        mod.ElementsContext,
-        Promise.resolve({ "slot:modal:/": mod.UNMATCHED_SLOT }),
-        React.createElement(mod.Slot, { id: "slot:modal:/" }),
-      ),
-    );
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
+      const renderPromise = renderHtml(
+        createContextProvider(
+          mod.ElementsContext,
+          Promise.resolve({ "slot:modal:/": mod.UNMATCHED_SLOT }),
+          React.createElement(mod.Slot, { id: "slot:modal:/" }),
+        ),
+      );
       await expect(renderPromise).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
     } finally {
       consoleError.mockRestore();
@@ -194,7 +194,13 @@ describe("slot primitives", () => {
     expect(Object.keys(merged)).toEqual(["layout:/", "slot:modal:/", "page:/blog/hello"]);
     expect(merged["layout:/"]).toBeDefined();
     expect(merged["page:/blog/hello"]).toBeDefined();
-    expect(merged["slot:modal:/"]).not.toBeNull();
+    // {…prev, …next} means next wins for duplicate keys
+    const modalSlot = merged["slot:modal:/"];
+    if (!React.isValidElement(modalSlot)) {
+      throw new Error("Expected ReactElement for slot:modal:/");
+    }
+    const html = await renderHtml(modalSlot);
+    expect(html).toContain("next slot");
   });
 
   it("mergeElementsPromise caches by input promise pair", async () => {

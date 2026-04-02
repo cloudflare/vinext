@@ -3,8 +3,10 @@
 import * as React from "react";
 import { notFound } from "./navigation.js";
 
-type Elements = Record<string, React.ReactNode | typeof UNMATCHED_SLOT>;
+export type Elements = Record<string, React.ReactNode | typeof UNMATCHED_SLOT>;
 
+// Shared across requests — safe because the resolved value is an immutable empty object.
+// A Slot rendered outside an ElementsContext.Provider sees {} and returns null for all IDs.
 const EMPTY_ELEMENTS_PROMISE = Promise.resolve<Elements>({});
 const mergeCache = new WeakMap<Promise<Elements>, WeakMap<Promise<Elements>, Promise<Elements>>>();
 
@@ -33,6 +35,8 @@ export function mergeElementsPromise(
     return cached;
   }
 
+  // Cached permanently including rejections — intentional because these promises come from
+  // createFromFetch() and a rejection means the navigation itself has failed.
   const merged = Promise.all([prev, next]).then(([prevElements, nextElements]) => ({
     ...prevElements,
     ...nextElements,
