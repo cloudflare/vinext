@@ -739,7 +739,7 @@ export function getClientParams(): Record<string, string | string[]> {
  */
 export function setPendingPathname(pathname: string): void {
   const state = getClientNavigationState();
-  if (!state || isServer) return;
+  if (!state) return;
   state.pendingPathname = stripBasePath(pathname, __basePath);
 }
 

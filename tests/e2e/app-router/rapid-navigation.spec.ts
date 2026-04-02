@@ -56,11 +56,11 @@ test.describe("rapid navigation", () => {
     await expect(page.locator("h1")).toHaveText("Page A");
     await waitForHydration(page);
 
-    // Navigate to B with query param
+    // Navigate to B (client-side)
     await page.click('a[href="/nav-rapid/page-b"]');
 
-    // Immediately change query param (same-route navigation to B with query)
-    await page.goto(`${BASE}/nav-rapid/page-b?filter=test`);
+    // Immediately change query param via client-side navigation (same-route nav to B with query)
+    await page.click('a[href="/nav-rapid/page-b?filter=test"]');
 
     // Should settle on B with query param
     await expect(page.locator("h1")).toHaveText("Page B");

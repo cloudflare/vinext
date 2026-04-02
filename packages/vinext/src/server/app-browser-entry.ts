@@ -774,8 +774,12 @@ async function main(): Promise<void> {
         _snapshotPending = false;
         commitClientNavigationState();
       }
-      // Clear pending pathname on error so subsequent navigations compare correctly
-      clearPendingPathname();
+      // Clear pending pathname on error so subsequent navigations compare correctly.
+      // Only clear if this is still the active navigation — a newer navigation
+      // has already overwritten pendingPathname with its own target.
+      if (navId === activeNavigationId) {
+        clearPendingPathname();
+      }
       // Don't hard-navigate to a stale URL if this navigation was superseded by
       // a newer one — the newer navigation is already in flight and would be clobbered.
       if (navId !== activeNavigationId) return;

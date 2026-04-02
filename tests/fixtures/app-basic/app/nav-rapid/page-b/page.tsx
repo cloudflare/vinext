@@ -8,6 +8,8 @@ export default function PageB() {
         <Link href="/nav-rapid/page-a">Go to A</Link>
         {" | "}
         <Link href="/nav-rapid/page-c">Go to C</Link>
+        {" | "}
+        <Link href="/nav-rapid/page-b?filter=test">Add Filter</Link>
       </nav>
     </div>
   );
