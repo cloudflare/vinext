@@ -598,6 +598,9 @@ const clientCodeSplittingConfig = {
  *   tryCatchDeoptimization: false, which can break specific libraries
  *   that rely on property access side effects or try/catch for feature detection
  * - 'recommended' + 'no-external' gives most of the benefit with less risk
+ *
+ * @deprecated Use getClientTreeshakeConfigForVite(viteMajorVersion) instead
+ * for Vite version compatibility. Kept for backward compatibility.
  */
 const clientTreeshakeConfig = {
   preset: "recommended" as const,
@@ -632,6 +635,31 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
         codeSplitting: clientCodeSplittingConfig,
       }
     : clientOutputConfig;
+}
+
+/**
+ * Returns treeshake configuration appropriate for the Vite version.
+ *
+ * Rollup (Vite 7) supports presets like "recommended" which set multiple
+ * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
+ * so we only return moduleSideEffects for Vite 8+.
+ *
+ * moduleSideEffects: "no-external" is valid in both Rollup and Rolldown.
+ * It treats node_modules as side-effect-free (enabling aggressive DCE for
+ * barrel-exporting libraries) while preserving side effects in local code.
+ */
+function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
+  if (viteMajorVersion >= 8) {
+    // Rolldown (Vite 8+) - no preset support, only specific options
+    return {
+      moduleSideEffects: "no-external" as const,
+    };
+  }
+  // Rollup (Vite 7) - supports presets for convenient option grouping
+  return {
+    preset: "recommended" as const,
+    moduleSideEffects: "no-external" as const,
+  };
 }
 
 type BundleBackfillChunk = {
@@ -1448,7 +1476,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // avoid leaking into RSC/SSR environments where
               // moduleSideEffects: 'no-external' could drop server packages
               // that rely on module-level side effects.
-              ...(!isSSR && !isMultiEnv ? { treeshake: clientTreeshakeConfig } : {}),
+              ...(!isSSR && !isMultiEnv
+                ? { treeshake: getClientTreeshakeConfigForVite(viteMajorVersion) }
+                : {}),
               // Code-split client bundles: separate framework (React/ReactDOM),
               // vinext runtime (shims), and vendor packages into their own
               // chunks so pages only load the JS they need.
@@ -1696,7 +1726,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1717,7 +1747,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1743,7 +1773,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -4084,6 +4114,7 @@ export {
   clientTreeshakeConfig,
   computeLazyChunks,
   getClientOutputConfigForVite,
+  getClientTreeshakeConfigForVite,
 };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };

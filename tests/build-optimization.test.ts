@@ -387,7 +387,6 @@ describe("treeshake config integration", () => {
 
       // treeshake should be set on bundler options for non-SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
     } finally {
@@ -479,7 +478,6 @@ describe("treeshake config integration", () => {
 
       // Client environment should have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
 
@@ -1630,5 +1628,42 @@ export const getStaticPaths = () => [
     expect(result).not.toBeNull();
     expect(result).toContain("export const getStaticPaths = undefined;");
     expect(result).not.toContain("a;b");
+  });
+});
+
+// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+
+describe("getClientTreeshakeConfigForVite", () => {
+  it("returns preset for Vite 7 (Rollup compatibility)", async () => {
+    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+    const config = getClientTreeshakeConfigForVite(7);
+    expect(config).toEqual({
+      preset: "recommended",
+      moduleSideEffects: "no-external",
+    });
+  });
+
+  it("returns config without preset for Vite 8 (Rolldown compatibility)", async () => {
+    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+    const config = getClientTreeshakeConfigForVite(8);
+    expect(config).toEqual({
+      moduleSideEffects: "no-external",
+    });
+    expect(config).not.toHaveProperty("preset");
+  });
+
+  it("returns config without preset for Vite 9+", async () => {
+    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+    const config9 = getClientTreeshakeConfigForVite(9);
+    expect(config9).toEqual({
+      moduleSideEffects: "no-external",
+    });
+    expect(config9).not.toHaveProperty("preset");
+
+    const config10 = getClientTreeshakeConfigForVite(10);
+    expect(config10).toEqual({
+      moduleSideEffects: "no-external",
+    });
+    expect(config10).not.toHaveProperty("preset");
   });
 });
