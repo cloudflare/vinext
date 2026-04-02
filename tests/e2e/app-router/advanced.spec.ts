@@ -120,6 +120,36 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
+  test("hard reload after intercepted navigation renders the full page", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).not.toBeVisible();
+  });
+
+  test("router.refresh preserves intercepted modal view", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+
+    await page.click('[data-testid="photo-modal-refresh"]');
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
   test("prefetches keep separate cache entries for feed and gallery interception contexts", async ({
     page,
   }) => {

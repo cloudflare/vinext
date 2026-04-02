@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PhotoModalRefreshButton } from "./refresh-button";
 
 // Intercepting route: renders when navigating from /feed to /photos/[id].
 // Shows a modal version of the photo instead of the full page.
@@ -10,6 +11,7 @@ export default function PhotoModal({ params }: { params: { id: string } }) {
       <Link href="/photos/43" id="modal-photo-43-link">
         Next Photo
       </Link>
+      <PhotoModalRefreshButton />
     </div>
   );
 }

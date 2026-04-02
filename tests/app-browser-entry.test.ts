@@ -12,8 +12,11 @@ import {
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import {
+  createHistoryStateWithPreviousNextUrl,
   createPendingNavigationCommit,
+  readHistoryStatePreviousNextUrl,
   resolveAndClassifyNavigationCommit,
+  resolveInterceptionContextFromPreviousNextUrl,
   routerReducer,
   resolvePendingNavigationCommitDisposition,
   shouldHardNavigate,
@@ -40,6 +43,7 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
     interceptionContext: null,
+    previousNextUrl: null,
     rootLayoutTreePath: "/",
     routeId: "route:/initial",
     ...overrides,
@@ -73,6 +77,7 @@ describe("app browser entry state helpers", () => {
         elements: nextElements,
         interceptionContext: null,
         navigationSnapshot: createState().navigationSnapshot,
+        previousNextUrl: null,
         renderId: 1,
         rootLayoutTreePath: "/",
         routeId: "route:/next",
@@ -82,6 +87,7 @@ describe("app browser entry state helpers", () => {
 
     expect(nextState.routeId).toBe("route:/next");
     expect(nextState.interceptionContext).toBeNull();
+    expect(nextState.previousNextUrl).toBeNull();
     expect(nextState.rootLayoutTreePath).toBe("/");
     expect(nextState.elements).toMatchObject({
       "layout:/": expect.anything(),
@@ -98,6 +104,7 @@ describe("app browser entry state helpers", () => {
       elements: nextElements,
       interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",
       routeId: "route:/next",
@@ -106,6 +113,7 @@ describe("app browser entry state helpers", () => {
 
     expect(nextState.elements).toBe(nextElements);
     expect(nextState.interceptionContext).toBeNull();
+    expect(nextState.previousNextUrl).toBeNull();
     expect(nextState.elements).toMatchObject({
       "page:/next": expect.anything(),
     });
@@ -120,13 +128,16 @@ describe("app browser entry state helpers", () => {
         }),
       ),
       navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: "/feed",
       renderId: 1,
       type: "navigate",
     });
 
     expect(pending.routeId).toBe("route:/photos/42\0/feed");
     expect(pending.interceptionContext).toBe("/feed");
+    expect(pending.previousNextUrl).toBe("/feed");
     expect(pending.action.interceptionContext).toBe("/feed");
+    expect(pending.action.previousNextUrl).toBe("/feed");
   });
 
   it("hard navigates instead of merging when the root layout changes", async () => {
@@ -213,6 +224,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: "/feed",
       renderId: 1,
       type: "navigate",
     });
@@ -220,6 +232,70 @@ describe("app browser entry state helpers", () => {
     expect(refreshCommit.action.type).toBe("navigate");
     expect(refreshCommit.routeId).toBe("route:/dashboard");
     expect(refreshCommit.rootLayoutTreePath).toBe("/");
+    expect(refreshCommit.previousNextUrl).toBe("/feed");
+  });
+
+  it("stores previousNextUrl on navigate actions", () => {
+    const nextState = routerReducer(createState(), {
+      elements: createResolvedElements("route:/photos/42\0/feed", "/", "/feed"),
+      interceptionContext: "/feed",
+      navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: "/feed",
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/photos/42\0/feed",
+      type: "navigate",
+    });
+
+    expect(nextState.interceptionContext).toBe("/feed");
+    expect(nextState.previousNextUrl).toBe("/feed");
+  });
+});
+
+describe("app browser entry previousNextUrl helpers", () => {
+  it("stores previousNextUrl alongside existing history state", () => {
+    expect(
+      createHistoryStateWithPreviousNextUrl(
+        {
+          __vinext_scrollY: 120,
+        },
+        "/feed?tab=latest",
+      ),
+    ).toEqual({
+      __vinext_previousNextUrl: "/feed?tab=latest",
+      __vinext_scrollY: 120,
+    });
+  });
+
+  it("drops previousNextUrl when cleared", () => {
+    expect(
+      createHistoryStateWithPreviousNextUrl(
+        {
+          __vinext_previousNextUrl: "/feed",
+          __vinext_scrollY: 120,
+        },
+        null,
+      ),
+    ).toEqual({
+      __vinext_scrollY: 120,
+    });
+  });
+
+  it("reads previousNextUrl from history state", () => {
+    expect(
+      readHistoryStatePreviousNextUrl({
+        __vinext_previousNextUrl: "/feed?tab=latest",
+      }),
+    ).toBe("/feed?tab=latest");
+  });
+
+  it("derives interception context from previousNextUrl pathname", () => {
+    expect(resolveInterceptionContextFromPreviousNextUrl("/feed?tab=latest")).toBe("/feed");
+  });
+
+  it("returns null when previousNextUrl is missing", () => {
+    expect(readHistoryStatePreviousNextUrl({})).toBeNull();
+    expect(resolveInterceptionContextFromPreviousNextUrl(null)).toBeNull();
   });
 
   it("classifies pending commits in one step for same-url payloads", async () => {
@@ -260,6 +336,7 @@ describe("app browser entry state helpers", () => {
       elements: nextElements,
       interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",
       routeId: "route:/feed",
@@ -281,6 +358,7 @@ describe("app browser entry state helpers", () => {
       elements: nextElements,
       interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",
       routeId: "route:/feed/comments",

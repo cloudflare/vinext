@@ -297,6 +297,14 @@ export function getCurrentInterceptionContext(): string | null {
   );
 }
 
+export function getCurrentNextUrl(): string {
+  if (isServer) {
+    return "/";
+  }
+
+  return window.location.pathname + window.location.search;
+}
+
 /** Get or create the shared in-memory RSC prefetch cache on window. */
 export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
   if (isServer) return new Map();
