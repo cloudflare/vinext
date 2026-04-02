@@ -2,10 +2,6 @@ import React, { Suspense } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-vi.mock("next/navigation", () => ({
-  usePathname: () => "/",
-}));
-
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -236,25 +232,24 @@ describe("slot primitives", () => {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     const firstChunkPromise = reader.read();
+
+    // Verify the stream is suspended — reader.read() should not resolve synchronously
+    // because React.use() on the unresolved deferred throws to trigger Suspense.
+    // NOTE: Promise.race between two microtasks is engine-dependent, but reliable here
+    // because renderToReadableStream won't enqueue any chunk while the component is suspended.
     const firstReadState = await Promise.race([
       firstChunkPromise.then(() => "resolved"),
       Promise.resolve("pending"),
     ]);
-
     expect(firstReadState).toBe("pending");
 
-    const resolvedPromise = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        deferred.resolve({
-          "layout:/": React.createElement("div", null, "resolved slot"),
-        });
-        resolve();
-      }, 20);
+    // Resolve the deferred so the stream can flush
+    deferred.resolve({
+      "layout:/": React.createElement("div", null, "resolved slot"),
     });
 
     const firstChunk = await firstChunkPromise;
     const firstHtml = decoder.decode(firstChunk.value, { stream: true });
-    await resolvedPromise;
 
     let rest = "";
     for (;;) {

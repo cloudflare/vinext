@@ -5,9 +5,12 @@ import { notFound } from "./navigation.js";
 
 export type Elements = Record<string, React.ReactNode | typeof UNMATCHED_SLOT>;
 
-// Shared across requests — safe because the resolved value is an immutable empty object.
+// Shared across requests — safe because the resolved value is frozen.
 // A Slot rendered outside an ElementsContext.Provider sees {} and returns null for all IDs.
-const EMPTY_ELEMENTS_PROMISE = Promise.resolve<Elements>({});
+const EMPTY_ELEMENTS_PROMISE = Promise.resolve<Elements>(Object.freeze({}));
+// Client-only optimisation: memoises merged promises by identity so React.use() sees a stable
+// reference across re-renders. During SSR each request creates fresh promises so the cache is
+// never hit, but the WeakMap entries are GC-eligible once the request's promises are collected.
 const mergeCache = new WeakMap<Promise<Elements>, WeakMap<Promise<Elements>, Promise<Elements>>>();
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
@@ -56,13 +59,13 @@ export function Slot({
 }) {
   const elements = React.use(React.useContext(ElementsContext));
 
-  if (!(id in elements)) {
+  if (!Object.hasOwn(elements, id)) {
     return null;
   }
 
   const element = elements[id];
   if (element === UNMATCHED_SLOT) {
-    notFound();
+    notFound(); // throws — never reaches the JSX below
   }
 
   return (
