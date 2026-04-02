@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
+  getClientTreeshakeConfigForVite,
   computeLazyChunks,
   _augmentSsrManifestFromBundle,
   _stripServerExports,
@@ -1634,8 +1635,7 @@ export const getStaticPaths = () => [
 // ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
 
 describe("getClientTreeshakeConfigForVite", () => {
-  it("returns preset for Vite 7 (Rollup compatibility)", async () => {
-    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+  it("returns preset for Vite 7 (Rollup compatibility)", () => {
     const config = getClientTreeshakeConfigForVite(7);
     expect(config).toEqual({
       preset: "recommended",
@@ -1643,8 +1643,7 @@ describe("getClientTreeshakeConfigForVite", () => {
     });
   });
 
-  it("returns config without preset for Vite 8 (Rolldown compatibility)", async () => {
-    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
     const config = getClientTreeshakeConfigForVite(8);
     expect(config).toEqual({
       moduleSideEffects: "no-external",
@@ -1652,8 +1651,7 @@ describe("getClientTreeshakeConfigForVite", () => {
     expect(config).not.toHaveProperty("preset");
   });
 
-  it("returns config without preset for Vite 9+", async () => {
-    const { getClientTreeshakeConfigForVite } = await import("../packages/vinext/src/index.js");
+  it("returns config without preset for Vite 9+", () => {
     const config9 = getClientTreeshakeConfigForVite(9);
     expect(config9).toEqual({
       moduleSideEffects: "no-external",

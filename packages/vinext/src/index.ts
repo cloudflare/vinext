@@ -644,9 +644,17 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
  * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
  * so we only return moduleSideEffects for Vite 8+.
  *
- * moduleSideEffects: "no-external" is valid in both Rollup and Rolldown.
- * It treats node_modules as side-effect-free (enabling aggressive DCE for
- * barrel-exporting libraries) while preserving side effects in local code.
+ * The Rollup "recommended" preset sets:
+ * - annotations: true (Rolldown default is also true)
+ * - manualPureFunctions: [] (Rolldown default is also [])
+ * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
+ * - unknownGlobalSideEffects: false (Rolldown default is true, slightly more conservative)
+ * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
+ *
+ * The key optimization is moduleSideEffects: "no-external", which is supported
+ * by both bundlers and provides the DCE benefits for barrel-exporting libraries.
+ * It treats node_modules as side-effect-free (enabling aggressive DCE) while
+ * preserving side effects in local code.
  */
 function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
