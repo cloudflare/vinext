@@ -86,6 +86,39 @@ describe("app page route wiring helpers", () => {
     ).toEqual(["blog", "post", "a/b"]);
   });
 
+  it("passes route group segments through unchanged", () => {
+    expect(resolveAppPageChildSegments(["(auth)", "login"], 0, {})).toEqual(["(auth)", "login"]);
+  });
+
+  it("skips optional catch-all when param is undefined", () => {
+    expect(resolveAppPageChildSegments(["docs", "[[...slug]]"], 0, {})).toEqual(["docs"]);
+  });
+
+  it("skips optional catch-all when param is an empty array", () => {
+    expect(resolveAppPageChildSegments(["docs", "[[...slug]]"], 0, { slug: [] })).toEqual(["docs"]);
+  });
+
+  it("pushes null param value for optional catch-all (strict undefined check)", () => {
+    // Optional catch-all uses `=== undefined` (not `== null`) to decide whether to
+    // skip the segment. null is not a valid AppPageParams value, but if it leaks in,
+    // it passes through rather than being silently dropped.
+    expect(
+      resolveAppPageChildSegments(["docs", "[[...slug]]"], 0, {
+        slug: null as unknown as string,
+      }),
+    ).toEqual(["docs", null]);
+  });
+
+  it("falls back to raw segment for dynamic param with undefined value", () => {
+    expect(resolveAppPageChildSegments(["blog", "[id]"], 0, {})).toEqual(["blog", "[id]"]);
+  });
+
+  it("preserves empty-string param instead of falling back to raw segment", () => {
+    expect(
+      resolveAppPageChildSegments(["blog", "[...slug]"], 0, { slug: "" as unknown as string }),
+    ).toEqual(["blog", ""]);
+  });
+
   it("builds layout entries from tree paths instead of visible URL segments", () => {
     const entries = createAppPageLayoutEntries({
       layouts: [{ default: RootLayout }, { default: GroupLayout }],

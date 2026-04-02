@@ -141,7 +141,7 @@ export function resolveAppPageChildSegments(
     if (
       segment.startsWith("[[...") &&
       segment.endsWith("]]") &&
-      segment.length > "[[...x]]".length - 1
+      segment.length >= "[[...x]]".length
     ) {
       const paramName = segment.slice(5, -2);
       const paramValue = params[paramName];
