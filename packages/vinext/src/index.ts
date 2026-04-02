@@ -648,7 +648,8 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
  * - annotations: true (Rolldown default is also true)
  * - manualPureFunctions: [] (Rolldown default is also [])
  * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
- * - unknownGlobalSideEffects: false (Rolldown default is true, slightly more conservative)
+ * - unknownGlobalSideEffects: false (Rolldown default is true — this is a known acceptable
+ *   divergence. Slightly less aggressive DCE on unknown globals, acceptable for client bundles)
  * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
  *
  * The key optimization is moduleSideEffects: "no-external", which is supported
@@ -658,7 +659,9 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
  */
 function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
-    // Rolldown (Vite 8+) - no preset support, only specific options
+    // Rolldown (Vite 8+) - no preset support, only specific options.
+    // Rolldown's built-in defaults already cover what Rollup's 'recommended'
+    // preset provides (annotations, correctContext, tryCatchDeoptimization).
     return {
       moduleSideEffects: "no-external" as const,
     };
