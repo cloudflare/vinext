@@ -132,7 +132,7 @@ export function createAppPageLayoutEntries<
 export function resolveAppPageChildSegments(
   routeSegments: readonly string[],
   treePosition: number,
-  params: AppPageParams,
+  params: Readonly<Record<string, string | string[] | undefined>>,
 ): string[] {
   const rawSegments = routeSegments.slice(treePosition);
   const resolvedSegments: string[] = [];

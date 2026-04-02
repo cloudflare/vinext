@@ -28,10 +28,10 @@ vi.mock("next/navigation", () => ({
 // query-aware. These tests lock our shim to that behavior.
 
 type ErrorBoundaryInnerConstructor = {
-  getDerivedStateFromError(error: Error): {
+  getDerivedStateFromError(error: Error): Partial<{
     error: Error | null;
     previousPathname: string;
-  };
+  }>;
   getDerivedStateFromProps(
     props: {
       children: React.ReactNode;
