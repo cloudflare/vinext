@@ -24,7 +24,13 @@ import {
   renderAppPageHtmlResponse,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import { APP_ROOT_LAYOUT_KEY, APP_ROUTE_KEY, type AppElements } from "./app-elements.js";
+import {
+  APP_INTERCEPTION_CONTEXT_KEY,
+  APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_KEY,
+  createAppPayloadRouteId,
+  type AppElements,
+} from "./app-elements.js";
 import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -234,9 +240,10 @@ function resolveAppPageBoundaryRootLayoutTreePath<TModule extends AppPageModule>
 function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
   options: AppPageBoundaryRscPayloadOptions<TModule>,
 ): AppElements {
-  const routeId = `route:${options.pathname}`;
+  const routeId = createAppPayloadRouteId(options.pathname, null);
 
   return {
+    [APP_INTERCEPTION_CONTEXT_KEY]: null,
     [APP_ROUTE_KEY]: routeId,
     [APP_ROOT_LAYOUT_KEY]: resolveAppPageBoundaryRootLayoutTreePath(options.route),
     [routeId]: options.element,

@@ -121,7 +121,11 @@ declare module "next/navigation" {
   export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
-  export function storePrefetchResponse(rscUrl: string, response: Response): void;
+  export function storePrefetchResponse(
+    rscUrl: string,
+    response: Response,
+    interceptionContext?: string | null,
+  ): void;
 }
 
 declare module "next/image" {

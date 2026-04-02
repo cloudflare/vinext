@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 
+const APP_INTERCEPTION_SEPARATOR = "\0";
+
+export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
@@ -13,6 +16,7 @@ export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
 
 export type AppElementsMetadata = {
+  interceptionContext: string | null;
   routeId: string;
   rootLayoutTreePath: string | null;
 };
@@ -40,6 +44,40 @@ export function getMountedSlotIds(elements: AppElements): string[] {
 
 export function getMountedSlotIdsHeader(elements: AppElements): string | null {
   return normalizeMountedSlotsHeader(getMountedSlotIds(elements).join(" "));
+}
+
+function appendInterceptionContext(identity: string, interceptionContext: string | null): string {
+  return interceptionContext === null
+    ? identity
+    : `${identity}${APP_INTERCEPTION_SEPARATOR}${interceptionContext}`;
+}
+
+export function createAppPayloadRouteId(
+  routePath: string,
+  interceptionContext: string | null,
+): string {
+  return appendInterceptionContext(`route:${routePath}`, interceptionContext);
+}
+
+export function createAppPayloadPageId(
+  routePath: string,
+  interceptionContext: string | null,
+): string {
+  return appendInterceptionContext(`page:${routePath}`, interceptionContext);
+}
+
+export function createAppPayloadCacheKey(
+  rscUrl: string,
+  interceptionContext: string | null,
+): string {
+  return appendInterceptionContext(rscUrl, interceptionContext);
+}
+
+export function resolveVisitedResponseInterceptionContext(
+  requestInterceptionContext: string | null,
+  payloadInterceptionContext: string | null,
+): string | null {
+  return payloadInterceptionContext ?? requestInterceptionContext;
 }
 
 export function normalizeAppElements(elements: AppWireElements): AppElements {
@@ -70,6 +108,15 @@ export function readAppElementsMetadata(elements: AppElements): AppElementsMetad
     throw new Error("[vinext] Missing __route string in App Router payload");
   }
 
+  const interceptionContext = elements[APP_INTERCEPTION_CONTEXT_KEY];
+  if (
+    interceptionContext !== undefined &&
+    interceptionContext !== null &&
+    typeof interceptionContext !== "string"
+  ) {
+    throw new Error("[vinext] Invalid __interceptionContext in App Router payload");
+  }
+
   const rootLayoutTreePath = elements[APP_ROOT_LAYOUT_KEY];
   if (rootLayoutTreePath === undefined) {
     throw new Error("[vinext] Missing __rootLayout key in App Router payload");
@@ -79,6 +126,7 @@ export function readAppElementsMetadata(elements: AppElements): AppElementsMetad
   }
 
   return {
+    interceptionContext: interceptionContext ?? null,
     routeId,
     rootLayoutTreePath,
   };

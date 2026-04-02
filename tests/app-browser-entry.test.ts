@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   UNMATCHED_SLOT,
@@ -22,9 +23,11 @@ import {
 function createResolvedElements(
   routeId: string,
   rootLayoutTreePath: string | null,
+  interceptionContext: string | null = null,
   extraEntries: Record<string, unknown> = {},
 ) {
   return normalizeAppElements({
+    [APP_INTERCEPTION_CONTEXT_KEY]: interceptionContext,
     [APP_ROUTE_KEY]: routeId,
     [APP_ROOT_LAYOUT_KEY]: rootLayoutTreePath,
     ...extraEntries,
@@ -36,6 +39,7 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     elements: createResolvedElements("route:/initial", "/"),
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
+    interceptionContext: null,
     rootLayoutTreePath: "/",
     routeId: "route:/initial",
     ...overrides,
@@ -54,10 +58,10 @@ describe("app browser entry state helpers", () => {
   });
 
   it("merges elements on navigate", async () => {
-    const previousElements = createResolvedElements("route:/initial", "/", {
+    const previousElements = createResolvedElements("route:/initial", "/", null, {
       "layout:/": React.createElement("div", null, "layout"),
     });
-    const nextElements = createResolvedElements("route:/next", "/", {
+    const nextElements = createResolvedElements("route:/next", "/", null, {
       "page:/next": React.createElement("main", null, "next"),
     });
 
@@ -67,6 +71,7 @@ describe("app browser entry state helpers", () => {
       }),
       {
         elements: nextElements,
+        interceptionContext: null,
         navigationSnapshot: createState().navigationSnapshot,
         renderId: 1,
         rootLayoutTreePath: "/",
@@ -76,6 +81,7 @@ describe("app browser entry state helpers", () => {
     );
 
     expect(nextState.routeId).toBe("route:/next");
+    expect(nextState.interceptionContext).toBeNull();
     expect(nextState.rootLayoutTreePath).toBe("/");
     expect(nextState.elements).toMatchObject({
       "layout:/": expect.anything(),
@@ -84,12 +90,13 @@ describe("app browser entry state helpers", () => {
   });
 
   it("replaces elements on replace", () => {
-    const nextElements = createResolvedElements("route:/next", "/", {
+    const nextElements = createResolvedElements("route:/next", "/", null, {
       "page:/next": React.createElement("main", null, "next"),
     });
 
     const nextState = routerReducer(createState(), {
       elements: nextElements,
+      interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
       renderId: 1,
       rootLayoutTreePath: "/",
@@ -98,9 +105,27 @@ describe("app browser entry state helpers", () => {
     });
 
     expect(nextState.elements).toBe(nextElements);
+    expect(nextState.interceptionContext).toBeNull();
     expect(nextState.elements).toMatchObject({
       "page:/next": expect.anything(),
     });
+  });
+
+  it("carries interception context through pending navigation commits", async () => {
+    const pending = await createPendingNavigationCommit({
+      currentState: createState(),
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/photos/42\0/feed", "/", "/feed", {
+          "page:/photos/42": React.createElement("main", null, "photo"),
+        }),
+      ),
+      navigationSnapshot: createState().navigationSnapshot,
+      type: "navigate",
+    });
+
+    expect(pending.routeId).toBe("route:/photos/42\0/feed");
+    expect(pending.interceptionContext).toBe("/feed");
+    expect(pending.action.interceptionContext).toBe("/feed");
   });
 
   it("hard navigates instead of merging when the root layout changes", async () => {

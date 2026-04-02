@@ -10,6 +10,7 @@
  * vi.resetModules() + dynamic import().
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { createAppPayloadCacheKey } from "../packages/vinext/src/server/app-elements.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
@@ -85,7 +86,7 @@ describe("prefetch cache eviction", () => {
     cache.set(rscUrl, { snapshot, timestamp: Date.now() });
     prefetched.add(rscUrl);
 
-    expect(consumePrefetchResponse(rscUrl, "slot:auth:/")).toEqual(snapshot);
+    expect(consumePrefetchResponse(rscUrl, null, "slot:auth:/")).toEqual(snapshot);
     expect(cache.has(rscUrl)).toBe(false);
     expect(prefetched.has(rscUrl)).toBe(false);
   });
@@ -107,9 +108,21 @@ describe("prefetch cache eviction", () => {
     });
     prefetched.add(rscUrl);
 
-    expect(consumePrefetchResponse(rscUrl, "slot:nav:/")).toBeNull();
+    expect(consumePrefetchResponse(rscUrl, null, "slot:nav:/")).toBeNull();
     expect(cache.has(rscUrl)).toBe(false);
     expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("allows separate interception-context entries for the same RSC URL", () => {
+    const feedKey = createAppPayloadCacheKey("/photos/42.rsc", "/feed");
+    const galleryKey = createAppPayloadCacheKey("/photos/42.rsc", "/gallery");
+
+    storePrefetchResponse(feedKey, new Response("feed"));
+    storePrefetchResponse(galleryKey, new Response("gallery"));
+
+    expect(feedKey).not.toBe(galleryKey);
+    expect(getPrefetchCache().has(feedKey)).toBe(true);
+    expect(getPrefetchCache().has(galleryKey)).toBe(true);
   });
 
   it("preserves X-Vinext-Params when replaying cached RSC responses", async () => {

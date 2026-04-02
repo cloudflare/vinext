@@ -4,6 +4,7 @@ import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
 
 export type AppRouterState = {
   elements: AppElements;
+  interceptionContext: string | null;
   renderId: number;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   rootLayoutTreePath: string | null;
@@ -12,6 +13,7 @@ export type AppRouterState = {
 
 export type AppRouterAction = {
   elements: AppElements;
+  interceptionContext: string | null;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   renderId: number;
   rootLayoutTreePath: string | null;
@@ -21,6 +23,7 @@ export type AppRouterAction = {
 
 export type PendingNavigationCommit = {
   action: AppRouterAction;
+  interceptionContext: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
 };
@@ -37,6 +40,7 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
     case "navigate":
       return {
         elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
+        interceptionContext: action.interceptionContext,
         navigationSnapshot: action.navigationSnapshot,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
@@ -45,6 +49,7 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
     case "replace":
       return {
         elements: action.elements,
+        interceptionContext: action.interceptionContext,
         navigationSnapshot: action.navigationSnapshot,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
@@ -101,12 +106,14 @@ export async function createPendingNavigationCommit(options: {
   return {
     action: {
       elements,
+      interceptionContext: metadata.interceptionContext,
       navigationSnapshot: options.navigationSnapshot,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
       routeId: metadata.routeId,
       type: options.type,
     },
+    interceptionContext: metadata.interceptionContext,
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
   };

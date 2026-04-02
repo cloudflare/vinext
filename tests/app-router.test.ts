@@ -480,7 +480,10 @@ describe("App Router integration", () => {
   it("renders intercepted photo modal on RSC navigation from feed", async () => {
     // RSC request simulates client-side navigation
     const res = await fetch(`${baseUrl}/photos/42.rsc`, {
-      headers: { Accept: "text/x-component" },
+      headers: {
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Context": "/feed",
+      },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
@@ -492,6 +495,13 @@ describe("App Router integration", () => {
     // It should also contain the feed page content (the source route)
     expect(rscPayload).toContain("Photo Feed");
     expect(rscPayload).toContain("feed-page");
+    expect(rscPayload).toContain("__interceptionContext");
+    expect(rscPayload).toContain("/feed");
+    const nul = String.fromCharCode(0);
+    expect(
+      rscPayload.includes("route:/photos/42\\u0000/feed") ||
+        rscPayload.includes(`route:/photos/42${nul}/feed`),
+    ).toBe(true);
   });
 
   // --- Intercepting routes with dynamic source route ---

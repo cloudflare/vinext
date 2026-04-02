@@ -21,12 +21,14 @@ import React, {
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import {
+  getCurrentInterceptionContext,
   toRscUrl,
   getPrefetchedUrls,
   getMountedSlotsHeader,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
+import { createAppPayloadCacheKey } from "../server/app-elements.js";
 import { isDangerousScheme } from "./url-safety.js";
 import {
   resolveRelativeHref,
@@ -125,21 +127,26 @@ function prefetchUrl(href: string): void {
 
   const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
 
-  // Don't prefetch the same URL twice (keyed by rscUrl so the browser
-  // entry can clear the key when a cache entry is consumed)
+  // Distinguish the same visible URL when it is prefetched from different
+  // interception sources such as /feed vs /gallery.
   const rscUrl = toRscUrl(fullHref);
+  const interceptionContext = getCurrentInterceptionContext();
+  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
   const prefetched = getPrefetchedUrls();
-  if (prefetched.has(rscUrl)) return;
-  prefetched.add(rscUrl);
+  if (prefetched.has(cacheKey)) return;
+  prefetched.add(cacheKey);
 
   const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       const mountedSlotsHeader = getMountedSlotsHeader();
-      const headers: Record<string, string> = { Accept: "text/x-component" };
+      const headers = new Headers({ Accept: "text/x-component" });
       if (mountedSlotsHeader) {
-        headers["X-Vinext-Mounted-Slots"] = mountedSlotsHeader;
+        headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+      }
+      if (interceptionContext !== null) {
+        headers.set("X-Vinext-Interception-Context", interceptionContext);
       }
       prefetchRscResponse(
         rscUrl,
@@ -150,6 +157,7 @@ function prefetchUrl(href: string): void {
           // @ts-expect-error — purpose is a valid fetch option in some browsers
           purpose: "prefetch",
         }),
+        interceptionContext,
         mountedSlotsHeader,
       );
     } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
