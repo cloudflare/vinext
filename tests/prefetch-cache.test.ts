@@ -17,6 +17,7 @@ let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
+let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
@@ -38,6 +39,7 @@ beforeEach(async () => {
   consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
+  getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
@@ -111,6 +113,15 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, "slot:nav:/")).toBeNull();
     expect(cache.has(rscUrl)).toBe(false);
     expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("reuses the committed interception context for soft navigations", () => {
+    (globalThis as any).window.location.pathname = "/photos/42";
+    (globalThis as any).window.history.state = {
+      __vinext_interceptionContext: "/feed",
+    };
+
+    expect(getCurrentInterceptionContext()).toBe("/feed");
   });
 
   it("allows separate interception-context entries for the same RSC URL", () => {

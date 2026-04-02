@@ -93,6 +93,22 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  test("chained intercepted navigations keep the original source context", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 42");
+
+    await page.click("#modal-photo-43-link");
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 43");
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
   test("refresh on direct photo load preserves the full-page render", async ({ page }) => {
     await page.goto(`${BASE}/photos/42`);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();

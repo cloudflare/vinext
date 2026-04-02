@@ -31,6 +31,7 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   pushHistoryStateWithoutNotify,
+  readHistoryStateInterceptionContext,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   restoreRscResponse,
@@ -39,6 +40,7 @@ import {
   setMountedSlotsHeader,
   setNavigationContext,
   toRscUrl,
+  VINEXT_INTERCEPTION_CONTEXT_HISTORY_STATE_KEY,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
 } from "../shims/navigation.js";
@@ -96,8 +98,6 @@ type VisitedResponseCacheEntry = {
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
-const VINEXT_INTERCEPTION_CONTEXT_HISTORY_STATE_KEY = "__vinext_interceptionContext";
-
 type HistoryStateRecord = {
   [key: string]: unknown;
 };
@@ -328,11 +328,6 @@ function createHistoryStateWithInterceptionContext(
   return Object.keys(nextState).length > 0 ? nextState : null;
 }
 
-function readHistoryStateInterceptionContext(state: unknown): string | null {
-  const value = cloneHistoryState(state)[VINEXT_INTERCEPTION_CONTEXT_HISTORY_STATE_KEY];
-  return typeof value === "string" ? value : null;
-}
-
 function getRequestInterceptionContext(navigationKind: NavigationKind): string | null {
   switch (navigationKind) {
     case "navigate":
@@ -509,6 +504,21 @@ function BrowserRoot({
   useLayoutEffect(() => {
     setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
   }, [treeState.elements]);
+
+  useLayoutEffect(() => {
+    if (treeState.renderId !== 0) {
+      return;
+    }
+
+    replaceHistoryStateWithoutNotify(
+      createHistoryStateWithInterceptionContext(
+        window.history.state,
+        treeState.interceptionContext,
+      ),
+      "",
+      window.location.href,
+    );
+  }, [treeState.interceptionContext, treeState.renderId]);
 
   const committedTree = createElement(
     NavigationCommitSignal,

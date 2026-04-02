@@ -244,6 +244,8 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
 
+export const VINEXT_INTERCEPTION_CONTEXT_HISTORY_STATE_KEY = "__vinext_interceptionContext";
+
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
   buffer: ArrayBuffer;
@@ -275,12 +277,24 @@ export function toRscUrl(href: string): string {
   return normalizedPath + ".rsc" + query;
 }
 
+export function readHistoryStateInterceptionContext(state: unknown): string | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+
+  const value = Reflect.get(state, VINEXT_INTERCEPTION_CONTEXT_HISTORY_STATE_KEY);
+  return typeof value === "string" ? value : null;
+}
+
 export function getCurrentInterceptionContext(): string | null {
   if (isServer) {
     return null;
   }
 
-  return stripBasePath(window.location.pathname, __basePath);
+  return (
+    readHistoryStateInterceptionContext(window.history.state) ??
+    stripBasePath(window.location.pathname, __basePath)
+  );
 }
 
 /** Get or create the shared in-memory RSC prefetch cache on window. */
