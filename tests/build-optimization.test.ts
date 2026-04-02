@@ -1648,7 +1648,6 @@ describe("getClientTreeshakeConfigForVite", () => {
     expect(config).toEqual({
       moduleSideEffects: "no-external",
     });
-    expect(config).not.toHaveProperty("preset");
   });
 
   it("returns config without preset for Vite 9+", () => {
@@ -1656,12 +1655,10 @@ describe("getClientTreeshakeConfigForVite", () => {
     expect(config9).toEqual({
       moduleSideEffects: "no-external",
     });
-    expect(config9).not.toHaveProperty("preset");
 
     const config10 = getClientTreeshakeConfigForVite(10);
     expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
-    expect(config10).not.toHaveProperty("preset");
   });
 });
