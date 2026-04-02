@@ -28,7 +28,7 @@ type BeforePopStateCallback = (state: {
   options: { shallow: boolean };
 }) => boolean;
 
-export interface NextRouter {
+export type NextRouter = {
   /** Current pathname */
   pathname: string;
   /** Current route pattern (e.g., "/posts/[id]") */
@@ -68,24 +68,24 @@ export interface NextRouter {
   beforePopState(cb: BeforePopStateCallback): void;
   /** Listen for route changes */
   events: RouterEvents;
-}
+};
 
-interface UrlObject {
+type UrlObject = {
   pathname?: string;
   query?: UrlQuery;
-}
+};
 
-interface TransitionOptions {
+type TransitionOptions = {
   shallow?: boolean;
   scroll?: boolean;
   locale?: string;
-}
+};
 
-interface RouterEvents {
+type RouterEvents = {
   on(event: string, handler: (...args: unknown[]) => void): void;
   off(event: string, handler: (...args: unknown[]) => void): void;
   emit(event: string, ...args: unknown[]): void;
-}
+};
 
 function createRouterEvents(): RouterEvents {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -231,7 +231,7 @@ function restoreScrollPosition(state: unknown): void {
 /**
  * SSR context - set by the dev server before rendering each page.
  */
-interface SSRContext {
+type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
@@ -239,7 +239,7 @@ interface SSRContext {
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: VinextNextData["domainLocales"];
-}
+};
 
 // ---------------------------------------------------------------------------
 // Server-side SSR state uses a registration pattern so this module can be

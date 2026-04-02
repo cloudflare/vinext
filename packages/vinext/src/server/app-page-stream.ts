@@ -1,60 +1,60 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
 
-export interface AppPageFontData {
+export type AppPageFontData = {
   links: string[];
   preloads: readonly AppPageFontPreload[];
   styles: string[];
-}
+};
 
-export interface CreateAppPageFontDataOptions {
+export type CreateAppPageFontDataOptions = {
   getLinks: () => string[];
   getPreloads: () => AppPageFontPreload[];
   getStyles: () => string[];
-}
+};
 
-export interface AppPageSsrHandler {
+export type AppPageSsrHandler = {
   handleSsr: (
     rscStream: ReadableStream<Uint8Array>,
     navigationContext: unknown,
     fontData: AppPageFontData,
   ) => Promise<ReadableStream<Uint8Array>>;
-}
+};
 
-export interface RenderAppPageHtmlStreamOptions {
+export type RenderAppPageHtmlStreamOptions = {
   fontData: AppPageFontData;
   navigationContext: unknown;
   rscStream: ReadableStream<Uint8Array>;
   ssrHandler: AppPageSsrHandler;
-}
+};
 
-export interface RenderAppPageHtmlResponseOptions extends RenderAppPageHtmlStreamOptions {
+export type RenderAppPageHtmlResponseOptions = {
   clearRequestContext: () => void;
   fontLinkHeader?: string;
   status: number;
-}
+} & RenderAppPageHtmlStreamOptions;
 
-export interface AppPageHtmlStreamRecoveryResult {
+export type AppPageHtmlStreamRecoveryResult = {
   htmlStream: ReadableStream<Uint8Array> | null;
   response: Response | null;
-}
+};
 
-export interface RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> {
+export type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   onShellRendered?: () => void;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array>>;
   renderSpecialErrorResponse: (specialError: TSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => TSpecialError | null;
-}
+};
 
-export interface AppPageRscErrorTracker {
+export type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
-}
+};
 
-export interface ShouldRerenderAppPageWithGlobalErrorOptions {
+export type ShouldRerenderAppPageWithGlobalErrorOptions = {
   capturedError: unknown;
   hasLocalBoundary: boolean;
-}
+};
 
 export function createAppPageFontData(options: CreateAppPageFontDataOptions): AppPageFontData {
   return {

@@ -116,8 +116,8 @@ describe("app page boundary helpers", () => {
       renderLayout(component, children, params) {
         return `Layout(${component})[${children}|${JSON.stringify(params)}]`;
       },
-      renderLayoutSegmentProvider(childSegments, children) {
-        return `Segment(${String(childSegments)})[${children}]`;
+      renderLayoutSegmentProvider(segmentMap, children) {
+        return `Segment(${String(segmentMap.children)})[${children}]`;
       },
       resolveChildSegments(routeSegments, treePosition, params) {
         const slug = Array.isArray(params.slug) ? params.slug.join("/") : params.slug;
@@ -186,9 +186,8 @@ describe("app page boundary helpers", () => {
 
   it("routes HTML boundary renders through the provided SSR callback", async () => {
     const createHtmlResponse = vi.fn(
-      async (rscStream: ReadableStream<Uint8Array>, status: number) => {
-        return new Response(`${status}:${await readText(rscStream)}`);
-      },
+      async (rscStream: ReadableStream<Uint8Array>, status: number) =>
+        new Response(`${status}:${await readText(rscStream)}`),
     );
 
     const response = await renderAppPageBoundaryResponse({

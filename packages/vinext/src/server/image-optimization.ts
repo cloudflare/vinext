@@ -24,14 +24,14 @@ export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
  * Image security configuration from next.config.js `images` section.
  * Controls SVG handling and security headers for the image endpoint.
  */
-export interface ImageConfig {
+export type ImageConfig = {
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
   /** Content-Disposition header value. Default: "inline". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */
   contentSecurityPolicy?: string;
-}
+};
 
 /**
  * Next.js default device sizes and image sizes.
@@ -189,7 +189,7 @@ function createPassthroughImageResponse(source: Response, config?: ImageConfig):
  * Handlers for image optimization I/O operations.
  * Workers provide these callbacks to adapt their specific bindings.
  */
-export interface ImageHandlers {
+export type ImageHandlers = {
   /** Fetch the source image from storage (e.g., Cloudflare ASSETS binding). */
   fetchAsset: (path: string, request: Request) => Promise<Response>;
   /** Optional: Transform the image (resize, format, quality). */
@@ -197,7 +197,7 @@ export interface ImageHandlers {
     body: ReadableStream,
     options: { width: number; format: string; quality: number },
   ) => Promise<Response>;
-}
+};
 
 /**
  * Handle image optimization requests.

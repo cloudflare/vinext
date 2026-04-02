@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
+import vinext from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
@@ -26,7 +26,10 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
+import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import { emitStandaloneOutput } from "./build/standalone.js";
+import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
+
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
 // When vinext is installed via `bun link` or `npm link`, Node follows the
@@ -37,14 +40,14 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 // To fix this, we resolve Vite dynamically from `process.cwd()` at runtime
 // using `createRequire`. This ensures we always use the project's Vite.
 
-interface ViteModule {
+type ViteModule = {
   createServer: typeof import("vite").createServer;
   build: typeof import("vite").build;
   createBuilder: typeof import("vite").createBuilder;
   createLogger: typeof import("vite").createLogger;
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
   version: string;
-}
+};
 
 let _viteModule: ViteModule | null = null;
 
@@ -90,7 +93,7 @@ const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.met
 const command = process.argv[2];
 const rawArgs = process.argv.slice(3);
 
-interface ParsedArgs {
+type ParsedArgs = {
   port?: number;
   hostname?: string;
   help?: boolean;
@@ -98,7 +101,8 @@ interface ParsedArgs {
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
   prerenderAll?: boolean;
-}
+  precompress?: boolean;
+};
 
 function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {};
@@ -114,6 +118,9 @@ function parseArgs(args: string[]): ParsedArgs {
       result.experimental = true; // no-op
     } else if (arg === "--prerender-all") {
       result.prerenderAll = true;
+    } else if (arg === "--precompress") {
+      result.precompress = true;
+      process.env.VINEXT_PRECOMPRESS = "1";
     } else if (arg === "--port" || arg === "-p") {
       result.port = parseInt(args[++i], 10);
     } else if (arg.startsWith("--port=")) {
@@ -163,7 +170,7 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
   const originalWarn = logger.warn.bind(logger);
 
   // Strip ANSI escape codes for pattern matching (keep originals for output).
-  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // eslint-disable-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // oxlint-disable-line no-control-regex
 
   logger.info = (msg: string, options?: import("vite").LogOptions) => {
     const plain = strip(msg);
@@ -358,10 +365,34 @@ async function buildApp() {
   applyViteConfigCompatibility(process.cwd());
 
   const vite = await loadVite();
+  const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
+
+  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
+    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+  const resolvedNextConfig = await resolveNextConfig(
+    await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
+    process.cwd(),
+  );
+  const outputMode = resolvedNextConfig.output;
+  const distDir = path.resolve(process.cwd(), "dist");
+
+  // Pre-flight check: verify vinext's own dist/ exists before starting the build.
+  // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
+  // the full multi-minute Vite build completes, when emitStandaloneOutput runs.
+  if (outputMode === "standalone") {
+    const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
+    if (!fs.existsSync(vinextDistDir)) {
+      console.error(
+        `  Error: vinext dist/ not found at ${vinextDistDir}. Run \`pnpm run build\` in the vinext package first.`,
+      );
+      process.exit(1);
+    }
+  }
+
   // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
   const logger = parsed.verbose
     ? vite.createLogger("info", { allowClearScreen: false })
@@ -380,12 +411,15 @@ async function buildApp() {
     }
   }
 
-  if (isApp) {
-    // App Router: use createBuilder for multi-environment RSC builds
-    const config = buildViteConfig({}, logger);
-    const builder = await vite.createBuilder(config);
-    await builder.buildApp();
+  // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
+  // use createBuilder + buildApp(). vinext() defines the appropriate environments
+  // in its config() hook for each case, so cloudflare() and the plain Node SSR
+  // build both work correctly.
+  const config = buildViteConfig({}, logger);
+  const builder = await vite.createBuilder(config);
+  await builder.buildApp();
 
+  if (isApp) {
     // Hybrid app (both app/ and pages/ directories): also build the Pages Router
     // SSR bundle so the prerender phase can render Pages Router routes.
     // The App Router multi-env build (buildApp) doesn't include the Pages Router
@@ -417,19 +451,19 @@ async function buildApp() {
           userTransformPlugins = flat.filter(
             (p): p is import("vite").Plugin =>
               !!p &&
-              typeof (p as any).name === "string" &&
+              typeof p.name === "string" &&
               // vinext and its sub-plugins — re-registered below
-              !(p as any).name.startsWith("vinext:") &&
+              !p.name.startsWith("vinext:") &&
               // @vitejs/plugin-react — auto-registered by vinext
-              !(p as any).name.startsWith("vite:react") &&
+              !p.name.startsWith("vite:react") &&
               // @vitejs/plugin-rsc and its sub-plugins — App Router only
-              !(p as any).name.startsWith("rsc:") &&
-              (p as any).name !== "vite-rsc-load-module-dev-proxy" &&
+              !p.name.startsWith("rsc:") &&
+              p.name !== "vite-rsc-load-module-dev-proxy" &&
               // vite-tsconfig-paths — auto-registered by vinext
-              (p as any).name !== "vite-tsconfig-paths" &&
+              p.name !== "vite-tsconfig-paths" &&
               // cloudflare() — injects multi-env environments block which
               // conflicts with the plain SSR build config below
-              !(p as any).name.startsWith("vite-plugin-cloudflare"),
+              !p.name.startsWith("vite-plugin-cloudflare"),
           );
         }
       }
@@ -445,60 +479,30 @@ async function buildApp() {
           outDir: "dist/server",
           emptyOutDir: false, // preserve RSC artefacts from buildApp()
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          ...withBuildBundlerOptions({
             output: {
               entryFileNames: "entry.js",
             },
-          },
+          }),
         },
       });
     }
-  } else {
-    // Pages Router: client + SSR builds.
-    // Use buildViteConfig() so that when a vite.config exists we don't
-    // duplicate the vinext() plugin.
-    console.log("  Building client...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/client",
-            manifest: true,
-            ssrManifest: true,
-            rollupOptions: {
-              input: "virtual:vinext-client-entry",
-              output: clientOutputConfig,
-              treeshake: clientTreeshakeConfig,
-            },
-          },
-        },
-        logger,
-      ),
-    );
-
-    console.log("  Building server...");
-    await vite.build(
-      buildViteConfig(
-        {
-          build: {
-            outDir: "dist/server",
-            ssr: "virtual:vinext-server-entry",
-            rollupOptions: {
-              output: {
-                entryFileNames: "entry.js",
-              },
-            },
-          },
-        },
-        logger,
-      ),
-    );
   }
 
-  const nextConfig = await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd());
+  if (outputMode === "standalone") {
+    const standalone = emitStandaloneOutput({
+      root: process.cwd(),
+      outDir: distDir,
+    });
+    console.log(
+      `  Generated standalone output in ${path.relative(process.cwd(), standalone.standaloneDir)}/`,
+    );
+    console.log("  Start it with: node dist/standalone/server.js\n");
+    return process.exit(0);
+  }
 
   let prerenderResult;
-  const shouldPrerender = parsed.prerenderAll || nextConfig.output === "export";
+  const shouldPrerender = parsed.prerenderAll || resolvedNextConfig.output === "export";
 
   if (shouldPrerender) {
     const label = parsed.prerenderAll
@@ -509,10 +513,13 @@ async function buildApp() {
     prerenderResult = await runPrerender({ root: process.cwd() });
   }
 
+  // Precompression runs as a Vite plugin writeBundle hook (vinext:precompress).
+  // Opt-in via --precompress CLI flag or `precompress: true` in plugin options.
+
   process.stdout.write("\x1b[0m");
   await printBuildReport({
     root: process.cwd(),
-    pageExtensions: nextConfig.pageExtensions,
+    pageExtensions: resolvedNextConfig.pageExtensions,
     prerenderResult: prerenderResult ?? undefined,
   });
 
@@ -672,11 +679,13 @@ function printHelp(cmd?: string) {
 
   Automatically detects App Router (app/) or Pages Router (pages/) and
   runs the appropriate multi-environment build via Vite.
+  If next.config sets output: "standalone", also emits dist/standalone/server.js.
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
     --prerender-all      Pre-render discovered routes after building (future releases
                          will serve these files in vinext start)
+    --precompress        Precompress static assets at build time (.br, .gz, .zst)
     -h, --help           Show this help
 `);
     return;
@@ -690,6 +699,7 @@ function printHelp(cmd?: string) {
 
   Serves the output from \`vinext build\`. Supports SSR, static files,
   compression, and all middleware.
+  For output: "standalone", you can also run: node dist/standalone/server.js
 
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)

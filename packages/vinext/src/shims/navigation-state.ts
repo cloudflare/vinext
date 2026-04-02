@@ -12,7 +12,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
+import {
+  _registerStateAccessors,
+  type NavigationContext,
+  GLOBAL_ACCESSORS_KEY,
+} from "./navigation.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -23,10 +27,10 @@ import {
 // ALS setup — same pattern as headers.ts
 // ---------------------------------------------------------------------------
 
-export interface NavigationState {
+export type NavigationState = {
   serverContext: NavigationContext | null;
   serverInsertedHTMLCallbacks: Array<() => unknown>;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.navigation.als");
 const _FALLBACK_KEY = Symbol.for("vinext.navigation.fallback");
@@ -98,8 +102,6 @@ export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T |
 //    module instance of navigation.ts, even if Vite created a separate one
 //    for "use client" components due to pre-bundling or env separation.
 // ---------------------------------------------------------------------------
-
-import { GLOBAL_ACCESSORS_KEY } from "./navigation";
 
 const _accessors = {
   getServerContext(): NavigationContext | null {

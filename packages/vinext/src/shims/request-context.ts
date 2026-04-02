@@ -37,10 +37,10 @@ import {
  * Using a structural interface so this file has no runtime dependency on
  * Cloudflare types packages.
  */
-export interface ExecutionContextLike {
+export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
-}
+};
 
 // ---------------------------------------------------------------------------
 // ALS setup — stored on globalThis so all Vite environments (RSC/SSR/client)

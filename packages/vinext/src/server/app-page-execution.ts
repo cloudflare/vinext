@@ -2,36 +2,36 @@ export type AppPageSpecialError =
   | { kind: "redirect"; location: string; statusCode: number }
   | { kind: "http-access-fallback"; statusCode: number };
 
-export interface AppPageFontPreload {
+export type AppPageFontPreload = {
   href: string;
   type: string;
-}
+};
 
-export interface AppPageRscStreamCapture {
+export type AppPageRscStreamCapture = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   responseStream: ReadableStream<Uint8Array>;
-}
+};
 
-export interface BuildAppPageSpecialErrorResponseOptions {
+export type BuildAppPageSpecialErrorResponseOptions = {
   clearRequestContext: () => void;
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
   requestUrl: string;
   specialError: AppPageSpecialError;
-}
+};
 
-export interface ProbeAppPageLayoutsOptions {
+export type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
   onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-}
+};
 
-export interface ProbeAppPageComponentOptions {
+export type ProbeAppPageComponentOptions = {
   awaitAsyncResult: boolean;
   onError: (error: unknown) => Promise<Response | null>;
   probePage: () => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-}
+};
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return Boolean(

@@ -1,54 +1,54 @@
-export interface AppPageMiddlewareContext {
+export type AppPageMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
-}
+};
 
-export interface AppPageResponseTiming {
+export type AppPageResponseTiming = {
   compileEnd?: number;
   handlerStart: number;
   renderEnd?: number;
   responseKind: "html" | "rsc";
-}
+};
 
-export interface AppPageResponsePolicy {
+export type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
-}
+};
 
-interface ResolveAppPageResponsePolicyBaseOptions {
+type ResolveAppPageResponsePolicyBaseOptions = {
   isDynamicError: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProduction: boolean;
   revalidateSeconds: number | null;
-}
+};
 
-export interface ResolveAppPageRscResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
+export type ResolveAppPageRscResponsePolicyOptions = {
   dynamicUsedDuringBuild: boolean;
-}
+} & ResolveAppPageResponsePolicyBaseOptions;
 
-export interface ResolveAppPageHtmlResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
+export type ResolveAppPageHtmlResponsePolicyOptions = {
   dynamicUsedDuringRender: boolean;
-}
+} & ResolveAppPageResponsePolicyBaseOptions;
 
-export interface AppPageHtmlResponsePolicy extends AppPageResponsePolicy {
+export type AppPageHtmlResponsePolicy = {
   shouldWriteToCache: boolean;
-}
+} & AppPageResponsePolicy;
 
-export interface BuildAppPageRscResponseOptions {
+export type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
-}
+};
 
-export interface BuildAppPageHtmlResponseOptions {
+export type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
   fontLinkHeader?: string;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
-}
+};
 
 const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";

@@ -13,14 +13,14 @@ import path from "node:path";
 
 type Status = "supported" | "partial" | "unsupported";
 
-interface CheckItem {
+type CheckItem = {
   name: string;
   status: Status;
   detail?: string;
   files?: string[];
-}
+};
 
-export interface CheckResult {
+export type CheckResult = {
   imports: CheckItem[];
   config: CheckItem[];
   libraries: CheckItem[];
@@ -32,7 +32,7 @@ export interface CheckResult {
     total: number;
     score: number;
   };
-}
+};
 
 // ── Import support map ─────────────────────────────────────────────────────
 
@@ -149,7 +149,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   env: { status: "supported" },
   images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
-  output: { status: "supported", detail: "'export' and 'standalone' modes" },
+  output: {
+    status: "supported",
+    detail: "'export' mode and 'standalone' output (dist/standalone/server.js)",
+  },
   transpilePackages: { status: "supported", detail: "Vite handles this natively" },
   webpack: {
     status: "unsupported",

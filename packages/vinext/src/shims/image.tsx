@@ -14,12 +14,12 @@ import React, { forwardRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
-export interface StaticImageData {
+export type StaticImageData = {
   src: string;
   height: number;
   width: number;
   blurDataURL?: string;
-}
+};
 
 /**
  * Image config injected at build time via Vite define.
@@ -92,7 +92,7 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   };
 }
 
-interface ImageProps {
+type ImageProps = {
   src: string | StaticImageData;
   alt: string;
   width?: number;
@@ -116,7 +116,7 @@ interface ImageProps {
   unoptimized?: boolean;
   overrideSrc?: string;
   loading?: "lazy" | "eager";
-}
+};
 
 /**
  * Sanitize a blurDataURL to prevent CSS injection.
@@ -150,6 +150,24 @@ function sanitizeBlurDataURL(url: string): string | undefined {
  */
 function isRemoteUrl(src: string): boolean {
   return src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//");
+}
+
+/**
+ * Resolve src, width, height, blurDataURL from Image props (string or StaticImageData).
+ * Shared by the Image component and getImageProps to keep behavior in sync.
+ */
+function resolveImageSource(v: {
+  src: string | StaticImageData;
+  width?: number;
+  height?: number;
+  blurDataURL?: string;
+}): { src: string; width?: number; height?: number; blurDataURL?: string } {
+  const src = typeof v.src === "string" ? v.src : v.src.src;
+  const imgWidth = v.width ?? (typeof v.src === "object" ? v.src.width : undefined);
+  const imgHeight = v.height ?? (typeof v.src === "object" ? v.src.height : undefined);
+  const imgBlurDataURL =
+    v.blurDataURL ?? (typeof v.src === "object" ? v.src.blurDataURL : undefined);
+  return { src, width: imgWidth, height: imgHeight, blurDataURL: imgBlurDataURL };
 }
 
 /**
@@ -217,12 +235,12 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
     : onLoad;
 
-  // Handle StaticImageData (import result)
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
-  const imgBlurDataURL =
-    blurDataURL ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
@@ -421,11 +439,12 @@ export function getImageProps(props: ImageProps): {
     ...rest
   } = props;
 
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
-  const imgBlurDataURL =
-    blurDataURLProp ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
 
   // Validate remote URLs against configured patterns
   let blockedInProd = false;

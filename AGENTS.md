@@ -451,7 +451,7 @@ This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bun
 - Prefer `oxc` over `esbuild` for new JavaScript transform config
 - Prefer `optimizeDeps.rolldownOptions` over `optimizeDeps.esbuildOptions`
 - Prefer `build.rolldownOptions` / `worker.rolldownOptions` over adding new `*.rollupOptions` config
-- When touching existing `build.rollupOptions` or `manualChunks`, preserve Vite 7 compatibility but treat them as migration targets, not patterns to copy forward
+- When touching existing `build.rollupOptions` or `manualChunks`, treat them as migration targets to Rolldown equivalents, not patterns to copy forward
 - If something breaks only on Vite 8, check the newer `build.target` baseline and stricter CommonJS default import behavior first
 
 ### Virtual Module Resolution Quirks

@@ -4,17 +4,17 @@ import { parseEnv } from "node:util";
 
 export type VinextEnvMode = "development" | "production" | "test";
 
-export interface LoadDotenvOptions {
+export type LoadDotenvOptions = {
   root: string;
   mode: VinextEnvMode;
   processEnv?: NodeJS.ProcessEnv;
-}
+};
 
-export interface LoadDotenvResult {
+export type LoadDotenvResult = {
   mode: VinextEnvMode;
   loadedFiles: string[];
   loadedEnv: Record<string, string>;
-}
+};
 
 /**
  * Next.js-compatible dotenv lookup order (highest priority first).

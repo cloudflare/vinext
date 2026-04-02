@@ -346,6 +346,28 @@ describe("Next.js compat: app-routes", () => {
     }
   });
 
+  // ── Catch-all dynamic params (Next.js 15 async params) ──────
+  // Regression test for: https://github.com/cloudflare/vinext/pull/466
+  // Route handlers must support `await params` (Promise<{ ... }> pattern).
+  // Fixture: /api/catch-all/[...slugs]/route.ts uses `await params`
+  //
+  // Next.js: 'provides params to routes with dynamic parameters'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L84-L92
+
+  it("catch-all route handler supports await params (Next.js 15 async params)", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/a/b/c`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["a", "b", "c"]);
+  });
+
+  it("catch-all route handler with hyphenated segments", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/foo-bar/baz-qux`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["foo-bar", "baz-qux"]);
+  });
+
   // ── Documented skips ─────────────────────────────────────────
   //
   // N/A: 'statically generates correctly with no dynamic usage'
@@ -379,8 +401,6 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'no response returned' — Tests console error inspection
   //
   // N/A: 'permanentRedirect' — Would need fixture, minor variant of redirect
-  //
-  // N/A: 'catch-all routes' — Would need fixture with [...slug] route handler
 
   // ── ISR caching (dev mode) ─────────────────────────────────
   // In dev mode, ISR caching is disabled. Route handlers should NOT emit

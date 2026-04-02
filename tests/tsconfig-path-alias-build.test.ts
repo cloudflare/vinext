@@ -7,6 +7,17 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
 const tmpDirs: string[] = [];
+const workerEntryPath = path
+  .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
+  .replace(/\\/g, "/");
+const cfPluginPath = path.resolve(
+  import.meta.dirname,
+  "./fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+);
+
+type CloudflarePluginFactory = (opts?: {
+  viteEnvironment?: { name: string; childEnvironments?: string[] };
+}) => import("vite").Plugin;
 
 function writeFixtureFile(root: string, filePath: string, content: string) {
   const absPath = path.join(root, filePath);
@@ -28,53 +39,38 @@ function readTextFilesRecursive(root: string): string {
   return output;
 }
 
-describe("App Router tsconfig path aliases in production builds", () => {
-  afterEach(() => {
-    for (const dir of tmpDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+async function loadCloudflarePlugin(): Promise<CloudflarePluginFactory> {
+  const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+    cloudflare: CloudflarePluginFactory;
+  };
+  return cloudflare;
+}
 
-  it("transforms alias-based import.meta.glob and alias-based dynamic import in Cloudflare builds", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-alias-build-"));
-    tmpDirs.push(root);
-    const workerEntryPath = path
-      .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
-      .replace(/\\/g, "/");
-    const cfPluginPath = path.resolve(
-      import.meta.dirname,
-      "./fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs",
-    );
-    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
-      cloudflare: (opts?: {
-        viteEnvironment?: { name: string; childEnvironments?: string[] };
-      }) => import("vite").Plugin;
-    };
+function writeCloudflareAppFixture(root: string, name: string) {
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
 
-    fs.symlinkSync(
-      path.resolve(import.meta.dirname, "../node_modules"),
-      path.join(root, "node_modules"),
-      "junction",
-    );
-
-    writeFixtureFile(
-      root,
-      "package.json",
-      JSON.stringify(
-        {
-          name: "vinext-tsconfig-alias-build",
-          private: true,
-          type: "module",
-        },
-        null,
-        2,
-      ),
-    );
-    writeFixtureFile(
-      root,
-      "wrangler.jsonc",
-      `{
-  "name": "vinext-tsconfig-alias-build",
+  writeFixtureFile(
+    root,
+    "package.json",
+    JSON.stringify(
+      {
+        name,
+        private: true,
+        type: "module",
+      },
+      null,
+      2,
+    ),
+  );
+  writeFixtureFile(
+    root,
+    "wrangler.jsonc",
+    `{
+  "name": ${JSON.stringify(name)},
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
@@ -84,34 +80,34 @@ describe("App Router tsconfig path aliases in production builds", () => {
   }
 }
 `,
-    );
-    writeFixtureFile(
-      root,
-      "tsconfig.json",
-      JSON.stringify(
-        {
-          compilerOptions: {
-            target: "ES2022",
-            module: "ESNext",
-            moduleResolution: "bundler",
-            jsx: "react-jsx",
-            strict: true,
-            skipLibCheck: true,
-            types: ["vite/client", "@vitejs/plugin-rsc/types"],
-            paths: {
-              "@/*": ["./*"],
-            },
+  );
+  writeFixtureFile(
+    root,
+    "tsconfig.json",
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "bundler",
+          jsx: "react-jsx",
+          strict: true,
+          skipLibCheck: true,
+          types: ["vite/client", "@vitejs/plugin-rsc/types"],
+          paths: {
+            "@/*": ["./*"],
           },
-          include: ["app", "lib", "content", "*.ts", "*.tsx"],
         },
-        null,
-        2,
-      ),
-    );
-    writeFixtureFile(
-      root,
-      "app/layout.tsx",
-      `export default function RootLayout({
+        include: ["app", "lib", "content", "*.ts", "*.tsx"],
+      },
+      null,
+      2,
+    ),
+  );
+  writeFixtureFile(
+    root,
+    "app/layout.tsx",
+    `export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -123,7 +119,50 @@ describe("App Router tsconfig path aliases in production builds", () => {
   );
 }
 `,
-    );
+  );
+  writeFixtureFile(
+    root,
+    "mdx-components.tsx",
+    `export function useMDXComponents(components: Record<string, unknown>) {
+  return components;
+}
+`,
+  );
+  writeFixtureFile(
+    root,
+    "worker/index.ts",
+    `import handler from ${JSON.stringify(workerEntryPath)};
+
+export default handler;
+`,
+  );
+}
+
+async function buildCloudflareAppFixture(root: string) {
+  const cloudflare = await loadCloudflarePlugin();
+  const builder = await createBuilder({
+    root,
+    configFile: false,
+    plugins: [
+      vinext({ appDir: root }),
+      cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+    ],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+}
+
+describe("App Router tsconfig path aliases in production builds", () => {
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("transforms alias-based import.meta.glob and alias-based dynamic import in Cloudflare builds", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-alias-build-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-tsconfig-alias-build");
     writeFixtureFile(
       root,
       "app/page.tsx",
@@ -211,28 +250,66 @@ This content came from an alias-based MDX import.
 This content came from an alias-based dynamic MDX import.
 `,
     );
-    writeFixtureFile(
-      root,
-      "worker/index.ts",
-      `import handler from ${JSON.stringify(workerEntryPath)};
 
-export default handler;
-`,
-    );
-
-    const builder = await createBuilder({
-      root,
-      configFile: false,
-      plugins: [
-        vinext({ appDir: root }),
-        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
-      ],
-      logLevel: "silent",
-    });
-    await builder.buildApp();
+    await buildCloudflareAppFixture(root);
 
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
     expect(buildOutput).not.toContain("@/content/posts/");
+  }, 60_000);
+
+  it("import.meta.glob with MDX files containing frontmatter does not cause parse errors (issue #659)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mdx-frontmatter-build-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-mdx-frontmatter-test");
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import { getGlobPostCount } from "../lib/mdx-loader";
+
+export default function HomePage() {
+  return <main>home {getGlobPostCount()}</main>;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "lib/mdx-loader.ts",
+      `type MdxModule = {
+  default: React.ComponentType;
+  frontmatter?: {
+    title: string;
+    date: string;
+  };
+};
+
+export const mdxModules = import.meta.glob("@/content/posts/**/*.mdx", {
+  eager: true,
+}) as Record<string, MdxModule>;
+
+export function getGlobPostCount(): number {
+  return Object.keys(mdxModules).length;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "content/posts/2025/08/20/second-post/index.mdx",
+      `---
+title: "Second Post"
+date: "2025-08-20"
+---
+
+<span className="text-red-500">This is a post with frontmatter and JSX.</span>
+`,
+    );
+
+    await buildCloudflareAppFixture(root);
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
+    expect(buildOutput).not.toContain("@/content/posts/");
+    expect(buildOutput).not.toContain('title: "Second Post"');
+    expect(buildOutput).toContain("text-red-500");
   }, 60_000);
 });

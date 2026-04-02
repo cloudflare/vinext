@@ -8,7 +8,7 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolveEntryPath } from "./runtime-entry-module.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -29,58 +29,46 @@ import { isProxyFile } from "../server/middleware.js";
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
-const configMatchersPath = fileURLToPath(
-  new URL("../config/config-matchers.js", import.meta.url),
-).replace(/\\/g, "/");
-const requestPipelinePath = fileURLToPath(
-  new URL("../server/request-pipeline.js", import.meta.url),
-).replace(/\\/g, "/");
-const requestContextShimPath = fileURLToPath(
-  new URL("../shims/request-context.js", import.meta.url),
-).replace(/\\/g, "/");
-const normalizePathModulePath = fileURLToPath(
-  new URL("../server/normalize-path.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerRuntimePath = fileURLToPath(
-  new URL("../server/app-route-handler-runtime.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerPolicyPath = fileURLToPath(
-  new URL("../server/app-route-handler-policy.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerExecutionPath = fileURLToPath(
-  new URL("../server/app-route-handler-execution.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerCachePath = fileURLToPath(
-  new URL("../server/app-route-handler-cache.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageCachePath = fileURLToPath(
-  new URL("../server/app-page-cache.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageExecutionPath = fileURLToPath(
-  new URL("../server/app-page-execution.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageBoundaryRenderPath = fileURLToPath(
-  new URL("../server/app-page-boundary-render.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageRenderPath = fileURLToPath(
-  new URL("../server/app-page-render.js", import.meta.url),
-).replace(/\\/g, "/");
-const appPageRequestPath = fileURLToPath(
-  new URL("../server/app-page-request.js", import.meta.url),
-).replace(/\\/g, "/");
-const appRouteHandlerResponsePath = fileURLToPath(
-  new URL("../server/app-route-handler-response.js", import.meta.url),
-).replace(/\\/g, "/");
-const routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
-  /\\/g,
-  "/",
+const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
+const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
+const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
+const appRouteHandlerRuntimePath = resolveEntryPath(
+  "../server/app-route-handler-runtime.js",
+  import.meta.url,
 );
+const appRouteHandlerPolicyPath = resolveEntryPath(
+  "../server/app-route-handler-policy.js",
+  import.meta.url,
+);
+const appRouteHandlerExecutionPath = resolveEntryPath(
+  "../server/app-route-handler-execution.js",
+  import.meta.url,
+);
+const appRouteHandlerCachePath = resolveEntryPath(
+  "../server/app-route-handler-cache.js",
+  import.meta.url,
+);
+const appPageCachePath = resolveEntryPath("../server/app-page-cache.js", import.meta.url);
+const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
+const appPageBoundaryRenderPath = resolveEntryPath(
+  "../server/app-page-boundary-render.js",
+  import.meta.url,
+);
+const appPageRenderPath = resolveEntryPath("../server/app-page-render.js", import.meta.url);
+const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
+const appRouteHandlerResponsePath = resolveEntryPath(
+  "../server/app-route-handler-response.js",
+  import.meta.url,
+);
+const routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
+const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
-export interface AppRouterConfig {
+export type AppRouterConfig = {
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -105,7 +93,7 @@ export interface AppRouterConfig {
    * `virtual:vinext-server-entry` when this flag is set.
    */
   hasPagesDir?: boolean;
-}
+};
 
 /**
  * Generate the virtual RSC entry module.
@@ -186,14 +174,14 @@ export function generateRscEntry(
     const templateVars = route.templates.map((t) => getImportVar(t));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
     const slotEntries = route.parallelSlots.map((slot) => {
-      const interceptEntries = slot.interceptingRoutes.map((ir) => {
-        return `        {
+      const interceptEntries = slot.interceptingRoutes.map(
+        (ir) => `        {
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           page: ${getImportVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
-        }`;
-      });
+        }`,
+      );
       return `      ${JSON.stringify(slot.name)}: {
         page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
@@ -358,7 +346,7 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
@@ -1026,7 +1014,7 @@ async function buildPageElement(route, params, opts, searchParams) {
 
   // Wrap page with empty segment provider so useSelectedLayoutSegments()
   // returns [] when called from inside a page component (leaf node).
-  element = createElement(LayoutSegmentProvider, { childSegments: [] }, element);
+  element = createElement(LayoutSegmentProvider, { segmentMap: { children: [] } }, element);
 
   // Add metadata + viewport head tags (React 19 hoists title/meta/link to <head>)
   // Next.js always injects charset and default viewport even when no metadata/viewport
@@ -1184,7 +1172,7 @@ async function buildPageElement(route, params, opts, searchParams) {
       // components rendered inside the layout's own JSX.
       const treePos = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
       const childSegs = __resolveChildSegments(route.routeSegments || [], treePos, params);
-      element = createElement(LayoutSegmentProvider, { childSegments: childSegs }, element);
+      element = createElement(LayoutSegmentProvider, { segmentMap: { children: childSegs } }, element);
     }
   }
 
@@ -1612,10 +1600,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const __mwNextConfig = (__basePath || __i18nConfig) ? { basePath: __basePath, i18n: __i18nConfig ?? undefined } : undefined;
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
-      const mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
-      const _mwWaitUntil = mwFetchEvent.drainWaitUntil();
-      const _mwExecCtx = _getRequestExecutionContext();
-      if (_mwExecCtx && typeof _mwExecCtx.waitUntil === "function") { _mwExecCtx.waitUntil(_mwWaitUntil); }
+      let mwResponse;
+      try {
+        mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
+      } finally {
+        const _mwWaitUntil = mwFetchEvent.drainWaitUntil();
+        const _mwExecCtx = _getRequestExecutionContext();
+        if (_mwExecCtx && typeof _mwExecCtx.waitUntil === "function") { _mwExecCtx.waitUntil(_mwWaitUntil); }
+      }
       if (mwResponse) {
         // Check for x-middleware-next (continue)
         if (mwResponse.headers.get("x-middleware-next") === "1") {
@@ -2277,7 +2269,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         markDynamicUsage,
         method,
         middlewareContext: _mwCtx,
-        params,
+        params: makeThenableParams(params),
         reportRequestError: _reportRequestError,
         request,
         revalidateSeconds,

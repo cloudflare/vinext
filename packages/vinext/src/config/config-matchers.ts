@@ -421,12 +421,12 @@ export function escapeHeaderSource(source: string): string {
  * Request context needed for evaluating has/missing conditions.
  * Callers extract the relevant parts from the incoming Request.
  */
-export interface RequestContext {
+export type RequestContext = {
   headers: Headers;
   cookies: Record<string, string>;
   query: URLSearchParams;
   host: string;
-}
+};
 
 /**
  * Parse a Cookie header string into a key-value record.
@@ -1080,8 +1080,8 @@ export async function proxyExternalRequest(
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
-  } catch (e: any) {
-    if (e?.name === "AbortError") {
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
       console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
       return new Response("Gateway Timeout", { status: 504 });
     }

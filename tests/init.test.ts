@@ -192,17 +192,19 @@ describe("generateViteConfig", () => {
 // ─── Unit Tests: addScripts ──────────────────────────────────────────────────
 
 describe("addScripts", () => {
-  it("adds dev:vinext and build:vinext scripts", () => {
+  it("adds dev:vinext, build:vinext, and start:vinext scripts", () => {
     setupProject(tmpDir, { router: "app" });
 
     const added = addScripts(tmpDir, 3001);
 
     expect(added).toContain("dev:vinext");
     expect(added).toContain("build:vinext");
+    expect(added).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 3001");
-    expect(pkg.scripts["build:vinext"]).toBe("vite build");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 3001");
+    expect(pkg.scripts["build:vinext"]).toBe("vinext build");
+    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
   });
 
   it("uses custom port", () => {
@@ -211,7 +213,7 @@ describe("addScripts", () => {
     addScripts(tmpDir, 4000);
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 4000");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 4000");
   });
 
   it("does not overwrite existing scripts", () => {
@@ -224,6 +226,7 @@ describe("addScripts", () => {
 
     expect(added).not.toContain("dev:vinext");
     expect(added).toContain("build:vinext");
+    expect(added).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
@@ -386,17 +389,19 @@ describe("init — basic functionality", () => {
     expect(result.addedTypeModule).toBe(false);
   });
 
-  it("adds dev:vinext and build:vinext scripts", async () => {
+  it("adds dev:vinext, build:vinext, and start:vinext scripts", async () => {
     setupProject(tmpDir, { router: "app" });
 
     const { result } = await runInit(tmpDir);
 
     expect(result.addedScripts).toContain("dev:vinext");
     expect(result.addedScripts).toContain("build:vinext");
+    expect(result.addedScripts).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 3001");
-    expect(pkg.scripts["build:vinext"]).toBe("vite build");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 3001");
+    expect(pkg.scripts["build:vinext"]).toBe("vinext build");
+    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
   });
 
   it("uses custom port in dev:vinext script", async () => {
@@ -405,7 +410,7 @@ describe("init — basic functionality", () => {
     await runInit(tmpDir, { port: 4000 });
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 4000");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 4000");
   });
 
   it("does not overwrite existing scripts", async () => {
@@ -674,6 +679,7 @@ describe("init — guard rails", () => {
     // Scripts should still be added
     expect(result.addedScripts).toContain("dev:vinext");
     expect(result.addedScripts).toContain("build:vinext");
+    expect(result.addedScripts).toContain("start:vinext");
     // But vite config should be skipped
     expect(result.generatedViteConfig).toBe(false);
     expect(result.skippedViteConfig).toBe(true);

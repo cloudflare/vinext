@@ -9,9 +9,9 @@
  */
 import React, { useEffect, useRef, Children, isValidElement } from "react";
 
-interface HeadProps {
+type HeadProps = {
   children?: React.ReactNode;
-}
+};
 
 // --- SSR head collection ---
 // State uses a registration pattern so this module can be bundled for the
@@ -45,7 +45,7 @@ export function resetSSRHead(): void {
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
   return reduceHeadChildren(_getSSRHeadChildren())
-    .map(reactElementToHTML)
+    .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("\n  ");
 }
@@ -55,13 +55,20 @@ export function getSSRHeadHTML(): string {
  * This prevents injection of dangerous elements like <iframe>, <object>, etc.
  */
 const ALLOWED_HEAD_TAGS = new Set(["title", "meta", "link", "style", "script", "base", "noscript"]);
+const ALLOWED_HEAD_TAGS_LIST = Array.from(ALLOWED_HEAD_TAGS).join(", ");
 const META_TYPES = ["name", "httpEquiv", "charSet", "itemProp"] as const;
+
+/** Self-closing tags: no inner content, emit as <tag ... /> */
+const SELF_CLOSING_HEAD_TAGS = new Set(["meta", "link", "base"]);
+
+/** Tags whose content is raw text — closing-tag sequences must be escaped during SSR. */
+const RAW_CONTENT_TAGS = new Set(["script", "style"]);
 
 function warnDisallowedHeadTag(tag: string): void {
   if (process.env.NODE_ENV !== "production") {
     console.warn(
       `[vinext] <Head> ignoring disallowed tag <${tag}>. ` +
-        `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
+        `Only ${ALLOWED_HEAD_TAGS_LIST} are allowed.`,
     );
   }
 }
@@ -171,9 +178,10 @@ function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
 
 export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
   return headChildren
-    .reduce<React.ReactNode[]>((flattenedChildren, child) => {
-      return flattenedChildren.concat(Children.toArray(child));
-    }, [])
+    .reduce<React.ReactNode[]>(
+      (flattenedChildren, child) => flattenedChildren.concat(Children.toArray(child)),
+      [],
+    )
     .reduce(collectHeadElements, [])
     .reverse()
     .filter(createUniqueHeadFilter())
@@ -197,32 +205,23 @@ export function isSafeAttrName(name: string): boolean {
 }
 
 /**
- * Convert a React element to an HTML string for SSR head injection.
- * Returns an empty string for disallowed tag types.
+ * Convert props + tag to an HTML string for SSR head injection.
+ * Callers must only pass tags that have already been validated against
+ * ALLOWED_HEAD_TAGS (e.g. via reduceHeadChildren / collectHeadElements).
  */
-function reactElementToHTML(child: React.ReactElement): string {
-  const tag = child.type as string;
-
-  if (!ALLOWED_HEAD_TAGS.has(tag)) {
-    warnDisallowedHeadTag(tag);
-    return "";
-  }
-
-  const props = child.props as Record<string, unknown>;
+function headChildToHTML(tag: string, props: Record<string, unknown>): string {
   const attrs: string[] = [];
   let innerHTML = "";
 
   for (const [key, value] of Object.entries(props)) {
     if (key === "children") {
-      if (typeof value === "string") {
-        innerHTML = escapeHTML(value);
-      }
+      if (typeof value === "string") innerHTML = escapeHTML(value);
     } else if (key === "dangerouslySetInnerHTML") {
       // Intentionally raw — developer explicitly opted in.
       // SECURITY NOTE: This injects raw HTML during SSR. The client-side
-      // path (line ~148) skips dangerouslySetInnerHTML for safety. Developers
-      // must never pass unsanitized user input here — it is a stored XSS vector.
-      const html = value as { __html: string };
+      // path skips dangerouslySetInnerHTML for safety. Developers must never
+      // pass unsanitized user input here — it is a stored XSS vector.
+      const html = value as { __html?: string };
       if (html?.__html) innerHTML = html.__html;
     } else if (key === "className") {
       attrs.push(`class="${escapeAttr(String(value))}"`);
@@ -237,16 +236,13 @@ function reactElementToHTML(child: React.ReactElement): string {
 
   const attrStr = attrs.length ? " " + attrs.join(" ") : "";
 
-  // Self-closing tags
-  const selfClosing = ["meta", "link", "base"];
-  if (selfClosing.includes(tag)) {
+  if (SELF_CLOSING_HEAD_TAGS.has(tag)) {
     return `<${tag}${attrStr} data-vinext-head="true" />`;
   }
 
   // For raw-content tags (script, style), escape closing-tag sequences so the
   // HTML parser doesn't prematurely terminate the element.
-  const rawContentTags = ["script", "style"];
-  if (rawContentTags.includes(tag) && innerHTML) {
+  if (RAW_CONTENT_TAGS.has(tag) && innerHTML) {
     innerHTML = escapeInlineContent(innerHTML, tag);
   }
 
@@ -326,7 +322,7 @@ function Head({ children }: HeadProps): null {
   }
 
   // Client path: update the shared head projection after hydration.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
+  // oxlint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     const instanceId = headInstanceIdRef.current!;
     _clientHeadChildren.set(instanceId, children);

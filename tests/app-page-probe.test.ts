@@ -5,9 +5,9 @@ describe("app page probe helpers", () => {
   it("handles layout special errors before probing the page", async () => {
     const layoutError = new Error("layout failed");
     const pageProbe = vi.fn(() => "page");
-    const renderLayoutSpecialError = vi.fn(async () => {
-      return new Response("layout-fallback", { status: 404 });
-    });
+    const renderLayoutSpecialError = vi.fn(
+      async () => new Response("layout-fallback", { status: 404 }),
+    );
     const renderPageSpecialError = vi.fn();
     const probedLayouts: number[] = [];
 
@@ -85,9 +85,9 @@ describe("app page probe helpers", () => {
 
   it("turns special page probe failures into immediate responses", async () => {
     const pageError = new Error("page failed");
-    const renderPageSpecialError = vi.fn(async () => {
-      return new Response("page-fallback", { status: 307 });
-    });
+    const renderPageSpecialError = vi.fn(
+      async () => new Response("page-fallback", { status: 307 }),
+    );
 
     const response = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,

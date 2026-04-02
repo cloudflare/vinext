@@ -81,7 +81,7 @@ let classCounter = 0;
 // Track which font stylesheets have been injected (SSR + client)
 const injectedFonts = new Set<string>();
 
-export interface FontOptions {
+export type FontOptions = {
   weight?: string | string[];
   style?: string | string[];
   subsets?: string[];
@@ -91,13 +91,13 @@ export interface FontOptions {
   adjustFontFallback?: boolean | string;
   variable?: string;
   axes?: string[];
-}
+};
 
-export interface FontResult {
+export type FontResult = {
   className: string;
   style: { fontFamily: string };
   variable?: string;
-}
+};
 
 /**
  * Convert a font family name to a CSS variable name.

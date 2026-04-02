@@ -45,37 +45,36 @@ import { ValidFileMatcher } from "../routing/file-matcher.js";
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
  * callers (including tests) to provide a full `ModuleRunner` instance.
  */
-export interface ModuleImporter {
+export type ModuleImporter = {
   import(id: string): Promise<unknown>;
-}
+};
 
 /**
  * Import a module via the runner and cast the result to `Record<string, any>`.
  *
  * Centralises the `as Record<string, any>` cast so callers don't need
- * per-call eslint-disable comments.
+ * per-call oxlint-disable comments.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export async function importModule(
   runner: ModuleImporter,
   id: string,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<Record<string, any>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await runner.import(id)) as Record<string, any>;
 }
 
 const INSTRUMENTATION_LOCATIONS = ["", "src/"];
 
-/**
- * Find the instrumentation file in the project root.
- */
-export function findInstrumentationFile(
+function findInstrumentationHookFile(
   root: string,
+  basename: string,
   fileMatcher: ValidFileMatcher,
 ): string | null {
   for (const dir of INSTRUMENTATION_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `instrumentation${ext}`);
+      const fullPath = path.join(root, dir, `${basename}${ext}`);
       if (fs.existsSync(fullPath)) {
         return fullPath;
       }
@@ -85,12 +84,32 @@ export function findInstrumentationFile(
 }
 
 /**
+ * Find the instrumentation file in the project root.
+ */
+export function findInstrumentationFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation", fileMatcher);
+}
+
+/**
+ * Find the instrumentation-client file in the project root.
+ */
+export function findInstrumentationClientFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation-client", fileMatcher);
+}
+
+/**
  * The onRequestError handler type from Next.js instrumentation.
  *
  * Called when an unhandled error occurs during request handling.
  * Provides the error, the request info, and an error context.
  */
-export interface OnRequestErrorContext {
+export type OnRequestErrorContext = {
   /** The route path (e.g., '/blog/[slug]') */
   routerKind: "Pages Router" | "App Router";
   /** The matched route pattern */
@@ -99,7 +118,7 @@ export interface OnRequestErrorContext {
   routeType: "render" | "route" | "action" | "middleware";
   /** HTTP status code that will be sent */
   revalidateReason?: "on-demand" | "stale" | undefined;
-}
+};
 
 export type OnRequestErrorHandler = (
   error: Error,

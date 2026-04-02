@@ -32,7 +32,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface InitOptions {
+export type InitOptions = {
   /** Project root directory */
   root: string;
   /** Dev server port (default: 3001) */
@@ -43,9 +43,9 @@ export interface InitOptions {
   force?: boolean;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
-}
+};
 
-export interface InitResult {
+export type InitResult = {
   /** Whether dependencies were installed */
   installedDeps: string[];
   /** Whether "type": "module" was added */
@@ -60,7 +60,7 @@ export interface InitResult {
   skippedViteConfig: boolean;
   /** Whether .gitignore was updated to include /dist/ */
   updatedGitignore: boolean;
-}
+};
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
@@ -95,13 +95,18 @@ export function addScripts(root: string, port: number): string[] {
     const added: string[] = [];
 
     if (!pkg.scripts["dev:vinext"]) {
-      pkg.scripts["dev:vinext"] = `vite dev --port ${port}`;
+      pkg.scripts["dev:vinext"] = `vinext dev --port ${port}`;
       added.push("dev:vinext");
     }
 
     if (!pkg.scripts["build:vinext"]) {
-      pkg.scripts["build:vinext"] = "vite build";
+      pkg.scripts["build:vinext"] = "vinext build";
       added.push("build:vinext");
+    }
+
+    if (!pkg.scripts["start:vinext"]) {
+      pkg.scripts["start:vinext"] = "vinext start";
+      added.push("start:vinext");
     }
 
     if (added.length > 0) {
@@ -360,6 +365,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   console.log(`
   Next steps:
     ${pmName} run dev:vinext    Start the vinext dev server
+    ${pmName} run build:vinext  Build production output
+    ${pmName} run start:vinext  Start vinext production server
     ${pmName} run dev           Start Next.js (still works as before)
 `);
 

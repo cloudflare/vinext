@@ -45,14 +45,14 @@ import {
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
 // ---------------------------------------------------------------------------
 
-export interface CacheContext {
+export type CacheContext = {
   /** Tags collected via cacheTag() during execution */
   tags: string[];
   /** Cache life configs collected via cacheLife() — minimum-wins rule applies */
   lifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
-}
+};
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
 // without a direct import (avoiding circular dependencies).
@@ -82,14 +82,14 @@ export function getCacheContext(): CacheContext | null {
  * (they depend on virtual modules set up by @vitejs/plugin-rsc).
  * In test environments, the import fails and we fall back to JSON.
  */
-interface RscModule {
+type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
   decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
-}
+};
 
 const NOT_LOADED = Symbol("not-loaded");
 let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
@@ -229,9 +229,9 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // Uses AsyncLocalStorage for request isolation so concurrent requests
 // on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
-export interface PrivateCacheState {
+export type PrivateCacheState = {
   _privateCache: Map<string, unknown> | null;
-}
+};
 
 const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
@@ -301,6 +301,7 @@ export function clearPrivateCache(): void {
  * @param variant - Cache variant: "" (default/shared), "remote", "private"
  * @returns A wrapper function that checks cache before calling the original
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 export function registerCachedFunction<T extends (...args: any[]) => Promise<any>>(
   fn: T,
   id: string,
@@ -316,6 +317,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const cachedFn = async (...args: any[]): Promise<any> => {
     const rsc = await getRscModule();
 
@@ -457,11 +459,13 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 // Helper: execute function within cache context
 // ---------------------------------------------------------------------------
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   fn: T,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-): Promise<any> {
+): Promise<Awaited<ReturnType<T>>> {
   const ctx: CacheContext = {
     tags: [],
     lifeConfigs: [],
@@ -502,11 +506,13 @@ function unwrapThenableObjects(value: unknown): unknown {
 
   // Detect thenable (Promise-like) with own enumerable properties —
   // this is the Object.assign(Promise.resolve(obj), obj) pattern.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   if (typeof (value as any).then === "function") {
     const keys = Object.keys(value);
     if (keys.length > 0) {
       const plain: Record<string, unknown> = {};
       for (const key of keys) {
+        // oxlint-disable-next-line typescript/no-explicit-any
         plain[key] = unwrapThenableObjects((value as any)[key]);
       }
       return plain;
@@ -518,6 +524,7 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;

@@ -112,6 +112,22 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).not.toContain("next-dynamic dynamic no ssr on client");
   });
 
+  // ── RSC (pure server component) dynamic() ────────────────────
+
+  // Regression test for: https://github.com/cloudflare/vinext/pull/466
+  //
+  // Verifies that dynamic() works when called from a pure server component.
+  // In React 19.x, React.lazy IS available in the react-server condition,
+  // so this exercises the standard LazyServer + Suspense path in RSC.
+  // The AsyncServerDynamic fallback (for hypothetical future React versions
+  // that strip lazy) is covered by unit tests in tests/dynamic.test.ts.
+
+  it("RSC: dynamic() in a pure server component renders content", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/rsc-dynamic");
+    expect(html).toContain("next-dynamic dynamic on rsc");
+    expect(html).toContain('id="css-text-dynamic-rsc"');
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // SKIP: 'should handle next/dynamic in hydration correctly'

@@ -8,7 +8,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
 
@@ -62,35 +62,35 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
   return bytes;
 }
 
-export interface HasCondition {
+export type HasCondition = {
   type: "header" | "cookie" | "query" | "host";
   key: string;
   value?: string;
-}
+};
 
-export interface NextRedirect {
+export type NextRedirect = {
   source: string;
   destination: string;
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextRewrite {
+export type NextRewrite = {
   source: string;
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextHeader {
+export type NextHeader = {
   source: string;
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
-}
+};
 
-export interface NextI18nConfig {
+export type NextI18nConfig = {
   /** List of supported locales */
   locales: string[];
   /** The default locale (used when no locale prefix is in the URL) */
@@ -109,20 +109,20 @@ export interface NextI18nConfig {
     locales?: string[];
     http?: boolean;
   }>;
-}
+};
 
 /**
  * MDX compilation options extracted from @next/mdx config.
  * These are passed through to @mdx-js/rollup so that custom
  * remark/rehype/recma plugins configured in next.config work with Vite.
  */
-export interface MdxOptions {
+export type MdxOptions = {
   remarkPlugins?: unknown[];
   rehypePlugins?: unknown[];
   recmaPlugins?: unknown[];
-}
+};
 
-export interface NextConfig {
+export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
   /** Base URL path prefix */
@@ -202,7 +202,7 @@ export interface NextConfig {
   generateBuildId?: () => string | null | Promise<string | null>;
   /** Any other options */
   [key: string]: unknown;
-}
+};
 
 export type NextConfigFactory = (
   phase: string,
@@ -214,7 +214,7 @@ export type NextConfigInput = NextConfig | NextConfigFactory;
 /**
  * Resolved configuration with all async values awaited.
  */
-export interface ResolvedNextConfig {
+export type ResolvedNextConfig = {
   env: Record<string, string>;
   basePath: string;
   trailingSlash: boolean;
@@ -250,7 +250,7 @@ export interface ResolvedNextConfig {
   serverExternalPackages: string[];
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
-}
+};
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
 
@@ -270,6 +270,12 @@ function isCjsError(e: unknown): boolean {
     msg.includes("__filename is not defined")
   );
 }
+
+// Dev-server phase is the safe default for config loading: it enables all
+// optional config sections (headers, redirects, rewrites) without triggering
+// build-only behaviour. Used in two default parameter values below to avoid
+// repeating PHASE_DEVELOPMENT_SERVER inline.
+const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
 
 /**
  * Emit a warning when config loading fails, with a targeted hint for
@@ -301,7 +307,7 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
  */
 async function resolveConfigValue(
   config: unknown,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig> {
   if (typeof config === "function") {
     const result = await config(phase, {
@@ -316,6 +322,7 @@ async function resolveConfigValue(
  * Unwrap the config value from a loaded module namespace.
  */
 async function unwrapConfig(
+  // oxlint-disable-next-line typescript/no-explicit-any
   mod: any,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig> {
@@ -350,7 +357,7 @@ export async function resolveNextConfigInput(
  */
 export async function loadNextConfig(
   root: string,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
   const configPath = findNextConfigPath(root);
   if (!configPath) return null;
@@ -656,11 +663,13 @@ async function probeWebpackConfig(
     return { aliases: {}, mdx: null };
   }
 
+  // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
   const mockConfig = {
     context: root,
     resolve: { alias: {} as Record<string, unknown> },
     module: { rules: mockModuleRules },
+    // oxlint-disable-next-line typescript/no-explicit-any
     plugins: [] as any[],
   };
   const mockOptions = {
@@ -671,8 +680,10 @@ async function probeWebpackConfig(
   };
 
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-function-type
     const result = await (config.webpack as Function)(mockConfig, mockOptions);
     const finalConfig = result ?? mockConfig;
+    // oxlint-disable-next-line typescript/no-explicit-any
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
@@ -761,6 +772,7 @@ export function detectNextIntlConfig(root: string, resolved: ResolvedNextConfig)
   }
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
   // Search through webpack rules for the MDX loader injected by @next/mdx
   for (const rule of rules) {
@@ -774,6 +786,7 @@ function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
  * Recursively search a webpack rule (which may have nested `oneOf` arrays)
  * for an MDX loader and extract its remark/rehype/recma plugin options.
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxLoaders(rule: any): MdxOptions | null {
   if (!rule) return null;
 
@@ -813,6 +826,7 @@ function isMdxLoader(loaderPath: string): boolean {
   );
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractPluginsFromOptions(opts: any): MdxOptions | null {
   if (!opts || typeof opts !== "object") return null;
 
@@ -835,3 +849,5 @@ function extractPluginsFromOptions(opts: any): MdxOptions | null {
 
   return null;
 }
+
+export { PHASE_PRODUCTION_BUILD } from "../shims/constants.js";

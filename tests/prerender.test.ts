@@ -13,7 +13,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from "./helpers.js";
-import type { PrerenderRouteResult } from "../packages/vinext/src/build/prerender.js";
+import {
+  resolveParentParams,
+  type PrerenderRouteResult,
+  type StaticParamsMap,
+} from "../packages/vinext/src/build/prerender.js";
+import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -717,5 +722,141 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
       expect(fs.existsSync(path.join(outDir, "posts/first.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "posts/second.html"))).toBe(true);
     });
+  });
+});
+
+// ─── resolveParentParams unit tests ─────────────────────────────────────────
+
+function mockRoute(pattern: string, opts: { pagePath?: string | null } = {}): AppRoute {
+  const parts = pattern.split("/").filter(Boolean);
+  return {
+    pattern,
+    pagePath: opts.pagePath ?? `/app${pattern}/page.tsx`,
+    routePath: null,
+    layouts: [],
+    templates: [],
+    parallelSlots: [],
+    loadingPath: null,
+    errorPath: null,
+    layoutErrorPaths: [],
+    notFoundPath: null,
+    notFoundPaths: [],
+    forbiddenPath: null,
+    unauthorizedPath: null,
+    routeSegments: [],
+    layoutTreePositions: [],
+    isDynamic: parts.some((p) => p.startsWith(":")),
+    params: parts
+      .filter((p) => p.startsWith(":"))
+      .map((p) => p.replace(/^:/, "").replace(/[+*]$/, "")),
+    patternParts: parts,
+  };
+}
+
+function routeIndexFrom(routes: AppRoute[]): ReadonlyMap<string, AppRoute> {
+  return new Map(routes.map((r) => [r.pattern, r]));
+}
+
+describe("resolveParentParams", () => {
+  it("returns empty array when route has no parent dynamic segments", async () => {
+    const route = mockRoute("/blog/:slug");
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array when parent route has no pagePath", async () => {
+    const parent = mockRoute("/shop/:category", { pagePath: null });
+    const child = mockRoute("/shop/:category/:item");
+    const result = await resolveParentParams(child, routeIndexFrom([parent, child]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array when parent has no generateStaticParams", async () => {
+    const parent = mockRoute("/shop/:category");
+    const child = mockRoute("/shop/:category/:item");
+    const staticParamsMap: StaticParamsMap = {};
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("resolves single parent dynamic segment", async () => {
+    const parent = mockRoute("/shop/:category");
+    const child = mockRoute("/shop/:category/:item");
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "electronics" }, { category: "clothing" }],
+    };
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
+  });
+
+  it("resolves two levels of parent dynamic segments", async () => {
+    const grandparent = mockRoute("/a/:b");
+    const parent = mockRoute("/a/:b/c/:d");
+    const child = mockRoute("/a/:b/c/:d/:e");
+    const staticParamsMap: StaticParamsMap = {
+      "/a/:b": async () => [{ b: "1" }, { b: "2" }],
+      "/a/:b/c/:d": async ({ params }) => {
+        if (params.b === "1") return [{ d: "x" }];
+        return [{ d: "y" }, { d: "z" }];
+      },
+    };
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([grandparent, parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([
+      { b: "1", d: "x" },
+      { b: "2", d: "y" },
+      { b: "2", d: "z" },
+    ]);
+  });
+
+  it("skips static segments between dynamic parents", async () => {
+    const parent = mockRoute("/shop/:category");
+    const child = mockRoute("/shop/:category/details/:item");
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "shoes" }],
+    };
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([{ category: "shoes" }]);
+  });
+
+  it("returns empty array for a fully static route", async () => {
+    const route = mockRoute("/about/contact");
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array for a single-segment dynamic route", async () => {
+    const route = mockRoute("/:id");
+    const result = await resolveParentParams(route, routeIndexFrom([route]), {});
+    expect(result).toEqual([]);
+  });
+
+  it("resolves parent with catch-all child segment", async () => {
+    const parent = mockRoute("/shop/:category");
+    const child = mockRoute("/shop/:category/:rest+");
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "electronics" }],
+    };
+    const result = await resolveParentParams(
+      child,
+      routeIndexFrom([parent, child]),
+      staticParamsMap,
+    );
+    expect(result).toEqual([{ category: "electronics" }]);
   });
 });

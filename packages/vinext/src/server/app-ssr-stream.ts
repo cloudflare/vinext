@@ -1,9 +1,9 @@
 import { safeJsonStringify } from "./html.js";
 
-export interface RscEmbedTransform {
+export type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
-}
+};
 
 /**
  * Fix invalid preload "as" values in RSC Flight hint lines before they reach
@@ -82,9 +82,9 @@ export function createRscEmbedTransform(
  * HTML spec requires as="style" for <link rel="preload">.
  */
 export function fixPreloadAs(html: string): string {
-  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) => {
-    return tag.replace(' as="stylesheet"', ' as="style"');
-  });
+  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) =>
+    tag.replace(' as="stylesheet"', ' as="style"'),
+  );
 }
 
 /**

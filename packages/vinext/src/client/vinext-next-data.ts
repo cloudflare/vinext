@@ -7,7 +7,7 @@
  */
 import type { NEXT_DATA } from "../shims/internal/utils.js";
 
-export interface VinextNextData extends NEXT_DATA {
+export type VinextNextData = {
   /** vinext-specific additions (not part of Next.js upstream). */
   __vinext?: {
     /** Absolute URL of the page module for dynamic import. */
@@ -19,4 +19,4 @@ export interface VinextNextData extends NEXT_DATA {
   __pageModule?: string;
   /** Serialised `_app` module path (legacy — used by `client/entry.ts`). */
   __appModule?: string;
-}
+} & NEXT_DATA;

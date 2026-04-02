@@ -24,7 +24,7 @@ export function extractPackageName(absolutePath: string): string | null {
 }
 
 const DEDUP_PREFIX = "\0vinext:dedup/";
-// eslint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+// oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
 const DEDUP_FILTER = /^\0vinext:dedup\//;
 const PROXY_MARKER = "virtual:vite-rsc/client-in-server-package-proxy/";
 

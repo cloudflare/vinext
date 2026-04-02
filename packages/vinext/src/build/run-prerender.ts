@@ -72,7 +72,7 @@ export class PrerenderProgress {
 
 // ─── Shared runner ────────────────────────────────────────────────────────────
 
-export interface RunPrerenderOptions {
+export type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
   /**
@@ -93,7 +93,7 @@ export interface RunPrerenderOptions {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
-}
+};
 
 /**
  * Run the prerender phase using pre-built production bundles.

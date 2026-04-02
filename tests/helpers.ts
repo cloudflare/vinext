@@ -36,10 +36,10 @@ export const RSC_ENTRIES = {
 
 // ── Server lifecycle helper ───────────────────────────────────
 
-export interface TestServerResult {
+export type TestServerResult = {
   server: ViteDevServer;
   baseUrl: string;
-}
+};
 
 /**
  * Start a Vite dev server against a fixture directory.
@@ -67,7 +67,7 @@ export async function startFixtureServer(
   // Pass appDir explicitly since tests run with configFile: false and
   // cwd may not be the fixture directory.
   // Note: opts.appRouter is accepted but unused — vinext auto-detects.
-  const plugins: any[] = [vinext({ appDir: fixtureDir })];
+  const plugins = [vinext({ appDir: fixtureDir })];
 
   const server = await createServer({
     root: fixtureDir,
@@ -122,17 +122,18 @@ export async function fetchJson(
   baseUrl: string,
   urlPath: string,
   init?: RequestInit,
+  // oxlint-disable-next-line typescript/no-explicit-any
 ): Promise<{ res: Response; data: any }> {
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const data = await res.json();
   return { res, data };
 }
 
-export interface NodeHttpResponse {
+export type NodeHttpResponse = {
   status: number;
   headers: IncomingHttpHeaders;
   body: string;
-}
+};
 
 export async function createIsolatedFixture(
   fixtureDir: string,

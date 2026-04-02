@@ -283,13 +283,16 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toContain("trieMatch");
   });
 
-  it("server entry eagerly starts ISR regeneration before waitUntil registration", async () => {
+  it("server entry delegates Pages ISR cache plumbing to shared helpers", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
-    const renderFnCall = code.indexOf("const promise = renderFn()");
-    const waitUntilCall = code.indexOf("ctx.waitUntil(promise)");
+    const stableCode = stabilize(code);
 
-    expect(renderFnCall).toBeGreaterThan(-1);
-    expect(waitUntilCall).toBeGreaterThan(renderFnCall);
+    expect(stableCode).toContain('from "<ROOT>/packages/vinext/src/server/isr-cache.js";');
+    expect(code).toContain("function isrGet(key) {");
+    expect(code).toContain("return __sharedIsrGet(key);");
+    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).not.toContain("const promise = renderFn()");
+    expect(code).not.toContain("ctx.waitUntil(promise)");
   });
 
   it("server entry seeds the main Pages Router unified context with executionContext", async () => {
@@ -331,10 +334,33 @@ describe("Pages Router entry templates", () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 
     expect(code).toContain("resolvePagesPageData as __resolvePagesPageData");
+    expect(code).toContain("isrGet as __sharedIsrGet");
+    expect(code).toContain("isrSet as __sharedIsrSet");
+    expect(code).toContain("isrCacheKey as __sharedIsrCacheKey");
+    expect(code).toContain(
+      "triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration",
+    );
     expect(code).toContain("const pageDataResult = await __resolvePagesPageData({");
-    expect(code).not.toContain("triggerBackgroundRegeneration(cacheKey, async function()");
+    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).not.toContain("async function isrGet(key)");
+    expect(code).not.toContain("async function isrSet(key, data, revalidateSeconds, tags)");
+    expect(code).not.toContain("const pendingRegenerations = new Map();");
+    expect(code).not.toContain("function fnv1a64(input)");
     expect(code).not.toContain("const result = await pageModule.getServerSideProps(ctx);");
     expect(code).not.toContain("const result = await pageModule.getStaticProps(ctx);");
+  });
+
+  it("server entry delegates Pages API route handling and req/res shims to typed helpers", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("createPagesReqRes as __createPagesReqRes");
+    expect(code).toContain("handlePagesApiRoute as __handlePagesApiRoute");
+    expect(code).toContain("return __handlePagesApiRoute({");
+    expect(code).not.toContain("function createReqRes(request, url, query, body)");
+    expect(code).not.toContain("async function readBodyWithLimit(request, maxBytes)");
+    expect(code).not.toContain(
+      "const { req, res, responsePromise } = createReqRes(request, url, query, body);",
+    );
   });
 
   it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {

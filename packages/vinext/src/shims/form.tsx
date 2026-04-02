@@ -19,6 +19,7 @@
  */
 
 import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
+import { navigateClientSide } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath } from "./url-utils.js";
 
@@ -160,21 +161,21 @@ function buildFormData(form: HTMLFormElement, submitter: FormSubmitter | null): 
   }
 }
 
-interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
+type FormProps = {
   /** Target URL for GET forms, or server action for POST forms */
   action: string | ((formData: FormData) => void | Promise<void>);
   /** Replace instead of push in history (default: false) */
   replace?: boolean;
   /** Scroll to top after navigation (default: true) */
   scroll?: boolean;
-}
+} & FormHTMLAttributes<HTMLFormElement>;
 
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
   const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
 
   // If action is a function (server action), pass it directly to React
   if (typeof action === "function") {
-    return <form ref={ref} action={action as any} onSubmit={onSubmit as any} {...rest} />;
+    return <form ref={ref} action={action} onSubmit={onSubmit} {...rest} />;
   }
 
   // Block dangerous action URLs. Render <form> without action attribute
@@ -187,13 +188,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
     }
-    return <form ref={ref} onSubmit={onSubmit as any} {...rest} />;
+    return <form ref={ref} onSubmit={onSubmit} {...rest} />;
   }
 
-  async function handleSubmit(e: any) {
+  async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
     if (onSubmit) {
-      (onSubmit as any)(e);
+      onSubmit(e);
       if (e.defaultPrevented) return;
     }
 
@@ -223,13 +224,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
     // Navigate client-side
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: RSC navigation. Await so scroll happens after new content renders.
-      if (replace) {
-        window.history.replaceState(null, "", url);
-      } else {
-        window.history.pushState(null, "", url);
-      }
-      await window.__VINEXT_RSC_NAVIGATE__(url);
+      // App Router: use the shared navigator so URL/history publish stays
+      // aligned with the committed RSC tree.
+      await navigateClientSide(url, replace ? "replace" : "push", scroll);
     } else {
       // Pages Router: use router or fallback
       if (replace) {
@@ -240,7 +237,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
 
-    if (scroll) {
+    // App Router: scroll is handled inside navigateClientSide (called above).
+    // Pages Router: scroll manually since pushState/popstate doesn't auto-scroll.
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ !== "function" && scroll) {
       window.scrollTo(0, 0);
     }
   }

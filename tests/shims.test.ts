@@ -210,7 +210,8 @@ describe("next/navigation shim", () => {
 
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
-        childSegments: ["explore"],
+        segmentMap: { children: ["explore"] },
+        // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
     );
@@ -261,6 +262,81 @@ describe("next/navigation shim", () => {
     // Outside a React tree, no LayoutSegmentProvider wraps us,
     // so there are no child segments → null.
     expect(useSelectedLayoutSegment()).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments() accepts parallelRoutesKey and returns matching segments", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    // Outside a React tree, returns [] regardless of key.
+    const result = nav.useSelectedLayoutSegments("team");
+    expect(result).toEqual([]);
+  });
+
+  it("useSelectedLayoutSegment() accepts parallelRoutesKey and returns null outside React tree", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    const result = nav.useSelectedLayoutSegment("team");
+    expect(result).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments(parallelRoutesKey) returns per-slot segments via segmentMap", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments, useSelectedLayoutSegment } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const childrenSegs = useSelectedLayoutSegments();
+      const teamSegs = useSelectedLayoutSegments("team");
+      const teamSeg = useSelectedLayoutSegment("team");
+      return createElement(
+        "div",
+        null,
+        createElement("span", { id: "children" }, JSON.stringify(childrenSegs)),
+        createElement("span", { id: "team" }, JSON.stringify(teamSegs)),
+        createElement("span", { id: "team-singular" }, teamSeg ?? "null"),
+      );
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog", "hello"], team: ["settings"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    // React SSR HTML-encodes " as &quot; in text content
+    const Q = "&quot;";
+    expect(html).toContain(`<span id="children">[${Q}blog${Q},${Q}hello${Q}]</span>`);
+    expect(html).toContain(`<span id="team">[${Q}settings${Q}]</span>`);
+    expect(html).toContain('<span id="team-singular">settings</span>');
+  });
+
+  it("useSelectedLayoutSegments(unknownKey) returns [] for missing slot", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const segs = useSelectedLayoutSegments("nonexistent");
+      return createElement("span", null, JSON.stringify(segs));
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    expect(html).toContain("[]");
   });
 });
 
@@ -1272,7 +1348,7 @@ describe("next/server shim", () => {
     // unstable_cache scope. If cache.ts was already imported, the existing instance is
     // reused; if not, this standalone ALS is sufficient for the guard to work.
     if (!g[key]) g[key] = new AsyncLocalStorage();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     (g[key] as any).run(true, () => {
       expect(() => after(() => {})).toThrow(/unstable_cache/);
     });
@@ -2797,7 +2873,7 @@ describe("middleware codegen parity", () => {
       await import("../packages/vinext/src/server/middleware-codegen.js");
     // Eval the generated code and test it behaves identically to the runtime
     const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2922,7 +2998,7 @@ describe("middleware codegen parity", () => {
     const { generateSafeRegExpCode, generateMiddlewareMatcherCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -2978,7 +3054,7 @@ describe("middleware codegen parity", () => {
     const { generateNormalizePathCode } =
       await import("../packages/vinext/src/server/middleware-codegen.js");
     const code = generateNormalizePathCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
+    // oxlint-disable-next-line no-new-func, no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn __normalizePath;");
     const __normalizePath = fn();
 
@@ -3287,6 +3363,60 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).toContain("/login");
     expect(result.redirectStatus).toBe(307);
+  });
+
+  it("runMiddleware bubbles up waitUntil promises in result", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("background-work");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return Response.redirect("http://localhost/login", 307);
+        },
+        config: { matcher: ["/protected"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/protected");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    // The most critical behavior: waitUntil promises must appear in the result
+    // so the runtime (e.g. Cloudflare Workers ctx.waitUntil) can keep them alive.
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBeDefined();
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
+  });
+
+  it("runMiddleware bubbles up waitUntil promises on continue: true path", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("analytics");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return NextResponse.next();
+        },
+        config: { matcher: ["/dashboard"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/dashboard");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
   });
 
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
@@ -5861,8 +5991,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("ok", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("ok", {
         status: 200,
         headers: {
           "content-type": "text/plain",
@@ -5872,7 +6002,6 @@ describe("proxyExternalRequest", () => {
           // setting them on Response, so we test with headers that can be set.
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/test");
@@ -5890,9 +6019,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("Not Found", { status: 404 });
-    };
+    globalThis.fetch = async (_url: any, _init: any) => new Response("Not Found", { status: 404 });
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/missing");
@@ -6022,10 +6149,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      // Simulate an upstream that sent gzip-encoded content.
-      // Node.js fetch() auto-decompresses, but the original headers remain.
-      return new Response("decompressed body", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("decompressed body", {
         status: 200,
         headers: {
           "content-type": "application/json",
@@ -6034,7 +6159,6 @@ describe("proxyExternalRequest", () => {
           "x-custom": "keep",
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/data");
@@ -9206,9 +9330,7 @@ describe("handleImageOptimization", () => {
       transformImage: async (
         _body: ReadableStream,
         options: { width: number; format: string; quality: number },
-      ) => {
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
+      ) => new Response("transformed", { headers: { "Content-Type": options.format } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -9231,10 +9353,8 @@ describe("handleImageOptimization", () => {
           status: 200,
           headers: { "Content-Type": "image/jpeg" },
         }),
-      transformImage: async () => {
-        // Buggy transform that returns text/html
-        return new Response("transformed", { headers: { "Content-Type": "text/html" } });
-      },
+      transformImage: async () =>
+        new Response("transformed", { headers: { "Content-Type": "text/html" } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
