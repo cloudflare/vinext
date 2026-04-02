@@ -23,10 +23,12 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   activateNavigationSnapshot,
+  clearPendingPathname,
   commitClientNavigationState,
   consumePrefetchResponse,
   createClientNavigationRenderSnapshot,
   getClientNavigationRenderContext,
+  getClientNavigationState,
   getPrefetchCache,
   getPrefetchedUrls,
   pushHistoryStateWithoutNotify,
@@ -34,8 +36,9 @@ import {
   replaceHistoryStateWithoutNotify,
   restoreRscResponse,
   setClientParams,
-  snapshotRscResponse,
+  setPendingPathname,
   setNavigationContext,
+  snapshotRscResponse,
   toRscUrl,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
@@ -613,17 +616,21 @@ async function main(): Promise<void> {
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
-      // Use startTransition for same-route navigations (searchParam changes)
-      // so React keeps the old UI visible during the transition. For cross-route
-      // navigations (different pathname), use synchronous updates — React's
-      // startTransition hangs in Firefox when replacing the entire tree.
-      // NB: During rapid navigations, window.location.pathname may not reflect
-      // the previous navigation's URL yet (URL commit is deferred). This could
-      // cause misclassification (synchronous instead of startTransition or vice
-      // versa), resulting in slightly less smooth transitions but correct behavior.
-      const isSameRoute =
-        stripBasePath(url.pathname, __basePath) ===
+
+      // Get state for comparison BEFORE we set the new pending pathname
+      const navState = getClientNavigationState();
+
+      // Compare against previous pending navigation, then committed, then window.location
+      // This ensures correct isSameRoute classification during rapid successive navigations
+      const currentPath =
+        navState?.pendingPathname ??
+        navState?.cachedPathname ??
         stripBasePath(window.location.pathname, __basePath);
+      const isSameRoute = stripBasePath(url.pathname, __basePath) === currentPath;
+
+      // Set this navigation as the new pending pathname for subsequent navigations to compare against
+      setPendingPathname(url.pathname);
+
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
       const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
 
@@ -767,6 +774,8 @@ async function main(): Promise<void> {
         _snapshotPending = false;
         commitClientNavigationState();
       }
+      // Clear pending pathname on error so subsequent navigations compare correctly
+      clearPendingPathname();
       // Don't hard-navigate to a stale URL if this navigation was superseded by
       // a newer one — the newer navigation is already in flight and would be clobbered.
       if (navId !== activeNavigationId) return;

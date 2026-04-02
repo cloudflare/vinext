@@ -474,6 +474,7 @@ type ClientNavigationState = {
   clientParamsJson: string;
   pendingClientParams: Record<string, string | string[]> | null;
   pendingClientParamsJson: string | null;
+  pendingPathname: string | null;
   originalPushState: typeof window.history.pushState;
   originalReplaceState: typeof window.history.replaceState;
   patchInstalled: boolean;
@@ -486,7 +487,7 @@ type ClientNavigationGlobal = typeof globalThis & {
   [_CLIENT_NAV_STATE_KEY]?: ClientNavigationState;
 };
 
-function getClientNavigationState(): ClientNavigationState | null {
+export function getClientNavigationState(): ClientNavigationState | null {
   if (isServer) return null;
 
   const globalState = window as ClientNavigationGlobal;
@@ -500,6 +501,7 @@ function getClientNavigationState(): ClientNavigationState | null {
       clientParamsJson: "{}",
       pendingClientParams: null,
       pendingClientParamsJson: null,
+      pendingPathname: null,
       // NB: These capture the currently installed history methods, not guaranteed
       // native ones. If a third-party library (analytics, router) has already patched
       // history methods before this module loads, we intentionally preserve that
@@ -731,6 +733,25 @@ export function getClientParams(): Record<string, string | string[]> {
   return getClientNavigationState()?.clientParams ?? _fallbackClientParams;
 }
 
+/**
+ * Set the pending pathname for client-side navigation.
+ * Strips the base path before storing.
+ */
+export function setPendingPathname(pathname: string): void {
+  const state = getClientNavigationState();
+  if (!state || isServer) return;
+  state.pendingPathname = stripBasePath(pathname, __basePath);
+}
+
+/**
+ * Clear the pending pathname.
+ */
+export function clearPendingPathname(): void {
+  const state = getClientNavigationState();
+  if (!state) return;
+  state.pendingPathname = null;
+}
+
 function getClientParamsSnapshot(): Record<string, string | string[]> {
   return getClientNavigationState()?.clientParams ?? _EMPTY_PARAMS;
 }
@@ -910,6 +931,8 @@ export function commitClientNavigationState(): void {
     state.pendingClientParams = null;
     state.pendingClientParamsJson = null;
   }
+  // Clear pending pathname when navigation commits
+  state.pendingPathname = null;
   const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
   state.hasPendingNavigationUpdate = false;
 
