@@ -227,6 +227,9 @@ export function buildAppPageRouteElement<
       continue;
     }
     const TemplateComponent = templateComponent;
+    // Next.js doesn't pass params to templates at all (createElement(Template, null, children)).
+    // We pass raw params here for convenience; layouts below receive thenable (Promise) params
+    // to match the Next.js 15+ async params contract.
     element = <TemplateComponent params={options.matchedParams}>{element}</TemplateComponent>;
   }
 
