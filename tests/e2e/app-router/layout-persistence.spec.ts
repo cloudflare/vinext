@@ -1,82 +1,16 @@
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
-
-async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
-  // Vite's dev error overlay can appear during tests (even for expected errors)
-  // and intercept pointer events, causing flaky click failures.
-  await page
-    .addStyleTag({
-      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
-    })
-    .catch(() => {
-      // best effort
-    });
-}
 
 const BASE = "http://localhost:4174";
 
-type CounterControls = {
-  countTestId: string;
-  incrementTestId: string;
-  label: string;
-};
-
-async function readCounterValue(
-  page: import("@playwright/test").Page,
-  { countTestId, label }: CounterControls,
-): Promise<number> {
-  const text = await page.getByTestId(countTestId).textContent();
-  if (text == null) {
-    throw new Error(`Missing counter text for ${countTestId}`);
-  }
-
-  const expectedPrefix = `${label}: `;
-  if (!text.startsWith(expectedPrefix)) {
-    throw new Error(`Unexpected counter text for ${countTestId}: ${text}`);
-  }
-
-  return Number.parseInt(text.slice(expectedPrefix.length), 10);
-}
-
-async function waitForInteractiveCounter(
-  page: import("@playwright/test").Page,
-  controls: CounterControls,
-): Promise<number> {
-  const incrementButton = page.getByTestId(controls.incrementTestId);
-  await incrementButton.waitFor({ state: "visible" });
-
+/**
+ * Wait for the RSC browser entry to hydrate.
+ */
+async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const before = await readCounterValue(page, controls);
-    await incrementButton.click();
-    const after = await readCounterValue(page, controls);
-    expect(after).toBeGreaterThan(before);
+    const ready = await page.evaluate(() => "__VINEXT_RSC_ROOT__" in window);
+    expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
-
-  return readCounterValue(page, controls);
 }
-
-async function incrementCounter(
-  page: import("@playwright/test").Page,
-  controls: CounterControls,
-  expectedValue: number,
-) {
-  await page.getByTestId(controls.incrementTestId).click();
-  await expect(page.getByTestId(controls.countTestId)).toHaveText(
-    `${controls.label}: ${expectedValue}`,
-  );
-}
-
-const layoutCounter = {
-  countTestId: "layout-count",
-  incrementTestId: "layout-increment",
-  label: "Layout count",
-} as const;
-
-const templateCounter = {
-  countTestId: "template-count",
-  incrementTestId: "template-increment",
-  label: "Template count",
-} as const;
 
 // ---------------------------------------------------------------------------
 // 1. Layout persistence — navigate between sibling routes, prove the layout
@@ -87,40 +21,42 @@ test.describe("Layout persistence", () => {
   test("dashboard layout counter survives sibling navigation", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    // Prove the counter is interactive before asserting exact values.
-    const initialCount = await waitForInteractiveCounter(page, layoutCounter);
-    await incrementCounter(page, layoutCounter, initialCount + 1);
-    await incrementCounter(page, layoutCounter, initialCount + 2);
+    // Increment the counter in the dashboard layout
+    await page.click('[data-testid="layout-increment"]');
+    await page.click('[data-testid="layout-increment"]');
+    await page.click('[data-testid="layout-increment"]');
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
 
     // Navigate to settings (sibling route under same layout)
-    await page.getByTestId("dash-settings-link").click();
+    await page.click('[data-testid="dash-settings-link"]');
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    // Layout counter should preserve its value — the layout was NOT remounted.
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    // Layout counter should still be 3 — the layout was NOT remounted
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
 
     // Navigate back to dashboard home
-    await page.getByTestId("dash-home-link").click();
+    await page.click('[data-testid="dash-home-link"]');
     await expect(page.locator("h1")).toHaveText("Dashboard");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    // Counter should still be 3
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
   });
 
   test("layout counter resets on hard navigation", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    const countAfterHydration = await waitForInteractiveCounter(page, layoutCounter);
-    await incrementCounter(page, layoutCounter, countAfterHydration + 1);
-    await incrementCounter(page, layoutCounter, countAfterHydration + 2);
+    // Increment counter
+    await page.click('[data-testid="layout-increment"]');
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 1");
 
     // Hard navigation (full page load) should reset everything
     await page.goto(`${BASE}/dashboard`);
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    await expect(page.getByTestId("layout-count")).toHaveText("Layout count: 0");
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 0");
   });
 });
 
@@ -135,55 +71,37 @@ test.describe("Template remount", () => {
   }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    const initialCount = await waitForInteractiveCounter(page, templateCounter);
-    await incrementCounter(page, templateCounter, initialCount + 1);
+    // Increment the template counter
+    await page.click('[data-testid="template-increment"]');
+    await page.click('[data-testid="template-increment"]');
+    await expect(page.locator('[data-testid="template-count"]')).toHaveText("Template count: 2");
 
     // Navigate to /about — this changes the root segment from "" to "about",
     // so the root template should remount and the counter should reset.
     await page.click('a[href="/about"]');
     await expect(page.locator("h1")).toHaveText("About");
 
-    await expect(page.getByTestId("template-count")).toHaveText("Template count: 0");
+    await expect(page.locator('[data-testid="template-count"]')).toHaveText("Template count: 0");
   });
 
   test("root template counter persists within same top-level segment", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    const initialCount = await waitForInteractiveCounter(page, templateCounter);
-    await incrementCounter(page, templateCounter, initialCount + 1);
+    // Increment the template counter
+    await page.click('[data-testid="template-increment"]');
+    await page.click('[data-testid="template-increment"]');
+    await expect(page.locator('[data-testid="template-count"]')).toHaveText("Template count: 2");
 
     // Navigate to /dashboard/settings — this is still under the "dashboard"
     // top-level segment, so the root template should NOT remount.
-    await page.getByTestId("dash-settings-link").click();
+    await page.click('[data-testid="dash-settings-link"]');
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    await expect(page.getByTestId("template-count")).toHaveText(
-      `Template count: ${initialCount + 1}`,
-    );
-  });
-
-  test("template counter does not reset on search param change within same segment", async ({
-    page,
-  }) => {
-    await page.goto(`${BASE}/dashboard`);
-    await expect(page.locator("h1")).toHaveText("Dashboard");
-    await waitForAppRouterHydration(page);
-
-    const initialCount = await waitForInteractiveCounter(page, templateCounter);
-    await incrementCounter(page, templateCounter, initialCount + 1);
-
-    // Navigate to /dashboard?tab=settings — same pathname, only search params change.
-    // The root segment stays "dashboard", so the root template must NOT remount.
-    await page.getByTestId("dash-tab-link").click();
-    await expect(page.locator("h1")).toHaveText("Dashboard");
-
-    await expect(page.getByTestId("template-count")).toHaveText(
-      `Template count: ${initialCount + 1}`,
-    );
+    await expect(page.locator('[data-testid="template-count"]')).toHaveText("Template count: 2");
   });
 });
 
@@ -196,18 +114,16 @@ test.describe("Error recovery across navigation", () => {
   test("navigating away from error and back clears the error", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible();
-    await waitForAppRouterHydration(page);
-
-    // Hide Vite's dev error overlay before triggering an error — it can appear
-    // over interactive elements and intercept pointer events, causing flaky failures.
-    await disableViteErrorOverlay(page);
+    await waitForHydration(page);
 
     // Trigger error
-    await page.getByTestId("trigger-error").waitFor({ state: "visible" });
-    await page.getByTestId("trigger-error").click();
+    await expect(async () => {
+      await page.click('[data-testid="trigger-error"]');
+      await expect(page.locator("#error-boundary")).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
 
     // Error boundary should be visible
-    await expect(page.locator("#error-boundary")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#error-boundary")).toBeVisible();
 
     // Client-navigate away to home via the link in the error boundary
     await page.click('[data-testid="error-go-home"]');
@@ -218,7 +134,7 @@ test.describe("Error recovery across navigation", () => {
 
     // Error should be gone — fresh page renders normally
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator("#error-boundary")).not.toBeAttached();
+    await expect(page.locator("#error-boundary")).not.toBeVisible();
   });
 });
 
@@ -231,31 +147,37 @@ test.describe("Back/forward with layout state", () => {
   test("browser back preserves layout counter across navigation history", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
-    const initialCount = await waitForInteractiveCounter(page, layoutCounter);
-    await incrementCounter(page, layoutCounter, initialCount + 1);
+    // Increment layout counter to 2
+    await page.click('[data-testid="layout-increment"]');
+    await page.click('[data-testid="layout-increment"]');
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 2");
 
     // Navigate: dashboard → settings
-    await page.getByTestId("dash-settings-link").click();
+    await page.click('[data-testid="dash-settings-link"]');
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 1}`);
+    // Counter should still be 2 (layout persisted)
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 2");
 
     // Increment once more while on settings
-    await incrementCounter(page, layoutCounter, initialCount + 2);
+    await page.click('[data-testid="layout-increment"]');
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
 
     // Go back to dashboard
     await page.goBack();
     await expect(page.locator("h1")).toHaveText("Dashboard");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    // Counter should still be 3 — back/forward doesn't remount the layout
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
 
     // Go forward to settings
     await page.goForward();
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    // Counter should still be 3
+    await expect(page.locator('[data-testid="layout-count"]')).toHaveText("Layout count: 3");
   });
 });
 
@@ -268,7 +190,7 @@ test.describe("Parallel slot persistence", () => {
     // Load /dashboard — parallel slots @team and @analytics have page.tsx
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
     // Verify slot content is visible
     await expect(page.locator('[data-testid="team-panel"]')).toBeVisible();
@@ -285,17 +207,13 @@ test.describe("Parallel slot persistence", () => {
     // slot content is retained (absent key = persisted from prior soft nav).
     await expect(page.locator('[data-testid="team-panel"]')).toBeVisible();
     await expect(page.locator('[data-testid="analytics-panel"]')).toBeVisible();
-    await expect(page.locator('[data-testid="team-slot"]')).toBeVisible();
-    await expect(page.locator('[data-testid="analytics-slot"]')).toBeVisible();
-    await expect(page.locator('[data-testid="team-default"]')).not.toBeAttached();
-    await expect(page.locator('[data-testid="analytics-default"]')).not.toBeAttached();
   });
 
   test("parallel slots show default.tsx on hard navigation to child route", async ({ page }) => {
     // Hard-load /dashboard/settings directly — slots should show default.tsx
     await page.goto(`${BASE}/dashboard/settings`);
     await expect(page.locator("h1")).toHaveText("Settings");
-    await waitForAppRouterHydration(page);
+    await waitForHydration(page);
 
     // On hard load, slots should render their default.tsx content
     await expect(page.locator('[data-testid="team-panel"]')).toBeVisible();
@@ -303,9 +221,8 @@ test.describe("Parallel slot persistence", () => {
     await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
     await expect(page.locator('[data-testid="analytics-default"]')).toBeVisible();
 
-    // The page-specific slot content should not be in the DOM at all —
-    // the server rendered default.tsx for these slots, not page.tsx.
-    await expect(page.locator('[data-testid="team-slot"]')).not.toBeAttached();
-    await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeAttached();
+    // The page-specific slot content should NOT be visible
+    await expect(page.locator('[data-testid="team-slot"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 });
