@@ -41,6 +41,8 @@ catalog:
   clsx: ^2.1.1
   codehike: 1.0.7
   date-fns: 4.1.0
+  dompurify: ^3.2.6
+  "@types/dompurify": ^3.0.5
   fumadocs-core: 16.6.17
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.6.17

@@ -29,7 +29,7 @@ function readUpgradeResponse(
         "Connection: Upgrade",
         "Upgrade: websocket",
         "Sec-WebSocket-Version: 13",
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", // gitleaks:allow — RFC 6455 example nonce ("the sample nonce"), not a real credential
         "Sec-WebSocket-Protocol: vite-hmr",
       ];
       if (origin) lines.push(`Origin: ${origin}`);

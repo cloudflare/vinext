@@ -8,8 +8,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowJs": true,
-    "baseUrl": ".",
-    "types": ["@cloudflare/workers-types"]
+    "noEmit": true,
+    "types": [
+      "@cloudflare/workers-types"
+    ]
   },
-  "include": ["app", "components", "lib", "worker"]
+  "include": [
+    "app",
+    "components",
+    "lib",
+    "worker"
+  ]
 }
