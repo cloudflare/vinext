@@ -10,7 +10,7 @@ packages:
 
 catalog:
   "@cloudflare/kumo": ^1.6.0
-  "@cloudflare/vite-plugin": ^1.25.0
+  "@cloudflare/vite-plugin": ^1.31.0
   "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
   "@mdx-js/react": ^3.1.1
@@ -35,16 +35,16 @@ catalog:
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
   "@vitejs/plugin-rsc": ^0.5.21
-  better-auth: ^1.4.0
+  better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
   clsx: ^2.1.1
   codehike: 1.0.7
   date-fns: 4.1.0
   sanitize-html: ^2.17.2
-  fumadocs-core: 16.6.17
+  fumadocs-core: 16.7.9
   fumadocs-mdx: 14.2.10
-  fumadocs-ui: 16.6.17
+  fumadocs-ui: 16.7.9
   image-size: 2.0.2
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
@@ -72,11 +72,13 @@ catalog:
   vite-plus: 0.1.12
   vite-tsconfig-paths: ^6.1.1
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.12
-  wrangler: ^4.66.0
+  wrangler: ^4.80.0
   zod: 3.24.3
 overrides:
   vite: "catalog:"
   vitest: "catalog:"
+  picomatch: ">=2.3.2"
+  srvx: ">=0.11.13"
 
 peerDependencyRules:
   allowAny:
