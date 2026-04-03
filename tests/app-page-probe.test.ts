@@ -19,7 +19,7 @@ describe("app page probe helpers", () => {
     const renderPageSpecialError = vi.fn();
     const probedLayouts: number[] = [];
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 3,
       probeLayoutAt(layoutIndex) {
@@ -55,8 +55,8 @@ describe("app page probe helpers", () => {
       1,
     );
     expect(renderPageSpecialError).not.toHaveBeenCalled();
-    expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("layout-fallback");
+    expect(result.response?.status).toBe(404);
+    await expect(result.response?.text()).resolves.toBe("layout-fallback");
   });
 
   it("falls through to the page probe when layout failures are not special", async () => {
@@ -64,7 +64,7 @@ describe("app page probe helpers", () => {
     const pageProbe = vi.fn(() => null);
     const renderLayoutSpecialError = vi.fn();
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 2,
       probeLayoutAt(layoutIndex) {
@@ -86,7 +86,7 @@ describe("app page probe helpers", () => {
       },
     });
 
-    expect(response).toBeNull();
+    expect(result.response).toBeNull();
     expect(pageProbe).toHaveBeenCalledTimes(1);
     expect(renderLayoutSpecialError).not.toHaveBeenCalled();
   });
@@ -97,7 +97,7 @@ describe("app page probe helpers", () => {
       async () => new Response("page-fallback", { status: 307 }),
     );
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 0,
       probeLayoutAt() {
@@ -129,8 +129,86 @@ describe("app page probe helpers", () => {
       location: "/target",
       statusCode: 307,
     });
-    expect(response?.status).toBe(307);
-    await expect(response?.text()).resolves.toBe("page-fallback");
+    expect(result.response?.status).toBe(307);
+    await expect(result.response?.text()).resolves.toBe("page-fallback");
+  });
+
+  it("propagates layoutFlags from layout probe result", async () => {
+    const pageProbe = vi.fn(() => null);
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 2,
+      probeLayoutAt() {
+        return null;
+      },
+      probePage: pageProbe,
+      renderLayoutSpecialError() {
+        throw new Error("should not render a layout special error");
+      },
+      renderPageSpecialError() {
+        throw new Error("should not render a page special error");
+      },
+      resolveSpecialError() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      buildTimeClassifications: new Map([
+        [0, "static"],
+        [1, "dynamic"],
+      ]),
+      getLayoutId(layoutIndex) {
+        return ["layout:/", "layout:/admin"][layoutIndex];
+      },
+      runWithIsolatedDynamicScope(fn) {
+        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/admin": "d",
+    });
+  });
+
+  it("still handles special errors with classification enabled", async () => {
+    const layoutError = new Error("layout failed");
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 2,
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) {
+          throw layoutError;
+        }
+        return null;
+      },
+      probePage() {
+        throw new Error("should not probe page");
+      },
+      renderLayoutSpecialError: vi.fn(async () => new Response("layout-fallback", { status: 404 })),
+      renderPageSpecialError() {
+        throw new Error("should not render a page special error");
+      },
+      resolveSpecialError(error) {
+        return error === layoutError ? { kind: "http-access-fallback", statusCode: 404 } : null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      getLayoutId(layoutIndex) {
+        return ["layout:/", "layout:/admin"][layoutIndex];
+      },
+      runWithIsolatedDynamicScope(fn) {
+        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      },
+    });
+
+    // Special error response should still be returned
+    expect(result.response?.status).toBe(404);
   });
 
   // ── Regression: probePage must receive thenable params/searchParams ──
@@ -156,7 +234,7 @@ describe("app page probe helpers", () => {
     );
 
     // With thenable params, the probe should catch notFound()
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 0,
       probeLayoutAt() {
@@ -178,7 +256,7 @@ describe("app page probe helpers", () => {
     });
 
     expect(renderPageSpecialError).toHaveBeenCalledOnce();
-    expect(response?.status).toBe(404);
+    expect(result.response?.status).toBe(404);
   });
 
   it("detects redirect() from an async-searchParams page when searchParams are thenable", async () => {
@@ -198,7 +276,7 @@ describe("app page probe helpers", () => {
       async () => new Response(null, { status: 307, headers: { location: "/about" } }),
     );
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 0,
       probeLayoutAt() {
@@ -225,7 +303,7 @@ describe("app page probe helpers", () => {
     });
 
     expect(renderPageSpecialError).toHaveBeenCalledOnce();
-    expect(response?.status).toBe(307);
+    expect(result.response?.status).toBe(307);
   });
 
   it("probe silently fails when searchParams is omitted and page awaits it", async () => {
@@ -237,7 +315,7 @@ describe("app page probe helpers", () => {
     // doesn't recognize it as a special error, so it returns null.
     const renderPageSpecialError = vi.fn(async () => new Response(null, { status: 307 }));
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: false,
       layoutCount: 0,
       probeLayoutAt() {
@@ -268,14 +346,14 @@ describe("app page probe helpers", () => {
     // The probe catches the TypeError but resolveSpecialError returns null
     // for it (TypeError is not a special error) so the probe returns null.
     // The redirect is never detected early.
-    expect(response).toBeNull();
+    expect(result.response).toBeNull();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
   it("does not await async page probes when a loading boundary is present", async () => {
     const renderPageSpecialError = vi.fn();
 
-    const response = await probeAppPageBeforeRender({
+    const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: true,
       layoutCount: 0,
       probeLayoutAt() {
@@ -299,7 +377,7 @@ describe("app page probe helpers", () => {
       },
     });
 
-    expect(response).toBeNull();
+    expect(result.response).toBeNull();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 });

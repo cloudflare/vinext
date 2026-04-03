@@ -103,7 +103,7 @@ describe("app page execution helpers", () => {
   it("probes layouts from inner to outer and stops on a handled special response", async () => {
     const probedLayouts: number[] = [];
 
-    const response = await probeAppPageLayouts({
+    const result = await probeAppPageLayouts({
       layoutCount: 3,
       async onLayoutError(error, layoutIndex) {
         expect(error).toBeInstanceOf(Error);
@@ -122,8 +122,8 @@ describe("app page execution helpers", () => {
     });
 
     expect(probedLayouts).toEqual([2, 1]);
-    expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("layout-fallback");
+    expect(result.response?.status).toBe(404);
+    await expect(result.response?.text()).resolves.toBe("layout-fallback");
   });
 
   it("does not await async page probes when a loading boundary is present", async () => {
@@ -152,6 +152,164 @@ describe("app page execution helpers", () => {
     expect(new TextDecoder().decode(captured ? new Uint8Array(captured) : undefined)).toBe(
       "flight-chunk",
     );
+  });
+
+  it("tracks per-layout dynamic usage when classification options are provided", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 3,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      buildTimeClassifications: new Map([
+        [0, "static"],
+        [2, "dynamic"],
+      ]),
+      getLayoutId(layoutIndex) {
+        return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
+      },
+      runWithIsolatedDynamicScope(fn) {
+        // Simulate: layout 1 triggers dynamic usage, others don't
+        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // Layout 0 is build-time static, layout 2 is build-time dynamic
+    // Layout 1 has no build-time classification, probed with no dynamic detected
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "s",
+      "layout:/blog/post": "d",
+    });
+  });
+
+  it("detects dynamic usage per-layout through isolated scope", async () => {
+    let probeCallCount = 0;
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      getLayoutId(layoutIndex) {
+        return ["layout:/", "layout:/dashboard"][layoutIndex];
+      },
+      runWithIsolatedDynamicScope(fn) {
+        probeCallCount++;
+        const result = fn();
+        // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
+        // detects dynamic usage
+        return Promise.resolve({
+          result,
+          dynamicDetected: probeCallCount === 2,
+        });
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "d",
+      "layout:/dashboard": "s",
+    });
+  });
+
+  it("returns empty layoutFlags when classification options are absent (backward compat)", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({});
+  });
+
+  it("skips probe for build-time classified layouts", async () => {
+    let probeCalls = 0;
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      buildTimeClassifications: new Map([
+        [0, "static"],
+        [1, "dynamic"],
+      ]),
+      getLayoutId(layoutIndex) {
+        return ["layout:/", "layout:/admin"][layoutIndex];
+      },
+      runWithIsolatedDynamicScope(fn) {
+        probeCalls++;
+        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      },
+    });
+
+    expect(probeCalls).toBe(0);
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/admin": "d",
+    });
+  });
+
+  it("returns special error response when build-time classified layout throws during error probe", async () => {
+    const layoutError = new Error("layout failed");
+    const specialResponse = new Response("layout-fallback", { status: 404 });
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError(error) {
+        return Promise.resolve(error === layoutError ? specialResponse : null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw layoutError;
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope() {
+          throw new Error("isolated scope must not run for build-time classified layouts");
+        },
+      },
+    });
+
+    // The special-error response from the throwing layout short-circuits the
+    // loop. The flag for layout 1 is still recorded (set before the error
+    // probe runs), and layout 0 is never reached.
+    expect(result.response).toBe(specialResponse);
+    expect(result.layoutFlags).toEqual({ "layout:/admin": "s" });
   });
 
   it("builds Link headers for preloaded app-page fonts", () => {

@@ -118,7 +118,7 @@ function buildResponseTiming(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
-  const preRenderResponse = await probeAppPageBeforeRender({
+  const preRenderResult = await probeAppPageBeforeRender({
     hasLoadingBoundary: options.hasLoadingBoundary,
     layoutCount: options.layoutCount,
     probeLayoutAt(layoutIndex) {
@@ -138,8 +138,8 @@ export async function renderAppPageLifecycle(
       return options.runWithSuppressedHookWarning(probe);
     },
   });
-  if (preRenderResponse) {
-    return preRenderResponse;
+  if (preRenderResult.response) {
+    return preRenderResult.response;
   }
 
   const compileEnd = options.isProduction ? undefined : performance.now();

@@ -2,7 +2,13 @@ import {
   probeAppPageComponent,
   probeAppPageLayouts,
   type AppPageSpecialError,
+  type LayoutFlags,
 } from "./app-page-execution.js";
+
+export type ProbeAppPageBeforeRenderResult = {
+  response: Response | null;
+  layoutFlags: LayoutFlags;
+};
 
 export type ProbeAppPageBeforeRenderOptions = {
   hasLoadingBoundary: boolean;
@@ -16,15 +22,26 @@ export type ProbeAppPageBeforeRenderOptions = {
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
+
+  /** Build-time classifications from segment config or module graph. */
+  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
+  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
+  getLayoutId?: (layoutIndex: number) => string;
+  /** Runs a function with isolated dynamic usage tracking per layout. */
+  runWithIsolatedDynamicScope?: <T>(
+    fn: () => T,
+  ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 export async function probeAppPageBeforeRender(
   options: ProbeAppPageBeforeRenderOptions,
-): Promise<Response | null> {
+): Promise<ProbeAppPageBeforeRenderResult> {
+  let layoutFlags: LayoutFlags = {};
+
   // Layouts render before their children in Next.js, so layout-level special
   // errors must be handled before probing the page component itself.
   if (options.layoutCount > 0) {
-    const layoutProbeResponse = await probeAppPageLayouts({
+    const layoutProbeResult = await probeAppPageLayouts({
       layoutCount: options.layoutCount,
       async onLayoutError(layoutError, layoutIndex) {
         const specialError = options.resolveSpecialError(layoutError);
@@ -38,16 +55,21 @@ export async function probeAppPageBeforeRender(
       runWithSuppressedHookWarning(probe) {
         return options.runWithSuppressedHookWarning(probe);
       },
+      buildTimeClassifications: options.buildTimeClassifications,
+      getLayoutId: options.getLayoutId,
+      runWithIsolatedDynamicScope: options.runWithIsolatedDynamicScope,
     });
 
-    if (layoutProbeResponse) {
-      return layoutProbeResponse;
+    layoutFlags = layoutProbeResult.layoutFlags;
+
+    if (layoutProbeResult.response) {
+      return { response: layoutProbeResult.response, layoutFlags };
     }
   }
 
   // Server Components are functions, so we can probe the page ahead of stream
   // creation and only turn special throws into immediate responses.
-  return probeAppPageComponent({
+  const pageResponse = await probeAppPageComponent({
     awaitAsyncResult: !options.hasLoadingBoundary,
     async onError(pageError) {
       const specialError = options.resolveSpecialError(pageError);
@@ -65,4 +87,6 @@ export async function probeAppPageBeforeRender(
       return options.runWithSuppressedHookWarning(probe);
     },
   });
+
+  return { response: pageResponse, layoutFlags };
 }
