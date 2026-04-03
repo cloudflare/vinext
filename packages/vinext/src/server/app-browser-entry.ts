@@ -626,7 +626,16 @@ async function main(): Promise<void> {
         navState?.pendingPathname ??
         navState?.cachedPathname ??
         stripBasePath(window.location.pathname, __basePath);
-      const isSameRoute = stripBasePath(url.pathname, __basePath) === currentPath;
+
+      // Clear pending pathname if this navigation is to a different route than the pending one.
+      // This prevents stale pendingPathname from affecting isSameRoute calculations for
+      // subsequent navigations during rapid clicks (issue #744).
+      const targetPath = stripBasePath(url.pathname, __basePath);
+      if (navState?.pendingPathname && navState.pendingPathname !== targetPath) {
+        clearPendingPathname();
+      }
+
+      const isSameRoute = targetPath === currentPath;
 
       // Set this navigation as the new pending pathname for subsequent navigations to compare against
       setPendingPathname(url.pathname);
