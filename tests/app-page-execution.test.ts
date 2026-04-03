@@ -245,6 +245,38 @@ describe("app page execution helpers", () => {
     expect(result.layoutFlags).toEqual({});
   });
 
+  it("defaults to dynamic flag when probe throws a non-special error", async () => {
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        // Non-special error — return null (don't short-circuit)
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw new Error("use() outside render");
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          // Re-throw so the catch path in probeAppPageLayouts fires
+          return Promise.resolve(fn()).then((result) => ({ result, dynamicDetected: false }));
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // Layout 1 threw → conservatively flagged as dynamic
+    expect(result.layoutFlags["layout:/dashboard"]).toBe("d");
+    // Layout 0 probed successfully
+    expect(result.layoutFlags["layout:/"]).toBe("s");
+  });
+
   it("skips probe for build-time classified layouts", async () => {
     let probeCalls = 0;
     const result = await probeAppPageLayouts({

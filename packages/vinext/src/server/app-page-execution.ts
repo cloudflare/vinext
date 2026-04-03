@@ -144,6 +144,8 @@ export async function probeAppPageLayouts(
           );
           layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
         } catch (error) {
+          // Probe failed — conservatively treat as dynamic.
+          layoutFlags[cls.getLayoutId(layoutIndex)] = "d";
           const errorResponse = await options.onLayoutError(error, layoutIndex);
           if (errorResponse) return errorResponse;
         }
