@@ -156,9 +156,6 @@ catalogs:
     react-server-dom-webpack:
       specifier: ^19.2.4
       version: 19.2.4
-    rsc-html-stream:
-      specifier: ^0.0.7
-      version: 0.0.7
     sanitize-html:
       specifier: ^2.17.2
       version: 2.17.2
@@ -783,9 +780,6 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
-      rsc-html-stream:
-        specifier: 'catalog:'
-        version: 0.0.7
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
         version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
@@ -4892,9 +4886,6 @@ packages:
   rou3@0.8.1:
     resolution: {integrity: sha512-ePa+XGk00/3HuCqrEnK3LxJW7I0SdNg6EFzKUJG73hMAdDcOUC/i/aSz7LSDwLrGr33kal/rqOGydzwl6U7zBA==}
 
-  rsc-html-stream@0.0.7:
-    resolution: {integrity: sha512-v9+fuY7usTgvXdNl8JmfXCvSsQbq2YMd60kOeeMIqCJFZ69fViuIxztHei7v5mlMMa2h3SqS+v44Gu9i9xANZA==}
-
   run-parallel@1.2.0:
     resolution: {integrity: sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==}
 
@@ -8886,8 +8877,6 @@ snapshots:
   rou3@0.7.12: {}
 
   rou3@0.8.1: {}
-
-  rsc-html-stream@0.0.7: {}
 
   run-parallel@1.2.0:
     dependencies:

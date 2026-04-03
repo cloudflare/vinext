@@ -63,7 +63,6 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "magic-string": "catalog:",
-    "rsc-html-stream": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"
   },
