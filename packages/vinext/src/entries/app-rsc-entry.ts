@@ -2382,6 +2382,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // rscCssTransform — no manual loadCss() call needed.
   const _hasLoadingBoundary = !!(route.loading && route.loading.default);
   const _asyncLayoutParams = makeThenableParams(params);
+  // Convert URLSearchParams to a plain object then wrap in makeThenableParams()
+  // so probePage() passes the same shape that buildPageElement() gives to the
+  // real render. Without this, pages that destructure await-ed searchParams
+  // throw TypeError during probe.
+  const _probeSearchObj = {};
+  url.searchParams.forEach(function(v, k) {
+    if (k in _probeSearchObj) {
+      _probeSearchObj[k] = Array.isArray(_probeSearchObj[k]) ? _probeSearchObj[k].concat(v) : [_probeSearchObj[k], v];
+    } else {
+      _probeSearchObj[k] = v;
+    }
+  });
+  const _asyncSearchParams = makeThenableParams(_probeSearchObj);
   return __renderAppPageLifecycle({
     cleanPathname,
     clearRequestContext() {
@@ -2427,7 +2440,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       return LayoutComp({ params: _asyncLayoutParams, children: null });
     },
     probePage() {
-      return PageComponent({ params });
+      return PageComponent({ params: _asyncLayoutParams, searchParams: _asyncSearchParams });
     },
     revalidateSeconds,
     renderErrorBoundaryResponse(renderErr) {

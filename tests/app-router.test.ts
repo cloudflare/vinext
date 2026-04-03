@@ -625,6 +625,45 @@ describe("App Router integration", () => {
     expect(location).toContain("/about");
   });
 
+  // ── probePage() with Next.js 15+ async params/searchParams ──
+  // Regression tests: probePage() passed raw null-prototype params instead of
+  // thenable params, so pages using `await params` threw TypeError during probe,
+  // silently defeating early notFound()/redirect() detection.
+
+  it("notFound() detected via probe when page uses async params pattern", async () => {
+    // Page does `const { id } = await params` then calls notFound() for invalid IDs.
+    // Without thenable params, `await params` throws TypeError → probe silently fails
+    // → notFound() is caught during RSC render instead of the probe → still returns
+    // 404 but only by luck of error boundary handling, not the probe path.
+    const res = await fetch(`${baseUrl}/probe-async-params/invalid-id`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    // Should render root not-found boundary, not the page content
+    expect(html).not.toContain("probe-async-params-page");
+  });
+
+  it("page renders normally with async params when ID is valid", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/probe-async-params/valid-1");
+    expect(res.status).toBe(200);
+    expect(html).toContain("probe-async-params-page");
+  });
+
+  it("redirect() detected via probe when page uses async searchParams pattern", async () => {
+    // Page does `const { dest } = await searchParams` then calls redirect(dest).
+    // Without searchParams in the probe, `await searchParams` throws TypeError →
+    // probe silently fails → redirect() goes through RSC render path instead.
+    const res = await fetch(`${baseUrl}/probe-async-search?dest=/about`, { redirect: "manual" });
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("page renders normally with async searchParams when no dest param", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/probe-async-search");
+    expect(res.status).toBe(200);
+    expect(html).toContain("probe-async-search-page");
+  });
+
   it("permanentRedirect() returns 308 status code", async () => {
     const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
     expect(res.status).toBe(308);

@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { probeAppPageBeforeRender } from "../packages/vinext/src/server/app-page-probe.js";
 
+// Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
+// converts raw null-prototype params into objects that work with both
+// `await params` (Next.js 15+) and `params.id` (pre-15).
+function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<T> & T {
+  const plain = { ...obj } as T;
+  return Object.assign(Promise.resolve(plain), plain);
+}
+
 describe("app page probe helpers", () => {
   it("handles layout special errors before probing the page", async () => {
     const layoutError = new Error("layout failed");
@@ -123,6 +131,145 @@ describe("app page probe helpers", () => {
     });
     expect(response?.status).toBe(307);
     await expect(response?.text()).resolves.toBe("page-fallback");
+  });
+
+  // ── Regression: probePage must receive thenable params/searchParams ──
+  // probePage() in the generated entry was passing raw null-prototype params
+  // (from trieMatch) instead of thenable params. Pages using `await params`
+  // (Next.js 15+ pattern) threw TypeError during probe, causing the probe to
+  // silently swallow the error instead of detecting notFound()/redirect().
+
+  it("detects notFound() from an async-params page when params are thenable", async () => {
+    const NOT_FOUND_ERROR = new Error("NEXT_NOT_FOUND");
+    const params = Object.create(null);
+    params.id = "invalid";
+
+    // Simulates a page that does `const { id } = await params; notFound()`
+    async function AsyncParamsPage(props: { params: Promise<{ id: string }> }) {
+      const { id } = await props.params;
+      if (id === "invalid") throw NOT_FOUND_ERROR;
+      return null;
+    }
+
+    const renderPageSpecialError = vi.fn(
+      async () => new Response("not-found-fallback", { status: 404 }),
+    );
+
+    // With thenable params, the probe should catch notFound()
+    const response = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 0,
+      probeLayoutAt() {
+        return null;
+      },
+      probePage() {
+        return AsyncParamsPage({ params: makeThenableParams(params) });
+      },
+      renderLayoutSpecialError() {
+        throw new Error("unreachable");
+      },
+      renderPageSpecialError,
+      resolveSpecialError(error) {
+        return error === NOT_FOUND_ERROR ? { kind: "http-access-fallback", statusCode: 404 } : null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(renderPageSpecialError).toHaveBeenCalledOnce();
+    expect(response?.status).toBe(404);
+  });
+
+  it("detects redirect() from an async-searchParams page when searchParams are thenable", async () => {
+    const REDIRECT_ERROR = new Error("NEXT_REDIRECT");
+
+    // Simulates a page that does `const { dest } = await searchParams; redirect(dest)`
+    async function AsyncSearchPage(props: {
+      params: Promise<Record<string, unknown>>;
+      searchParams: Promise<{ dest?: string }>;
+    }) {
+      const { dest } = await props.searchParams;
+      if (dest) throw REDIRECT_ERROR;
+      return null;
+    }
+
+    const renderPageSpecialError = vi.fn(
+      async () => new Response(null, { status: 307, headers: { location: "/about" } }),
+    );
+
+    const response = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 0,
+      probeLayoutAt() {
+        return null;
+      },
+      probePage() {
+        return AsyncSearchPage({
+          params: makeThenableParams({}),
+          searchParams: makeThenableParams({ dest: "/about" }),
+        });
+      },
+      renderLayoutSpecialError() {
+        throw new Error("unreachable");
+      },
+      renderPageSpecialError,
+      resolveSpecialError(error) {
+        return error === REDIRECT_ERROR
+          ? { kind: "redirect", location: "/about", statusCode: 307 }
+          : null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(renderPageSpecialError).toHaveBeenCalledOnce();
+    expect(response?.status).toBe(307);
+  });
+
+  it("probe silently fails when searchParams is omitted and page awaits it", async () => {
+    const REDIRECT_ERROR = new Error("NEXT_REDIRECT");
+
+    // When the old probePage() omitted searchParams, the component received
+    // undefined for that prop. `await undefined` produces undefined, then
+    // destructuring undefined throws TypeError. The probe catches it but
+    // doesn't recognize it as a special error, so it returns null.
+    const renderPageSpecialError = vi.fn(async () => new Response(null, { status: 307 }));
+
+    const response = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      layoutCount: 0,
+      probeLayoutAt() {
+        return null;
+      },
+      probePage() {
+        // Simulate what happens at runtime when searchParams is not passed:
+        // the page component receives no searchParams prop, then tries to
+        // destructure it after await. This throws TypeError.
+        return Promise.resolve().then(() => {
+          throw new TypeError("Cannot destructure property 'dest' of undefined");
+        });
+      },
+      renderLayoutSpecialError() {
+        throw new Error("unreachable");
+      },
+      renderPageSpecialError,
+      resolveSpecialError(error) {
+        return error === REDIRECT_ERROR
+          ? { kind: "redirect", location: "/about", statusCode: 307 }
+          : null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    // The probe catches the TypeError but resolveSpecialError returns null
+    // for it (TypeError is not a special error) so the probe returns null.
+    // The redirect is never detected early.
+    expect(response).toBeNull();
+    expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
   it("does not await async page probes when a loading boundary is present", async () => {
