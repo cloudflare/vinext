@@ -12,15 +12,9 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: navigation (browser)", () => {
   // Next.js: 'should redirect in a server component'
@@ -36,7 +30,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Source: navigation.test.ts#L184-L191
   test("client-side redirect via router.push()", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-redirect`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#redirect-btn");
     await expect(page.locator("#result-page")).toHaveText("Result Page", {
@@ -58,7 +52,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Source: navigation.test.ts#L155-L165
   test("client-side notFound() trigger renders not-found component", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-notfound`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Verify the page loaded correctly first
     await expect(page.locator("#notfound-trigger-page")).toHaveText("Not Found Trigger Page");
@@ -76,7 +70,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Next.js: Link-based client-side navigation
   test("Link navigates client-side without full reload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker for reload detection
     await page.evaluate(() => {
@@ -100,7 +94,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // exist should render the not-found.tsx boundary, not a blank white page.
   test("Link to non-existent route renders not-found via client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker to verify it's a client-side navigation (no full reload)
     await page.evaluate(() => {
@@ -122,7 +116,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click Link to a page that calls notFound()
     await page.click("#link-to-notfound-page");
@@ -137,7 +131,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Back/forward navigation
   test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to result page
     await page.click("#link-to-result");
@@ -152,7 +146,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
   test("Link onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(async () => {
       const ready = await page.evaluate(() => !!(window as any).__APP_RELATIVE_QUERY_LINK_READY__);
       expect(ready).toBe(true);

@@ -83,29 +83,6 @@ export default defineConfig({
         childEnvironments: ["ssr"],
       },
     }),
-
-    // Vite 8 (rolldown) warns on rollup-only keys injected by vinext.
-    // Strip those keys from the resolved client build config.
-    {
-      name: "strip-rolldown-incompatible-rollup-options",
-      configResolved(config) {
-        const clientRollupOptions = (config as any).environments?.client?.build?.rollupOptions;
-        if (!clientRollupOptions) return;
-
-        if (
-          clientRollupOptions.treeshake &&
-          typeof clientRollupOptions.treeshake === "object" &&
-          !Array.isArray(clientRollupOptions.treeshake)
-        ) {
-          delete clientRollupOptions.treeshake.preset;
-        }
-
-        const output = clientRollupOptions.output;
-        if (output && typeof output === "object" && !Array.isArray(output)) {
-          delete output.experimentalMinChunkSize;
-        }
-      },
-    },
   ],
 
   resolve: {

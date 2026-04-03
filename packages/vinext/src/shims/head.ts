@@ -272,7 +272,9 @@ export function escapeAttr(s: string): string {
  * context but prevents the HTML parser from seeing a closing tag.
  */
 export function escapeInlineContent(content: string, tag: string): string {
-  // Build a pattern like `<\/script` or `<\/style`, case-insensitive
+  // Build a pattern like `<\/script` or `<\/style`, case-insensitive.
+  // `tag` is always a literal developer-controlled value ("script" or "style")
+  // guarded by the RAW_CONTENT_TAGS.has(tag) check at all call sites — never user input.
   const pattern = new RegExp(`<\\/(${tag})`, "gi");
   return content.replace(pattern, "<\\/$1");
 }

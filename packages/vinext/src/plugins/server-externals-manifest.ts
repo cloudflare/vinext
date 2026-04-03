@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { builtinModules } from "node:module";
 import type { Plugin } from "vite";
+
+const BUILTIN_MODULES = new Set(
+  builtinModules.flatMap((name) =>
+    name.startsWith("node:") ? [name, name.slice(5)] : [name, `node:${name}`],
+  ),
+);
 
 /**
  * Extract the npm package name from a bare module specifier.
@@ -11,13 +18,20 @@ import type { Plugin } from "vite";
  *  - Node built-ins ("node:fs")
  *  - Package self-references ("#imports")
  */
-function packageNameFromSpecifier(specifier: string): string | null {
+export function packageNameFromSpecifier(specifier: string): string | null {
   if (
+    !specifier ||
     specifier.startsWith(".") ||
     specifier.startsWith("/") ||
-    specifier.startsWith("node:") ||
+    specifier.startsWith("\\") ||
     specifier.startsWith("#")
   ) {
+    return null;
+  }
+
+  // External specifiers can include non-package schemes such as
+  // "virtual:vite-rsc" or "file:...". Those are never npm packages.
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier)) {
     return null;
   }
 
@@ -29,7 +43,11 @@ function packageNameFromSpecifier(specifier: string): string | null {
     return null;
   }
 
-  return specifier.split("/")[0] || null;
+  const packageName = specifier.split("/")[0] || null;
+  if (!packageName || BUILTIN_MODULES.has(specifier) || BUILTIN_MODULES.has(packageName)) {
+    return null;
+  }
+  return packageName;
 }
 
 /**
@@ -95,6 +113,7 @@ export function createServerExternalsManifestPlugin(): Plugin {
           outDir = path.basename(dir) === "server" ? dir : path.dirname(dir);
         }
 
+        const bundleFiles = new Set(Object.keys(bundle));
         for (const item of Object.values(bundle)) {
           if (item.type !== "chunk") continue;
           // In Rollup output, item.imports normally contains filenames of other
@@ -104,6 +123,9 @@ export function createServerExternalsManifestPlugin(): Plugin {
           // filenames (relative/absolute paths) and extracts the package name from
           // bare specifiers — which is exactly what the standalone BFS needs.
           for (const specifier of [...item.imports, ...item.dynamicImports]) {
+            if (bundleFiles.has(specifier)) {
+              continue;
+            }
             const pkg = packageNameFromSpecifier(specifier);
             if (pkg) externals.add(pkg);
           }

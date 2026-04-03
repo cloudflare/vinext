@@ -598,6 +598,9 @@ const clientCodeSplittingConfig = {
  *   tryCatchDeoptimization: false, which can break specific libraries
  *   that rely on property access side effects or try/catch for feature detection
  * - 'recommended' + 'no-external' gives most of the benefit with less risk
+ *
+ * @deprecated Use getClientTreeshakeConfigForVite(viteMajorVersion) instead
+ * for Vite version compatibility. Kept for backward compatibility.
  */
 const clientTreeshakeConfig = {
   preset: "recommended" as const,
@@ -632,6 +635,42 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
         codeSplitting: clientCodeSplittingConfig,
       }
     : clientOutputConfig;
+}
+
+/**
+ * Returns treeshake configuration appropriate for the Vite version.
+ *
+ * Rollup (Vite 7) supports presets like "recommended" which set multiple
+ * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
+ * so we only return moduleSideEffects for Vite 8+.
+ *
+ * The Rollup "recommended" preset sets:
+ * - annotations: true (Rolldown default is also true)
+ * - manualPureFunctions: [] (Rolldown default is also [])
+ * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
+ * - unknownGlobalSideEffects: false (Rolldown default is true — this is a known acceptable
+ *   divergence. Slightly less aggressive DCE on unknown globals, acceptable for client bundles)
+ * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
+ *
+ * The key optimization is moduleSideEffects: "no-external", which is supported
+ * by both bundlers and provides the DCE benefits for barrel-exporting libraries.
+ * It treats node_modules as side-effect-free (enabling aggressive DCE) while
+ * preserving side effects in local code.
+ */
+function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
+  if (viteMajorVersion >= 8) {
+    // Rolldown (Vite 8+) - no preset support, only specific options.
+    // Rolldown's built-in defaults already cover what Rollup's 'recommended'
+    // preset provides (annotations, correctContext, tryCatchDeoptimization).
+    return {
+      moduleSideEffects: "no-external" as const,
+    };
+  }
+  // Rollup (Vite 7) - supports presets for convenient option grouping
+  return {
+    preset: "recommended" as const,
+    moduleSideEffects: "no-external" as const,
+  };
 }
 
 type BundleBackfillChunk = {
@@ -1441,14 +1480,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 };
               })(),
               // Enable aggressive tree-shaking for client builds.
-              // See clientTreeshakeConfig for rationale.
+              // See getClientTreeshakeConfigForVite JSDoc for rationale.
               // Only apply globally for standalone client builds (Pages Router
               // CLI). For multi-environment builds (App Router, Cloudflare),
               // treeshake is set per-environment on the client env below to
               // avoid leaking into RSC/SSR environments where
               // moduleSideEffects: 'no-external' could drop server packages
               // that rely on module-level side effects.
-              ...(!isSSR && !isMultiEnv ? { treeshake: clientTreeshakeConfig } : {}),
+              ...(!isSSR && !isMultiEnv
+                ? { treeshake: getClientTreeshakeConfigForVite(viteMajorVersion) }
+                : {}),
               // Code-split client bundles: separate framework (React/ReactDOM),
               // vinext runtime (shims), and vendor packages into their own
               // chunks so pages only load the JS they need.
@@ -1696,7 +1737,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1717,7 +1758,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1743,7 +1784,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1945,6 +1986,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               i18n: nextConfig?.i18n,
               hasPagesDir,
+              publicFiles: scanPublicFileRoutes(root),
             },
             instrumentationPath,
           );
@@ -4029,7 +4071,6 @@ function findFileWithExts(
 
 /** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
 const _mdxScanCache = new Map<string, boolean>();
-
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
@@ -4065,6 +4106,60 @@ function scanDirForMdx(dir: string): boolean {
   return false;
 }
 
+function scanPublicFileRoutes(root: string): string[] {
+  const publicDir = path.join(root, "public");
+  const routes: string[] = [];
+  const visitedDirs = new Set<string>();
+
+  function walk(dir: string): void {
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visitedDirs.has(realDir)) return;
+    visitedDirs.add(realDir);
+
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(fullPath);
+          continue;
+        }
+        if (!stat.isFile()) continue;
+      } else if (!entry.isFile()) {
+        continue;
+      }
+      const relativePath = path.relative(publicDir, fullPath).split(path.sep).join("/");
+      routes.push("/" + relativePath);
+    }
+  }
+
+  if (fs.existsSync(publicDir)) {
+    try {
+      walk(publicDir);
+    } catch {
+      // ignore unreadable dirs
+    }
+  }
+
+  routes.sort();
+  return routes;
+}
+
 // Public exports for static export
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type {
@@ -4084,12 +4179,14 @@ export {
   clientTreeshakeConfig,
   computeLazyChunks,
   getClientOutputConfigForVite,
+  getClientTreeshakeConfigForVite,
 };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { _postcssCache };
 export { hasMdxFiles as _hasMdxFiles };
 export { _mdxScanCache };
+export { scanPublicFileRoutes as _scanPublicFileRoutes };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { _findBalancedObject, _findCallEnd };
 export { stripServerExports as _stripServerExports };

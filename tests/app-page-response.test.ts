@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
+  mergeMiddlewareResponseHeaders,
   resolveAppPageHtmlResponsePolicy,
   resolveAppPageRscResponsePolicy,
 } from "../packages/vinext/src/server/app-page-response.js";
@@ -286,5 +287,49 @@ describe("app page response helpers", () => {
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");
     expect(setCookies).toContain("mw=1; Path=/");
     await expect(response.text()).resolves.toBe("<h1>page</h1>");
+  });
+});
+
+describe("mergeMiddlewareResponseHeaders", () => {
+  it("is a no-op when middleware headers are null", () => {
+    const target = new Headers({ "Content-Type": "text/plain" });
+    mergeMiddlewareResponseHeaders(target, null);
+    expect(target.get("Content-Type")).toBe("text/plain");
+    expect([...target].length).toBe(1);
+  });
+
+  it("sets singular headers via set(), overriding existing values", () => {
+    const target = new Headers({ "Cache-Control": "no-store", "X-Custom": "original" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Cache-Control", "private, max-age=5");
+    mwHeaders.set("X-Custom", "from-middleware");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Cache-Control")).toBe("private, max-age=5");
+    expect(target.get("X-Custom")).toBe("from-middleware");
+  });
+
+  it("appends Set-Cookie headers instead of overriding", () => {
+    const target = new Headers();
+    target.append("Set-Cookie", "existing=1; Path=/");
+    const mwHeaders = new Headers();
+    mwHeaders.append("Set-Cookie", "mw-session=abc; Path=/");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    const cookies = target.getSetCookie();
+    expect(cookies).toContain("existing=1; Path=/");
+    expect(cookies).toContain("mw-session=abc; Path=/");
+  });
+
+  it("appends Vary headers instead of overriding", () => {
+    const target = new Headers({ Vary: "RSC, Accept" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "Next-Router-State-Tree");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("RSC, Accept, Next-Router-State-Tree");
   });
 });

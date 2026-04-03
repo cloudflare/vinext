@@ -4,20 +4,14 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
   test("can navigate away from error page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/error-nav`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#link-to-error");
     await expect(page.locator("#error-boundary")).toBeVisible({
@@ -59,7 +53,7 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
 
   test("navigation to error page then back works", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/error-nav`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.click("#link-to-error");
     await expect(page.locator("#error-boundary")).toBeVisible({

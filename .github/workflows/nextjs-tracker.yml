@@ -39,8 +39,9 @@ jobs:
         id: commits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE_HOURS: ${{ github.event.inputs.since_hours || '24' }}
         run: |
-          HOURS="${{ github.event.inputs.since_hours || '24' }}"
+          HOURS="$SINCE_HOURS"
           SINCE=$(date -u -d "${HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
 
           echo "Fetching Next.js canary commits since $SINCE"
@@ -70,8 +71,10 @@ jobs:
       - name: Build tracker prompt
         id: build_prompt
         if: steps.commits.outputs.has_commits == 'true'
+        env:
+          DRY_RUN_INPUT: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          DRY_RUN="$DRY_RUN_INPUT"
           COMMITS=$(cat /tmp/nextjs-commits.json)
 
           if [ "$DRY_RUN" = "true" ]; then
@@ -134,4 +137,6 @@ jobs:
 
       - name: Skip (no commits)
         if: steps.commits.outputs.has_commits == 'false'
-        run: echo "No Next.js canary commits in the last ${{ github.event.inputs.since_hours || '24' }} hours. Nothing to do."
+        env:
+          SINCE_HOURS: ${{ github.event.inputs.since_hours || '24' }}
+        run: echo "No Next.js canary commits in the last $SINCE_HOURS hours. Nothing to do."

@@ -106,13 +106,19 @@ export function deferUntilStreamConsumed(
   const reader = piped.getReader();
   return new ReadableStream<Uint8Array>({
     pull(controller) {
-      return reader.read().then(({ done, value }) => {
-        if (done) {
-          controller.close();
-        } else {
-          controller.enqueue(value);
-        }
-      });
+      return reader.read().then(
+        ({ done, value }) => {
+          if (done) {
+            controller.close();
+          } else {
+            controller.enqueue(value);
+          }
+        },
+        (error) => {
+          once();
+          controller.error(error);
+        },
+      );
     },
     cancel(reason) {
       // Stream cancelled before fully consumed (e.g. client disconnected).

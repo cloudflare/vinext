@@ -156,6 +156,10 @@ function Script(props: ScriptProps): React.ReactElement | null {
       }
 
       if (dangerouslySetInnerHTML?.__html) {
+        // Intentional: mirrors the Next.js <Script> API where dangerouslySetInnerHTML
+        // is developer-supplied inline script content (not user input). The prop name
+        // itself signals developer awareness of the XSS risk, consistent with React's
+        // design. User-supplied data must never flow into this prop.
         el.innerHTML = dangerouslySetInnerHTML.__html as string;
       } else if (children && typeof children === "string") {
         el.textContent = children;

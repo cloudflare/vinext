@@ -1,22 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Server Actions", () => {
   test("like button calls server action and updates count", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Initial state
     await expect(page.locator('[data-testid="likes"]')).toContainText("Likes:");
@@ -41,7 +32,7 @@ test.describe("Server Actions", () => {
   test("message form calls server action with FormData", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Type a message and submit
     await page.fill('[data-testid="message-input"]', "Hello vinext!");
@@ -69,7 +60,7 @@ test.describe("Server Actions", () => {
   test("server action with redirect() navigates to target page", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
     await page.click('[data-testid="redirect-btn"]');
@@ -83,7 +74,7 @@ test.describe("Server Actions", () => {
     test.slow();
     await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);
     await expect(page.locator("h1")).toHaveText("Action Cookie Phase");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#cookie-value")).toHaveText("missing");
     await expect(page.locator("#cookie-error")).toContainText(
       "Cookies can only be modified in a Server Action or Route Handler",
@@ -174,7 +165,7 @@ test.describe("useActionState", () => {
   test("useActionState: redirect does not cause undefined state (issue #589)", async ({ page }) => {
     await page.goto(`${BASE}/action-state-redirect`);
     await expect(page.locator("h1")).toHaveText("useActionState Redirect Test");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Initial state should be { success: false }
     await expect(async () => {

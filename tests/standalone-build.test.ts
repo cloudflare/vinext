@@ -398,6 +398,54 @@ describe("emitStandaloneOutput", () => {
     ).toBe(true);
   });
 
+  it("copies vinext runtime dependencies that only expose subpath exports", () => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify([]));
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "vinext",
+          version: "0.0.0-test",
+          type: "module",
+          dependencies: {
+            "rsc-html-stream": "1.0.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+    writePackage(fakeVinextRoot, "rsc-html-stream", {}, { exports: { "./server": "./server.js" } });
+    writeFile(fakeVinextRoot, "node_modules/rsc-html-stream/server.js", "export {};\n");
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("rsc-html-stream");
+    expect(
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/rsc-html-stream/package.json"),
+      ),
+    ).toBe(true);
+  });
+
   it("copies packages referenced through symlinked node_modules entries", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });

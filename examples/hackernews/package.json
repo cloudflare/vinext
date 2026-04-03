@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
+    "sanitize-html": "catalog:",
     "ms": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -21,6 +22,7 @@
     "wrangler": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
     "vite-plus": "catalog:"
   }
 }

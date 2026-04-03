@@ -178,6 +178,33 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Content-Length"]).toBe(String(jsContent.length));
   });
 
+  it("preserves a non-200 status override for cached static files", async () => {
+    const jsContent = "export const blocked = true;\n";
+    await writeFile(clientDir, "assets/status-override-abc123.js", jsContent);
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/status-override-abc123.js",
+      true,
+      cache,
+      { "x-middleware": "blocked" },
+      403,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(403);
+    expect(captured.headers["x-middleware"]).toBe("blocked");
+    expect(captured.headers["ETag"]).toBe('W/"abc123"');
+    expect(captured.body.toString()).toBe(jsContent);
+  });
+
   // ── Cache miss / non-existent ──────────────────────────────────
 
   it("returns false for non-existent files", async () => {

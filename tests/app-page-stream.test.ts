@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
+  deferUntilStreamConsumed,
   renderAppPageHtmlResponse,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
@@ -98,6 +99,60 @@ describe("app page stream helpers", () => {
 
     // Now that the stream is fully consumed, context must have been cleared.
     expect(contextCleared).toHaveLength(1);
+  });
+
+  it("calls onFlush when the upstream stream errors mid-consumption", async () => {
+    const onFlush = vi.fn();
+    const streamError = new Error("component threw during streaming");
+
+    // Emit one chunk, then error on the next pull — simulates a component
+    // throwing partway through RSC/SSR streaming.
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount++;
+        if (pullCount === 1) {
+          controller.enqueue(new TextEncoder().encode("partial"));
+        } else {
+          controller.error(streamError);
+        }
+      },
+    });
+
+    const wrapped = deferUntilStreamConsumed(source, onFlush);
+    const reader = wrapped.getReader();
+
+    // First read succeeds with the enqueued chunk.
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toBe("partial");
+
+    // Second read should surface the upstream error.
+    await expect(reader.read()).rejects.toThrow("component threw during streaming");
+
+    // onFlush must have been called despite the error — this is the bug fix.
+    expect(onFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onFlush only once when the stream errors then is cancelled", async () => {
+    const onFlush = vi.fn();
+    const streamError = new Error("stream error");
+
+    // Error on the very first pull — simulates immediate failure.
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(streamError);
+      },
+    });
+
+    const wrapped = deferUntilStreamConsumed(source, onFlush);
+    const reader = wrapped.getReader();
+
+    // Reading the errored stream triggers the error handler.
+    await expect(reader.read()).rejects.toThrow("stream error");
+
+    // The idempotent once() guard prevents double invocation — even if
+    // some code path triggered cleanup again, onFlush fires exactly once.
+    expect(onFlush).toHaveBeenCalledTimes(1);
   });
 
   it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {

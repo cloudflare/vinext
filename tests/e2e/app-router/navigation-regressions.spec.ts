@@ -1,21 +1,15 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 // Hardcoded BASE URL matches the convention used in all other E2E test files in
 // this directory (navigation.spec.ts, server-client-only.spec.ts, after.spec.ts,
 // etc.). Port 4174 is the vite preview default for the app-basic fixture.
 const BASE = "http://localhost:4174";
 
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
-
 test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
   test("cross-route navigation completes without hanging", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#page-title")).toHaveText("All Items");
 
     // Set a marker to verify no full page reload
@@ -37,7 +31,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("same-route navigation (search param change) works", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#page-title")).toHaveText("All Items");
 
     await page.evaluate(() => {
@@ -59,7 +53,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("back/forward navigation works after cross-route nav", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#page-title")).toHaveText("All Items");
 
     // Navigate to list page
@@ -79,7 +73,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("rapid same-route navigation settles correctly", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#page-title")).toHaveText("All Items");
 
     // Rapidly click between filters
@@ -96,7 +90,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("cross-route then same-route navigation works", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/list`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#list-title")).toHaveText("Nav Flash List");
 
     // Cross-route: list -> query-sync
@@ -112,7 +106,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("usePathname reflects correct value during cross-route navigation", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#hook-pathname")).toHaveText("pathname: /nav-flash/link-sync");
 
@@ -129,7 +123,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("useParams reflects correct value after param change", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/param-sync/active`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#param-title")).toHaveText("Filter: active");
     await expect(page.locator("#hook-params")).toHaveText("params.filter: active");
@@ -142,7 +136,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("navigation from home page to nav-flash routes", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
 
     // Navigate to nav-flash test
@@ -155,7 +149,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("cross-route round trip preserves SPA state", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.evaluate(() => {
       (window as any).__ROUND_TRIP_MARKER__ = "alive";
@@ -176,7 +170,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
   test("provider page cross-route navigation between dynamic params", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/provider/1`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#provider-title")).toHaveText("Provider 1");
 
     // Navigate to provider 2 (cross-route: different dynamic param)
@@ -193,7 +187,7 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     // This test verifies the fix for: stale navigation bailout leaving staged params
     // that could be committed by the next navigation.
     await page.goto(`${BASE}/nav-flash/slow-route/slow-value`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#slow-param")).toHaveText("Param: slow-value");
 
     // Set marker to detect full page reload
