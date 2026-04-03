@@ -339,21 +339,16 @@ describe("next/navigation shim", () => {
     expect(html).toContain("[]");
   });
 
-  // Unit tests for pending pathname helper functions
-  // Related to PR #745: pending pathname race condition fix
-  // Note: These functions are client-side only. On server, they should be no-ops.
-  it("setPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
+  // Smoke tests for server-side safety
+  // These verify the functions don't throw on the server (getClientNavigationState returns null)
+  // Real pending pathname behavior is covered by E2E tests
+  it("setPendingPathname does not throw on server (getClientNavigationState returns null)", async () => {
     const { setPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
-
-    // On server, getClientNavigationState returns null
-    // This should not throw and should be a no-op
     expect(() => setPendingPathname("/some-path")).not.toThrow();
   });
 
-  it("clearPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
+  it("clearPendingPathname does not throw on server (getClientNavigationState returns null)", async () => {
     const { clearPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
-
-    // On server, this should not throw
     expect(() => clearPendingPathname()).not.toThrow();
   });
 });
