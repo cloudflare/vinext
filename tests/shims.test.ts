@@ -343,9 +343,7 @@ describe("next/navigation shim", () => {
   // Related to PR #745: pending pathname race condition fix
   // Note: These functions are client-side only. On server, they should be no-ops.
   it("setPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
-    const { setPendingPathname } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { setPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
 
     // On server, getClientNavigationState returns null
     // This should not throw and should be a no-op
@@ -353,9 +351,7 @@ describe("next/navigation shim", () => {
   });
 
   it("clearPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
-    const { clearPendingPathname } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { clearPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
 
     // On server, this should not throw
     expect(() => clearPendingPathname()).not.toThrow();
