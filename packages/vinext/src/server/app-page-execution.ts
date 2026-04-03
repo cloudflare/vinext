@@ -1,3 +1,7 @@
+import type { LayoutFlags } from "./app-elements.js";
+
+export type { LayoutFlags };
+
 export type AppPageSpecialError =
   | { kind: "redirect"; location: string; statusCode: number }
   | { kind: "http-access-fallback"; statusCode: number };
@@ -19,11 +23,18 @@ export type BuildAppPageSpecialErrorResponseOptions = {
   specialError: AppPageSpecialError;
 };
 
-export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
-
 export type ProbeAppPageLayoutsResult = {
   response: Response | null;
   layoutFlags: LayoutFlags;
+};
+
+export type LayoutClassificationOptions = {
+  /** Build-time classifications from segment config or module graph. */
+  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
+  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
+  getLayoutId: (layoutIndex: number) => string;
+  /** Runs a function with isolated dynamic usage tracking per layout. */
+  runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 export type ProbeAppPageLayoutsOptions = {
@@ -31,15 +42,8 @@ export type ProbeAppPageLayoutsOptions = {
   onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-
-  /** Build-time classifications from segment config or module graph. */
-  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
-  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
-  getLayoutId?: (layoutIndex: number) => string;
-  /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope?: <T>(
-    fn: () => T,
-  ) => Promise<{ result: T; dynamicDetected: boolean }>;
+  /** When provided, enables per-layout static/dynamic classification. */
+  classification?: LayoutClassificationOptions | null;
 };
 
 export type ProbeAppPageComponentOptions = {
@@ -116,29 +120,29 @@ export async function probeAppPageLayouts(
   options: ProbeAppPageLayoutsOptions,
 ): Promise<ProbeAppPageLayoutsResult> {
   const layoutFlags: Record<string, "s" | "d"> = {};
-  const hasClassification = !!(options.getLayoutId && options.runWithIsolatedDynamicScope);
+  const cls = options.classification ?? null;
 
   const response = await options.runWithSuppressedHookWarning(async () => {
     for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
-      const buildTimeResult = options.buildTimeClassifications?.get(layoutIndex);
+      const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
 
-      if (hasClassification && buildTimeResult) {
+      if (cls && buildTimeResult) {
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
         // but still probe for special errors (redirects, not-found).
-        layoutFlags[options.getLayoutId!(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
+        layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
         continue;
       }
 
-      if (hasClassification) {
+      if (cls) {
         // Layer 3: probe with isolated dynamic scope to detect per-layout
         // dynamic API usage (headers(), cookies(), connection(), etc.)
         try {
-          const { dynamicDetected } = await options.runWithIsolatedDynamicScope!(() =>
+          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(() =>
             options.probeLayoutAt(layoutIndex),
           );
-          layoutFlags[options.getLayoutId!(layoutIndex)] = dynamicDetected ? "d" : "s";
+          layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
         } catch (error) {
           const errorResponse = await options.onLayoutError(error, layoutIndex);
           if (errorResponse) return errorResponse;

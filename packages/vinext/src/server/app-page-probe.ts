@@ -2,6 +2,7 @@ import {
   probeAppPageComponent,
   probeAppPageLayouts,
   type AppPageSpecialError,
+  type LayoutClassificationOptions,
   type LayoutFlags,
 } from "./app-page-execution.js";
 
@@ -22,15 +23,8 @@ export type ProbeAppPageBeforeRenderOptions = {
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-
-  /** Build-time classifications from segment config or module graph. */
-  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
-  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
-  getLayoutId?: (layoutIndex: number) => string;
-  /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope?: <T>(
-    fn: () => T,
-  ) => Promise<{ result: T; dynamicDetected: boolean }>;
+  /** When provided, enables per-layout static/dynamic classification. */
+  classification?: LayoutClassificationOptions | null;
 };
 
 export async function probeAppPageBeforeRender(
@@ -55,9 +49,7 @@ export async function probeAppPageBeforeRender(
       runWithSuppressedHookWarning(probe) {
         return options.runWithSuppressedHookWarning(probe);
       },
-      buildTimeClassifications: options.buildTimeClassifications,
-      getLayoutId: options.getLayoutId,
-      runWithIsolatedDynamicScope: options.runWithIsolatedDynamicScope,
+      classification: options.classification,
     });
 
     layoutFlags = layoutProbeResult.layoutFlags;

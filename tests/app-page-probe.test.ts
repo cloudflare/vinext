@@ -155,15 +155,17 @@ describe("app page probe helpers", () => {
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-      buildTimeClassifications: new Map([
-        [0, "static"],
-        [1, "dynamic"],
-      ]),
-      getLayoutId(layoutIndex) {
-        return ["layout:/", "layout:/admin"][layoutIndex];
-      },
-      runWithIsolatedDynamicScope(fn) {
-        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
       },
     });
 
@@ -199,11 +201,13 @@ describe("app page probe helpers", () => {
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-      getLayoutId(layoutIndex) {
-        return ["layout:/", "layout:/admin"][layoutIndex];
-      },
-      runWithIsolatedDynamicScope(fn) {
-        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
       },
     });
 

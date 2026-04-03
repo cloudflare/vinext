@@ -166,16 +166,17 @@ describe("app page execution helpers", () => {
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-      buildTimeClassifications: new Map([
-        [0, "static"],
-        [2, "dynamic"],
-      ]),
-      getLayoutId(layoutIndex) {
-        return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
-      },
-      runWithIsolatedDynamicScope(fn) {
-        // Simulate: layout 1 triggers dynamic usage, others don't
-        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [2, "dynamic"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
       },
     });
 
@@ -202,18 +203,20 @@ describe("app page execution helpers", () => {
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-      getLayoutId(layoutIndex) {
-        return ["layout:/", "layout:/dashboard"][layoutIndex];
-      },
-      runWithIsolatedDynamicScope(fn) {
-        probeCallCount++;
-        const result = fn();
-        // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
-        // detects dynamic usage
-        return Promise.resolve({
-          result,
-          dynamicDetected: probeCallCount === 2,
-        });
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          probeCallCount++;
+          const result = fn();
+          // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
+          // detects dynamic usage
+          return Promise.resolve({
+            result,
+            dynamicDetected: probeCallCount === 2,
+          });
+        },
       },
     });
 
@@ -255,16 +258,18 @@ describe("app page execution helpers", () => {
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-      buildTimeClassifications: new Map([
-        [0, "static"],
-        [1, "dynamic"],
-      ]),
-      getLayoutId(layoutIndex) {
-        return ["layout:/", "layout:/admin"][layoutIndex];
-      },
-      runWithIsolatedDynamicScope(fn) {
-        probeCalls++;
-        return Promise.resolve({ result: fn(), dynamicDetected: false });
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          probeCalls++;
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
       },
     });
 
