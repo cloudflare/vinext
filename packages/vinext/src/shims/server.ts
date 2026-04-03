@@ -639,6 +639,9 @@ export class ResponseCookies {
       expires: new Date(0),
       path: opts?.path,
       domain: opts?.domain,
+      httpOnly: opts?.httpOnly,
+      secure: opts?.secure,
+      sameSite: opts?.sameSite,
     });
   }
 
@@ -683,7 +686,7 @@ function parseCookieSetArgs(
     return [args[0], args[1] as string, args[2] as CookieOptions | undefined];
   }
   const { name, value, ...opts } = args[0];
-  return [name, value, Object.keys(opts).length > 0 ? (opts as CookieOptions) : undefined];
+  return [name, value, opts as CookieOptions];
 }
 
 // ---------------------------------------------------------------------------

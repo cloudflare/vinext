@@ -4107,6 +4107,28 @@ describe("ResponseCookies correctness", () => {
     expect(setCookie[0]).toContain("Expires=");
   });
 
+  it("delete() forwards httpOnly, secure, and sameSite attributes", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({
+      name: "session",
+      path: "/app",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Secure");
+    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("Path=/app");
+    expect(setCookie[0]).toContain("Expires=");
+  });
+
   it("delete() replaces existing cookie's Set-Cookie header", async () => {
     const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers();
