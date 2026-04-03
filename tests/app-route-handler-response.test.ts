@@ -103,6 +103,60 @@ describe("app route handler response helpers", () => {
     expect(new TextDecoder().decode(value.body)).toBe("cache me");
   });
 
+  it("preserves multiple Set-Cookie headers when building cache value", async () => {
+    const response = new Response("with cookies", {
+      status: 200,
+      headers: [
+        ["content-type", "application/json"],
+        ["set-cookie", "session=abc; Path=/; HttpOnly"],
+        ["set-cookie", "theme=dark; Path=/"],
+        ["set-cookie", "lang=en; Path=/; SameSite=Lax"],
+      ],
+    });
+
+    const value = await buildAppRouteCacheValue(response);
+
+    expect(value.headers["set-cookie"]).toEqual([
+      "session=abc; Path=/; HttpOnly",
+      "theme=dark; Path=/",
+      "lang=en; Path=/; SameSite=Lax",
+    ]);
+    expect(value.headers["content-type"]).toBe("application/json");
+  });
+
+  it("omits set-cookie key when response has no Set-Cookie headers", async () => {
+    const response = new Response("no cookies", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+
+    const value = await buildAppRouteCacheValue(response);
+
+    expect(value.headers).toEqual({ "content-type": "text/plain" });
+    expect(value.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("round-trips multiple Set-Cookie headers through cache store and restore", async () => {
+    const original = new Response("round trip", {
+      status: 200,
+      headers: [
+        ["content-type", "text/plain"],
+        ["set-cookie", "a=1; Path=/"],
+        ["set-cookie", "b=2; Path=/"],
+      ],
+    });
+
+    const cached = await buildAppRouteCacheValue(original);
+    const restored = buildRouteHandlerCachedResponse(cached, {
+      cacheState: "HIT",
+      isHead: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(restored.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    await expect(restored.text()).resolves.toBe("round trip");
+  });
+
   it("finalizes route handler responses with cookies and auto-head semantics", async () => {
     const response = new Response("body", {
       status: 202,
