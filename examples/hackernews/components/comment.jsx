@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import DOMPurify from 'isomorphic-dompurify';
 
 import timeAgo from '../lib/time-ago';
 
@@ -27,7 +26,7 @@ export default function Comment({ user, text, date, comments, commentsCount }) {
             <div
               key="text"
               className={styles.text}
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(text) }}
+              dangerouslySetInnerHTML={{ __html: text }}
             />,
             <div key="children" className={styles.children}>
               {comments.map((comment) => (

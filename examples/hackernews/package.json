@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
-    "isomorphic-dompurify": "catalog:",
+    "sanitize-html": "catalog:",
     "ms": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
