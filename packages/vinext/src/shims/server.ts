@@ -161,6 +161,9 @@ export class NextRequest extends Request {
 // NextResponse
 // ---------------------------------------------------------------------------
 
+/** Valid HTTP redirect status codes, matching Next.js's REDIRECTS set. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 export class NextResponse<_Body = unknown> extends Response {
   private _cookies: ResponseCookies;
 
@@ -192,6 +195,9 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
+    if (!REDIRECT_STATUSES.has(status)) {
+      throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
+    }
     const destination = typeof url === "string" ? url : url.toString();
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
     headers.set("Location", destination);

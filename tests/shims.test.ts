@@ -4748,6 +4748,31 @@ describe("NextResponse.redirect() status codes", () => {
     const res = NextResponse.redirect(url);
     expect(res.headers.get("Location")).toBe("https://example.com/target");
   });
+
+  it("supports 303 See Other", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const res = NextResponse.redirect("https://example.com", 303);
+    expect(res.status).toBe(303);
+  });
+
+  // Ported from Next.js: packages/next/src/server/web/spec-extension/response.ts
+  // Next.js validates redirect status codes and throws RangeError for invalid ones.
+  it("throws RangeError for non-redirect status code 200", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(RangeError);
+  });
+
+  it("throws RangeError for non-redirect status code 418", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 418)).toThrow(RangeError);
+  });
+
+  it("throws RangeError with descriptive message for invalid status", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(
+      /Failed to execute "redirect" on "response": Invalid status code/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
