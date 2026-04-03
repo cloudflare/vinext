@@ -633,7 +633,13 @@ export class ResponseCookies {
   ): this {
     const [name, opts] =
       typeof args[0] === "string" ? [args[0], undefined] : [args[0].name, args[0]];
-    return this.set({ name, value: "", expires: new Date(0), ...opts });
+    return this.set({
+      name,
+      value: "",
+      expires: new Date(0),
+      path: opts?.path,
+      domain: opts?.domain,
+    });
   }
 
   [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
