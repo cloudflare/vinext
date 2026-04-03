@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import DOMPurify from 'dompurify';
+import DOMPurify from 'isomorphic-dompurify';
 
 import timeAgo from '../lib/time-ago';
 
