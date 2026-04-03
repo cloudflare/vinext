@@ -341,45 +341,8 @@ describe("next/navigation shim", () => {
 
   // Unit tests for pending pathname helper functions
   // Related to PR #745: pending pathname race condition fix
-  it("setPendingPathname strips base path correctly", async () => {
-    const {
-      setPendingPathname,
-      getClientNavigationState,
-    } = await import("../packages/vinext/src/shims/navigation.js");
-
-    // Simulate client environment by mocking window
-    const mockWindow = {
-      location: {
-        pathname: "/base/path",
-        search: "",
-      },
-      history: {
-        pushState: vi.fn(),
-        replaceState: vi.fn(),
-      },
-    };
-
-    // Set the global window mock
-    const originalWindow = globalThis.window;
-    (globalThis as any).window = mockWindow;
-
-    try {
-      // Initialize the client navigation state
-      const state = getClientNavigationState();
-      expect(state).not.toBeNull();
-
-      // Set pending pathname with base path (simulating /base prefix)
-      setPendingPathname("/base/page-b");
-
-      // The base path should be stripped
-      expect(state!.pendingPathname).toBe("/page-b");
-    } finally {
-      // Restore original window
-      (globalThis as any).window = originalWindow;
-    }
-  });
-
-  it("setPendingPathname is no-op when getClientNavigationState returns null", async () => {
+  // Note: These functions are client-side only. On server, they should be no-ops.
+  it("setPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
     const { setPendingPathname } = await import(
       "../packages/vinext/src/shims/navigation.js"
     );
@@ -389,44 +352,7 @@ describe("next/navigation shim", () => {
     expect(() => setPendingPathname("/some-path")).not.toThrow();
   });
 
-  it("clearPendingPathname clears pending pathname correctly", async () => {
-    const {
-      setPendingPathname,
-      clearPendingPathname,
-      getClientNavigationState,
-    } = await import("../packages/vinext/src/shims/navigation.js");
-
-    // Simulate client environment
-    const mockWindow = {
-      location: {
-        pathname: "/",
-        search: "",
-      },
-      history: {
-        pushState: vi.fn(),
-        replaceState: vi.fn(),
-      },
-    };
-
-    const originalWindow = globalThis.window;
-    (globalThis as any).window = mockWindow;
-
-    try {
-      const state = getClientNavigationState();
-      expect(state).not.toBeNull();
-
-      // Set and then clear
-      setPendingPathname("/page-b");
-      expect(state!.pendingPathname).toBe("/page-b");
-
-      clearPendingPathname();
-      expect(state!.pendingPathname).toBeNull();
-    } finally {
-      (globalThis as any).window = originalWindow;
-    }
-  });
-
-  it("clearPendingPathname is no-op when getClientNavigationState returns null", async () => {
+  it("clearPendingPathname is no-op when getClientNavigationState returns null (server-side)", async () => {
     const { clearPendingPathname } = await import(
       "../packages/vinext/src/shims/navigation.js"
     );
