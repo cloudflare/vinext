@@ -15,9 +15,20 @@
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+import { resolveStaticAssetSignal } from "./worker-utils.js";
+
+type WorkerAssetEnv = {
+  ASSETS?: {
+    fetch(request: Request): Promise<Response> | Response;
+  };
+};
 
 export default {
-  async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
+  async fetch(
+    request: Request,
+    env?: WorkerAssetEnv,
+    ctx?: ExecutionContextLike,
+  ): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
@@ -52,6 +63,13 @@ export default {
     const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     if (result instanceof Response) {
+      if (env?.ASSETS) {
+        const assetResponse = await resolveStaticAssetSignal(result, {
+          fetchAsset: (path) =>
+            Promise.resolve(env.ASSETS!.fetch(new Request(new URL(path, request.url)))),
+        });
+        if (assetResponse) return assetResponse;
+      }
       return result;
     }
 

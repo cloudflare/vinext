@@ -391,8 +391,11 @@ async function tryServeStatic(
   compress: boolean,
   cache?: StaticFileCache,
   extraHeaders?: Record<string, string | string[]>,
+  statusCode?: number,
 ): Promise<boolean> {
   if (pathname === "/") return false;
+  const responseStatus = statusCode ?? 200;
+  const omitBody = isNoBodyResponseStatus(responseStatus);
 
   // ── Fast path: pre-computed headers, minimal per-request work ──
   // When a cache is provided, all path validation happened at startup.
@@ -419,7 +422,11 @@ async function tryServeStatic(
 
     // 304 Not Modified: string compare against pre-computed ETag
     const ifNoneMatch = req.headers["if-none-match"];
-    if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)) {
+    if (
+      responseStatus === 200 &&
+      typeof ifNoneMatch === "string" &&
+      matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)
+    ) {
       if (extraHeaders) {
         res.writeHead(304, { ...entry.notModifiedHeaders, ...extraHeaders });
       } else {
@@ -449,12 +456,12 @@ async function tryServeStatic(
       : entry.original;
 
     if (extraHeaders) {
-      res.writeHead(200, { ...variant.headers, ...extraHeaders });
+      res.writeHead(responseStatus, { ...variant.headers, ...extraHeaders });
     } else {
-      res.writeHead(200, variant.headers);
+      res.writeHead(responseStatus, variant.headers);
     }
 
-    if (req.method === "HEAD") {
+    if (omitBody || req.method === "HEAD") {
       res.end();
       return true;
     }
@@ -515,7 +522,11 @@ async function tryServeStatic(
   // compress=false also skips all compressed variants.
   // Spreading undefined is a no-op in object literals (ES2018+).
   const ifNoneMatch = req.headers["if-none-match"];
-  if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, etag)) {
+  if (
+    responseStatus === 200 &&
+    typeof ifNoneMatch === "string" &&
+    matchesIfNoneMatchHeader(ifNoneMatch, etag)
+  ) {
     const notModifiedHeaders: Record<string, string | string[]> = {
       ETag: etag,
       "Cache-Control": cacheControl,
@@ -539,12 +550,12 @@ async function tryServeStatic(
     if (encoding) {
       // Content-Length omitted intentionally: compressed size isn't known
       // ahead of time, so Node.js uses chunked transfer encoding.
-      res.writeHead(200, {
+      res.writeHead(responseStatus, {
         ...baseHeaders,
         "Content-Encoding": encoding,
         Vary: "Accept-Encoding",
       });
-      if (req.method === "HEAD") {
+      if (omitBody || req.method === "HEAD") {
         res.end();
         return true;
       }
@@ -561,11 +572,11 @@ async function tryServeStatic(
     }
   }
 
-  res.writeHead(200, {
+  res.writeHead(responseStatus, {
     ...baseHeaders,
     "Content-Length": String(resolved.size),
   });
-  if (req.method === "HEAD") {
+  if (omitBody || req.method === "HEAD") {
     res.end();
     return true;
   }
@@ -1043,6 +1054,46 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req, normalizedUrl);
       const response = await rscHandler(request);
+
+      const staticFileSignal = response.headers.get("x-vinext-static-file");
+      if (staticFileSignal) {
+        let staticFilePath = "/";
+        try {
+          staticFilePath = decodeURIComponent(staticFileSignal);
+        } catch {
+          staticFilePath = staticFileSignal;
+        }
+
+        const staticResponseHeaders = omitHeadersCaseInsensitive(
+          mergeResponseHeaders({}, response),
+          ["x-vinext-static-file", "content-encoding", "content-length", "content-type"],
+        );
+
+        const served = await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          staticFilePath,
+          compress,
+          staticCache,
+          staticResponseHeaders,
+          response.status,
+        );
+        cancelResponseBody(response);
+        if (served) {
+          return;
+        }
+        await sendWebResponse(
+          new Response("Not Found", {
+            status: 404,
+            headers: toWebHeaders(staticResponseHeaders),
+          }),
+          req,
+          res,
+          compress,
+        );
+        return;
+      }
 
       // Stream the Web Response back to the Node.js response
       await sendWebResponse(response, req, res, compress);

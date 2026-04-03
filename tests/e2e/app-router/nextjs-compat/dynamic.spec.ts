@@ -10,15 +10,9 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: next/dynamic (browser)", () => {
   // Next.js: 'should handle next/dynamic in hydration correctly'
@@ -27,7 +21,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
   // After hydration, the ssr:false component should appear in the DOM.
   test("ssr:false component appears after hydration", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/dynamic`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // The ssr:false component should now be visible after client-side rendering
     await expect(async () => {
@@ -39,7 +33,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
   // Verify SSR-rendered dynamic components are still present after hydration
   test("dynamic() components remain visible after hydration", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/dynamic`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#css-text-lazy")).toContainText("next-dynamic lazy");
     await expect(page.locator("#css-text-dynamic-server")).toContainText(
@@ -57,7 +51,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L97-L100
   test("named export via dynamic() renders button after hydration", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/dynamic/named-export`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await expect(page.locator("#client-button")).toHaveText("this is a client button");
   });
@@ -69,7 +63,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
     // Static content should be present immediately
     await expect(page.locator("#static-text")).toHaveText("This is static content");
 
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // After hydration, the ssr:false component should appear
     await expect(async () => {
@@ -87,7 +81,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
     // Server-rendered static content should be present immediately
     await expect(page.locator("#server-text")).toHaveText("Server rendered");
 
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // After hydration, the ssr:false component should appear
     await expect(async () => {

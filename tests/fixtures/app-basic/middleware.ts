@@ -184,5 +184,7 @@ export const config = {
       missing: [{ type: "cookie", key: "mw-blocked" }],
     },
     "/mw-gated-fallback-pages",
+    "/photos/:path*",
+    "/actions",
   ],
 };
