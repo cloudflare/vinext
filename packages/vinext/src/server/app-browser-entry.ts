@@ -60,6 +60,7 @@ import {
   resolveVisitedResponseInterceptionContext,
   type AppElements,
   type AppWireElements,
+  type LayoutFlags,
 } from "./app-elements.js";
 import {
   createHistoryStateWithPreviousNextUrl,
@@ -458,6 +459,7 @@ async function commitSameUrlNavigatePayload(
       pending.action.renderId,
       "navigate",
       pending.interceptionContext,
+      pending.action.layoutFlags,
       pending.previousNextUrl,
       pending.routeId,
       pending.rootLayoutTreePath,
@@ -491,6 +493,7 @@ function BrowserRoot({
   const [treeState, dispatchTreeState] = useReducer(routerReducer, {
     elements: resolvedElements,
     interceptionContext: initialMetadata.interceptionContext,
+    layoutFlags: initialMetadata.layoutFlags,
     navigationSnapshot: initialNavigationSnapshot,
     previousNextUrl: null,
     renderId: 0,
@@ -570,6 +573,7 @@ function dispatchBrowserTree(
   renderId: number,
   actionType: "navigate" | "replace" | "traverse",
   interceptionContext: string | null,
+  layoutFlags: LayoutFlags,
   previousNextUrl: string | null,
   routeId: string,
   rootLayoutTreePath: string | null,
@@ -581,6 +585,7 @@ function dispatchBrowserTree(
     dispatch({
       elements,
       interceptionContext,
+      layoutFlags,
       navigationSnapshot,
       previousNextUrl,
       renderId,
@@ -662,6 +667,7 @@ async function renderNavigationPayload(
       renderId,
       actionType,
       pending.interceptionContext,
+      pending.action.layoutFlags,
       pending.previousNextUrl,
       pending.routeId,
       pending.rootLayoutTreePath,
@@ -1146,6 +1152,7 @@ async function main(): Promise<void> {
           pending.action.renderId,
           "replace",
           pending.interceptionContext,
+          pending.action.layoutFlags,
           pending.previousNextUrl,
           pending.routeId,
           pending.rootLayoutTreePath,

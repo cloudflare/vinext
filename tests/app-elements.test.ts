@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { UNMATCHED_SLOT } from "../packages/vinext/src/shims/slot.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
+  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
@@ -118,5 +119,33 @@ describe("app elements payload helpers", () => {
         }),
       ),
     ).toThrow("[vinext] Invalid __interceptionContext in App Router payload");
+  });
+
+  it("reads layoutFlags from payload metadata", () => {
+    // Layout flags are set directly on the elements object (not via
+    // normalizeAppElements which expects AppWireElementValue types).
+    const elements = {
+      ...normalizeAppElements({
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_ROUTE_KEY]: "route:/blog",
+        "page:/blog": React.createElement("div", null, "blog"),
+      }),
+      [APP_LAYOUT_FLAGS_KEY]: { "layout:/": "s", "layout:/blog": "d" },
+    };
+    const metadata = readAppElementsMetadata(elements);
+
+    expect(metadata.layoutFlags).toEqual({ "layout:/": "s", "layout:/blog": "d" });
+  });
+
+  it("defaults missing layoutFlags to empty object (backward compat)", () => {
+    const metadata = readAppElementsMetadata(
+      normalizeAppElements({
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_ROUTE_KEY]: "route:/dashboard",
+        "route:/dashboard": React.createElement("div", null, "route"),
+      }),
+    );
+
+    expect(metadata.layoutFlags).toEqual({});
   });
 });

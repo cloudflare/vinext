@@ -40,6 +40,7 @@ function createResolvedElements(
 function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
   return {
     elements: createResolvedElements("route:/initial", "/"),
+    layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
     interceptionContext: null,
@@ -76,6 +77,7 @@ describe("app browser entry state helpers", () => {
       {
         elements: nextElements,
         interceptionContext: null,
+        layoutFlags: {},
         navigationSnapshot: createState().navigationSnapshot,
         previousNextUrl: null,
         renderId: 1,
@@ -103,6 +105,7 @@ describe("app browser entry state helpers", () => {
     const nextState = routerReducer(createState(), {
       elements: nextElements,
       interceptionContext: null,
+      layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
       previousNextUrl: null,
       renderId: 1,
@@ -259,10 +262,55 @@ describe("app browser entry state helpers", () => {
     expect(refreshCommit.previousNextUrl).toBe("/feed");
   });
 
+  it("merges layoutFlags on navigate", () => {
+    const nextState = routerReducer(
+      createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } }),
+      {
+        elements: createResolvedElements("route:/next", "/"),
+        interceptionContext: null,
+        layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
+        navigationSnapshot: createState().navigationSnapshot,
+        previousNextUrl: null,
+        renderId: 1,
+        rootLayoutTreePath: "/",
+        routeId: "route:/next",
+        type: "navigate",
+      },
+    );
+
+    // Navigate merges: old flags preserved, new flags override
+    expect(nextState.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/old": "d",
+      "layout:/blog": "d",
+    });
+  });
+
+  it("replaces layoutFlags on replace", () => {
+    const nextState = routerReducer(
+      createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } }),
+      {
+        elements: createResolvedElements("route:/next", "/"),
+        interceptionContext: null,
+        layoutFlags: { "layout:/": "d" },
+        navigationSnapshot: createState().navigationSnapshot,
+        previousNextUrl: null,
+        renderId: 1,
+        rootLayoutTreePath: "/",
+        routeId: "route:/next",
+        type: "replace",
+      },
+    );
+
+    // Replace: only new flags
+    expect(nextState.layoutFlags).toEqual({ "layout:/": "d" });
+  });
+
   it("stores previousNextUrl on navigate actions", () => {
     const nextState = routerReducer(createState(), {
       elements: createResolvedElements("route:/photos/42\0/feed", "/", "/feed"),
       interceptionContext: "/feed",
+      layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
       previousNextUrl: "/feed",
       renderId: 1,
@@ -359,6 +407,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     const nextState = routerReducer(state, {
       elements: nextElements,
       interceptionContext: null,
+      layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
       previousNextUrl: null,
       renderId: 1,
@@ -381,6 +430,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     const nextState = routerReducer(state, {
       elements: nextElements,
       interceptionContext: null,
+      layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
       previousNextUrl: null,
       renderId: 1,

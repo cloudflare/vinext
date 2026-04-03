@@ -1,6 +1,6 @@
 import { mergeElements } from "../shims/slot.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { readAppElementsMetadata, type AppElements } from "./app-elements.js";
+import { readAppElementsMetadata, type AppElements, type LayoutFlags } from "./app-elements.js";
 import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -12,6 +12,7 @@ type HistoryStateRecord = {
 export type AppRouterState = {
   elements: AppElements;
   interceptionContext: string | null;
+  layoutFlags: LayoutFlags;
   previousNextUrl: string | null;
   renderId: number;
   navigationSnapshot: ClientNavigationRenderSnapshot;
@@ -22,6 +23,7 @@ export type AppRouterState = {
 export type AppRouterAction = {
   elements: AppElements;
   interceptionContext: string | null;
+  layoutFlags: LayoutFlags;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   previousNextUrl: string | null;
   renderId: number;
@@ -95,6 +97,7 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
       return {
         elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
         interceptionContext: action.interceptionContext,
+        layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
         navigationSnapshot: action.navigationSnapshot,
         previousNextUrl: action.previousNextUrl,
         renderId: action.renderId,
@@ -105,6 +108,7 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
       return {
         elements: action.elements,
         interceptionContext: action.interceptionContext,
+        layoutFlags: action.layoutFlags,
         navigationSnapshot: action.navigationSnapshot,
         previousNextUrl: action.previousNextUrl,
         renderId: action.renderId,
@@ -168,6 +172,7 @@ export async function createPendingNavigationCommit(options: {
     action: {
       elements,
       interceptionContext: metadata.interceptionContext,
+      layoutFlags: metadata.layoutFlags,
       navigationSnapshot: options.navigationSnapshot,
       previousNextUrl,
       renderId: options.renderId,

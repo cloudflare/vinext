@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 const APP_INTERCEPTION_SEPARATOR = "\0";
 
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
+export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
@@ -15,8 +16,11 @@ export type AppWireElementValue = ReactNode | string | null;
 export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
 
+export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
+
 export type AppElementsMetadata = {
   interceptionContext: string | null;
+  layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
 };
@@ -102,7 +106,27 @@ export function normalizeAppElements(elements: AppWireElements): AppElements {
   return normalized;
 }
 
-export function readAppElementsMetadata(elements: AppElements): AppElementsMetadata {
+function isLayoutFlagsRecord(value: unknown): value is LayoutFlags {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const v of Object.values(value)) {
+    if (v !== "s" && v !== "d") return false;
+  }
+  return true;
+}
+
+function parseLayoutFlags(value: unknown): LayoutFlags {
+  if (isLayoutFlagsRecord(value)) return value;
+  return {};
+}
+
+/**
+ * Parses metadata from the wire payload. Accepts `Record<string, unknown>`
+ * because the RSC payload carries heterogeneous values (React elements,
+ * strings, and plain objects like layout flags) under the same record type.
+ */
+export function readAppElementsMetadata(
+  elements: Readonly<Record<string, unknown>>,
+): AppElementsMetadata {
   const routeId = elements[APP_ROUTE_KEY];
   if (typeof routeId !== "string") {
     throw new Error("[vinext] Missing __route string in App Router payload");
@@ -125,8 +149,11 @@ export function readAppElementsMetadata(elements: AppElements): AppElementsMetad
     throw new Error("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
   }
 
+  const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
+
   return {
     interceptionContext: interceptionContext ?? null,
+    layoutFlags,
     routeId,
     rootLayoutTreePath,
   };
