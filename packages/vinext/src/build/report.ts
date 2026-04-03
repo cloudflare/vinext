@@ -607,6 +607,37 @@ function findMatchingToken(
   return -1;
 }
 
+// ─── Layout segment config classification ────────────────────────────────────
+
+/**
+ * Classification result for layout segment config analysis.
+ * "static" means the layout is confirmed static via segment config.
+ * "dynamic" means the layout is confirmed dynamic via segment config.
+ */
+export type LayoutClassification = "static" | "dynamic";
+
+/**
+ * Classifies a layout file by its segment config exports (`dynamic`, `revalidate`).
+ *
+ * Returns `"static"` or `"dynamic"` when the config is decisive, or `null`
+ * when no segment config is present (deferring to module graph analysis).
+ *
+ * Unlike page classification, positive `revalidate` values are not meaningful
+ * for layout skip decisions — ISR is a page-level concept. Only the extremes
+ * (`revalidate = 0` → dynamic, `revalidate = Infinity` → static) are decisive.
+ */
+export function classifyLayoutSegmentConfig(code: string): LayoutClassification | null {
+  const dynamicValue = extractExportConstString(code, "dynamic");
+  if (dynamicValue === "force-dynamic") return "dynamic";
+  if (dynamicValue === "force-static" || dynamicValue === "error") return "static";
+
+  const revalidateValue = extractExportConstNumber(code, "revalidate");
+  if (revalidateValue === Infinity) return "static";
+  if (revalidateValue === 0) return "dynamic";
+
+  return null;
+}
+
 // ─── Route classification ─────────────────────────────────────────────────────
 
 /**

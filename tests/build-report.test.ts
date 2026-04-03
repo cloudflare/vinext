@@ -16,6 +16,7 @@ import {
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
   classifyAppRoute,
+  classifyLayoutSegmentConfig,
   buildReportRows,
   formatBuildReport,
   printBuildReport,
@@ -737,5 +738,41 @@ describe("printBuildReport respects pageExtensions", () => {
 
     const output = lines.join("\n");
     expect(output).toContain("/about");
+  });
+});
+
+// ─── classifyLayoutSegmentConfig ─────────────────────────────────────────────
+
+describe("classifyLayoutSegmentConfig", () => {
+  it('returns "static" for export const dynamic = "force-static"', () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toBe("static");
+  });
+
+  it('returns "static" for export const dynamic = "error" (enforces static)', () => {
+    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toBe("static");
+  });
+
+  it('returns "dynamic" for export const dynamic = "force-dynamic"', () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toBe("dynamic");
+  });
+
+  it('returns "dynamic" for export const revalidate = 0', () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toBe("dynamic");
+  });
+
+  it('returns "static" for export const revalidate = Infinity', () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toBe("static");
+  });
+
+  it("returns null for no config (defers to module graph)", () => {
+    expect(
+      classifyLayoutSegmentConfig(
+        "export default function Layout({ children }) { return children; }",
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for positive revalidate (ISR is a page concept)", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toBeNull();
   });
 });
