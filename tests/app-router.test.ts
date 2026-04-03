@@ -3245,6 +3245,20 @@ describe("App Router middleware with NextRequest", () => {
     const text = await res.text();
     expect(text).toBe("Event OK");
   });
+
+  it("middleware response headers appear on intercepting route RSC responses", async () => {
+    // Intercepting route responses are constructed via renderInterceptResponse(),
+    // which must merge _mwCtx.headers into the Response — same as the normal
+    // page path through buildAppPageRscResponse().
+    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // Middleware sets x-mw-ran and x-mw-pathname on all matched paths
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/photos/42");
+  });
 });
 
 describe("RSC Flight hint fix", () => {
@@ -3908,5 +3922,41 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("return __executeAppRouteHandler({");
     expect(code).toContain("isrRouteKey: __isrRouteKey");
     expect(code).toContain("isrSet: __isrSet");
+  });
+
+  it("generated code merges middleware headers into intercept route responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The renderInterceptResponse callback must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers (auth cookies, CORS, security headers) to
+    // intercepting route RSC responses.
+    expect(code).toContain("mergeMiddlewareResponseHeaders");
+    // The call must appear between renderInterceptResponse and searchParams
+    // (the next callback in the options object), ensuring it's inside the
+    // intercept response construction path.
+    const interceptStart = code.indexOf("renderInterceptResponse(sourceRoute, interceptElement)");
+    const interceptEnd = code.indexOf("searchParams:", interceptStart);
+    const interceptBody = code.slice(interceptStart, interceptEnd);
+    expect(interceptBody).toContain("mergeMiddlewareResponseHeaders");
+  });
+
+  it("generated code merges middleware headers into server action re-render responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The server action re-render path must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers to the RSC response containing the re-rendered page.
+    // Find the action response construction area (after actionHeaders, before catch)
+    const actionHeadersIdx = code.indexOf("const actionHeaders =");
+    const actionCatchIdx = code.indexOf("} catch (err)", actionHeadersIdx);
+    const actionResponseBody = code.slice(actionHeadersIdx, actionCatchIdx);
+    expect(actionResponseBody).toContain("mergeMiddlewareResponseHeaders");
+  });
+
+  it("generated code merges middleware headers into server action redirect responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The server action redirect path must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers to the redirect response.
+    const redirectStart = code.indexOf("if (actionRedirect)");
+    const redirectEnd = code.indexOf('return new Response(""', redirectStart);
+    const redirectBody = code.slice(redirectStart, redirectEnd);
+    expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
   });
 });

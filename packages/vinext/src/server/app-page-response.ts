@@ -157,6 +157,34 @@ export function resolveAppPageHtmlResponsePolicy(
   return { shouldWriteToCache: false };
 }
 
+/**
+ * Merge middleware response headers into a target Headers object.
+ *
+ * Set-Cookie and Vary are accumulated (append) since multiple sources can
+ * contribute values. All other headers use set() so middleware owns singular
+ * response headers like Cache-Control.
+ *
+ * Used by buildAppPageRscResponse and the generated entry for intercepting
+ * route and server action responses that bypass the normal page render path.
+ */
+export function mergeMiddlewareResponseHeaders(
+  target: Headers,
+  middlewareHeaders: Headers | null,
+): void {
+  if (!middlewareHeaders) {
+    return;
+  }
+
+  for (const [key, value] of middlewareHeaders) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "set-cookie" || lowerKey === "vary") {
+      target.append(key, value);
+    } else {
+      target.set(key, value);
+    }
+  }
+}
+
 export function buildAppPageRscResponse(
   body: ReadableStream,
   options: BuildAppPageRscResponseOptions,
@@ -178,20 +206,7 @@ export function buildAppPageRscResponse(
     headers.set("X-Vinext-Cache", options.policy.cacheState);
   }
 
-  if (options.middlewareContext.headers) {
-    for (const [key, value] of options.middlewareContext.headers) {
-      const lowerKey = key.toLowerCase();
-      if (lowerKey === "set-cookie" || lowerKey === "vary") {
-        headers.append(key, value);
-      } else {
-        // Keep parity with the old inline RSC path: middleware owns singular
-        // response headers like Cache-Control here, while Set-Cookie and Vary
-        // are accumulated. The HTML helper intentionally keeps its legacy
-        // append-for-everything behavior below.
-        headers.set(key, value);
-      }
-    }
-  }
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
 
   applyTimingHeader(headers, options.timing);
 
