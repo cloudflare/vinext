@@ -617,7 +617,7 @@ async function main(): Promise<void> {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
 
-      // Get state for comparison BEFORE we set the new pending pathname
+      // Get navigation state for comparison
       const navState = getClientNavigationState();
 
       // Compare against previous pending navigation, then committed, then window.location
@@ -627,17 +627,11 @@ async function main(): Promise<void> {
         navState?.cachedPathname ??
         stripBasePath(window.location.pathname, __basePath);
 
-      // Clear pending pathname if this navigation is to a different route than the pending one.
-      // This prevents stale pendingPathname from affecting isSameRoute calculations for
-      // subsequent navigations during rapid clicks (issue #744).
       const targetPath = stripBasePath(url.pathname, __basePath);
-      if (navState?.pendingPathname && navState.pendingPathname !== targetPath) {
-        clearPendingPathname();
-      }
-
       const isSameRoute = targetPath === currentPath;
 
-      // Set this navigation as the new pending pathname for subsequent navigations to compare against
+      // Always set this navigation as the pending pathname, overwriting any previous.
+      // This ensures subsequent navigations compare against the most recent in-flight target.
       setPendingPathname(url.pathname);
 
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
