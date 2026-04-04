@@ -69,8 +69,8 @@ export type AppRoute = {
   routePath: string | null;
   /** Ordered list of layout files from root to leaf */
   layouts: string[];
-  /** Ordered list of template files from root to leaf (parallel to layouts) */
-  templates: string[];
+  /** Template files aligned with layouts array (null where no template exists at that level) */
+  templates: (string | null)[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
   /** Loading component path */
@@ -402,9 +402,9 @@ function fileToAppRoute(
 
   const pattern = "/" + urlSegments.join("/");
 
-  // Discover layouts and templates from root to leaf
+  // Discover layouts and layout-aligned templates from root to leaf
   const layouts = discoverLayouts(segments, appDir, matcher);
-  const templates = discoverTemplates(segments, appDir, matcher);
+  const templates = discoverLayoutAlignedTemplates(segments, appDir, matcher);
 
   // Compute the tree position (directory depth) for each layout.
   const layoutTreePositions = computeLayoutTreePositions(appDir, layouts);
@@ -493,27 +493,37 @@ function discoverLayouts(segments: string[], appDir: string, matcher: ValidFileM
 }
 
 /**
- * Discover all template files from root to the given directory.
- * Each level of the directory tree may have a template.tsx.
- * Templates are like layouts but re-mount on navigation.
+ * Discover template files aligned with the layouts array.
+ * Walks the same directory levels as discoverLayouts and, for each level
+ * that contributes a layout entry, checks whether template.tsx also exists.
+ * Returns an array of the same length as discoverLayouts() would return,
+ * with the template path (or null) at each corresponding layout level.
+ *
+ * This enables interleaving templates with their corresponding layouts,
+ * matching Next.js behavior where each segment's hierarchy is
+ * Layout > Template > ErrorBoundary > children.
  */
-function discoverTemplates(
+function discoverLayoutAlignedTemplates(
   segments: string[],
   appDir: string,
   matcher: ValidFileMatcher,
-): string[] {
-  const templates: string[] = [];
+): (string | null)[] {
+  const templates: (string | null)[] = [];
 
-  // Check root template
-  const rootTemplate = findFile(appDir, "template", matcher);
-  if (rootTemplate) templates.push(rootTemplate);
+  // Root level (only if root has a layout — matching discoverLayouts logic)
+  const rootLayout = findFile(appDir, "layout", matcher);
+  if (rootLayout) {
+    templates.push(findFile(appDir, "template", matcher));
+  }
 
   // Check each directory level
   let currentDir = appDir;
   for (const segment of segments) {
     currentDir = path.join(currentDir, segment);
-    const template = findFile(currentDir, "template", matcher);
-    if (template) templates.push(template);
+    const layout = findFile(currentDir, "layout", matcher);
+    if (layout) {
+      templates.push(findFile(currentDir, "template", matcher));
+    }
   }
 
   return templates;

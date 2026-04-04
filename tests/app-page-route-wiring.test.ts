@@ -153,7 +153,7 @@ describe("app page route wiring helpers", () => {
             page: { default: SlotPage },
           },
         },
-        templates: [{ default: GroupTemplate }],
+        templates: [null, { default: GroupTemplate }],
       },
       rootNotFoundModule: null,
       slotOverrides: {
@@ -170,6 +170,10 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="group"');
     expect(html).toContain('data-template="group"');
+    // GroupTemplate must be inside GroupLayout, not RootLayout
+    const groupLayoutPos = html.indexOf('data-layout="group"');
+    const groupTemplatePos = html.indexOf('data-template="group"');
+    expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
     expect(html).toContain('data-slot-layout="sidebar"');
     expect(html).toContain('data-slot-page="intercepted"');
     expect(html).toContain('data-page-segments=""');
