@@ -557,7 +557,7 @@ function registerServerActionCallback(): void {
               const renderId = ++nextNavigationRenderId;
               setter({ renderId, node: result.root, navigationSnapshot });
 
-              replaceClientParamsWithoutNotify(params);
+              stageClientParams(params);
 
               // Keep the browser URL update atomic with the tree update.
               // If render() throws, the URL will not have changed yet.
@@ -586,7 +586,7 @@ function registerServerActionCallback(): void {
           // Ensure transient redirect navigation state is cleared before
           // forcing a full-page navigation fallback.
           setNavigationContext(null);
-          replaceClientParamsWithoutNotify({});
+          stageClientParams({});
           commitClientNavigationState();
         }
       }
