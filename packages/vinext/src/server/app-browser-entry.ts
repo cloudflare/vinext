@@ -174,8 +174,13 @@ function drainPrePaintEffects(upToRenderId: number): void {
 function createNavigationCommitEffect(
   href: string,
   historyUpdateMode: HistoryUpdateMode | undefined,
+  navId: number,
 ): () => void {
   return () => {
+    // Only update URL if this is still the active navigation.
+    // A newer navigation would have incremented activeNavigationId.
+    if (navId !== activeNavigationId) return;
+
     const targetHref = new URL(href, window.location.origin).href;
 
     if (historyUpdateMode === "replace" && window.location.href !== targetHref) {
@@ -184,7 +189,7 @@ function createNavigationCommitEffect(
       pushHistoryStateWithoutNotify(null, "", href);
     }
 
-    commitClientNavigationState();
+    commitClientNavigationState(navId);
   };
 }
 
@@ -337,6 +342,7 @@ function updateBrowserTree(
   renderId: number,
   useTransitionMode: boolean,
   snapshotActivated = false,
+  navId?: number,
 ): void {
   const setter = getBrowserTreeStateSetter();
 
@@ -354,7 +360,11 @@ function updateBrowserTree(
     const resolve = pendingNavigationCommits.get(renderId);
     pendingNavigationCommits.delete(renderId);
     if (snapshotActivated) {
-      commitClientNavigationState();
+      if (navId !== undefined) {
+        commitClientNavigationState(navId);
+      } else {
+        commitClientNavigationState();
+      }
     }
     resolve?.();
   };
@@ -386,6 +396,7 @@ function renderNavigationPayload(
   navigationSnapshot: ClientNavigationRenderSnapshot,
   prePaintEffect: (() => void) | null = null,
   useTransition = true,
+  navId?: number,
 ): Promise<void> {
   const renderId = ++nextNavigationRenderId;
   queuePrePaintNavigationEffect(renderId, prePaintEffect);
@@ -399,13 +410,17 @@ function renderNavigationPayload(
   // Wrap updateBrowserTree in try-catch to ensure counter is decremented
   // if a synchronous error occurs before the async promise chain is established.
   try {
-    updateBrowserTree(payload, navigationSnapshot, renderId, useTransition, true);
+    updateBrowserTree(payload, navigationSnapshot, renderId, useTransition, true, navId);
   } catch (error) {
     // Clean up pending state and decrement counter on synchronous error.
     pendingNavigationPrePaintEffects.delete(renderId);
     const resolve = pendingNavigationCommits.get(renderId);
     pendingNavigationCommits.delete(renderId);
-    commitClientNavigationState();
+    if (navId !== undefined) {
+      commitClientNavigationState(navId);
+    } else {
+      commitClientNavigationState();
+    }
     resolve?.();
     throw error; // Re-throw to maintain error propagation
   }
@@ -630,12 +645,12 @@ async function main(): Promise<void> {
       const targetPath = stripBasePath(url.pathname, __basePath);
       const isSameRoute = targetPath === currentPath;
 
-      // Always set this navigation as the pending pathname, overwriting any previous.
-      // This ensures subsequent navigations compare against the most recent in-flight target.
-      setPendingPathname(url.pathname);
+      // Set this navigation as the pending pathname, overwriting any previous.
+      // Pass navId so only this navigation (or a newer one) can clear it later.
+      setPendingPathname(url.pathname, navId);
 
       const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
-      const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode);
+      const navigationCommitEffect = createNavigationCommitEffect(href, historyUpdateMode, navId);
 
       if (cachedRoute) {
         // Check stale-navigation before and after createFromFetch. The pre-check
@@ -670,6 +685,7 @@ async function main(): Promise<void> {
             cachedNavigationSnapshot,
             navigationCommitEffect,
             isSameRoute,
+            navId,
           );
         } finally {
           // Always clear _snapshotPending so the outer catch does not
@@ -754,6 +770,7 @@ async function main(): Promise<void> {
           navigationSnapshot,
           navigationCommitEffect,
           isSameRoute,
+          navId,
         );
       } finally {
         // Always clear _snapshotPending after renderNavigationPayload returns or
@@ -781,7 +798,7 @@ async function main(): Promise<void> {
       // Only clear if this is still the active navigation — a newer navigation
       // has already overwritten pendingPathname with its own target.
       if (navId === activeNavigationId) {
-        clearPendingPathname();
+        clearPendingPathname(navId);
       }
       // Don't hard-navigate to a stale URL if this navigation was superseded by
       // a newer one — the newer navigation is already in flight and would be clobbered.

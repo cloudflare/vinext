@@ -475,6 +475,7 @@ type ClientNavigationState = {
   pendingClientParams: Record<string, string | string[]> | null;
   pendingClientParamsJson: string | null;
   pendingPathname: string | null;
+  pendingPathnameNavId: number | null;
   originalPushState: typeof window.history.pushState;
   originalReplaceState: typeof window.history.replaceState;
   patchInstalled: boolean;
@@ -501,6 +502,7 @@ export function getClientNavigationState(): ClientNavigationState | null {
     pendingClientParams: null,
     pendingClientParamsJson: null,
     pendingPathname: null,
+    pendingPathnameNavId: null,
     // NB: These capture the currently installed history methods, not guaranteed
     // native ones. If a third-party library (analytics, router) has already patched
     // history methods before this module loads, we intentionally preserve that
@@ -733,21 +735,30 @@ export function getClientParams(): Record<string, string | string[]> {
 
 /**
  * Set the pending pathname for client-side navigation.
- * Strips the base path before storing.
+ * Strips the base path before storing. Associates the pathname with the given navId
+ * so only that navigation (or a newer one) can clear it.
  */
-export function setPendingPathname(pathname: string): void {
+export function setPendingPathname(pathname: string, navId: number): void {
   const state = getClientNavigationState();
   if (!state) return;
   state.pendingPathname = stripBasePath(pathname, __basePath);
+  state.pendingPathnameNavId = navId;
 }
 
 /**
- * Clear the pending pathname.
+ * Clear the pending pathname, but only if the given navId matches the one
+ * that set it, or if pendingPathnameNavId is null (no active owner).
+ * This prevents superseded navigations from clearing state belonging to newer navigations.
  */
-export function clearPendingPathname(): void {
+export function clearPendingPathname(navId: number): void {
   const state = getClientNavigationState();
   if (!state) return;
-  state.pendingPathname = null;
+  // Only clear if this navId is the one that set the pendingPathname,
+  // or if pendingPathnameNavId is null (no owner)
+  if (state.pendingPathnameNavId === null || state.pendingPathnameNavId === navId) {
+    state.pendingPathname = null;
+    state.pendingPathnameNavId = null;
+  }
 }
 
 function getClientParamsSnapshot(): Record<string, string | string[]> {
@@ -909,7 +920,7 @@ function withSuppressedUrlNotifications<T>(fn: () => T): T {
   }
 }
 
-export function commitClientNavigationState(): void {
+export function commitClientNavigationState(navId?: number): void {
   if (isServer) return;
   const state = getClientNavigationState();
   if (!state) return;
@@ -929,8 +940,14 @@ export function commitClientNavigationState(): void {
     state.pendingClientParams = null;
     state.pendingClientParamsJson = null;
   }
-  // Clear pending pathname when navigation commits
-  state.pendingPathname = null;
+  // Clear pending pathname when navigation commits, but only if:
+  // - No navId provided (backward compatibility for non-tracked paths)
+  // - The navId matches the one that set pendingPathname
+  // - No newer navigation has overwritten pendingPathname (pendingPathnameNavId === null or matches)
+  if (state.pendingPathnameNavId === null || state.pendingPathnameNavId === navId) {
+    state.pendingPathname = null;
+    state.pendingPathnameNavId = null;
+  }
   const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
   state.hasPendingNavigationUpdate = false;
 
