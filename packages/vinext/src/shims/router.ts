@@ -341,10 +341,41 @@ function getPathnameAndQuery(): {
 }
 
 /**
+ * Error thrown when a navigation is superseded by a newer one.
+ * Matches Next.js's convention of an Error with `.cancelled = true`.
+ */
+class NavigationCancelledError extends Error {
+  cancelled = true;
+  constructor(route: string) {
+    super(`Abort fetching component for route: "${route}"`);
+    this.name = "NavigationCancelledError";
+  }
+}
+
+/**
+ * Monotonically increasing ID for tracking the current navigation.
+ * Each call to navigateClient() increments this and captures the value.
+ * After each async boundary, the navigation checks whether it is still
+ * the active one. If a newer navigation has started, the stale one
+ * throws NavigationCancelledError so the caller can emit routeChangeError
+ * and skip routeChangeComplete.
+ *
+ * Replaces the old boolean `_navInProgress` guard which silently dropped
+ * the second navigation, causing URL/content mismatch.
+ */
+let _navigationId = 0;
+
+/** AbortController for the in-flight fetch, so superseded navigations abort network I/O. */
+let _activeAbortController: AbortController | null = null;
+
+/**
  * Perform client-side navigation: fetch the target page's HTML,
  * extract __NEXT_DATA__, and re-render the React root.
+ *
+ * Throws NavigationCancelledError if a newer navigation supersedes this one.
+ * Throws on hard-navigation failures (non-OK response, missing data) so the
+ * caller can distinguish success from failure for event emission.
  */
-let _navInProgress = false;
 async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
@@ -355,25 +386,51 @@ async function navigateClient(url: string): Promise<void> {
     return;
   }
 
-  // Prevent re-entrant navigation (e.g., double popstate events)
-  if (_navInProgress) return;
-  _navInProgress = true;
+  // Cancel any in-flight navigation (abort its fetch, mark it stale)
+  _activeAbortController?.abort();
+  const controller = new AbortController();
+  _activeAbortController = controller;
+
+  const navId = ++_navigationId;
+
+  /** Check if this navigation is still the active one. If not, throw. */
+  function assertStillCurrent(): void {
+    if (navId !== _navigationId) {
+      throw new NavigationCancelledError(url);
+    }
+  }
 
   try {
     // Fetch the target page's SSR HTML
-    const res = await fetch(url, { headers: { Accept: "text/html" } });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { Accept: "text/html" },
+        signal: controller.signal,
+      });
+    } catch (err: unknown) {
+      // AbortError means a newer navigation cancelled this fetch
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new NavigationCancelledError(url);
+      }
+      throw err;
+    }
+    assertStillCurrent();
+
     if (!res.ok) {
       window.location.href = url;
-      return;
+      const err = new Error(`Navigation failed: ${res.status} ${res.statusText}`);
+      throw err;
     }
 
     const html = await res.text();
+    assertStillCurrent();
 
     // Extract __NEXT_DATA__ from the HTML
     const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
     if (!match) {
       window.location.href = url;
-      return;
+      throw new Error("Navigation failed: missing __NEXT_DATA__ in response");
     }
 
     const nextData = JSON.parse(match[1]);
@@ -393,7 +450,7 @@ async function navigateClient(url: string): Promise<void> {
 
     if (!pageModuleUrl) {
       window.location.href = url;
-      return;
+      throw new Error("Navigation failed: no page module URL found");
     }
 
     // Validate the module URL before importing — defense-in-depth against
@@ -401,20 +458,23 @@ async function navigateClient(url: string): Promise<void> {
     if (!isValidModulePath(pageModuleUrl)) {
       console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
       window.location.href = url;
-      return;
+      throw new Error("Navigation failed: invalid page module path");
     }
 
     // Dynamically import the new page module
     const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
+    assertStillCurrent();
+
     const PageComponent = pageModule.default;
 
     if (!PageComponent) {
       window.location.href = url;
-      return;
+      throw new Error("Navigation failed: page module has no default export");
     }
 
     // Import React for createElement
     const React = (await import("react")).default;
+    assertStillCurrent();
 
     // Re-render with the new page, loading _app if needed
     let AppComponent = window.__VINEXT_APP__;
@@ -433,6 +493,7 @@ async function navigateClient(url: string): Promise<void> {
         }
       }
     }
+    assertStillCurrent();
 
     let element;
     if (AppComponent) {
@@ -448,12 +509,11 @@ async function navigateClient(url: string): Promise<void> {
     element = wrapWithRouterContext(element);
 
     root.render(element);
-  } catch (err) {
-    console.error("[vinext] Client navigation failed:", err);
-    routerEvents.emit("routeChangeError", err, url, { shallow: false });
-    window.location.href = url;
   } finally {
-    _navInProgress = false;
+    // Clean up the abort controller if this navigation is still the active one
+    if (navId === _navigationId) {
+      _activeAbortController = null;
+    }
   }
 }
 
@@ -564,7 +624,17 @@ export function useRouter(): NextRouter {
       window.history.pushState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
-        await navigateClient(full);
+        try {
+          await navigateClient(full);
+        } catch (err: unknown) {
+          const routeProps = { shallow: false };
+          if (err instanceof NavigationCancelledError) {
+            routerEvents.emit("routeChangeError", err, resolved, routeProps);
+            return true;
+          }
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          return false;
+        }
       }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
@@ -621,7 +691,17 @@ export function useRouter(): NextRouter {
       window.history.replaceState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
-        await navigateClient(full);
+        try {
+          await navigateClient(full);
+        } catch (err: unknown) {
+          const routeProps = { shallow: false };
+          if (err instanceof NavigationCancelledError) {
+            routerEvents.emit("routeChangeError", err, resolved, routeProps);
+            return true;
+          }
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          return false;
+        }
       }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
@@ -730,11 +810,20 @@ if (typeof window !== "undefined") {
     // precedes that call, not the URL change itself. We emit it here for API
     // compatibility.
     routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
-    void navigateClient(browserUrl).then(() => {
-      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
-      restoreScrollPosition(e.state);
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    });
+    void navigateClient(browserUrl).then(
+      () => {
+        routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
+        restoreScrollPosition(e.state);
+        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      },
+      (err: unknown) => {
+        if (err instanceof NavigationCancelledError) {
+          routerEvents.emit("routeChangeError", err, fullAppUrl, { shallow: false });
+          return;
+        }
+        routerEvents.emit("routeChangeError", err, fullAppUrl, { shallow: false });
+      },
+    );
   });
 }
 
@@ -802,7 +891,17 @@ const Router = {
     window.history.pushState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
-      await navigateClient(full);
+      try {
+        await navigateClient(full);
+      } catch (err: unknown) {
+        const routeProps = { shallow: false };
+        if (err instanceof NavigationCancelledError) {
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          return true;
+        }
+        routerEvents.emit("routeChangeError", err, resolved, routeProps);
+        return false;
+      }
     }
     routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
@@ -852,7 +951,17 @@ const Router = {
     window.history.replaceState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
-      await navigateClient(full);
+      try {
+        await navigateClient(full);
+      } catch (err: unknown) {
+        const routeProps = { shallow: false };
+        if (err instanceof NavigationCancelledError) {
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          return true;
+        }
+        routerEvents.emit("routeChangeError", err, resolved, routeProps);
+        return false;
+      }
     }
     routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
