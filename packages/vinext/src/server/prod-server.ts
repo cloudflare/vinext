@@ -1238,6 +1238,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
+
+          if (
+            path.extname(resolvedPathname) &&
+            tryServeStatic(req, res, clientDir, resolvedPathname, compress, middlewareHeaders)
+          ) {
+            return;
+          }
         }
       }
 
@@ -1257,6 +1264,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             if (isExternalUrl(fallbackRewrite)) {
               const proxyResponse = await proxyExternalRequest(webRequest, fallbackRewrite);
               await sendWebResponse(proxyResponse, req, res, compress);
+              return;
+            }
+            const fallbackPathname = fallbackRewrite.split("?")[0];
+            if (
+              path.extname(fallbackPathname) &&
+              tryServeStatic(req, res, clientDir, fallbackPathname, compress, middlewareHeaders)
+            ) {
               return;
             }
             response = await renderPage(webRequest, fallbackRewrite, ssrManifest);

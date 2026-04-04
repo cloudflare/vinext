@@ -845,6 +845,29 @@ export interface VinextOptions {
   };
 }
 
+/** Content-type lookup for static assets. */
+const CONTENT_TYPES: Record<string, string> = {
+  ".js": "application/javascript",
+  ".mjs": "application/javascript",
+  ".css": "text/css",
+  ".html": "text/html",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".eot": "application/vnd.ms-fontobject",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".map": "application/json",
+  ".rsc": "text/x-component",
+};
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
@@ -2589,6 +2612,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
               if (!hasPagesDir) return next();
 
+              const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
+                for (const key of Object.keys(req.headers)) {
+                  delete req.headers[key];
+                }
+                for (const [key, value] of nextRequestHeaders) {
+                  req.headers[key] = value;
+                }
+              };
+
+              let middlewareRequestHeaders: Headers | null = null;
+              let deferredMwResponseHeaders: [string, string][] | null = null;
+
+              const applyDeferredMwHeaders = (
+                response: import("node:http").ServerResponse,
+                headers?: [string, string][] | Headers | null,
+              ) => {
+                if (!headers) return;
+                for (const [key, value] of headers) {
+                  // skip internal x-middleware- headers
+                  if (key.startsWith("x-middleware-")) continue;
+                  // append handles multiple Set-Cookie correctly
+                  response.appendHeader(key, value);
+                }
+              };
+
               // Skip Vite internal requests and static files
               if (
                 url.startsWith("/@") ||
@@ -2674,8 +2722,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               // Skip requests for files with extensions (static assets)
-              let pathname = url.split("?")[0];
-              if (pathname.includes(".") && !pathname.endsWith(".html")) {
+              const [pathnameWithExt] = url.split("?");
+              const ext = path.extname(pathnameWithExt);
+              if (ext && ext !== ".html" && CONTENT_TYPES[ext]) {
+                // If middleware was run, apply its headers (Set-Cookie, etc.)
+                // before Vite's built-in static-file middleware sends the file.
+                // This ensures public/ asset responses have middleware headers.
+                applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                 return next();
               }
 
@@ -2683,7 +2736,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Normalize backslashes first: browsers treat /\ as // in URL
               // context. Check the RAW pathname before normalizePath so the
               // guard fires before normalizePath collapses //.
-              pathname = pathname.replaceAll("\\", "/");
+              let pathname = pathnameWithExt.replaceAll("\\", "/");
               if (pathname.startsWith("//")) {
                 res.writeHead(404);
                 res.end("404 Not Found");
@@ -2782,26 +2835,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 );
                 if (redirected) return;
               }
-
-              const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
-                for (const key of Object.keys(req.headers)) {
-                  delete req.headers[key];
-                }
-                for (const [key, value] of nextRequestHeaders) {
-                  req.headers[key] = value;
-                }
-              };
-
-              let middlewareRequestHeaders: Headers | null = null;
-              let deferredMwResponseHeaders: [string, string][] | null = null;
-
-              const applyDeferredMwHeaders = () => {
-                if (deferredMwResponseHeaders) {
-                  for (const [key, value] of deferredMwResponseHeaders) {
-                    res.appendHeader(key, value);
-                  }
-                }
-              };
 
               // Run middleware.ts if present
               if (middlewarePath) {
@@ -2968,7 +3001,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // External rewrite from beforeFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
-                applyDeferredMwHeaders();
+                applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
@@ -2983,7 +3016,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 );
                 const apiMatch = matchRoute(resolvedUrl, apiRoutes);
                 if (apiMatch) {
-                  applyDeferredMwHeaders();
+                  applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
@@ -3023,7 +3056,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // External rewrite from afterFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
-                applyDeferredMwHeaders();
+                applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
@@ -3043,7 +3076,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);
               if (match) {
-                applyDeferredMwHeaders();
+                applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                 if (middlewareRequestHeaders) {
                   applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                 }
@@ -3061,7 +3094,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
                   if (isExternalUrl(fallbackRewrite)) {
-                    applyDeferredMwHeaders();
+                    applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                     await proxyExternalRewriteNode(req, res, fallbackRewrite);
                     return;
                   }
@@ -3069,7 +3102,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   if (!fallbackMatch && hasAppDir) {
                     return next();
                   }
-                  applyDeferredMwHeaders();
+                  applyDeferredMwHeaders(res, deferredMwResponseHeaders);
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
