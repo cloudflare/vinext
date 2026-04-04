@@ -441,6 +441,54 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("feed-page");
   });
 
+  // --- Intercepting routes with dynamic source route ---
+  // Regression: matchSourceRouteParams must extract actual URL param values
+  // (e.g. "42") from the request pathname, not the literal pattern strings
+  // (e.g. ":teamId") that result from feeding the pattern into the route trie.
+
+  it("renders members page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/members`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="members-page"');
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("renders settings page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/settings`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="settings-page"');
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/team-id:\s*(<!--\s*-->)?\s*42/);
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("extracts actual URL params for intercepted routes with dynamic source routes", async () => {
+    // RSC request simulates client-side navigation from /team/[teamId]/members
+    // to /team/[teamId]/settings. The source route has a dynamic :teamId segment.
+    // The intercepting route handler must extract "42" from the URL, not ":teamId".
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscPayload = await res.text();
+    // The RSC payload should contain the intercepted settings modal with the actual team ID
+    expect(rscPayload).toContain("Settings Modal");
+    expect(rscPayload).toContain("settings-modal");
+    // The source route (members page) should render with the actual teamId value.
+    // The source page component receives params from matchSourceRouteParams.
+    expect(rscPayload).toContain("members-page");
+    // The literal pattern string ":teamId" must NOT appear as a param value anywhere
+    expect(rscPayload).not.toContain('":teamId"');
+  });
+
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
