@@ -38,11 +38,12 @@ test.describe("rapid navigation", () => {
       if (linkC) linkC.click();
     });
 
-    // Wait for navigation to settle on page C
-    await page.waitForURL(`${BASE}/nav-rapid/page-c`);
+    // Use toHaveURL (polling) instead of waitForURL (navigation event) because
+    // rapid back-to-back client-side navigations abort the first navigation,
+    // causing waitForURL to fail with ERR_ABORTED.
+    await expect(page).toHaveURL(`${BASE}/nav-rapid/page-c`, { timeout: 10_000 });
     await expect(page.locator("h1")).toHaveText("Page C");
 
-    // Verify no console errors about navigation or vinext
     const navigationErrors = errors.filter(
       (e) => e.includes("navigation") || e.includes("vinext") || e.includes("router"),
     );
@@ -155,8 +156,9 @@ test.describe("rapid navigation", () => {
       if (linkC) linkC.click();
     });
 
-    // Wait for navigation to settle
-    await page.waitForURL(`${BASE}/nav-rapid/page-c`);
+    // Use toHaveURL (polling) instead of waitForURL — rapid client-side
+    // navigations abort the first nav, causing ERR_ABORTED with waitForURL.
+    await expect(page).toHaveURL(`${BASE}/nav-rapid/page-c`, { timeout: 10_000 });
     await expect(page.locator("h1")).toHaveText("Page C");
 
     // Verify no full page reload happened (marker should survive)
