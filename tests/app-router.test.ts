@@ -4065,4 +4065,22 @@ describe("generateRscEntry ISR code generation", () => {
     const redirectBody = code.slice(redirectStart, redirectEnd);
     expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
   });
+
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() defaults to "push" in Server Action context so
+  // the Back button works after form submissions. The empty sentinel in the
+  // digest (parts[1] === "") should resolve to "push" in the action handler.
+  it("generated action handler defaults empty redirect type to 'push'", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // Find the action redirect digest parsing block
+    const digestStart = code.indexOf('if (digest.startsWith("NEXT_REDIRECT;"))');
+    const actionRedirectEnd = code.indexOf(
+      "returnValue = { ok: true, data: undefined }",
+      digestStart,
+    );
+    const digestBlock = code.slice(digestStart, actionRedirectEnd);
+    // The fallback for empty type must be "push", not "replace"
+    expect(digestBlock).toContain('parts[1] || "push"');
+    expect(digestBlock).not.toContain('parts[1] || "replace"');
+  });
 });

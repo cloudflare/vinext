@@ -1671,7 +1671,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           returnValue = { ok: true, data };
         } catch (e) {
           // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
+          // These throw errors with digest "NEXT_REDIRECT;<type>;<url>[;<status>]".
+          // The type field is empty when redirect() was called without an explicit
+          // type argument. In Server Action context, Next.js defaults to "push" so
+          // the Back button works after form submissions.
           // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
           // from corrupting the delimiter-based digest format.
           if (e && typeof e === "object" && "digest" in e) {
@@ -1680,7 +1683,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const parts = digest.split(";");
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
-                type: parts[1] || "replace",       // "push" or "replace"
+                type: parts[1] || "push",          // Server Action → default "push"
                 status: parts[3] ? parseInt(parts[3], 10) : 307,
               };
               returnValue = { ok: true, data: undefined };

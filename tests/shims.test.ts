@@ -62,6 +62,45 @@ describe("next/navigation shim", () => {
     }
   });
 
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() without an explicit type uses an empty sentinel so
+  // the context (action vs render) can resolve the default at the catch site.
+  it("redirect() without explicit type uses empty sentinel (context-dependent default)", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      // Empty string sentinel — the catch site determines push vs replace
+      expect(parts[1]).toBe("");
+      expect(decodeURIComponent(parts[2])).toBe("/dashboard");
+    }
+  });
+
+  it("redirect() with explicit 'push' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("push");
+    }
+  });
+
+  it("redirect() with explicit 'replace' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "replace");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
+    }
+  });
+
   it("redirect() encodes semicolons in URL to prevent digest injection", async () => {
     const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
     try {
@@ -72,8 +111,34 @@ describe("next/navigation shim", () => {
       // The URL field must not leak into the status code position
       expect(parts).toHaveLength(3); // NEXT_REDIRECT, type, encoded-url
       expect(parts[0]).toBe("NEXT_REDIRECT");
-      expect(parts[1]).toBe("replace");
+      // Empty sentinel — no explicit type passed
+      expect(parts[1]).toBe("");
       expect(decodeURIComponent(parts[2])).toBe("http://example.com;301");
+    }
+  });
+
+  it("permanentRedirect() accepts an optional type parameter", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      expect(parts[1]).toBe("push");
+      expect(decodeURIComponent(parts[2])).toBe("/new-page");
+      expect(parts[3]).toBe("308");
+    }
+  });
+
+  it("permanentRedirect() defaults to 'replace' when no type given", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
     }
   });
 
