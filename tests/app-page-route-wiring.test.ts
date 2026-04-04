@@ -67,7 +67,11 @@ function SlotPage(props: Record<string, unknown>) {
   return createElement("p", { "data-slot-page": readNode(props.label) }, readNode(props.label));
 }
 
-function Template(props: Record<string, unknown>) {
+function RootTemplate(props: Record<string, unknown>) {
+  return createElement("div", { "data-template": "root" }, readChildren(props.children));
+}
+
+function GroupTemplate(props: Record<string, unknown>) {
   return createElement("div", { "data-template": "group" }, readChildren(props.children));
 }
 
@@ -149,7 +153,7 @@ describe("app page route wiring helpers", () => {
             page: { default: SlotPage },
           },
         },
-        templates: [{ default: Template }],
+        templates: [{ default: GroupTemplate }],
       },
       rootNotFoundModule: null,
       slotOverrides: {
@@ -171,5 +175,61 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-page-segments=""');
     expect(html).toContain('data-segments="(marketing)|blog|post"');
     expect(html).toContain('data-segments="blog|post"');
+  });
+
+  it("interleaves templates with their corresponding layouts (Layout[i] > Template[i])", () => {
+    // Next.js nesting order per segment: Layout > Template > ErrorBoundary > children
+    // With two levels, the correct tree is:
+    //   Layout[0] > Template[0] > Layout[1] > Template[1] > Page
+    //
+    // The bug was: Layout[0] > Layout[1] > Template[0] > Template[1] > Page
+    // (all templates grouped as a batch, then all layouts grouped separately)
+
+    const element = buildAppPageRouteElement({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { slug: "post" },
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["(marketing)", "blog", "[slug]"],
+        slots: {},
+        templates: [{ default: RootTemplate }, { default: GroupTemplate }],
+      },
+      rootNotFoundModule: null,
+    });
+
+    const html = ReactDOMServer.renderToStaticMarkup(element);
+
+    // Both layouts and templates must be present
+    expect(html).toContain('data-layout="root"');
+    expect(html).toContain('data-layout="group"');
+    expect(html).toContain('data-template="root"');
+    expect(html).toContain('data-template="group"');
+
+    // Verify interleaving order: Layout[0] > Template[0] > Layout[1] > Template[1] > Page
+    const rootLayoutPos = html.indexOf('data-layout="root"');
+    const rootTemplatePos = html.indexOf('data-template="root"');
+    const groupLayoutPos = html.indexOf('data-layout="group"');
+    const groupTemplatePos = html.indexOf('data-template="group"');
+    const pagePos = html.indexOf("data-page-segments=");
+
+    // Root layout wraps root template
+    expect(rootLayoutPos).toBeLessThan(rootTemplatePos);
+    // Root template wraps group layout (NOT: group layout wraps root template)
+    expect(rootTemplatePos).toBeLessThan(groupLayoutPos);
+    // Group layout wraps group template
+    expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
+    // Group template wraps page
+    expect(groupTemplatePos).toBeLessThan(pagePos);
   });
 });

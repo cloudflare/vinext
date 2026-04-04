@@ -221,18 +221,6 @@ export function buildAppPageRouteElement<
   }
 
   const templates = options.route.templates ?? [];
-  for (let index = templates.length - 1; index >= 0; index--) {
-    const templateComponent = getDefaultExport(templates[index]);
-    if (!templateComponent) {
-      continue;
-    }
-    const TemplateComponent = templateComponent;
-    // Next.js doesn't pass params to templates at all (createElement(Template, null, children)).
-    // We pass raw params here for convenience; layouts below receive thenable (Promise) params
-    // to match the Next.js 15+ async params contract.
-    element = <TemplateComponent params={options.matchedParams}>{element}</TemplateComponent>;
-  }
-
   const routeSlots = options.route.slots ?? {};
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const routeThenableParams = options.makeThenableParams(options.matchedParams);
@@ -242,6 +230,14 @@ export function buildAppPageRouteElement<
     const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
     if (layoutErrorComponent) {
       element = <ErrorBoundary fallback={layoutErrorComponent}>{element}</ErrorBoundary>;
+    }
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > children
+    // Building bottom-up, template wraps after error boundary.
+    const templateComponent = getDefaultExport(templates[index]);
+    if (templateComponent) {
+      const TemplateComponent = templateComponent;
+      element = <TemplateComponent params={options.matchedParams}>{element}</TemplateComponent>;
     }
 
     const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
