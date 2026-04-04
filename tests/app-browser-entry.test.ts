@@ -1,5 +1,5 @@
 import React from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -8,9 +8,10 @@ import {
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import {
-  applyAppRouterStateUpdate,
   createPendingNavigationCommit,
   routerReducer,
+  resolvePendingNavigationCommitDisposition,
+  shouldHardNavigate,
   type AppRouterState,
 } from "../packages/vinext/src/server/app-browser-state.js";
 
@@ -89,44 +90,43 @@ describe("app browser entry state helpers", () => {
   });
 
   it("hard navigates instead of merging when the root layout changes", async () => {
-    const assign = vi.fn<(href: string) => void>();
-
-    const result = await applyAppRouterStateUpdate({
-      commit: vi.fn(),
-      currentState: createState({
-        rootLayoutTreePath: "/(marketing)",
-      }),
-      dispatch: vi.fn(),
+    const currentState = createState({
+      rootLayoutTreePath: "/(marketing)",
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
-      onHardNavigate: assign,
-      targetHref: "/dashboard",
-      transition: (callback) => callback(),
+      navigationSnapshot: currentState.navigationSnapshot,
+      type: "navigate",
     });
 
-    expect(result).toEqual({ type: "hard-navigate" });
-    expect(assign).toHaveBeenCalledWith("/dashboard");
+    expect(
+      resolvePendingNavigationCommitDisposition({
+        activeNavigationId: 3,
+        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
+        nextRootLayoutTreePath: pending.rootLayoutTreePath,
+        startedNavigationId: 3,
+      }),
+    ).toBe("hard-navigate");
   });
 
-  it("defers commit side effects until the payload has resolved and dispatched", async () => {
+  it("defers commit classification until the payload has resolved", async () => {
     let resolveElements: ((value: AppElements) => void) | undefined;
     const nextElements = new Promise<AppElements>((resolve) => {
       resolveElements = resolve;
     });
-    const dispatch = vi.fn();
-    const commit = vi.fn();
-
-    const pending = applyAppRouterStateUpdate({
-      commit,
+    let resolved = false;
+    const pending = createPendingNavigationCommit({
       currentState: createState(),
-      dispatch,
       nextElements,
-      onHardNavigate: vi.fn(),
-      targetHref: "/dashboard",
-      transition: (callback) => callback(),
+      navigationSnapshot: createState().navigationSnapshot,
+      type: "navigate",
+    }).then((result) => {
+      resolved = true;
+      return result;
     });
 
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(commit).not.toHaveBeenCalled();
+    expect(resolved).toBe(false);
 
     if (!resolveElements) {
       throw new Error("Expected deferred elements resolver");
@@ -140,10 +140,29 @@ describe("app browser entry state helpers", () => {
       }),
     );
 
-    await pending;
+    const result = await pending;
 
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(commit).toHaveBeenCalledOnce();
+    expect(resolved).toBe(true);
+    expect(result.routeId).toBe("route:/dashboard");
+  });
+
+  it("skips a pending commit when a newer navigation has become active", async () => {
+    const currentState = createState();
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+      navigationSnapshot: currentState.navigationSnapshot,
+      type: "navigate",
+    });
+
+    expect(
+      resolvePendingNavigationCommitDisposition({
+        activeNavigationId: 5,
+        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
+        nextRootLayoutTreePath: pending.rootLayoutTreePath,
+        startedNavigationId: 4,
+      }),
+    ).toBe("skip");
   });
 
   it("builds a merge commit for refresh and server-action payloads", async () => {
@@ -157,5 +176,11 @@ describe("app browser entry state helpers", () => {
     expect(refreshCommit.action.type).toBe("navigate");
     expect(refreshCommit.routeId).toBe("route:/dashboard");
     expect(refreshCommit.rootLayoutTreePath).toBe("/");
+  });
+
+  it("treats null root-layout identities as soft-navigation compatible", () => {
+    expect(shouldHardNavigate(null, null)).toBe(false);
+    expect(shouldHardNavigate(null, "/")).toBe(false);
+    expect(shouldHardNavigate("/", null)).toBe(false);
   });
 });

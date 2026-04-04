@@ -47,7 +47,7 @@ export function readAppElementsMetadata(elements: AppElements): AppElementsMetad
 
   const rootLayoutTreePath = elements[APP_ROOT_LAYOUT_KEY];
   if (rootLayoutTreePath !== null && typeof rootLayoutTreePath !== "string") {
-    throw new Error("[vinext] Invalid __rootLayout in App Router payload");
+    throw new Error("[vinext] Missing or invalid __rootLayout in App Router payload");
   }
 
   return {

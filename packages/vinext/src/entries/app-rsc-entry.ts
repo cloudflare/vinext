@@ -1729,11 +1729,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const redirectHeaders = new Headers({
           "Content-Type": "text/x-component; charset=utf-8",
           "Vary": "RSC, Accept",
-          "x-action-redirect": actionRedirect.url,
-          "x-action-redirect-type": actionRedirect.type,
-          "x-action-redirect-status": String(actionRedirect.status),
         });
         __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
+        redirectHeaders.set("x-action-redirect", actionRedirect.url);
+        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
+        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
         for (const cookie of actionPendingCookies) {
           redirectHeaders.append("Set-Cookie", cookie);
         }

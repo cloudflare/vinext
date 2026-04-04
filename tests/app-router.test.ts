@@ -4082,5 +4082,12 @@ describe("generateRscEntry ISR code generation", () => {
     const redirectEnd = code.indexOf('return new Response(""', redirectStart);
     const redirectBody = code.slice(redirectStart, redirectEnd);
     expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
+    // Framework-owned redirect headers must be written after the middleware merge
+    // so middleware cannot clobber the target URL or redirect type.
+    const mergeIndex = redirectBody.indexOf("__mergeMiddlewareResponseHeaders");
+    const redirectHeaderIndex = redirectBody.indexOf('redirectHeaders.set("x-action-redirect"');
+    expect(mergeIndex).toBeGreaterThan(-1);
+    expect(redirectHeaderIndex).toBeGreaterThan(-1);
+    expect(mergeIndex).toBeLessThan(redirectHeaderIndex);
   });
 });

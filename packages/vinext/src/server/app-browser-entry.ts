@@ -54,8 +54,8 @@ import {
 } from "./app-elements.js";
 import {
   createPendingNavigationCommit,
+  resolvePendingNavigationCommitDisposition,
   routerReducer,
-  shouldHardNavigate,
   type AppRouterAction,
   type AppRouterState,
 } from "./app-browser-state.js";
@@ -330,19 +330,24 @@ function BrowserRoot({
   });
 
   // Keep the latest router state in a ref so external callers (navigate(),
-  // server actions, HMR) always read the current state. The ref is updated
-  // synchronously during render -- not in an effect -- so there is no stale
-  // window between React committing a new state and the effect firing.
+  // server actions, HMR) always read the current state.
   const stateRef = useRef(treeState);
   stateRef.current = treeState;
-  browserRouterStateRef = stateRef;
 
-  // Assign the module-level dispatch via useLayoutEffect. dispatchTreeState
-  // is referentially stable so the effect only runs on mount. The effect fires
-  // synchronously during commit, before hydrateRoot returns to main(), so the
-  // dispatch is available before __VINEXT_RSC_NAVIGATE__ is assigned.
+  // Publish the stable ref object and dispatch during layout commit. This keeps
+  // the module-level escape hatches aligned with React's committed tree without
+  // performing module writes during render.
   useLayoutEffect(() => {
     dispatchBrowserRouterAction = dispatchTreeState;
+    browserRouterStateRef = stateRef;
+    return () => {
+      if (dispatchBrowserRouterAction === dispatchTreeState) {
+        dispatchBrowserRouterAction = null;
+      }
+      if (browserRouterStateRef === stateRef) {
+        browserRouterStateRef = null;
+      }
+    };
   }, [dispatchTreeState]);
 
   const committedTree = createElement(
@@ -420,17 +425,21 @@ async function renderNavigationPayload(
       type: actionType,
     });
 
-    // After the await, a newer navigation may have started. Bail out to
-    // avoid dispatching stale elements into the React tree. Clean up the
-    // pending commit entry so it doesn't leak.
-    if (navId !== activeNavigationId) {
+    const disposition = resolvePendingNavigationCommitDisposition({
+      activeNavigationId,
+      currentRootLayoutTreePath: currentState.rootLayoutTreePath,
+      nextRootLayoutTreePath: pending.rootLayoutTreePath,
+      startedNavigationId: navId,
+    });
+
+    if (disposition === "skip") {
       const resolve = pendingNavigationCommits.get(renderId);
       pendingNavigationCommits.delete(renderId);
       resolve?.();
       return;
     }
 
-    if (shouldHardNavigate(currentState.rootLayoutTreePath, pending.rootLayoutTreePath)) {
+    if (disposition === "hard-navigate") {
       pendingNavigationCommits.delete(renderId);
       window.location.assign(targetHref);
       return;
@@ -608,22 +617,36 @@ function registerServerActionCallback(): void {
         window.location.href,
         latestClientParams,
       );
+      const currentState = getBrowserRouterState();
+      const startedNavigationId = activeNavigationId;
       const pending = await createPendingNavigationCommit({
-        currentState: getBrowserRouterState(),
+        currentState,
         nextElements: Promise.resolve(normalizeAppElements(result.root)),
         navigationSnapshot,
         renderId: ++nextNavigationRenderId,
         type: "navigate",
       });
-      dispatchBrowserTree(
-        pending.action.elements,
-        navigationSnapshot,
-        pending.action.renderId,
-        "navigate",
-        pending.routeId,
-        pending.rootLayoutTreePath,
-        false,
-      );
+      const disposition = resolvePendingNavigationCommitDisposition({
+        activeNavigationId,
+        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
+        nextRootLayoutTreePath: pending.rootLayoutTreePath,
+        startedNavigationId,
+      });
+      if (disposition === "hard-navigate") {
+        window.location.assign(window.location.href);
+        return undefined;
+      }
+      if (disposition === "dispatch") {
+        dispatchBrowserTree(
+          pending.action.elements,
+          navigationSnapshot,
+          pending.action.renderId,
+          "navigate",
+          pending.routeId,
+          pending.rootLayoutTreePath,
+          false,
+        );
+      }
       if (result.returnValue) {
         if (!result.returnValue.ok) throw result.returnValue.data;
         return result.returnValue.data;
@@ -635,23 +658,37 @@ function registerServerActionCallback(): void {
       window.location.href,
       latestClientParams,
     );
+    const currentState = getBrowserRouterState();
+    const startedNavigationId = activeNavigationId;
     const pending = await createPendingNavigationCommit({
-      currentState: getBrowserRouterState(),
+      currentState,
       nextElements: Promise.resolve(normalizeAppElements(result)),
       navigationSnapshot,
       renderId: ++nextNavigationRenderId,
       type: "navigate",
     });
-    dispatchBrowserTree(
-      pending.action.elements,
-      navigationSnapshot,
-      pending.action.renderId,
-      "navigate",
-      pending.routeId,
-      pending.rootLayoutTreePath,
-      false,
-    );
-    return result;
+    const disposition = resolvePendingNavigationCommitDisposition({
+      activeNavigationId,
+      currentRootLayoutTreePath: currentState.rootLayoutTreePath,
+      nextRootLayoutTreePath: pending.rootLayoutTreePath,
+      startedNavigationId,
+    });
+    if (disposition === "hard-navigate") {
+      window.location.assign(window.location.href);
+      return undefined;
+    }
+    if (disposition === "dispatch") {
+      dispatchBrowserTree(
+        pending.action.elements,
+        navigationSnapshot,
+        pending.action.renderId,
+        "navigate",
+        pending.routeId,
+        pending.rootLayoutTreePath,
+        false,
+      );
+    }
+    return undefined;
   });
 }
 

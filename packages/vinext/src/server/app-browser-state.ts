@@ -25,6 +25,8 @@ export type PendingNavigationCommit = {
   routeId: string;
 };
 
+export type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
+
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
     case "navigate":
@@ -54,11 +56,31 @@ export function shouldHardNavigate(
   currentRootLayoutTreePath: string | null,
   nextRootLayoutTreePath: string | null,
 ): boolean {
+  // `null` means the payload could not identify an enclosing root layout
+  // boundary. Treat that as soft-navigation compatible so fallback payloads
+  // do not force a hard reload purely because metadata is absent.
   return (
     currentRootLayoutTreePath !== null &&
     nextRootLayoutTreePath !== null &&
     currentRootLayoutTreePath !== nextRootLayoutTreePath
   );
+}
+
+export function resolvePendingNavigationCommitDisposition(options: {
+  activeNavigationId: number;
+  currentRootLayoutTreePath: string | null;
+  nextRootLayoutTreePath: string | null;
+  startedNavigationId: number;
+}): PendingNavigationCommitDisposition {
+  if (options.startedNavigationId !== options.activeNavigationId) {
+    return "skip";
+  }
+
+  if (shouldHardNavigate(options.currentRootLayoutTreePath, options.nextRootLayoutTreePath)) {
+    return "hard-navigate";
+  }
+
+  return "dispatch";
 }
 
 export async function createPendingNavigationCommit(options: {
@@ -83,35 +105,4 @@ export async function createPendingNavigationCommit(options: {
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
   };
-}
-
-export async function applyAppRouterStateUpdate(options: {
-  commit: () => void;
-  currentState: AppRouterState;
-  dispatch: (action: AppRouterAction) => void;
-  nextElements: Promise<AppElements>;
-  navigationSnapshot?: ClientNavigationRenderSnapshot;
-  onHardNavigate: (href: string) => void;
-  targetHref: string;
-  transition: (callback: () => void) => void;
-  type?: "navigate" | "replace";
-}): Promise<{ type: "dispatched" | "hard-navigate" }> {
-  const pending = await createPendingNavigationCommit({
-    currentState: options.currentState,
-    nextElements: options.nextElements,
-    navigationSnapshot: options.navigationSnapshot ?? options.currentState.navigationSnapshot,
-    type: options.type ?? "navigate",
-  });
-
-  if (shouldHardNavigate(options.currentState.rootLayoutTreePath, pending.rootLayoutTreePath)) {
-    options.onHardNavigate(options.targetHref);
-    return { type: "hard-navigate" };
-  }
-
-  options.transition(() => {
-    options.commit();
-    options.dispatch(pending.action);
-  });
-
-  return { type: "dispatched" };
 }
