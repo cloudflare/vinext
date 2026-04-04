@@ -941,7 +941,6 @@ export function commitClientNavigationState(navId?: number): void {
     state.pendingClientParamsJson = null;
   }
   // Clear pending pathname when navigation commits, but only if:
-  // - No navId provided (backward compatibility for non-tracked paths)
   // - The navId matches the one that set pendingPathname
   // - No newer navigation has overwritten pendingPathname (pendingPathnameNavId === null or matches)
   if (state.pendingPathnameNavId === null || state.pendingPathnameNavId === navId) {

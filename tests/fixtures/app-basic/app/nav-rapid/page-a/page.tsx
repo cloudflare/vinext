@@ -5,11 +5,21 @@ export default function PageA() {
     <div>
       <h1>Page A</h1>
       <nav>
-        <Link href="/nav-rapid/page-b">Go to B</Link>
+        <Link href="/nav-rapid/page-b" prefetch={false} data-testid="page-a-link-to-b">
+          Go to B
+        </Link>
         {" | "}
-        <Link href="/nav-rapid/page-b?filter=test">Go to B with Filter</Link>
+        <Link
+          href="/nav-rapid/page-b?filter=test"
+          prefetch={false}
+          data-testid="page-a-link-to-b-filter"
+        >
+          Go to B with Filter
+        </Link>
         {" | "}
-        <Link href="/nav-rapid/page-c">Go to C</Link>
+        <Link href="/nav-rapid/page-c" prefetch={false} data-testid="page-a-link-to-c">
+          Go to C
+        </Link>
       </nav>
     </div>
   );

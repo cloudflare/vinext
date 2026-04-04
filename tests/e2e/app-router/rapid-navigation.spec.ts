@@ -29,8 +29,14 @@ test.describe("rapid navigation", () => {
     await waitForHydration(page);
 
     // Click B then immediately click C (before B fully commits)
-    await page.click('a[href="/nav-rapid/page-b"]');
-    await page.click('a[href="/nav-rapid/page-c"]');
+    // Use a single page.evaluate() to click both links atomically.
+    // This avoids React re-render issues and prevents "execution context destroyed" errors in CI.
+    await page.evaluate(() => {
+      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
+      const linkC = document.querySelector('[data-testid="page-a-link-to-c"]') as HTMLElement;
+      if (linkB) linkB.click();
+      if (linkC) linkC.click();
+    });
 
     // Wait for navigation to settle on page C
     await page.waitForURL(`${BASE}/nav-rapid/page-c`);
@@ -56,11 +62,16 @@ test.describe("rapid navigation", () => {
     await expect(page.locator("h1")).toHaveText("Page A");
     await waitForHydration(page);
 
-    // Navigate to B (client-side)
-    await page.click('a[href="/nav-rapid/page-b"]');
-
-    // Immediately change query param via client-side navigation (same-route nav to B with query)
-    await page.click('a[href="/nav-rapid/page-b?filter=test"]');
+    // Navigate to B then immediately change query param (same-route nav)
+    // Use a single page.evaluate() to click both links atomically.
+    await page.evaluate(() => {
+      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
+      const linkFilter = document.querySelector(
+        '[data-testid="page-a-link-to-b-filter"]',
+      ) as HTMLElement;
+      if (linkB) linkB.click();
+      if (linkFilter) linkFilter.click();
+    });
 
     // Should settle on B with query param
     await expect(page.locator("h1")).toHaveText("Page B");
@@ -87,11 +98,11 @@ test.describe("rapid navigation", () => {
     await waitForHydration(page);
 
     // Navigate A -> B
-    await page.click('a[href="/nav-rapid/page-b"]');
+    await page.click('[data-testid="page-a-link-to-b"]');
     await expect(page.locator("h1")).toHaveText("Page B");
 
     // Navigate B -> C
-    await page.click('a[href="/nav-rapid/page-c"]');
+    await page.click('[data-testid="link-to-c"]');
     await expect(page.locator("h1")).toHaveText("Page C");
 
     // Rapid back navigation
@@ -136,8 +147,13 @@ test.describe("rapid navigation", () => {
     });
 
     // Start navigation to B but immediately interrupt with navigation to C
-    await page.click('a[href="/nav-rapid/page-b"]');
-    await page.click('a[href="/nav-rapid/page-c"]');
+    // Use a single page.evaluate() to click both links atomically.
+    await page.evaluate(() => {
+      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
+      const linkC = document.querySelector('[data-testid="page-a-link-to-c"]') as HTMLElement;
+      if (linkB) linkB.click();
+      if (linkC) linkC.click();
+    });
 
     // Wait for navigation to settle
     await page.waitForURL(`${BASE}/nav-rapid/page-c`);

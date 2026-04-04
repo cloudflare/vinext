@@ -179,7 +179,9 @@ function createNavigationCommitEffect(
   return () => {
     // Only update URL if this is still the active navigation.
     // A newer navigation would have incremented activeNavigationId.
-    if (navId !== activeNavigationId) return;
+    if (navId !== activeNavigationId) {
+      return;
+    }
 
     const targetHref = new URL(href, window.location.origin).href;
 
