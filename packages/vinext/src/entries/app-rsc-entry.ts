@@ -1743,7 +1743,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           searchParams: url.searchParams,
           params: actionParams,
         });
-        element = buildPageElement(actionRoute, actionParams, undefined, url.searchParams);
+        element = await buildPageElement(actionRoute, actionParams, undefined, url.searchParams);
       } else {
         element = createElement("div", null, "Page not found");
       }
