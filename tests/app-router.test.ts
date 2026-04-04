@@ -367,11 +367,11 @@ describe("App Router integration", () => {
   });
 
   // --- parallelRoutesKey support ---
-  // These tests verify the segmentMap context migration works end-to-end.
-  // Until PR 2 populates per-slot segment data, useSelectedLayoutSegments("team")
-  // returns [] (key absent in segmentMap → fallback). This is structurally correct.
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-use-selected-layout-segment
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-use-selected-layout-segment
 
-  it("useSelectedLayoutSegments('team') returns [] for flat slot (no per-slot wiring yet)", async () => {
+  it("useSelectedLayoutSegments('team') returns [] when slot page is at root", async () => {
+    // On /dashboard, @team/page.tsx is active — page at slot root means no child segments
     const res = await fetch(`${baseUrl}/dashboard`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -380,8 +380,29 @@ describe("App Router integration", () => {
     expect(html).toMatch(/data-testid="team-segment"[^>]*>null</);
   });
 
-  it("useSelectedLayoutSegments('analytics') returns [] for flat slot", async () => {
+  it("useSelectedLayoutSegments('analytics') returns [] when slot page is at root", async () => {
     const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments('team') returns slot sub-route segments", async () => {
+    // On /dashboard/members, @team/members/page.tsx is active
+    // useSelectedLayoutSegments("team") should return ["members"]
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[&quot;members&quot;\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>members</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] when slot shows default on sub-route", async () => {
+    // On /dashboard/members, @analytics shows default.tsx (no members page)
+    // useSelectedLayoutSegments("analytics") should return [] (fallback)
+    const res = await fetch(`${baseUrl}/dashboard/members`);
     expect(res.status).toBe(200);
     const html = await res.text();
 

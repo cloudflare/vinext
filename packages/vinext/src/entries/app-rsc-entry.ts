@@ -197,6 +197,7 @@ export function generateRscEntry(
         loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
         error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
         layoutIndex: ${slot.layoutIndex},
+        routeSegments: ${JSON.stringify(slot.routeSegments)},
         intercepts: [
 ${interceptEntries.join(",\n")}
         ],

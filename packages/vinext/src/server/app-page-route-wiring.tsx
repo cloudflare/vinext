@@ -32,6 +32,12 @@ export type AppPageRouteWiringSlot<
   layoutIndex: number;
   loading?: TModule | null;
   page?: TModule | null;
+  /**
+   * Filesystem segments from the slot's root to its active page.
+   * Used to populate the LayoutSegmentProvider's segmentMap for this slot.
+   * null when the slot has no active page (showing default.tsx fallback).
+   */
+  routeSegments?: readonly string[] | null;
 };
 
 export type AppPageRouteWiringRoute<
@@ -313,19 +319,35 @@ export function buildAppPageRouteElement<
 
     const LayoutComponent = layoutComponent;
     element = <LayoutComponent {...layoutProps}>{element}</LayoutComponent>;
-    element = (
-      <LayoutSegmentProvider
-        segmentMap={{
-          children: resolveAppPageChildSegments(
-            options.route.routeSegments ?? [],
-            layoutEntry.treePosition,
-            options.matchedParams,
-          ),
-        }}
-      >
-        {element}
-      </LayoutSegmentProvider>
-    );
+
+    // Build the segment map for this layout level. The "children" key always
+    // contains the route segments below this layout. Named parallel slots at
+    // this layout level add their own keys with per-slot segment data.
+    const segmentMap: { children: string[] } & Record<string, string[]> = {
+      children: resolveAppPageChildSegments(
+        options.route.routeSegments ?? [],
+        layoutEntry.treePosition,
+        options.matchedParams,
+      ),
+    };
+    for (const [slotName, slot] of Object.entries(routeSlots)) {
+      const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+      if (index !== targetIndex) {
+        continue;
+      }
+      if (slot.routeSegments) {
+        // Slot has an active page — resolve its segments (dynamic params → values)
+        segmentMap[slotName] = resolveAppPageChildSegments(
+          slot.routeSegments,
+          0, // Slot segments are already relative to the slot root
+          options.matchedParams,
+        );
+      } else {
+        // Slot is showing default.tsx or has no page — empty segments
+        segmentMap[slotName] = [];
+      }
+    }
+    element = <LayoutSegmentProvider segmentMap={segmentMap}>{element}</LayoutSegmentProvider>;
   }
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);

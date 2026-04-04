@@ -58,6 +58,14 @@ export type ParallelSlot = {
    * necessarily the innermost layout. -1 means "innermost" (legacy default).
    */
   layoutIndex: number;
+  /**
+   * Filesystem segments from the slot's root directory to its active page.
+   * Used at render time to compute segments for useSelectedLayoutSegment(slotName).
+   * For a page at the slot root (@team/page.tsx), this is [].
+   * For a sub-page (@team/members/page.tsx), this is ["members"].
+   * null when the slot has no active page (showing default.tsx fallback).
+   */
+  routeSegments: string[] | null;
 };
 
 export type AppRoute = {
@@ -214,11 +222,18 @@ function discoverSlotSubRoutes(
 
   const slotKey = (slotName: string, ownerDir: string): string => `${slotName}\u0000${ownerDir}`;
 
-  const applySlotSubPages = (route: AppRoute, slotPages: Map<string, string>): void => {
-    route.parallelSlots = route.parallelSlots.map((slot) => ({
-      ...slot,
-      pagePath: slotPages.get(slotKey(slot.name, slot.ownerDir)) ?? slot.pagePath,
-    }));
+  const applySlotSubPages = (
+    route: AppRoute,
+    slotPages: Map<string, string>,
+    rawSegments: string[],
+  ): void => {
+    route.parallelSlots = route.parallelSlots.map((slot) => {
+      const subPage = slotPages.get(slotKey(slot.name, slot.ownerDir));
+      if (subPage !== undefined) {
+        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+      }
+      return slot;
+    });
   };
 
   for (const parentRoute of routes) {
@@ -301,16 +316,20 @@ function discoverSlotSubRoutes(
             `You cannot have two routes that resolve to the same path ("${pattern}").`,
           );
         }
-        applySlotSubPages(existingRoute, slotPages);
+        applySlotSubPages(existingRoute, slotPages, rawSegments);
         continue;
       }
 
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
-      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => ({
-        ...slot,
-        pagePath: slotPages.get(slotKey(slot.name, slot.ownerDir)) || null,
-      }));
+      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
+        const subPage = slotPages.get(slotKey(slot.name, slot.ownerDir));
+        return {
+          ...slot,
+          pagePath: subPage || null,
+          routeSegments: subPage ? rawSegments : null,
+        };
+      });
 
       const newRoute: AppRoute = {
         pattern,
@@ -656,6 +675,7 @@ function discoverInheritedParallelSlots(
           ...slot,
           pagePath: null, // Don't use ancestor's page.tsx
           layoutIndex: lvlLayoutIdx,
+          routeSegments: null, // Inherited slot shows default.tsx, not an active page
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
         // Iteration goes root-to-leaf, so later (closer) ancestors overwrite
@@ -705,6 +725,7 @@ function discoverParallelSlots(
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,
       layoutIndex: -1, // Will be set by discoverInheritedParallelSlots
+      routeSegments: pagePath ? [] : null, // Root page = [], no page = null (default fallback)
     });
   }
 
