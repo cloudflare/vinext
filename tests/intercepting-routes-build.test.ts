@@ -22,10 +22,13 @@ function writeFixtureFile(root: string, filePath: string, content: string) {
 }
 
 async function buildApp(root: string) {
+  const rscOutDir = path.join(root, "dist", "server");
+  const ssrOutDir = path.join(root, "dist", "server", "ssr");
+  const clientOutDir = path.join(root, "dist", "client");
   const builder = await createBuilder({
     root,
     configFile: false,
-    plugins: [vinext()],
+    plugins: [vinext({ appDir: root, rscOutDir, ssrOutDir, clientOutDir })],
     logLevel: "silent",
   });
   await builder.buildApp();
