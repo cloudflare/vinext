@@ -418,6 +418,12 @@ async function navigateClient(url: string): Promise<void> {
     assertStillCurrent();
 
     if (!res.ok) {
+      // Set window.location.href first so the browser navigates to the correct
+      // page even if the caller suppresses the error.  The assignment schedules
+      // the navigation asynchronously (as a task), so synchronous routeChangeError
+      // listeners still run — and observe the error — before the page unloads.
+      // Contract: routeChangeError listeners MUST be synchronous; async listeners
+      // will not fire before the navigation completes.
       window.location.href = url;
       const err = new Error(`Navigation failed: ${res.status} ${res.statusText}`);
       throw err;
@@ -628,11 +634,12 @@ export function useRouter(): NextRouter {
           await navigateClient(full);
         } catch (err: unknown) {
           const routeProps = { shallow: false };
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          // Cancelled means a newer navigation superseded this one — not a failure
+          // from the caller's perspective, so return true (matches Next.js behaviour).
           if (err instanceof NavigationCancelledError) {
-            routerEvents.emit("routeChangeError", err, resolved, routeProps);
             return true;
           }
-          routerEvents.emit("routeChangeError", err, resolved, routeProps);
           return false;
         }
       }
@@ -695,11 +702,12 @@ export function useRouter(): NextRouter {
           await navigateClient(full);
         } catch (err: unknown) {
           const routeProps = { shallow: false };
+          routerEvents.emit("routeChangeError", err, resolved, routeProps);
+          // Cancelled means a newer navigation superseded this one — not a failure
+          // from the caller's perspective, so return true (matches Next.js behaviour).
           if (err instanceof NavigationCancelledError) {
-            routerEvents.emit("routeChangeError", err, resolved, routeProps);
             return true;
           }
-          routerEvents.emit("routeChangeError", err, resolved, routeProps);
           return false;
         }
       }
@@ -817,10 +825,8 @@ if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("vinext:navigate"));
       },
       (err: unknown) => {
-        if (err instanceof NavigationCancelledError) {
-          routerEvents.emit("routeChangeError", err, fullAppUrl, { shallow: false });
-          return;
-        }
+        // Both real errors and cancellations emit routeChangeError. The popstate
+        // handler has no return value so there is no true/false distinction here.
         routerEvents.emit("routeChangeError", err, fullAppUrl, { shallow: false });
       },
     );
@@ -895,11 +901,12 @@ const Router = {
         await navigateClient(full);
       } catch (err: unknown) {
         const routeProps = { shallow: false };
+        routerEvents.emit("routeChangeError", err, resolved, routeProps);
+        // Cancelled means a newer navigation superseded this one — not a failure
+        // from the caller's perspective, so return true (matches Next.js behaviour).
         if (err instanceof NavigationCancelledError) {
-          routerEvents.emit("routeChangeError", err, resolved, routeProps);
           return true;
         }
-        routerEvents.emit("routeChangeError", err, resolved, routeProps);
         return false;
       }
     }
@@ -955,11 +962,12 @@ const Router = {
         await navigateClient(full);
       } catch (err: unknown) {
         const routeProps = { shallow: false };
+        routerEvents.emit("routeChangeError", err, resolved, routeProps);
+        // Cancelled means a newer navigation superseded this one — not a failure
+        // from the caller's perspective, so return true (matches Next.js behaviour).
         if (err instanceof NavigationCancelledError) {
-          routerEvents.emit("routeChangeError", err, resolved, routeProps);
           return true;
         }
-        routerEvents.emit("routeChangeError", err, resolved, routeProps);
         return false;
       }
     }
