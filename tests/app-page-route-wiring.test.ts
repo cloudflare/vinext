@@ -181,6 +181,98 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-segments="blog|post"');
   });
 
+  it("NotFoundBoundary is nested inside Template in the element tree (Layout > Template > NotFound > Page)", () => {
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > Page
+    // NotFoundBoundary must be INSIDE Template so that when notFound() fires, the Template
+    // still wraps the not-found fallback.
+    //
+    // The bug: NotFoundBoundary was placed OUTSIDE Template (wrapping order was
+    // Layout > NotFound > Template > Error > Page), so when notFound() triggered,
+    // Template got replaced instead of wrapping the NotFound fallback.
+    //
+    // We verify this by inspecting the React element tree structure directly:
+    // walk from the root inward and assert that RootTemplate appears at a shallower
+    // depth than NotFoundBoundary's inner class component.
+
+    function RootNotFound() {
+      return createElement("div", { "data-not-found": "root" }, "Not Found");
+    }
+
+    function LeafPage() {
+      return createElement("main", null, "Page");
+    }
+
+    const element = buildAppPageRouteElement({
+      element: createElement(LeafPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [{ default: RootNotFound }],
+        routeSegments: ["blog"],
+        slots: {},
+        templates: [{ default: RootTemplate }],
+      },
+      rootNotFoundModule: null,
+    });
+
+    // Walk the React element tree depth-first, recording the depth at which each
+    // component type first appears. We find the depth of RootTemplate and the depth
+    // of the NotFoundBoundary inner class (identified by looking for an element whose
+    // type has a displayName or name containing "NotFound").
+    function walkDepth(node: unknown, depth: number, found: Map<string, number>): void {
+      if (!isValidElement(node)) return;
+      const el = node as { type: unknown; props: Record<string, unknown> };
+
+      const typeName =
+        typeof el.type === "function"
+          ? ((el.type as { displayName?: string; name?: string }).displayName ??
+            (el.type as { name?: string }).name ??
+            "")
+          : typeof el.type === "string"
+            ? el.type
+            : "";
+
+      if (!found.has(typeName)) {
+        found.set(typeName, depth);
+      }
+
+      const { children, ...rest } = el.props;
+      for (const val of Object.values(rest)) {
+        walkDepth(val, depth + 1, found);
+      }
+      if (Array.isArray(children)) {
+        for (const child of children) walkDepth(child, depth + 1, found);
+      } else {
+        walkDepth(children, depth + 1, found);
+      }
+    }
+
+    const depthMap = new Map<string, number>();
+    walkDepth(element, 0, depthMap);
+
+    const templateDepth = depthMap.get("RootTemplate");
+    // NotFoundBoundary renders as NotFoundBoundaryInner at the class level.
+    // We search for the class component by its name.
+    const notFoundDepth = depthMap.get("NotFoundBoundaryInner") ?? depthMap.get("NotFoundBoundary");
+
+    expect(templateDepth).toBeDefined();
+    expect(notFoundDepth).toBeDefined();
+
+    // Template must be shallower (closer to root) than NotFoundBoundary.
+    // If this fails, NotFoundBoundary is outside Template — the bug.
+    expect(templateDepth).toBeLessThan(notFoundDepth!);
+  });
+
   it("interleaves templates with their corresponding layouts (Layout[i] > Template[i])", () => {
     // Next.js nesting order per segment: Layout > Template > ErrorBoundary > children
     // With two levels, the correct tree is:
