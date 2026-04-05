@@ -139,18 +139,6 @@ export function invalidateAppRouteCache(): void {
   cachedPageExtensionsKey = null;
 }
 
-export function collectUniqueInterceptTargetPatterns(routes: readonly AppRoute[]): string[] {
-  return [
-    ...new Set(
-      routes.flatMap((route) =>
-        route.parallelSlots.flatMap((slot) =>
-          slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
-        ),
-      ),
-    ),
-  ];
-}
-
 /**
  * Scan the app/ directory and return a list of routes.
  */
@@ -193,7 +181,19 @@ export async function appRouter(
   routes.push(...slotSubRoutes);
 
   validateRoutePatterns(routes.map((route) => route.pattern));
-  validateRoutePatterns(collectUniqueInterceptTargetPatterns(routes));
+  // Deduplicate intercept target patterns: child routes inherit parent slots
+  // (including their intercepting routes), so the same target pattern can appear
+  // on both the parent and child route. Collect unique patterns only.
+  const interceptTargetPatterns = [
+    ...new Set(
+      routes.flatMap((route) =>
+        route.parallelSlots.flatMap((slot) =>
+          slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
+        ),
+      ),
+    ),
+  ];
+  validateRoutePatterns(interceptTargetPatterns);
 
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort(compareRoutes);

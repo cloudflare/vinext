@@ -10,7 +10,6 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
   appRouter,
-  collectUniqueInterceptTargetPatterns,
   matchAppRoute,
   invalidateAppRouteCache,
   type AppRoute,
@@ -1129,57 +1128,6 @@ describe("matchAppRoute - URL matching", () => {
         galleryModal?.interceptingRoutes[0]?.pagePath,
       );
     });
-  });
-
-  it("dedupes repeated intercepting target patterns", () => {
-    const firstRoute = makeTestAppRoute("/feed", ["feed"]);
-    const secondRoute = makeTestAppRoute("/profile", ["profile"]);
-
-    firstRoute.parallelSlots = [
-      {
-        name: "modal",
-        ownerDir: "/tmp/app/feed/@modal",
-        pagePath: null,
-        defaultPath: null,
-        layoutPath: null,
-        loadingPath: null,
-        errorPath: null,
-        routeSegments: null,
-        interceptingRoutes: [
-          {
-            convention: "..",
-            targetPattern: "/photo/:id",
-            pagePath: "/tmp/app/feed/@modal/(..)photo/[id]/page.tsx",
-            params: ["id"],
-          },
-        ],
-        layoutIndex: -1,
-      },
-    ];
-
-    secondRoute.parallelSlots = [
-      {
-        name: "modal",
-        ownerDir: "/tmp/app/profile/@modal",
-        pagePath: null,
-        defaultPath: null,
-        layoutPath: null,
-        loadingPath: null,
-        errorPath: null,
-        routeSegments: null,
-        interceptingRoutes: [
-          {
-            convention: "..",
-            targetPattern: "/photo/:id",
-            pagePath: "/tmp/app/profile/@modal/(..)photo/[id]/page.tsx",
-            params: ["id"],
-          },
-        ],
-        layoutIndex: -1,
-      },
-    ];
-
-    expect(collectUniqueInterceptTargetPatterns([firstRoute, secondRoute])).toEqual(["/photo/:id"]);
   });
 
   it("intercepting route pages are not standalone routes", async () => {
