@@ -8575,14 +8575,16 @@ describe("Pages Router concurrent navigation", () => {
       return fetchB.promise;
     };
 
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const completedUrls: string[] = [];
-      Router.events.on("routeChangeComplete", (...args: unknown[]) => {
-        completedUrls.push(String(args[0]));
-      });
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
 
       // Start two overlapping navigations
       const navA = Router.push("/page-a");
@@ -8601,6 +8603,9 @@ describe("Pages Router concurrent navigation", () => {
       // cancelled navigation never fires routeChangeComplete.
       expect(completedUrls).not.toContain("/page-a");
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -8626,14 +8631,16 @@ describe("Pages Router concurrent navigation", () => {
       return fetchB.promise;
     };
 
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const errors: Array<{ err: unknown; url: string }> = [];
-      Router.events.on("routeChangeError", (...args: unknown[]) => {
-        errors.push({ err: args[0], url: String(args[1]) });
-      });
+      Router.events.on("routeChangeError", onRouteChangeError);
 
       // Start two overlapping navigations
       const navA = Router.push("/page-a");
@@ -8653,6 +8660,9 @@ describe("Pages Router concurrent navigation", () => {
       const errObj = cancelledError?.err;
       expect(errObj).toHaveProperty("cancelled", true);
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -8671,18 +8681,21 @@ describe("Pages Router concurrent navigation", () => {
     globalThis.fetch = async (_url: any, _init: any) =>
       new Response("Internal Server Error", { status: 500 });
 
+    const completedUrls: string[] = [];
+    const errorUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errorUrls.push(String(args[1]));
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const completedUrls: string[] = [];
-      const errorUrls: string[] = [];
-      Router.events.on("routeChangeComplete", (...args: unknown[]) => {
-        completedUrls.push(String(args[0]));
-      });
-      Router.events.on("routeChangeError", (...args: unknown[]) => {
-        errorUrls.push(String(args[1]));
-      });
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
 
       await Router.push("/failing-page");
 
@@ -8691,6 +8704,10 @@ describe("Pages Router concurrent navigation", () => {
       // Should have fired routeChangeError
       expect(errorUrls).toContain("/failing-page");
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -8716,18 +8733,21 @@ describe("Pages Router concurrent navigation", () => {
       return fetchB.promise;
     };
 
+    const completedUrls: string[] = [];
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const completedUrls: string[] = [];
-      Router.events.on("routeChangeComplete", (...args: unknown[]) => {
-        completedUrls.push(String(args[0]));
-      });
-      const errors: Array<{ err: unknown; url: string }> = [];
-      Router.events.on("routeChangeError", (...args: unknown[]) => {
-        errors.push({ err: args[0], url: String(args[1]) });
-      });
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
 
       // First push, then replace overlapping
       const navA = Router.push("/page-a");
@@ -8746,6 +8766,10 @@ describe("Pages Router concurrent navigation", () => {
       expect(cancelledA).toBeDefined();
       expect(cancelledA?.err).toHaveProperty("cancelled", true);
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -8782,14 +8806,16 @@ describe("Pages Router concurrent navigation", () => {
       return fetchB.promise;
     };
 
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const errors: Array<{ err: unknown; url: string }> = [];
-      Router.events.on("routeChangeError", (...args: unknown[]) => {
-        errors.push({ err: args[0], url: String(args[1]) });
-      });
+      Router.events.on("routeChangeError", onRouteChangeError);
 
       // Start navigation A then immediately supersede it with B
       const navA = Router.push("/page-a");
@@ -8806,6 +8832,9 @@ describe("Pages Router concurrent navigation", () => {
       expect(cancelledError).toBeDefined();
       expect(cancelledError?.err).toHaveProperty("cancelled", true);
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -8834,14 +8863,16 @@ describe("Pages Router concurrent navigation", () => {
       return fetchB.promise;
     };
 
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const completedUrls: string[] = [];
-      Router.events.on("routeChangeComplete", (...args: unknown[]) => {
-        completedUrls.push(String(args[0]));
-      });
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
 
       // Start two navigations
       const navA = Router.push("/page-a");
@@ -8860,6 +8891,9 @@ describe("Pages Router concurrent navigation", () => {
       // Stale navigation must not fire routeChangeComplete
       expect(completedUrls).not.toContain("/page-a");
     } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
