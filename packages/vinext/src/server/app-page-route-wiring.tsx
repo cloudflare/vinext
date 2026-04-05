@@ -233,13 +233,22 @@ export function buildAppPageRouteElement<
 
   for (let index = layoutEntries.length - 1; index >= 0; index--) {
     const layoutEntry = layoutEntries[index];
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children
+    // Building bottom-up: NotFoundBoundary is the innermost wrapper, then ErrorBoundary, then Template.
+    const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
+    if (layoutNotFoundComponent) {
+      const LayoutNotFoundComponent = layoutNotFoundComponent;
+      element = (
+        <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>{element}</NotFoundBoundary>
+      );
+    }
+
     const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
     if (layoutErrorComponent) {
       element = <ErrorBoundary fallback={layoutErrorComponent}>{element}</ErrorBoundary>;
     }
 
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > children
-    // Building bottom-up, template wraps after error boundary.
     const templateComponent = getDefaultExport(templates[index]);
     if (templateComponent) {
       const TemplateComponent = templateComponent;
@@ -249,14 +258,6 @@ export function buildAppPageRouteElement<
     const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
     if (!layoutComponent) {
       continue;
-    }
-
-    const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
-    if (layoutNotFoundComponent) {
-      const LayoutNotFoundComponent = layoutNotFoundComponent;
-      element = (
-        <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>{element}</NotFoundBoundary>
-      );
     }
 
     const layoutProps: Record<string, unknown> = {
