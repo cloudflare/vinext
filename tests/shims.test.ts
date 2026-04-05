@@ -8754,6 +8754,120 @@ describe("Pages Router concurrent navigation", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("abort signal fires when navigation is superseded — AbortError becomes NavigationCancelledError", async () => {
+    // Verify that the AbortController signal passed to fetch actually fires when a
+    // newer navigation starts, and that the resulting AbortError is converted into
+    // a NavigationCancelledError (the routeChangeError path, not a plain rejection).
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    // Signal-aware mock: the first fetch rejects with AbortError when its signal fires.
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        return new Promise<Response>((resolve, reject) => {
+          fetchA.promise.then(resolve, reject);
+          _init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      }
+      return fetchB.promise;
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const errors: Array<{ err: unknown; url: string }> = [];
+      Router.events.on("routeChangeError", (...args: unknown[]) => {
+        errors.push({ err: args[0], url: String(args[1]) });
+      });
+
+      // Start navigation A then immediately supersede it with B
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B; A is aborted via its signal — no manual resolution needed
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // navA's fetch was aborted via signal → AbortError → NavigationCancelledError
+      const cancelledError = errors.find((e) => e.url === "/page-a");
+      expect(cancelledError).toBeDefined();
+      expect(cancelledError?.err).toHaveProperty("cancelled", true);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("stale response arriving first does not render before the winning navigation", async () => {
+    // fetchA (stale, page-a) resolves before fetchB (winning, page-b).
+    // assertStillCurrent() in navigateClient must catch the stale navigation
+    // after it processes the response, so page-a's data never reaches the DOM.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const completedUrls: string[] = [];
+      Router.events.on("routeChangeComplete", (...args: unknown[]) => {
+        completedUrls.push(String(args[0]));
+      });
+
+      // Start two navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Stale fetch (A) resolves first this time
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+      // Winning fetch (B) resolves after
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // Stale navigation must not have committed its data to the DOM
+      expect(win.__NEXT_DATA__.page).toBe("/page-b");
+      // Stale navigation must not fire routeChangeComplete
+      expect(completedUrls).not.toContain("/page-a");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("next/server enhancements", () => {
