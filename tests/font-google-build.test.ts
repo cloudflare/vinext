@@ -5,12 +5,12 @@ import os from "node:os";
 import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 
-const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
+const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/font-google-multiple");
 
 /**
  * Build an App Router fixture's RSC/SSR/client bundles using the actual Vite
  * build pipeline (createBuilder + buildApp). This exercises the full build
- * pipeline where issue #751 occurs, not just the transform hook in isolation.
+ * pipeline for font-google transforms.
  */
 async function buildFontGoogleMultipleFixture(): Promise<string> {
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-font-google-multiple-"));
@@ -35,28 +35,38 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
     });
   };
 
+  const nodeModulesLink = path.join(APP_FIXTURE_DIR, "node_modules");
+
   try {
+    // Symlink node_modules before building so imports work
+    const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.symlink(projectNodeModules, nodeModulesLink);
+
     const builder = await createBuilder({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR, rscOutDir, ssrOutDir, clientOutDir })],
+      plugins: [
+        vinext({
+          appDir: APP_FIXTURE_DIR,
+          rscOutDir,
+          ssrOutDir,
+          clientOutDir,
+        }),
+      ],
       logLevel: "silent",
     });
 
-    // This is where issue #751 occurs - during [1/5] analyze client references
     await builder.buildApp();
 
-    // Symlink node_modules for external imports
-    const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fs.symlink(projectNodeModules, path.join(outDir, "node_modules"));
-
-    return path.join(outDir, "server", "index.js");
+    return path.join(outDir, "server", "index.mjs");
   } finally {
     globalThis.fetch = originalFetch;
+    // Cleanup symlink
+    await fs.unlink(nodeModulesLink).catch(() => {});
   }
 }
 
-describe("font-google build integration (issue #751)", () => {
+describe("font-google build integration", () => {
   let buildOutputPath: string;
   let outDir: string;
 
@@ -68,13 +78,9 @@ describe("font-google build integration (issue #751)", () => {
   });
 
   it("should build successfully with multiple Google fonts (Geist + Geist_Mono)", async () => {
-    // This test reproduces issue #751:
-    // Build fails during [1/5] analyze client references... with:
-    // Error: Unexpected token in app/layout.tsx at 234..235
-    //
-    // The issue occurs when using multiple fonts with the same options pattern:
-    // const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-    // const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+    // This test validates that the build pipeline can handle multiple
+    // Google font imports without errors. It exercises the font transform
+    // plugin during the full createBuilder + buildApp() flow.
     buildOutputPath = await buildFontGoogleMultipleFixture();
     outDir = path.dirname(path.dirname(buildOutputPath));
 
