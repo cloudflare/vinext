@@ -26,6 +26,7 @@ coverage/
 
 # Worktrees
 .worktrees/
+.claude
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
@@ -41,3 +42,5 @@ result
 result-*
 .direnv/
 .corepack/
+
+.vinext
