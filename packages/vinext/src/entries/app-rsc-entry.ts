@@ -197,6 +197,7 @@ export function generateRscEntry(
         loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
         error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
         layoutIndex: ${slot.layoutIndex},
+        routeSegments: ${JSON.stringify(slot.routeSegments)},
         intercepts: [
 ${interceptEntries.join(",\n")}
         ],
@@ -1693,7 +1694,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const parts = digest.split(";");
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
-                type: parts[1] || "replace",       // "push" or "replace"
+                type: parts[1] || "push",          // "push" or "replace"
                 status: parts[3] ? parseInt(parts[3], 10) : 307,
               };
               returnValue = { ok: true, data: undefined };
@@ -2192,16 +2193,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     cleanPathname,
     currentRoute: route,
     findIntercept,
-    getRoutePattern(sourceRoute) {
-      return sourceRoute.pattern;
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
     },
     getSourceRoute(sourceRouteIndex) {
       return routes[sourceRouteIndex];
     },
     isRscRequest,
-    matchSourceRouteParams(pattern) {
-      return matchRoute(pattern)?.params ?? {};
-    },
     renderInterceptResponse(sourceRoute, interceptElement) {
       const interceptOnError = createRscOnErrorHandler(
         request,

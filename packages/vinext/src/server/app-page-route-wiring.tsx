@@ -45,6 +45,7 @@ export type AppPageRouteWiringSlot<
   layoutIndex: number;
   loading?: TModule | null;
   page?: TModule | null;
+  routeSegments?: readonly string[] | null;
 };
 
 export type AppPageRouteWiringRoute<
@@ -251,6 +252,7 @@ function createAppPageParallelSlotEntries<
   layoutIndex: number,
   layoutEntries: readonly AppPageLayoutEntry<TModule, TErrorModule>[],
   route: AppPageRouteWiringRoute<TModule, TErrorModule>,
+  params: AppPageParams,
 ): Readonly<Record<string, ReactNode>> | undefined {
   const parallelSlots: Record<string, ReactNode> = {};
 
@@ -262,8 +264,11 @@ function createAppPageParallelSlotEntries<
 
     const layoutEntry = layoutEntries[targetIndex];
     const treePath = layoutEntry?.treePath ?? "/";
+    const slotSegments = slot.routeSegments
+      ? resolveAppPageChildSegments(slot.routeSegments, 0, params)
+      : [];
     parallelSlots[slotName] = (
-      <LayoutSegmentProvider segmentMap={{ children: [] }}>
+      <LayoutSegmentProvider segmentMap={{ children: slotSegments }}>
         <Slot id={`slot:${slotName}:${treePath}`} />
       </LayoutSegmentProvider>
     );
@@ -495,9 +500,34 @@ export function buildAppPageElements<
 
   for (let index = orderedTreePositions.length - 1; index >= 0; index--) {
     const treePosition = orderedTreePositions[index];
+    let segmentChildren: ReactNode = routeChildren;
+    const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
-    if (templateEntry) {
-      routeChildren = (
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children.
+    // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
+    // then ErrorBoundary, then Template, with the Layout slot outermost.
+    if (layoutEntry) {
+      const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
+      if (layoutNotFoundComponent) {
+        const LayoutNotFoundComponent = layoutNotFoundComponent;
+        segmentChildren = (
+          <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>
+            {segmentChildren}
+          </NotFoundBoundary>
+        );
+      }
+
+      const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
+      if (layoutErrorComponent) {
+        segmentChildren = (
+          <ErrorBoundary fallback={layoutErrorComponent}>{segmentChildren}</ErrorBoundary>
+        );
+      }
+    }
+
+    if (templateEntry && getDefaultExport(templateEntry.templateModule)) {
+      segmentChildren = (
         <Slot
           id={templateEntry.id}
           key={resolveAppPageTemplateKey(
@@ -506,65 +536,50 @@ export function buildAppPageElements<
             options.matchedParams,
           )}
         >
-          {routeChildren}
+          {segmentChildren}
         </Slot>
       );
     }
 
-    const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     if (!layoutEntry) {
+      routeChildren = segmentChildren;
       continue;
     }
-    let layoutChildren = routeChildren;
-    const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
-    if (layoutErrorComponent) {
-      layoutChildren = (
-        <ErrorBoundary fallback={layoutErrorComponent}>{layoutChildren}</ErrorBoundary>
-      );
-    }
-
-    const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
-    if (layoutNotFoundComponent) {
-      const LayoutNotFoundComponent = layoutNotFoundComponent;
-      layoutChildren = (
-        <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>{layoutChildren}</NotFoundBoundary>
-      );
-    }
-
     const layoutHasElement = getDefaultExport(layoutEntry.layoutModule) !== null;
+    const layoutIndex = layoutIndicesByTreePosition.get(treePosition) ?? -1;
+    const segmentMap: { children: string[] } & Record<string, string[]> = {
+      children: resolveAppPageChildSegments(
+        options.route.routeSegments ?? [],
+        layoutEntry.treePosition,
+        options.matchedParams,
+      ),
+    };
+    for (const [slotName, slot] of Object.entries(options.route.slots ?? {})) {
+      const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+      if (targetIndex !== layoutIndex) {
+        continue;
+      }
+      segmentMap[slotName] = slot.routeSegments
+        ? resolveAppPageChildSegments(slot.routeSegments, 0, options.matchedParams)
+        : [];
+    }
 
     routeChildren = (
-      <LayoutSegmentProvider
-        segmentMap={{
-          children: resolveAppPageChildSegments(
-            options.route.routeSegments ?? [],
-            layoutEntry.treePosition,
-            options.matchedParams,
-          ),
-          ...Object.fromEntries(
-            Object.entries(options.route.slots ?? {})
-              .filter(([, slot]) => {
-                const targetIndex =
-                  slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
-                return targetIndex === layoutIndicesByTreePosition.get(treePosition);
-              })
-              .map(([slotName]) => [slotName, []]),
-          ),
-        }}
-      >
+      <LayoutSegmentProvider segmentMap={segmentMap}>
         {layoutHasElement ? (
           <Slot
             id={layoutEntry.id}
             parallelSlots={createAppPageParallelSlotEntries(
-              layoutIndicesByTreePosition.get(treePosition) ?? -1,
+              layoutIndex,
               layoutEntries,
               options.route,
+              options.matchedParams,
             )}
           >
-            {layoutChildren}
+            {segmentChildren}
           </Slot>
         ) : (
-          layoutChildren
+          segmentChildren
         )}
       </LayoutSegmentProvider>
     );

@@ -385,11 +385,11 @@ describe("App Router integration", () => {
   });
 
   // --- parallelRoutesKey support ---
-  // These tests verify the segmentMap context migration works end-to-end.
-  // Until PR 2 populates per-slot segment data, useSelectedLayoutSegments("team")
-  // returns [] (key absent in segmentMap → fallback). This is structurally correct.
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-use-selected-layout-segment
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-use-selected-layout-segment
 
-  it("useSelectedLayoutSegments('team') returns [] for flat slot (no per-slot wiring yet)", async () => {
+  it("useSelectedLayoutSegments('team') returns [] when slot page is at root", async () => {
+    // On /dashboard, @team/page.tsx is active — page at slot root means no child segments
     const res = await fetch(`${baseUrl}/dashboard`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -398,8 +398,29 @@ describe("App Router integration", () => {
     expect(html).toMatch(/data-testid="team-segment"[^>]*>null</);
   });
 
-  it("useSelectedLayoutSegments('analytics') returns [] for flat slot", async () => {
+  it("useSelectedLayoutSegments('analytics') returns [] when slot page is at root", async () => {
     const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments('team') returns slot sub-route segments", async () => {
+    // On /dashboard/members, @team/members/page.tsx is active
+    // useSelectedLayoutSegments("team") should return ["members"]
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[&quot;members&quot;\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>members</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] when slot shows default on sub-route", async () => {
+    // On /dashboard/members, @analytics shows default.tsx (no members page)
+    // useSelectedLayoutSegments("analytics") should return [] (fallback)
+    const res = await fetch(`${baseUrl}/dashboard/members`);
     expect(res.status).toBe(200);
     const html = await res.text();
 
@@ -457,6 +478,54 @@ describe("App Router integration", () => {
     // It should also contain the feed page content (the source route)
     expect(rscPayload).toContain("Photo Feed");
     expect(rscPayload).toContain("feed-page");
+  });
+
+  // --- Intercepting routes with dynamic source route ---
+  // Regression: matchSourceRouteParams must extract actual URL param values
+  // (e.g. "42") from the request pathname, not the literal pattern strings
+  // (e.g. ":teamId") that result from feeding the pattern into the route trie.
+
+  it("renders members page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/members`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="members-page"');
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("renders settings page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/settings`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="settings-page"');
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/team-id:\s*(<!--\s*-->)?\s*42/);
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("extracts actual URL params for intercepted routes with dynamic source routes", async () => {
+    // RSC request simulates client-side navigation from /team/[teamId]/members
+    // to /team/[teamId]/settings. The source route has a dynamic :teamId segment.
+    // The intercepting route handler must extract "42" from the URL, not ":teamId".
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscPayload = await res.text();
+    // The RSC payload should contain the intercepted settings modal with the actual team ID
+    expect(rscPayload).toContain("Settings Modal");
+    expect(rscPayload).toContain("settings-modal");
+    // The source route (members page) should render with the actual teamId value.
+    // The source page component receives params from matchSourceRouteParams.
+    expect(rscPayload).toContain("members-page");
+    // The literal pattern string ":teamId" must NOT appear as a param value anywhere
+    expect(rscPayload).not.toContain('":teamId"');
   });
 
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
@@ -4089,5 +4158,23 @@ describe("generateRscEntry ISR code generation", () => {
     expect(mergeIndex).toBeGreaterThan(-1);
     expect(redirectHeaderIndex).toBeGreaterThan(-1);
     expect(mergeIndex).toBeLessThan(redirectHeaderIndex);
+  });
+
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() defaults to "push" in Server Action context so
+  // the Back button works after form submissions. The empty sentinel in the
+  // digest (parts[1] === "") should resolve to "push" in the action handler.
+  it("generated action handler defaults empty redirect type to 'push'", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // Find the action redirect digest parsing block
+    const digestStart = code.indexOf('if (digest.startsWith("NEXT_REDIRECT;"))');
+    const actionRedirectEnd = code.indexOf(
+      "returnValue = { ok: true, data: undefined }",
+      digestStart,
+    );
+    const digestBlock = code.slice(digestStart, actionRedirectEnd);
+    // The fallback for empty type must be "push", not "replace"
+    expect(digestBlock).toContain('parts[1] || "push"');
+    expect(digestBlock).not.toContain('parts[1] || "replace"');
   });
 });

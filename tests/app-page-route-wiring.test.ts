@@ -124,7 +124,11 @@ function SlotPage(props: Record<string, unknown>) {
   return createElement("p", { "data-slot-page": readNode(props.label) }, readNode(props.label));
 }
 
-function Template(props: Record<string, unknown>) {
+function RootTemplate(props: Record<string, unknown>) {
+  return createElement("div", { "data-template": "root" }, readChildren(props.children));
+}
+
+function GroupTemplate(props: Record<string, unknown>) {
   return createElement("div", { "data-template": "group" }, readChildren(props.children));
 }
 
@@ -159,7 +163,7 @@ describe("app page route wiring helpers", () => {
     expect(entries.map((entry) => entry.treePath)).toEqual(["/", "/(marketing)"]);
   });
 
-  it("builds a flat elements map with route, layout, template, page, and slot entries", () => {
+  it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -185,10 +189,11 @@ describe("app page route wiring helpers", () => {
             layoutIndex: 0,
             loading: null,
             page: { default: SlotPage },
+            routeSegments: ["members"],
           },
         },
         templateTreePositions: [1],
-        templates: [{ default: Template }],
+        templates: [{ default: GroupTemplate }],
       },
       routePath: "/blog/post",
       rootNotFoundModule: null,
@@ -209,6 +214,20 @@ describe("app page route wiring helpers", () => {
     expect(elements["page:/blog/post"]).toBeDefined();
     expect(elements["slot:sidebar:/"]).toBeDefined();
     expect(elements["route:/blog/post"]).toBeDefined();
+
+    const html = await renderRouteEntry(elements, "route:/blog/post");
+
+    expect(html).toContain('data-layout="root"');
+    expect(html).toContain('data-layout="group"');
+    expect(html).toContain('data-template="group"');
+    const groupLayoutPos = html.indexOf('data-layout="group"');
+    const groupTemplatePos = html.indexOf('data-template="group"');
+    expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
+    expect(html).toContain('data-slot-layout="sidebar"');
+    expect(html).toContain('data-slot-page="intercepted"');
+    expect(html).toContain('data-page-segments=""');
+    expect(html).toContain('data-segments="(marketing)|blog|post"');
+    expect(html).toContain('data-segments="blog|post"');
   });
 
   it("does not deadlock when a layout renders without children", async () => {
@@ -375,5 +394,129 @@ describe("app page route wiring helpers", () => {
     expect(body).toContain('data-layout="root"');
     expect(body).toContain('data-template="blog"');
     expect(body).toContain("Blog page");
+  });
+
+  it("nests per-segment NotFoundBoundary inside the template wrapper", () => {
+    function RootNotFound() {
+      return createElement("div", { "data-not-found": "root" }, "Not Found");
+    }
+
+    function LeafPage() {
+      return createElement("main", null, "Page");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(LeafPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [{ default: RootNotFound }],
+        routeSegments: ["blog"],
+        slots: {},
+        templateTreePositions: [0],
+        templates: [{ default: RootTemplate }],
+      },
+      routePath: "/blog",
+      rootNotFoundModule: null,
+    });
+
+    function walkDepth(node: unknown, depth: number, found: Map<string, number>): void {
+      if (!isValidElement(node)) return;
+      const element = node as { type: unknown; props: Record<string, unknown> };
+
+      if (typeof element.props.id === "string" && element.props.id.startsWith("template:")) {
+        found.set(`template:${element.props.id}`, depth);
+      }
+
+      const typeName =
+        typeof element.type === "function"
+          ? ((element.type as { displayName?: string; name?: string }).displayName ??
+            (element.type as { name?: string }).name ??
+            "")
+          : typeof element.type === "string"
+            ? element.type
+            : "";
+
+      if (!found.has(typeName)) {
+        found.set(typeName, depth);
+      }
+
+      const { children, ...rest } = element.props;
+      for (const value of Object.values(rest)) {
+        walkDepth(value, depth + 1, found);
+      }
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          walkDepth(child, depth + 1, found);
+        }
+      } else {
+        walkDepth(children, depth + 1, found);
+      }
+    }
+
+    const depthMap = new Map<string, number>();
+    walkDepth(elements["route:/blog"], 0, depthMap);
+
+    const templateDepth = depthMap.get("template:template:/");
+    const notFoundDepth = depthMap.get("NotFoundBoundaryInner") ?? depthMap.get("NotFoundBoundary");
+
+    expect(templateDepth).toBeDefined();
+    expect(notFoundDepth).toBeDefined();
+    expect(templateDepth).toBeLessThan(notFoundDepth!);
+  });
+
+  it("interleaves templates with their corresponding layouts", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { slug: "post" },
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["(marketing)", "blog", "[slug]"],
+        slots: {},
+        templateTreePositions: [0, 1],
+        templates: [{ default: RootTemplate }, { default: GroupTemplate }],
+      },
+      routePath: "/blog/post",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/blog/post");
+
+    expect(html).toContain('data-layout="root"');
+    expect(html).toContain('data-layout="group"');
+    expect(html).toContain('data-template="root"');
+    expect(html).toContain('data-template="group"');
+
+    const rootLayoutPos = html.indexOf('data-layout="root"');
+    const rootTemplatePos = html.indexOf('data-template="root"');
+    const groupLayoutPos = html.indexOf('data-layout="group"');
+    const groupTemplatePos = html.indexOf('data-template="group"');
+    const pagePos = html.indexOf("data-page-segments=");
+
+    expect(rootLayoutPos).toBeLessThan(rootTemplatePos);
+    expect(rootTemplatePos).toBeLessThan(groupLayoutPos);
+    expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
+    expect(groupTemplatePos).toBeLessThan(pagePos);
   });
 });

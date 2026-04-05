@@ -165,6 +165,66 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("treats revalidate = 0 as no-store in RSC response policy", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
+
+    // revalidate = 0 takes priority over isForceStatic
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
+  });
+
+  it("treats revalidate = 0 as no-store in HTML response policy", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+
+    // revalidate = 0 takes priority over isForceStatic
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 0,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("treats force-static with explicit revalidate as ISR in both policy helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({

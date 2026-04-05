@@ -233,6 +233,18 @@ describe("App Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
+  it("generateRscEntry uses buildPageElements in the server-action re-render path", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    // PR 2c returns the flat elements payload instead of the monolithic page
+    // element, so the action re-render path should rebuild the keyed map.
+    const actionRerenderIdx = code.indexOf(
+      "// After the action, re-render the current page so the client",
+    );
+    expect(actionRerenderIdx).toBeGreaterThan(-1);
+    const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 700);
+    expect(rerenderSlice).toContain("element = buildPageElements(");
+  });
+
   it("generateSsrEntry snapshot", () => {
     const code = generateSsrEntry();
     expect(stabilize(code)).toMatchSnapshot();
