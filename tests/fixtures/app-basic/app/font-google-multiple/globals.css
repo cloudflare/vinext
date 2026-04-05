@@ -1,0 +1,4 @@
+/* Global styles for font-google-multiple test */
+html {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}

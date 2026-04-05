@@ -481,56 +481,6 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
-  it("transforms multiple fonts with identical options patterns (issue #751)", async () => {
-    // Regression test for issue #751: Build fails when multiple fonts have the
-    // same options pattern. The bug occurred with Geist + Geist_Mono both having
-    // { subsets: ["latin"] } — the second font call wasn't being transformed.
-    const plugin = getGoogleFontsPlugin();
-    const root = path.join(import.meta.dirname, ".test-font-root-issue-751");
-    initPlugin(plugin, { command: "build", root });
-
-    // Mock fetch to return CSS for both fonts
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (input: any) => {
-      const url = String(input);
-      if (url.includes("Geist")) {
-        return new Response("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
-          status: 200,
-          headers: { "content-type": "text/css" },
-        });
-      }
-      return new Response(
-        "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
-        {
-          status: 200,
-          headers: { "content-type": "text/css" },
-        },
-      );
-    };
-
-    try {
-      const transform = unwrapHook(plugin.transform);
-      // This pattern matches the exact reproduction from issue #751
-      const code = [
-        `import { Geist, Geist_Mono } from 'next/font/google';`,
-        `const geistSans = Geist({ subsets: ["latin"] });`,
-        `const geistMono = Geist_Mono({ subsets: ["latin"] });`,
-      ].join("\n");
-
-      const result = await transform.call(plugin, code, "/app/layout.tsx");
-      expect(result).not.toBeNull();
-      expect(result.code).toContain("virtual:vinext-google-fonts?");
-      // Both font calls should be transformed with _selfHostedCSS
-      const matches = result.code.match(/_selfHostedCSS/g);
-      expect(matches?.length).toBe(2);
-      // Verify the transformed code is syntactically valid
-      expect(result.code).not.toMatch(/,\s*,/); // No double commas
-    } finally {
-      globalThis.fetch = originalFetch;
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("skips font calls not from the import", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-4");
