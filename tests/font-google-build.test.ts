@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { describe, it, expect, afterAll } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { createBuilder, type Plugin } from "vite";
+import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -29,20 +29,17 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
         headers: { "content-type": "text/css" },
       });
     }
-    return new Response(
-      "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
-      {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      },
-    );
+    return new Response("@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }", {
+      status: 200,
+      headers: { "content-type": "text/css" },
+    });
   };
 
   try {
     const builder = await createBuilder({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR, rscOutDir, ssrOutDir, clientOutDir }) as Plugin],
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR, rscOutDir, ssrOutDir, clientOutDir })],
       logLevel: "silent",
     });
 
