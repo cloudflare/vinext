@@ -1978,7 +1978,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 { temporaryReferences, onError: redirectOnError },
               );
 
-              // Collect cookies after rendering (same as normal action response)
+              // Collect cookies set synchronously during rendering. Note: cookies
+              // set by async server components during lazy stream consumption
+              // will not be captured here (same limitation as the normal re-render
+              // path below).
               const redirectPendingCookies = getAndClearPendingCookies();
               const redirectDraftCookie = getDraftModeCookieHeader();
               
