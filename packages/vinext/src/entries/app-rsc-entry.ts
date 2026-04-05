@@ -2168,12 +2168,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const urlParts = cleanPathname.split("/").filter(Boolean);
       const params = Object.create(null);
       for (let i = 0; i < patternParts.length; i++) {
-        if (i >= urlParts.length) break;
         const pp = patternParts[i];
         if (pp.endsWith("+") || pp.endsWith("*")) {
+          // urlParts.slice(i) safely returns [] when i >= urlParts.length,
+          // which is the correct value for optional catch-all with zero segments.
           params[pp.slice(1, -1)] = urlParts.slice(i);
           break;
         }
+        if (i >= urlParts.length) break;
         if (pp.startsWith(":")) {
           params[pp.slice(1)] = urlParts[i];
         } else if (pp !== urlParts[i]) {
