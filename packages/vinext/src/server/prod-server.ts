@@ -1181,6 +1181,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
+      // Serve static files for beforeFiles rewrite targets. This matches
+      // Next.js behavior where beforeFiles rewrites can resolve to static
+      // files in public/ or other direct filesystem paths.
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
@@ -1191,6 +1194,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
+
+          // Try serving static file at the rewritten path
+          if (
+            path.extname(resolvedPathname) &&
+            tryServeStatic(req, res, clientDir, resolvedPathname, compress, middlewareHeaders)
+          ) {
+            return;
+          }
         }
       }
 
