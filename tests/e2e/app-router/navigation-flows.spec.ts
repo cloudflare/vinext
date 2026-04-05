@@ -1,22 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("App Router navigation flows", () => {
   test("multi-page navigation chain without reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.evaluate(() => {
       (window as any).__NAV_MARKER__ = true;
@@ -49,7 +40,7 @@ test.describe("App Router navigation flows", () => {
 
   test("back/forward through multiple pages preserves content", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate through 3 pages via links
     await page.click('a[href="/about"]');
@@ -81,7 +72,7 @@ test.describe("App Router navigation flows", () => {
   test("search form flow: type, submit, modify, resubmit", async ({ page }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Empty state
     await expect(page.locator("#search-empty")).toHaveText("Enter a search term");
@@ -107,7 +98,7 @@ test.describe("App Router navigation flows", () => {
   test("server action: like button click flow", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Initial state
     await expect(page.locator('[data-testid="likes"]')).toHaveText("Likes: 0");
@@ -133,7 +124,7 @@ test.describe("App Router navigation flows", () => {
 
   test("server action: message form submit flow", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Type and submit a message
     await page.fill('[data-testid="message-input"]', "Hello!");
@@ -154,7 +145,7 @@ test.describe("App Router navigation flows", () => {
   test("useActionState: increment and decrement counter", async ({ page }) => {
     await page.goto(`${BASE}/action-state-test`);
     await expect(page.locator("#count")).toHaveText("Count: 0");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Increment 3 times
     for (let i = 1; i <= 3; i++) {

@@ -40,6 +40,7 @@ import {
   runInstrumentation,
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "./shims/constants.js";
+import { precompressAssets } from "./build/precompress.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
   isExternalUrl,
@@ -66,6 +67,7 @@ import { createInstrumentationClientTransformPlugin } from "./plugins/instrument
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { fixUseServerClosureCollisionPlugin } from "./plugins/fix-use-server-closure-collision.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -73,8 +75,11 @@ import {
   generateGoogleFontsVirtualModule,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
+  _findBalancedObject,
+  _findCallEnd,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
+import { computeLazyChunks } from "./utils/lazy-chunks.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -593,6 +598,9 @@ const clientCodeSplittingConfig = {
  *   tryCatchDeoptimization: false, which can break specific libraries
  *   that rely on property access side effects or try/catch for feature detection
  * - 'recommended' + 'no-external' gives most of the benefit with less risk
+ *
+ * @deprecated Use getClientTreeshakeConfigForVite(viteMajorVersion) instead
+ * for Vite version compatibility. Kept for backward compatibility.
  */
 const clientTreeshakeConfig = {
   preset: "recommended" as const,
@@ -629,89 +637,40 @@ function getClientOutputConfigForVite(viteMajorVersion: number) {
     : clientOutputConfig;
 }
 
-type BuildManifestChunk = {
-  file: string;
-  isEntry?: boolean;
-  isDynamicEntry?: boolean;
-  imports?: string[];
-  dynamicImports?: string[];
-  css?: string[];
-  assets?: string[];
-};
-
 /**
- * Compute the set of chunk filenames that are ONLY reachable through dynamic
- * imports (i.e. behind React.lazy(), next/dynamic, or manual import()).
+ * Returns treeshake configuration appropriate for the Vite version.
  *
- * These chunks should NOT be modulepreloaded in the HTML — they will be
- * fetched on demand when the dynamic import executes.
+ * Rollup (Vite 7) supports presets like "recommended" which set multiple
+ * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
+ * so we only return moduleSideEffects for Vite 8+.
  *
- * Algorithm: Starting from all entry chunks in the build manifest, walk the
- * static `imports` tree (breadth-first). Any chunk file NOT reached by this
- * walk is only reachable through `dynamicImports` and is therefore "lazy".
+ * The Rollup "recommended" preset sets:
+ * - annotations: true (Rolldown default is also true)
+ * - manualPureFunctions: [] (Rolldown default is also [])
+ * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
+ * - unknownGlobalSideEffects: false (Rolldown default is true — this is a known acceptable
+ *   divergence. Slightly less aggressive DCE on unknown globals, acceptable for client bundles)
+ * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
  *
- * @param buildManifest - Vite's build manifest (manifest.json), which is a
- *   Record<string, ManifestChunk> where each chunk has `file`, `imports`,
- *   `dynamicImports`, `isEntry`, and `isDynamicEntry` fields.
- * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
- *   should be excluded from modulepreload hints.
+ * The key optimization is moduleSideEffects: "no-external", which is supported
+ * by both bundlers and provides the DCE benefits for barrel-exporting libraries.
+ * It treats node_modules as side-effect-free (enabling aggressive DCE) while
+ * preserving side effects in local code.
  */
-function computeLazyChunks(buildManifest: Record<string, BuildManifestChunk>): string[] {
-  // Collect all chunk files that are statically reachable from entries
-  const eagerFiles = new Set<string>();
-  const visited = new Set<string>();
-  const queue: string[] = [];
-
-  // Start BFS from all entry chunks
-  for (const key of Object.keys(buildManifest)) {
-    const chunk = buildManifest[key];
-    if (chunk.isEntry) {
-      queue.push(key);
-    }
+function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
+  if (viteMajorVersion >= 8) {
+    // Rolldown (Vite 8+) - no preset support, only specific options.
+    // Rolldown's built-in defaults already cover what Rollup's 'recommended'
+    // preset provides (annotations, correctContext, tryCatchDeoptimization).
+    return {
+      moduleSideEffects: "no-external" as const,
+    };
   }
-
-  while (queue.length > 0) {
-    const key = queue.shift()!;
-    if (visited.has(key)) continue;
-    visited.add(key);
-
-    const chunk = buildManifest[key];
-    if (!chunk) continue;
-
-    // Mark this chunk's file as eager
-    eagerFiles.add(chunk.file);
-
-    // Also mark its CSS as eager (CSS should always be preloaded to avoid FOUC)
-    if (chunk.css) {
-      for (const cssFile of chunk.css) {
-        eagerFiles.add(cssFile);
-      }
-    }
-
-    // Follow only static imports — NOT dynamicImports
-    if (chunk.imports) {
-      for (const imp of chunk.imports) {
-        if (!visited.has(imp)) {
-          queue.push(imp);
-        }
-      }
-    }
-  }
-
-  // Any JS file in the manifest that's NOT in eagerFiles is a lazy chunk
-  const lazyChunks: string[] = [];
-  const allFiles = new Set<string>();
-  for (const key of Object.keys(buildManifest)) {
-    const chunk = buildManifest[key];
-    if (chunk.file && !allFiles.has(chunk.file)) {
-      allFiles.add(chunk.file);
-      if (!eagerFiles.has(chunk.file) && chunk.file.endsWith(".js")) {
-        lazyChunks.push(chunk.file);
-      }
-    }
-  }
-
-  return lazyChunks;
+  // Rollup (Vite 7) - supports presets for convenient option grouping
+  return {
+    preset: "recommended" as const,
+    moduleSideEffects: "no-external" as const,
+  };
 }
 
 type BundleBackfillChunk = {
@@ -898,6 +857,22 @@ export type VinextOptions = {
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
+  /**
+   * Enable build-time precompression of static assets (.br, .gz, .zst).
+   *
+   * When enabled, hashed assets in the client build are precompressed at
+   * build time so the production server can serve them without on-the-fly
+   * compression overhead.
+   *
+   * Disabled by default. Not useful when deploying to edge platforms
+   * (Cloudflare Workers, Nitro) that handle compression at the CDN layer.
+   *
+   * Can also be enabled via the `--precompress` CLI flag or by setting the
+   * `VINEXT_PRECOMPRESS=1` environment variable (useful for CI pipelines
+   * that need to enable precompression without modifying vite.config.ts).
+   * @default false
+   */
+  precompress?: boolean;
   /**
    * Experimental vinext-only feature flags.
    */
@@ -1203,21 +1178,32 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Load next.config.js if present (always from project root, not src/),
         // unless vinext({ nextConfig }) explicitly overrides it.
-        const phase = env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
-        let rawConfig: NextConfig | null;
-        if (options.nextConfig) {
-          const diskConfigPath = findNextConfigPath(root);
-          if (diskConfigPath && !warnedInlineNextConfigOverride) {
-            warnedInlineNextConfigOverride = true;
-            console.warn(
-              `[vinext] vinext({ nextConfig }) overrides ${path.basename(diskConfigPath)}. Remove one of the config sources to avoid drift.`,
-            );
+        // Guard: resolve nextConfig only once per plugin instance. In Vite's
+        // multi-environment build the config hook fires once per environment;
+        // without this guard, resolveNextConfig() → resolveBuildId() generates
+        // a fresh random UUID each time, causing different buildId values to be
+        // baked into the RSC, SSR, and client bundles.
+        // Note: fileMatcher, instrumentationPath, etc. are intentionally set
+        // outside this guard — they are cheap and deterministic, and keeping
+        // them here ensures they reflect the final resolved root on every call.
+        if (!nextConfig) {
+          const phase =
+            env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
+          let rawConfig: NextConfig | null;
+          if (options.nextConfig) {
+            const diskConfigPath = findNextConfigPath(root);
+            if (diskConfigPath && !warnedInlineNextConfigOverride) {
+              warnedInlineNextConfigOverride = true;
+              console.warn(
+                `[vinext] vinext({ nextConfig }) overrides ${path.basename(diskConfigPath)}. Remove one of the config sources to avoid drift.`,
+              );
+            }
+            rawConfig = await resolveNextConfigInput(options.nextConfig, phase);
+          } else {
+            rawConfig = await loadNextConfig(root, phase);
           }
-          rawConfig = await resolveNextConfigInput(options.nextConfig, phase);
-        } else {
-          rawConfig = await loadNextConfig(root, phase);
+          nextConfig = await resolveNextConfig(rawConfig, root);
         }
-        nextConfig = await resolveNextConfig(rawConfig, root);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
@@ -1494,14 +1480,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 };
               })(),
               // Enable aggressive tree-shaking for client builds.
-              // See clientTreeshakeConfig for rationale.
+              // See getClientTreeshakeConfigForVite JSDoc for rationale.
               // Only apply globally for standalone client builds (Pages Router
               // CLI). For multi-environment builds (App Router, Cloudflare),
               // treeshake is set per-environment on the client env below to
               // avoid leaking into RSC/SSR environments where
               // moduleSideEffects: 'no-external' could drop server packages
               // that rely on module-level side effects.
-              ...(!isSSR && !isMultiEnv ? { treeshake: clientTreeshakeConfig } : {}),
+              ...(!isSSR && !isMultiEnv
+                ? { treeshake: getClientTreeshakeConfigForVite(viteMajorVersion) }
+                : {}),
               // Code-split client bundles: separate framework (React/ReactDOM),
               // vinext runtime (shims), and vendor packages into their own
               // chunks so pages only load the JS they need.
@@ -1749,7 +1737,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1770,7 +1758,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1796,7 +1784,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
-                  treeshake: clientTreeshakeConfig,
+                  treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
@@ -1998,6 +1986,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               i18n: nextConfig?.i18n,
               hasPagesDir,
+              publicFiles: scanPublicFileRoutes(root),
             },
             instrumentationPath,
           );
@@ -3264,6 +3253,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createOgInlineFetchAssetsPlugin(),
     // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
     ogAssetsPlugin,
+    // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
+    // Used by emitStandaloneOutput to determine which packages to copy into
+    // standalone/node_modules/ — uses the bundler's own import graph instead of
+    // fragile regex scanning of emitted files.
+    createServerExternalsManifestPlugin(),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -3292,6 +3286,32 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
+    // read the build identifier without depending on the prerender manifest.
+    // Uses closeBundle (not writeBundle) with a one-time write guard so the file
+    // is written exactly once per build regardless of how many environments are
+    // active (App Router RSC+SSR+client, Pages Router SSR+client, etc.).
+    // The path is always dist/server/BUILD_ID — derived from root, not from the
+    // per-environment options.dir — so it works for all router types.
+    (() => {
+      let buildIdWritten = false;
+      return {
+        name: "vinext:build-id",
+        apply: "build" as const,
+        enforce: "post" as const,
+        closeBundle: {
+          sequential: true,
+          order: "post" as const,
+          handler() {
+            if (buildIdWritten) return;
+            buildIdWritten = true;
+            const outDir = path.join(root, "dist", "server");
+            fs.mkdirSync(outDir, { recursive: true });
+            fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
+          },
+        },
+      };
+    })(),
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
     // The prerender secret is used by prod-server.ts to authenticate requests to
     // the internal /__vinext/prerender/* endpoints, which are only reachable during
@@ -3401,6 +3421,95 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Build-time precompression: generate .br, .gz, .zst for hashed assets.
+    // Runs after the client bundle is written so compressed variants are
+    // available for the production server's static file cache.
+    // Opt-in via `precompress: true` in plugin options or `--precompress`
+    // CLI flag. Not useful for edge platforms (Cloudflare Workers, Nitro)
+    // that handle compression at the CDN layer.
+    (() => {
+      let pendingPrecompress: Promise<void> | null = null;
+      let pendingPrecompressError: unknown = null;
+
+      return {
+        name: "vinext:precompress",
+        apply: "build" as const,
+        enforce: "post" as const,
+        writeBundle: {
+          sequential: true,
+          order: "post" as const,
+          handler(outputOptions: { dir?: string }) {
+            if (this.environment?.name !== "client") return;
+
+            if (!options.precompress && process.env.VINEXT_PRECOMPRESS !== "1") return;
+
+            const outDir = outputOptions.dir;
+            if (!outDir) return;
+
+            // Only precompress hashed assets — public directory files use
+            // on-the-fly compression since they may change between deploys.
+            const assetsDir = path.join(outDir, "assets");
+            if (!fs.existsSync(assetsDir)) return;
+
+            const isTTY = process.stderr.isTTY;
+            let lastLineLen = 0;
+
+            // Start precompression as soon as the client bundle is written, but
+            // defer awaiting it until the SSR environment finishes. This overlaps
+            // the extra asset work with the final build phase instead of putting
+            // the full precompression cost on the critical path of step 4/5.
+            pendingPrecompressError = null;
+            pendingPrecompress = (async () => {
+              const result = await precompressAssets(outDir, (completed, total, file) => {
+                if (!isTTY) return;
+                const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
+                const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
+                const maxFile = 30;
+                const fileLabel = file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
+                const line = `Compressing assets... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${fileLabel}`;
+                const padded = line.padEnd(lastLineLen);
+                lastLineLen = line.length;
+                process.stderr.write(`\r${padded}`);
+              });
+              if (isTTY) {
+                process.stderr.write(`\r${" ".repeat(lastLineLen)}\r`);
+              }
+              if (result.filesCompressed > 0) {
+                const ratio = (
+                  (1 - result.totalBrotliBytes / result.totalOriginalBytes) *
+                  100
+                ).toFixed(1);
+                console.log(
+                  `  Precompressed ${result.filesCompressed} assets (${ratio}% smaller with brotli)`,
+                );
+              }
+            })().catch((error) => {
+              pendingPrecompressError = error;
+              // Log immediately so the error isn't invisible if closeBundle
+              // never fires (e.g. a crash in a later SSR build plugin).
+              console.error("[vinext] Precompression failed:", error);
+            });
+          },
+        },
+        closeBundle: {
+          sequential: true,
+          order: "post" as const,
+          async handler() {
+            if (this.environment?.name !== "ssr") return;
+            if (!pendingPrecompress) return;
+
+            const task = pendingPrecompress;
+            pendingPrecompress = null;
+            await task;
+            if (pendingPrecompressError) {
+              const error = pendingPrecompressError;
+              pendingPrecompressError = null;
+              throw error;
+            }
+          },
+        },
+      };
+    })(),
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.
@@ -3962,7 +4071,6 @@ function findFileWithExts(
 
 /** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
 const _mdxScanCache = new Map<string, boolean>();
-
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
@@ -3998,6 +4106,60 @@ function scanDirForMdx(dir: string): boolean {
   return false;
 }
 
+function scanPublicFileRoutes(root: string): string[] {
+  const publicDir = path.join(root, "public");
+  const routes: string[] = [];
+  const visitedDirs = new Set<string>();
+
+  function walk(dir: string): void {
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visitedDirs.has(realDir)) return;
+    visitedDirs.add(realDir);
+
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          walk(fullPath);
+          continue;
+        }
+        if (!stat.isFile()) continue;
+      } else if (!entry.isFile()) {
+        continue;
+      }
+      const relativePath = path.relative(publicDir, fullPath).split(path.sep).join("/");
+      routes.push("/" + relativePath);
+    }
+  }
+
+  if (fs.existsSync(publicDir)) {
+    try {
+      walk(publicDir);
+    } catch {
+      // ignore unreadable dirs
+    }
+  }
+
+  routes.sort();
+  return routes;
+}
+
 // Public exports for static export
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type {
@@ -4017,12 +4179,15 @@ export {
   clientTreeshakeConfig,
   computeLazyChunks,
   getClientOutputConfigForVite,
+  getClientTreeshakeConfigForVite,
 };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { _postcssCache };
 export { hasMdxFiles as _hasMdxFiles };
 export { _mdxScanCache };
+export { scanPublicFileRoutes as _scanPublicFileRoutes };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
+export { _findBalancedObject, _findCallEnd };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };

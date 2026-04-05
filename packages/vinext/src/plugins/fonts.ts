@@ -393,6 +393,137 @@ async function fetchAndCacheFont(
  *   files from transform (they contain `next/font/google` references that must
  *   not be rewritten).
  */
+
+/**
+ * Scan `code` forward from `searchStart` for a `{...}` object literal that
+ * may contain arbitrarily nested braces.  Returns `[objStart, objEnd]` where
+ * `code[objStart] === '{'` and `code[objEnd - 1] === '}'`, or `null` if no
+ * balanced object is found.
+ *
+ * String literals (single-quoted, double-quoted, and backtick template
+ * literals including `${...}` interpolations) are fully skipped so that brace
+ * characters inside string values do not affect the depth count.
+ */
+export function _findBalancedObject(code: string, searchStart: number): [number, number] | null {
+  let i = searchStart;
+  // Skip leading whitespace before the opening brace
+  while (
+    i < code.length &&
+    (code[i] === " " || code[i] === "\t" || code[i] === "\n" || code[i] === "\r")
+  ) {
+    i++;
+  }
+  if (i >= code.length || code[i] !== "{") return null;
+  const objStart = i;
+  let depth = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    if (ch === '"' || ch === "'") {
+      // Skip a single- or double-quoted string literal, respecting backslash escapes.
+      const quote = ch;
+      i++;
+      while (i < code.length) {
+        const sc = code[i];
+        if (sc === "\\") {
+          i += 2; // skip escaped character
+        } else if (sc === quote) {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+    } else if (ch === "`") {
+      // Skip a template literal, including ${...} interpolation blocks.
+      // We need to track brace depth inside interpolations so that a `}`
+      // that closes an interpolation isn't mistaken for closing the object.
+      i++; // consume the opening backtick
+      while (i < code.length) {
+        const tc = code[i];
+        if (tc === "\\") {
+          i += 2; // skip escape sequence
+        } else if (tc === "`") {
+          i++; // end of template literal
+          break;
+        } else if (tc === "$" && code[i + 1] === "{") {
+          // Enter a ${...} interpolation: scan forward tracking nested braces.
+          i += 2; // consume '${'
+          let exprDepth = 1;
+          while (i < code.length && exprDepth > 0) {
+            const ec = code[i];
+            if (ec === "{") {
+              exprDepth++;
+              i++;
+            } else if (ec === "}") {
+              exprDepth--;
+              i++;
+            } else if (ec === '"' || ec === "'") {
+              // Quoted string inside interpolation — skip it
+              const q = ec;
+              i++;
+              while (i < code.length) {
+                if (code[i] === "\\") {
+                  i += 2;
+                } else if (code[i] === q) {
+                  i++;
+                  break;
+                } else {
+                  i++;
+                }
+              }
+            } else if (ec === "`") {
+              // Nested template literal inside interpolation — skip it
+              // (simple depth-1 skip; deeply nested templates are rare in font options)
+              i++;
+              while (i < code.length) {
+                if (code[i] === "\\") {
+                  i += 2;
+                } else if (code[i] === "`") {
+                  i++;
+                  break;
+                } else {
+                  i++;
+                }
+              }
+            } else {
+              i++;
+            }
+          }
+        } else {
+          i++;
+        }
+      }
+    } else if (ch === "{") {
+      depth++;
+      i++;
+    } else if (ch === "}") {
+      depth--;
+      i++;
+      if (depth === 0) return [objStart, i];
+    } else {
+      i++;
+    }
+  }
+  return null; // unbalanced
+}
+
+/**
+ * Given the index just past the closing `}` of an options object, skip
+ * optional whitespace and return the index after the closing `)`.
+ * Returns `null` if the next non-whitespace character is not `)`.
+ */
+export function _findCallEnd(code: string, objEnd: number): number | null {
+  let i = objEnd;
+  while (
+    i < code.length &&
+    (code[i] === " " || code[i] === "\t" || code[i] === "\n" || code[i] === "\r")
+  ) {
+    i++;
+  }
+  if (i >= code.length || code[i] !== ")") return null;
+  return i + 1;
+}
+
 export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: string): Plugin {
   // Vite does not bind `this` to the plugin object when calling hooks, so
   // plugin state must be held in closure variables rather than as properties.
@@ -602,15 +733,26 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         }
 
         if (isBuild) {
-          const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+          // Match: Identifier( — where the argument starts with {
+          // The regex intentionally does NOT capture the options object; we use
+          // _findBalancedObject() to handle nested braces correctly.
+          const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
           let namedCallMatch;
           while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
-            const [fullMatch, localName, optionsStr] = namedCallMatch;
+            const [fullMatch, localName] = namedCallMatch;
             const importedName = fontLocals.get(localName);
             if (!importedName) continue;
 
             const callStart = namedCallMatch.index;
-            const callEnd = callStart + fullMatch.length;
+            // The regex consumed up to (but not including) the '{' due to the
+            // lookahead — find the balanced object starting at the lookahead pos.
+            const openParenEnd = callStart + fullMatch.length;
+            const objRange = _findBalancedObject(code, openParenEnd);
+            if (!objRange) continue;
+            const optionsStr = code.slice(objRange[0], objRange[1]);
+            const callEnd = _findCallEnd(code, objRange[1]);
+            if (callEnd === null) continue;
+
             if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
               continue;
             }
@@ -624,15 +766,22 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             );
           }
 
+          // Match: Identifier.Identifier( — where the argument starts with {
           const memberCallRe =
-            /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+            /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
           let memberCallMatch;
           while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
-            const [fullMatch, objectName, propName, optionsStr] = memberCallMatch;
+            const [fullMatch, objectName, propName] = memberCallMatch;
             if (!proxyObjectLocals.has(objectName)) continue;
 
             const callStart = memberCallMatch.index;
-            const callEnd = callStart + fullMatch.length;
+            const openParenEnd = callStart + fullMatch.length;
+            const objRange = _findBalancedObject(code, openParenEnd);
+            if (!objRange) continue;
+            const optionsStr = code.slice(objRange[0], objRange[1]);
+            const callEnd = _findCallEnd(code, objRange[1]);
+            if (callEnd === null) continue;
+
             if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
               continue;
             }

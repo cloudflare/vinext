@@ -26,7 +26,10 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
+import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import { emitStandaloneOutput } from "./build/standalone.js";
+import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
+
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
 // When vinext is installed via `bun link` or `npm link`, Node follows the
@@ -98,6 +101,7 @@ type ParsedArgs = {
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
   prerenderAll?: boolean;
+  precompress?: boolean;
 };
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -114,6 +118,9 @@ function parseArgs(args: string[]): ParsedArgs {
       result.experimental = true; // no-op
     } else if (arg === "--prerender-all") {
       result.prerenderAll = true;
+    } else if (arg === "--precompress") {
+      result.precompress = true;
+      process.env.VINEXT_PRECOMPRESS = "1";
     } else if (arg === "--port" || arg === "-p") {
       result.port = parseInt(args[++i], 10);
     } else if (arg.startsWith("--port=")) {
@@ -366,6 +373,26 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+  const resolvedNextConfig = await resolveNextConfig(
+    await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
+    process.cwd(),
+  );
+  const outputMode = resolvedNextConfig.output;
+  const distDir = path.resolve(process.cwd(), "dist");
+
+  // Pre-flight check: verify vinext's own dist/ exists before starting the build.
+  // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
+  // the full multi-minute Vite build completes, when emitStandaloneOutput runs.
+  if (outputMode === "standalone") {
+    const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
+    if (!fs.existsSync(vinextDistDir)) {
+      console.error(
+        `  Error: vinext dist/ not found at ${vinextDistDir}. Run \`pnpm run build\` in the vinext package first.`,
+      );
+      process.exit(1);
+    }
+  }
+
   // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
   const logger = parsed.verbose
     ? vite.createLogger("info", { allowClearScreen: false })
@@ -462,10 +489,20 @@ async function buildApp() {
     }
   }
 
-  const nextConfig = await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd());
+  if (outputMode === "standalone") {
+    const standalone = emitStandaloneOutput({
+      root: process.cwd(),
+      outDir: distDir,
+    });
+    console.log(
+      `  Generated standalone output in ${path.relative(process.cwd(), standalone.standaloneDir)}/`,
+    );
+    console.log("  Start it with: node dist/standalone/server.js\n");
+    return process.exit(0);
+  }
 
   let prerenderResult;
-  const shouldPrerender = parsed.prerenderAll || nextConfig.output === "export";
+  const shouldPrerender = parsed.prerenderAll || resolvedNextConfig.output === "export";
 
   if (shouldPrerender) {
     const label = parsed.prerenderAll
@@ -476,10 +513,13 @@ async function buildApp() {
     prerenderResult = await runPrerender({ root: process.cwd() });
   }
 
+  // Precompression runs as a Vite plugin writeBundle hook (vinext:precompress).
+  // Opt-in via --precompress CLI flag or `precompress: true` in plugin options.
+
   process.stdout.write("\x1b[0m");
   await printBuildReport({
     root: process.cwd(),
-    pageExtensions: nextConfig.pageExtensions,
+    pageExtensions: resolvedNextConfig.pageExtensions,
     prerenderResult: prerenderResult ?? undefined,
   });
 
@@ -639,11 +679,13 @@ function printHelp(cmd?: string) {
 
   Automatically detects App Router (app/) or Pages Router (pages/) and
   runs the appropriate multi-environment build via Vite.
+  If next.config sets output: "standalone", also emits dist/standalone/server.js.
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
     --prerender-all      Pre-render discovered routes after building (future releases
                          will serve these files in vinext start)
+    --precompress        Precompress static assets at build time (.br, .gz, .zst)
     -h, --help           Show this help
 `);
     return;
@@ -657,6 +699,7 @@ function printHelp(cmd?: string) {
 
   Serves the output from \`vinext build\`. Supports SSR, static files,
   compression, and all middleware.
+  For output: "standalone", you can also run: node dist/standalone/server.js
 
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)

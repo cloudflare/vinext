@@ -18,48 +18,81 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/",
 }));
 // The error boundary is primarily a client-side component.
+//
+// Verified against Next.js source:
+// - packages/next/src/client/components/error-boundary.tsx
+// - packages/next/src/client/components/navigation.ts
+//
+// Next.js resets segment error boundaries on pathname changes using a
+// previousPathname field, and usePathname() is pathname-only rather than
+// query-aware. These tests lock our shim to that behavior.
+
+type ErrorBoundaryInnerConstructor = {
+  getDerivedStateFromError(error: Error): Partial<{
+    error: Error | null;
+    previousPathname: string;
+  }>;
+  getDerivedStateFromProps(
+    props: {
+      children: React.ReactNode;
+      fallback: React.ComponentType<{ error: Error; reset: () => void }>;
+      pathname: string;
+    },
+    state: {
+      error: Error | null;
+      previousPathname: string;
+    },
+  ): {
+    error: Error | null;
+    previousPathname: string;
+  } | null;
+};
+
+function isErrorBoundaryInnerConstructor(value: unknown): value is ErrorBoundaryInnerConstructor {
+  return value !== null && typeof value === "function";
+}
+
+function createErrorWithDigest(message: string, digest: string) {
+  return Object.assign(new Error(message), { digest });
+}
 
 // Test the digest detection patterns used by the boundaries
 describe("ErrorBoundary digest patterns", () => {
   it("NEXT_NOT_FOUND digest matches legacy not-found pattern", () => {
-    const error = new Error("Not Found");
-    (error as any).digest = "NEXT_NOT_FOUND";
-
-    // The ErrorBoundary re-throws errors with these digests
-    const digest = (error as any).digest;
-    expect(digest === "NEXT_NOT_FOUND").toBe(true);
+    const error = createErrorWithDigest("Not Found", "NEXT_NOT_FOUND");
+    expect(Reflect.get(error, "digest")).toBe("NEXT_NOT_FOUND");
   });
 
   it("NEXT_HTTP_ERROR_FALLBACK;404 matches new not-found pattern", () => {
-    const error = new Error("Not Found");
-    (error as any).digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const error = createErrorWithDigest("Not Found", digest);
 
-    const digest = (error as any).digest;
+    expect(Reflect.get(error, "digest")).toBe(digest);
     expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(true);
     expect(digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
   });
 
   it("NEXT_HTTP_ERROR_FALLBACK;403 matches forbidden pattern", () => {
-    const error = new Error("Forbidden");
-    (error as any).digest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const error = createErrorWithDigest("Forbidden", digest);
 
-    const digest = (error as any).digest;
+    expect(Reflect.get(error, "digest")).toBe(digest);
     expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(true);
   });
 
   it("NEXT_HTTP_ERROR_FALLBACK;401 matches unauthorized pattern", () => {
-    const error = new Error("Unauthorized");
-    (error as any).digest = "NEXT_HTTP_ERROR_FALLBACK;401";
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;401";
+    const error = createErrorWithDigest("Unauthorized", digest);
 
-    const digest = (error as any).digest;
+    expect(Reflect.get(error, "digest")).toBe(digest);
     expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(true);
   });
 
   it("NEXT_REDIRECT digest matches redirect pattern", () => {
-    const error = new Error("Redirect");
-    (error as any).digest = "NEXT_REDIRECT;replace;/login;307;";
+    const digest = "NEXT_REDIRECT;replace;/login;307;";
+    const error = createErrorWithDigest("Redirect", digest);
 
-    const digest = (error as any).digest;
+    expect(Reflect.get(error, "digest")).toBe(digest);
     expect(digest.startsWith("NEXT_REDIRECT;")).toBe(true);
   });
 
@@ -70,12 +103,12 @@ describe("ErrorBoundary digest patterns", () => {
   });
 
   it("errors with non-special digests are caught by ErrorBoundary", () => {
-    const error = new Error("Custom error");
-    (error as any).digest = "SOME_CUSTOM_DIGEST";
+    const digest = "SOME_CUSTOM_DIGEST";
+    const error = createErrorWithDigest("Custom error", digest);
 
-    const digest = (error as any).digest;
+    expect(Reflect.get(error, "digest")).toBe(digest);
     // These should NOT be re-thrown — they should be caught
-    expect(digest === "NEXT_NOT_FOUND").toBe(false);
+    expect(digest).not.toBe("NEXT_NOT_FOUND");
     expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(false);
     expect(digest.startsWith("NEXT_REDIRECT;")).toBe(false);
   });
@@ -85,53 +118,138 @@ describe("ErrorBoundary digest patterns", () => {
 // The real method THROWS for digest errors (re-throwing them past the boundary)
 // and returns { error } for regular errors (catching them).
 describe("ErrorBoundary digest classification (actual class)", () => {
-  let ErrorBoundary: any;
+  let ErrorBoundaryInnerClass: ErrorBoundaryInnerConstructor | null = null;
+  let ErrorBoundaryInner: ErrorBoundaryInnerConstructor | null = null;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/error-boundary.js");
-    ErrorBoundary = mod.ErrorBoundary;
+    const maybeInner = Reflect.get(mod, "ErrorBoundaryInner");
+    if (isErrorBoundaryInnerConstructor(maybeInner)) {
+      ErrorBoundaryInnerClass = maybeInner;
+      ErrorBoundaryInner = maybeInner;
+    }
   });
 
   it("rethrows NEXT_NOT_FOUND", () => {
     const e = Object.assign(new Error(), { digest: "NEXT_NOT_FOUND" });
-    expect(() => ErrorBoundary.getDerivedStateFromError(e)).toThrow(e);
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;404", () => {
     const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
-    expect(() => ErrorBoundary.getDerivedStateFromError(e)).toThrow(e);
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;403", () => {
     const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
-    expect(() => ErrorBoundary.getDerivedStateFromError(e)).toThrow(e);
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;401", () => {
     const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
-    expect(() => ErrorBoundary.getDerivedStateFromError(e)).toThrow(e);
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_REDIRECT", () => {
     const e = Object.assign(new Error(), { digest: "NEXT_REDIRECT;replace;/login;307;" });
-    expect(() => ErrorBoundary.getDerivedStateFromError(e)).toThrow(e);
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("catches regular errors (no digest)", () => {
     const e = new Error("oops");
-    const state = ErrorBoundary.getDerivedStateFromError(e);
-    expect(state).toEqual({ error: e });
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
+    expect(state).toMatchObject({ error: e });
   });
 
   it("catches errors with unknown digest", () => {
     const e = Object.assign(new Error(), { digest: "CUSTOM_ERROR" });
-    const state = ErrorBoundary.getDerivedStateFromError(e);
-    expect(state).toEqual({ error: e });
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
+    expect(state).toMatchObject({ error: e });
   });
 
   it("catches errors with empty digest", () => {
     const e = Object.assign(new Error(), { digest: "" });
-    const state = ErrorBoundary.getDerivedStateFromError(e);
-    expect(state).toEqual({ error: e });
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+    const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
+    expect(state).toMatchObject({ error: e });
+  });
+
+  // No direct Next.js test equivalent; behavior inferred from
+  // packages/next/src/client/components/error-boundary.tsx (getDerivedStateFromProps).
+  // Next.js uses the same pathname !== previousPathname guard at line 93 to clear
+  // error state on navigation. Their E2E test (test/e2e/app-dir/errors/index.test.ts)
+  // only covers the button-click reset path, not pathname-based reset.
+  it("resets caught errors when the pathname changes", () => {
+    expect(ErrorBoundaryInner).not.toBeNull();
+    if (!ErrorBoundaryInner) {
+      throw new Error("Expected ErrorBoundaryInner export");
+    }
+
+    function Fallback() {
+      return null;
+    }
+
+    const state = ErrorBoundaryInner.getDerivedStateFromProps(
+      {
+        children: null,
+        fallback: Fallback,
+        pathname: "/next",
+      },
+      {
+        error: new Error("stuck"),
+        previousPathname: "/previous",
+      },
+    );
+
+    expect(state).toEqual({
+      error: null,
+      previousPathname: "/next",
+    });
+  });
+
+  // Validates the getDerivedStateFromError → getDerivedStateFromProps sequence
+  // on the same pathname. Inferred from Next.js error-boundary.tsx: getDerivedStateFromError
+  // returns { error } (partial state), React merges it preserving previousPathname, then
+  // getDerivedStateFromProps sees matching pathnames and preserves the error.
+  it("does not immediately clear a caught error on the same pathname", () => {
+    expect(ErrorBoundaryInner).not.toBeNull();
+    if (!ErrorBoundaryInner) {
+      throw new Error("Expected ErrorBoundaryInner export");
+    }
+
+    const error = new Error("stuck");
+    const baseState = {
+      error: null,
+      previousPathname: "/error-test",
+    };
+    const stateAfterError = {
+      ...baseState,
+      ...ErrorBoundaryInner.getDerivedStateFromError(error),
+    };
+
+    function Fallback() {
+      return null;
+    }
+
+    const stateAfterProps = ErrorBoundaryInner.getDerivedStateFromProps(
+      {
+        children: null,
+        fallback: Fallback,
+        pathname: "/error-test",
+      },
+      stateAfterError,
+    );
+
+    expect(stateAfterProps).toEqual({
+      error,
+      previousPathname: "/error-test",
+    });
   });
 });

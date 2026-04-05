@@ -8,21 +8,15 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: search-params-react-key (browser)", () => {
   // Next.js: 'should keep the React router instance the same when changing the search params'
   test("component state persists across search param changes via router.push", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/search-params-key`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Initial state: count=0
     await expect(page.locator("#count")).toHaveText("0");
@@ -48,7 +42,7 @@ test.describe("Next.js compat: search-params-react-key (browser)", () => {
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/search-params-key`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Increment twice: count=2
     await page.click("#increment");

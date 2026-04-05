@@ -17,25 +17,30 @@
  * to avoid creating separate contexts in different modules.
  */
 import { createElement, type ReactNode } from "react";
-import { getLayoutSegmentContext } from "./navigation.js";
+import { getLayoutSegmentContext, type SegmentMap } from "./navigation.js";
 
 /**
  * Wraps children with the layout segment context.
+ *
  * Each layout in the App Router tree wraps its children with this provider,
- * passing the remaining route tree segments below that layout level.
- * Segments include route groups and resolved dynamic param values.
+ * passing a map of parallel route key to segment path. The "children" key is
+ * always present (the default parallel route). Named parallel slots at this
+ * layout level add their own keys.
+ *
+ * Components inside the provider call useSelectedLayoutSegments(parallelRoutesKey)
+ * to read the segments for a specific parallel route.
  */
 export function LayoutSegmentProvider({
-  childSegments,
+  segmentMap,
   children,
 }: {
-  childSegments: string[];
+  segmentMap: SegmentMap;
   children: ReactNode;
 }) {
   const ctx = getLayoutSegmentContext();
   if (!ctx) {
-    // Fallback: no context available (shouldn't happen in SSR/Browser)
+    // No context available — expected only in RSC environment, not SSR/browser.
     return children;
   }
-  return createElement(ctx.Provider, { value: childSegments }, children);
+  return createElement(ctx.Provider, { value: segmentMap }, children);
 }

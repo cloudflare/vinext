@@ -20,8 +20,12 @@ import React, {
 } from "react";
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
-import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
-import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import {
+  toRscUrl,
+  getPrefetchedUrls,
+  navigateClientSide,
+  prefetchRscResponse,
+} from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import {
   resolveRelativeHref,
@@ -93,36 +97,6 @@ function resolveHref(href: LinkProps["href"]): string {
   return url;
 }
 
-/**
- * Check if a href is only a hash change (same pathname, different/added hash).
- * Handles relative hashes like "#foo" and "?query#foo".
- */
-function isHashOnlyChange(href: string): boolean {
-  if (href.startsWith("#")) return true;
-  try {
-    const current = new URL(window.location.href);
-    const next = new URL(href, window.location.href);
-    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Scroll to a hash target element, or to the top if no hash.
- */
-function scrollToHash(hash: string): void {
-  if (!hash || hash === "#") {
-    window.scrollTo(0, 0);
-    return;
-  }
-  const id = hash.slice(1); // Remove leading #
-  const element = document.getElementById(id);
-  if (element) {
-    element.scrollIntoView({ behavior: "auto" });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Prefetching infrastructure
 // ---------------------------------------------------------------------------
@@ -161,26 +135,16 @@ function prefetchUrl(href: string): void {
 
   schedule(() => {
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: prefetch the RSC payload and store in cache
-      fetch(rscUrl, {
-        headers: { Accept: "text/x-component" },
-        credentials: "include",
-        priority: "low" as const,
-        // @ts-expect-error — purpose is a valid fetch option in some browsers
-        purpose: "prefetch",
-      })
-        .then((response) => {
-          if (response.ok) {
-            storePrefetchResponse(rscUrl, response);
-          } else {
-            // Non-ok response: allow retry on next viewport intersection
-            prefetched.delete(rscUrl);
-          }
-        })
-        .catch(() => {
-          // Network error: allow retry on next viewport intersection
-          prefetched.delete(rscUrl);
-        });
+      prefetchRscResponse(
+        rscUrl,
+        fetch(rscUrl, {
+          headers: { Accept: "text/x-component" },
+          credentials: "include",
+          priority: "low" as const,
+          // @ts-expect-error — purpose is a valid fetch option in some browsers
+          purpose: "prefetch",
+        }),
+      );
     } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module
       // We can't easily resolve the target page's module URL from the Link,
@@ -437,49 +401,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
     }
 
-    // Save scroll position for back/forward restoration
-    if (!replace) {
-      const state = window.history.state ?? {};
-      window.history.replaceState(
-        { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
-        "",
-      );
-    }
-
-    // Hash-only change: update URL and scroll to target, skip RSC fetch
-    if (typeof window !== "undefined" && isHashOnlyChange(absoluteFullHref)) {
-      const hash = absoluteFullHref.includes("#")
-        ? absoluteFullHref.slice(absoluteFullHref.indexOf("#"))
-        : "";
-      if (replace) {
-        window.history.replaceState(null, "", absoluteFullHref);
-      } else {
-        window.history.pushState(null, "", absoluteFullHref);
-      }
-      if (scroll) {
-        scrollToHash(hash);
-      }
-      return;
-    }
-
-    // Extract hash for scroll-after-navigation
-    const hashIdx = absoluteFullHref.indexOf("#");
-    const hash = hashIdx !== -1 ? absoluteFullHref.slice(hashIdx) : "";
-
-    // Try RSC navigation first (App Router), then Pages Router
+    // App Router: delegate to navigateClientSide which handles scroll save,
+    // hash-only changes, RSC fetch, and two-phase URL commit.
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: push/replace history state, then fetch RSC stream.
-      // Await the RSC navigate so scroll-to-top happens after the new
-      // content is committed to the DOM (prevents flash of old page at top).
-      notifyAppRouterTransitionStart(absoluteFullHref, replace ? "replace" : "push");
-      if (replace) {
-        window.history.replaceState(null, "", absoluteFullHref);
-      } else {
-        window.history.pushState(null, "", absoluteFullHref);
-      }
       setPending(true);
       try {
-        await window.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+        await navigateClientSide(navigateHref, replace ? "replace" : "push", scroll);
       } finally {
         if (mountedRef.current) setPending(false);
       }
@@ -505,14 +432,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           window.history.pushState({}, "", absoluteFullHref);
         }
         window.dispatchEvent(new PopStateEvent("popstate"));
-      }
-    }
-
-    if (scroll) {
-      if (hash) {
-        scrollToHash(hash);
-      } else {
-        window.scrollTo(0, 0);
       }
     }
   };

@@ -62,6 +62,45 @@ describe("next/navigation shim", () => {
     }
   });
 
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() without an explicit type uses an empty sentinel so
+  // the context (action vs render) can resolve the default at the catch site.
+  it("redirect() without explicit type uses empty sentinel (context-dependent default)", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      // Empty string sentinel — the catch site determines push vs replace
+      expect(parts[1]).toBe("");
+      expect(decodeURIComponent(parts[2])).toBe("/dashboard");
+    }
+  });
+
+  it("redirect() with explicit 'push' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("push");
+    }
+  });
+
+  it("redirect() with explicit 'replace' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "replace");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
+    }
+  });
+
   it("redirect() encodes semicolons in URL to prevent digest injection", async () => {
     const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
     try {
@@ -72,8 +111,34 @@ describe("next/navigation shim", () => {
       // The URL field must not leak into the status code position
       expect(parts).toHaveLength(3); // NEXT_REDIRECT, type, encoded-url
       expect(parts[0]).toBe("NEXT_REDIRECT");
-      expect(parts[1]).toBe("replace");
+      // Empty sentinel — no explicit type passed
+      expect(parts[1]).toBe("");
       expect(decodeURIComponent(parts[2])).toBe("http://example.com;301");
+    }
+  });
+
+  it("permanentRedirect() accepts an optional type parameter", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      expect(parts[1]).toBe("push");
+      expect(decodeURIComponent(parts[2])).toBe("/new-page");
+      expect(parts[3]).toBe("308");
+    }
+  });
+
+  it("permanentRedirect() defaults to 'replace' when no type given", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
     }
   });
 
@@ -210,7 +275,7 @@ describe("next/navigation shim", () => {
 
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
-        childSegments: ["explore"],
+        segmentMap: { children: ["explore"] },
         // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
@@ -262,6 +327,81 @@ describe("next/navigation shim", () => {
     // Outside a React tree, no LayoutSegmentProvider wraps us,
     // so there are no child segments → null.
     expect(useSelectedLayoutSegment()).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments() accepts parallelRoutesKey and returns matching segments", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    // Outside a React tree, returns [] regardless of key.
+    const result = nav.useSelectedLayoutSegments("team");
+    expect(result).toEqual([]);
+  });
+
+  it("useSelectedLayoutSegment() accepts parallelRoutesKey and returns null outside React tree", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    const result = nav.useSelectedLayoutSegment("team");
+    expect(result).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments(parallelRoutesKey) returns per-slot segments via segmentMap", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments, useSelectedLayoutSegment } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const childrenSegs = useSelectedLayoutSegments();
+      const teamSegs = useSelectedLayoutSegments("team");
+      const teamSeg = useSelectedLayoutSegment("team");
+      return createElement(
+        "div",
+        null,
+        createElement("span", { id: "children" }, JSON.stringify(childrenSegs)),
+        createElement("span", { id: "team" }, JSON.stringify(teamSegs)),
+        createElement("span", { id: "team-singular" }, teamSeg ?? "null"),
+      );
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog", "hello"], team: ["settings"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    // React SSR HTML-encodes " as &quot; in text content
+    const Q = "&quot;";
+    expect(html).toContain(`<span id="children">[${Q}blog${Q},${Q}hello${Q}]</span>`);
+    expect(html).toContain(`<span id="team">[${Q}settings${Q}]</span>`);
+    expect(html).toContain('<span id="team-singular">settings</span>');
+  });
+
+  it("useSelectedLayoutSegments(unknownKey) returns [] for missing slot", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const segs = useSelectedLayoutSegments("nonexistent");
+      return createElement("span", null, JSON.stringify(segs));
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    expect(html).toContain("[]");
   });
 });
 
@@ -3812,7 +3952,7 @@ describe("ResponseCookies API", () => {
     expect(cookies.has("missing")).toBe(false);
   });
 
-  it("delete() sets Max-Age=0", async () => {
+  it("delete() expires the cookie (matching edge-runtime)", async () => {
     const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers();
     const cookies = new ResponseCookies(headers);
@@ -3822,7 +3962,7 @@ describe("ResponseCookies API", () => {
     const setCookie = headers.getSetCookie();
     expect(setCookie).toHaveLength(1);
     expect(setCookie[0]).toContain("session=");
-    expect(setCookie[0]).toContain("Max-Age=0");
+    expect(setCookie[0]).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
     expect(setCookie[0]).toContain("Path=/");
   });
 
@@ -3879,6 +4019,233 @@ describe("ResponseCookies API", () => {
     const setCookie = headers.getSetCookie();
     expect(setCookie[0]).toContain("Expires=");
     expect(setCookie[0]).toContain("2030");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResponseCookies correctness (Next.js parity)
+// Ported from @edge-runtime/cookies: packages/cookies/src/response-cookies.ts
+// https://github.com/vercel/edge-runtime/blob/main/packages/cookies/src/response-cookies.ts
+
+describe("ResponseCookies correctness", () => {
+  // Bug 1: set() same cookie name twice should replace, not duplicate
+  it("set() same cookie name twice replaces the header (no duplicates)", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "old-value");
+    cookies.set("session", "new-value");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=new-value");
+  });
+
+  it("get() returns the latest value after set() overwrites", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "first");
+    cookies.set("token", "second");
+
+    const result = cookies.get("token");
+    expect(result?.value).toBe("second");
+  });
+
+  it("set() replaces only the matching cookie, preserves others", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("a", "3");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(2);
+    // 'a' was replaced, 'b' stays
+    const aHeader = setCookie.find((h: string) => h.startsWith("a="));
+    const bHeader = setCookie.find((h: string) => h.startsWith("b="));
+    expect(aHeader).toContain("a=3");
+    expect(bHeader).toContain("b=2");
+  });
+
+  // Bug 2: set() should accept object form
+  it("set() accepts object form { name, value, ... }", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set({ name: "token", value: "abc", httpOnly: true, path: "/api" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=abc");
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Path=/api");
+
+    const result = cookies.get("token");
+    expect(result?.value).toBe("abc");
+  });
+
+  it("set() object form replaces existing cookie of same name", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "old");
+    cookies.set({ name: "token", value: "new", secure: true });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=new");
+    expect(setCookie[0]).toContain("Secure");
+  });
+
+  // Bug 3: getAll() should accept optional name filter
+  it("getAll(name) filters by cookie name", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("c", "3");
+
+    const filtered = cookies.getAll("b");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toEqual({ name: "b", value: "2" });
+  });
+
+  it("getAll({ name }) filters by cookie name (object form)", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("x", "10");
+    cookies.set("y", "20");
+
+    const filtered = cookies.getAll({ name: "x" });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toEqual({ name: "x", value: "10" });
+  });
+
+  it("getAll() with no args returns all cookies", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(2);
+  });
+
+  it("getAll(name) returns empty array for non-existent cookie", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+
+    const filtered = cookies.getAll("missing");
+    expect(filtered).toHaveLength(0);
+  });
+
+  // Bug 4: delete() should accept object and array forms
+  it("delete({ name, path, domain }) sets correct expiry cookie with path and domain", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({ name: "session", path: "/app", domain: ".example.com" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=");
+    expect(setCookie[0]).toContain("Path=/app");
+    expect(setCookie[0]).toContain("Domain=.example.com");
+    // Should expire the cookie
+    expect(setCookie[0]).toContain("Expires=");
+  });
+
+  it("delete() forwards httpOnly, secure, and sameSite attributes", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({
+      name: "session",
+      path: "/app",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Secure");
+    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("Path=/app");
+    expect(setCookie[0]).toContain("Expires=");
+  });
+
+  it("delete() replaces existing cookie's Set-Cookie header", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc123", { path: "/app" });
+    cookies.delete("session");
+
+    // Should have exactly one Set-Cookie for 'session' (the deletion one)
+    const setCookie = headers.getSetCookie();
+    const sessionHeaders = setCookie.filter((h: string) => h.startsWith("session="));
+    expect(sessionHeaders).toHaveLength(1);
+    expect(sessionHeaders[0]).toContain("Expires=");
+  });
+
+  // Constructor should parse existing Set-Cookie headers
+  it("constructor parses existing Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    headers.append("Set-Cookie", "existing=value; Path=/");
+
+    const cookies = new ResponseCookies(headers);
+    const result = cookies.get("existing");
+    expect(result?.value).toBe("value");
+  });
+
+  // has() should work with internal map
+  it("has() returns false after delete()", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc");
+    expect(cookies.has("session")).toBe(true);
+
+    cookies.delete("session");
+    // After delete, a new expired cookie replaces the old one.
+    // The cookie still "exists" in the map (with empty value and past expiry),
+    // matching edge-runtime behavior where delete() calls set().
+    // has() returns true because the entry exists in the map.
+    expect(cookies.has("session")).toBe(true);
+  });
+
+  // get() with object form (matching edge-runtime)
+  it("get() accepts object { name } form", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc");
+    const result = cookies.get({ name: "token" });
+    expect(result?.value).toBe("abc");
   });
 });
 
@@ -4672,6 +5039,31 @@ describe("NextResponse.redirect() status codes", () => {
     const url = new URL("https://example.com/target");
     const res = NextResponse.redirect(url);
     expect(res.headers.get("Location")).toBe("https://example.com/target");
+  });
+
+  it("supports 303 See Other", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const res = NextResponse.redirect("https://example.com", 303);
+    expect(res.status).toBe(303);
+  });
+
+  // Ported from Next.js: packages/next/src/server/web/spec-extension/response.ts
+  // Next.js validates redirect status codes and throws RangeError for invalid ones.
+  it("throws RangeError for non-redirect status code 200", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(RangeError);
+  });
+
+  it("throws RangeError for non-redirect status code 418", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 418)).toThrow(RangeError);
+  });
+
+  it("throws RangeError with descriptive message for invalid status", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(
+      /Failed to execute "redirect" on "response": Invalid status code/,
+    );
   });
 });
 

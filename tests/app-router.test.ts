@@ -366,6 +366,58 @@ describe("App Router integration", () => {
     expect(html).toMatch(/data-testid="segment"[^>]*>null</);
   });
 
+  // --- parallelRoutesKey support ---
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-use-selected-layout-segment
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-use-selected-layout-segment
+
+  it("useSelectedLayoutSegments('team') returns [] when slot page is at root", async () => {
+    // On /dashboard, @team/page.tsx is active — page at slot root means no child segments
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>null</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] when slot page is at root", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments('team') returns slot sub-route segments", async () => {
+    // On /dashboard/members, @team/members/page.tsx is active
+    // useSelectedLayoutSegments("team") should return ["members"]
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[&quot;members&quot;\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>members</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] when slot shows default on sub-route", async () => {
+    // On /dashboard/members, @analytics shows default.tsx (no members page)
+    // useSelectedLayoutSegments("analytics") should return [] (fallback)
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments() (default children) still returns correct segments after migration", async () => {
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // children segments below the dashboard layout should include "settings"
+    expect(html).toMatch(/data-testid="segments"[^>]*>\[&quot;settings&quot;\]/);
+  });
+
   // --- Intercepting routes ---
 
   it("renders full photo page on direct navigation (SSR)", async () => {
@@ -408,6 +460,54 @@ describe("App Router integration", () => {
     // It should also contain the feed page content (the source route)
     expect(rscPayload).toContain("Photo Feed");
     expect(rscPayload).toContain("feed-page");
+  });
+
+  // --- Intercepting routes with dynamic source route ---
+  // Regression: matchSourceRouteParams must extract actual URL param values
+  // (e.g. "42") from the request pathname, not the literal pattern strings
+  // (e.g. ":teamId") that result from feeding the pattern into the route trie.
+
+  it("renders members page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/members`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="members-page"');
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("renders settings page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/settings`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="settings-page"');
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/team-id:\s*(<!--\s*-->)?\s*42/);
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("extracts actual URL params for intercepted routes with dynamic source routes", async () => {
+    // RSC request simulates client-side navigation from /team/[teamId]/members
+    // to /team/[teamId]/settings. The source route has a dynamic :teamId segment.
+    // The intercepting route handler must extract "42" from the URL, not ":teamId".
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscPayload = await res.text();
+    // The RSC payload should contain the intercepted settings modal with the actual team ID
+    expect(rscPayload).toContain("Settings Modal");
+    expect(rscPayload).toContain("settings-modal");
+    // The source route (members page) should render with the actual teamId value.
+    // The source page component receives params from matchSourceRouteParams.
+    expect(rscPayload).toContain("members-page");
+    // The literal pattern string ":teamId" must NOT appear as a param value anywhere
+    expect(rscPayload).not.toContain('":teamId"');
   });
 
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
@@ -592,6 +692,45 @@ describe("App Router integration", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  // ── probePage() with Next.js 15+ async params/searchParams ──
+  // Regression tests: probePage() passed raw null-prototype params instead of
+  // thenable params, so pages using `await params` threw TypeError during probe,
+  // silently defeating early notFound()/redirect() detection.
+
+  it("notFound() detected via probe when page uses async params pattern", async () => {
+    // Page does `const { id } = await params` then calls notFound() for invalid IDs.
+    // Without thenable params, `await params` throws TypeError → probe silently fails
+    // → notFound() is caught during RSC render instead of the probe → still returns
+    // 404 but only by luck of error boundary handling, not the probe path.
+    const res = await fetch(`${baseUrl}/probe-async-params/invalid-id`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    // Should render root not-found boundary, not the page content
+    expect(html).not.toContain("probe-async-params-page");
+  });
+
+  it("page renders normally with async params when ID is valid", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/probe-async-params/valid-1");
+    expect(res.status).toBe(200);
+    expect(html).toContain("probe-async-params-page");
+  });
+
+  it("redirect() detected via probe when page uses async searchParams pattern", async () => {
+    // Page does `const { dest } = await searchParams` then calls redirect(dest).
+    // Without searchParams in the probe, `await searchParams` throws TypeError →
+    // probe silently fails → redirect() goes through RSC render path instead.
+    const res = await fetch(`${baseUrl}/probe-async-search?dest=/about`, { redirect: "manual" });
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("page renders normally with async searchParams when no dest param", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/probe-async-search");
+    expect(res.status).toBe(200);
+    expect(html).toContain("probe-async-search-page");
   });
 
   it("permanentRedirect() returns 308 status code", async () => {
@@ -1579,6 +1718,73 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toContain("immutable");
+  });
+
+  it("serves public files from the build output", async () => {
+    // Ported from Next.js: test/production/export/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/production/export/index.test.ts
+    const res = await fetch(`${baseUrl}/logo/logo.svg`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/svg+xml");
+    expect(await res.text()).toContain("vinext");
+  });
+
+  it("serves public files under basePath and 404s without it", async () => {
+    // Ported from Next.js: test/e2e/basepath/basepath.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/basepath.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-public-basepath-"));
+    const fixtureRoot = path.join(tmpDir, "fixture");
+    let basePathServer: import("node:http").Server | undefined;
+
+    try {
+      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+      if (!fs.existsSync(fixtureNodeModules)) {
+        fs.symlinkSync(
+          path.resolve(__dirname, "..", "node_modules"),
+          fixtureNodeModules,
+          "junction",
+        );
+      }
+
+      const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+      const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+      fs.writeFileSync(
+        nextConfigPath,
+        nextConfig.replace(
+          "const nextConfig: NextConfig = {",
+          'const nextConfig: NextConfig = {\n  basePath: "/app",',
+        ),
+      );
+
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server: basePathServer } = await startProdServer({
+        port: 0,
+        outDir: path.join(fixtureRoot, "dist"),
+        noCompression: true,
+      }));
+      const addr = basePathServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const tmpBaseUrl = `http://localhost:${port}`;
+
+      const withBasePathRes = await fetch(`${tmpBaseUrl}/app/logo/logo.svg`);
+      expect(withBasePathRes.status).toBe(200);
+      expect(withBasePathRes.headers.get("content-type")).toContain("image/svg+xml");
+
+      const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
+      expect(withoutBasePathRes.status).toBe(404);
+    } finally {
+      basePathServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("supports gzip compression for HTML", async () => {
@@ -3214,6 +3420,20 @@ describe("App Router middleware with NextRequest", () => {
     const text = await res.text();
     expect(text).toBe("Event OK");
   });
+
+  it("middleware response headers appear on intercepting route RSC responses", async () => {
+    // Intercepting route responses are constructed via renderInterceptResponse(),
+    // which must merge _mwCtx.headers into the Response — same as the normal
+    // page path through buildAppPageRscResponse().
+    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // Middleware sets x-mw-ran and x-mw-pathname on all matched paths
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/photos/42");
+  });
 });
 
 describe("RSC Flight hint fix", () => {
@@ -3877,5 +4097,59 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("return __executeAppRouteHandler({");
     expect(code).toContain("isrRouteKey: __isrRouteKey");
     expect(code).toContain("isrSet: __isrSet");
+  });
+
+  it("generated code merges middleware headers into intercept route responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The renderInterceptResponse callback must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers (auth cookies, CORS, security headers) to
+    // intercepting route RSC responses.
+    expect(code).toContain("mergeMiddlewareResponseHeaders");
+    // The call must appear between renderInterceptResponse and searchParams
+    // (the next callback in the options object), ensuring it's inside the
+    // intercept response construction path.
+    const interceptStart = code.indexOf("renderInterceptResponse(sourceRoute, interceptElement)");
+    const interceptEnd = code.indexOf("searchParams:", interceptStart);
+    const interceptBody = code.slice(interceptStart, interceptEnd);
+    expect(interceptBody).toContain("mergeMiddlewareResponseHeaders");
+  });
+
+  it("generated code merges middleware headers into server action re-render responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The server action re-render path must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers to the RSC response containing the re-rendered page.
+    // Find the action response construction area (after actionHeaders, before catch)
+    const actionHeadersIdx = code.indexOf("const actionHeaders =");
+    const actionCatchIdx = code.indexOf("} catch (err)", actionHeadersIdx);
+    const actionResponseBody = code.slice(actionHeadersIdx, actionCatchIdx);
+    expect(actionResponseBody).toContain("mergeMiddlewareResponseHeaders");
+  });
+
+  it("generated code merges middleware headers into server action redirect responses", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The server action redirect path must call mergeMiddlewareResponseHeaders
+    // to apply middleware headers to the redirect response.
+    const redirectStart = code.indexOf("if (actionRedirect)");
+    const redirectEnd = code.indexOf('return new Response(""', redirectStart);
+    const redirectBody = code.slice(redirectStart, redirectEnd);
+    expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
+  });
+
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() defaults to "push" in Server Action context so
+  // the Back button works after form submissions. The empty sentinel in the
+  // digest (parts[1] === "") should resolve to "push" in the action handler.
+  it("generated action handler defaults empty redirect type to 'push'", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // Find the action redirect digest parsing block
+    const digestStart = code.indexOf('if (digest.startsWith("NEXT_REDIRECT;"))');
+    const actionRedirectEnd = code.indexOf(
+      "returnValue = { ok: true, data: undefined }",
+      digestStart,
+    );
+    const digestBlock = code.slice(digestStart, actionRedirectEnd);
+    // The fallback for empty type must be "push", not "replace"
+    expect(digestBlock).toContain('parts[1] || "push"');
+    expect(digestBlock).not.toContain('parts[1] || "replace"');
   });
 });

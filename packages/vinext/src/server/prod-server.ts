@@ -5,7 +5,7 @@
  * - Static asset serving from client build output
  * - Pages Router: SSR rendering + API route handling
  * - App Router: RSC/SSR rendering, route handlers, server actions
- * - Gzip/Brotli compression for text-based responses
+ * - Zstd/Brotli/Gzip compression for text-based responses
  * - Streaming SSR for App Router
  *
  * Build output for Pages Router:
@@ -21,8 +21,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
+import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {
   matchRedirect,
   matchRewrite,
@@ -45,7 +47,7 @@ import {
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { computeLazyChunks } from "../index.js";
+import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
@@ -97,12 +99,19 @@ const COMPRESS_THRESHOLD = 1024;
 
 /**
  * Parse the Accept-Encoding header and return the best supported encoding.
- * Preference order: br > gzip > deflate > identity.
+ * Preference order: zstd > br > gzip > deflate > identity.
+ *
+ * zstd decompresses ~3-5x faster than brotli at similar compression ratios.
+ * Supported in Chrome 123+, Firefox 126+. Safari can decompress but doesn't
+ * send zstd in Accept-Encoding, so it transparently falls back to br/gzip.
  */
-function negotiateEncoding(req: IncomingMessage): "br" | "gzip" | "deflate" | null {
+const HAS_ZSTD = typeof zlib.createZstdCompress === "function";
+
+function negotiateEncoding(req: IncomingMessage): "zstd" | "br" | "gzip" | "deflate" | null {
   const accept = req.headers["accept-encoding"];
   if (!accept || typeof accept !== "string") return null;
   const lower = accept.toLowerCase();
+  if (HAS_ZSTD && lower.includes("zstd")) return "zstd";
   if (lower.includes("br")) return "br";
   if (lower.includes("gzip")) return "gzip";
   if (lower.includes("deflate")) return "deflate";
@@ -113,10 +122,15 @@ function negotiateEncoding(req: IncomingMessage): "br" | "gzip" | "deflate" | nu
  * Create a compression stream for the given encoding.
  */
 function createCompressor(
-  encoding: "br" | "gzip" | "deflate",
+  encoding: "zstd" | "br" | "gzip" | "deflate",
   mode: "default" | "streaming" = "default",
-): zlib.BrotliCompress | zlib.Gzip | zlib.Deflate {
+): zlib.ZstdCompress | zlib.BrotliCompress | zlib.Gzip | zlib.Deflate {
   switch (encoding) {
+    case "zstd":
+      return zlib.createZstdCompress({
+        ...(mode === "streaming" ? { flush: zlib.constants.ZSTD_e_flush } : {}),
+        params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 }, // Fast for on-the-fly
+      });
     case "br":
       return zlib.createBrotliCompress({
         ...(mode === "streaming" ? { flush: zlib.constants.BROTLI_OPERATION_FLUSH } : {}),
@@ -196,6 +210,15 @@ function omitHeadersCaseInsensitive(
     filtered[key] = value;
   }
   return filtered;
+}
+
+function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  if (ifNoneMatch === "*") return true;
+  return ifNoneMatch
+    .split(",")
+    .map((value) => value.trim())
+    .some((value) => value === etag);
 }
 
 function stripHeaders(
@@ -349,42 +372,118 @@ function sendCompressed(
   }
 }
 
-/** Content-type lookup for static assets. */
-const CONTENT_TYPES: Record<string, string> = {
-  ".js": "application/javascript",
-  ".mjs": "application/javascript",
-  ".css": "text/css",
-  ".html": "text/html",
-  ".json": "application/json",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".eot": "application/vnd.ms-fontobject",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".map": "application/json",
-  ".rsc": "text/x-component",
-};
-
 /**
  * Try to serve a static file from the client build directory.
- * Returns true if the file was served, false otherwise.
+ *
+ * When a `StaticFileCache` is provided, lookups are pure in-memory Map.get()
+ * with zero filesystem calls. Precompressed .br/.gz/.zst variants (generated at
+ * build time) are served directly — no per-request compression needed for
+ * hashed assets.
+ *
+ * Without a cache, falls back to async filesystem probing (still non-blocking,
+ * unlike the old sync existsSync/statSync approach).
  */
-function tryServeStatic(
+async function tryServeStatic(
   req: IncomingMessage,
   res: ServerResponse,
   clientDir: string,
   pathname: string,
   compress: boolean,
+  cache?: StaticFileCache,
   extraHeaders?: Record<string, string | string[]>,
-): boolean {
-  // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
+  statusCode?: number,
+): Promise<boolean> {
+  if (pathname === "/") return false;
+  const responseStatus = statusCode ?? 200;
+  const omitBody = isNoBodyResponseStatus(responseStatus);
+
+  // ── Fast path: pre-computed headers, minimal per-request work ──
+  // When a cache is provided, all path validation happened at startup.
+  // The only per-request work: Map.get(), string compare, pipe.
+  if (cache) {
+    // Decode only when needed (hashed /assets/ URLs never have %)
+    let lookupPath: string;
+    if (pathname.includes("%")) {
+      try {
+        lookupPath = decodeURIComponent(pathname);
+      } catch {
+        return false;
+      }
+      // Block encoded .vite/ access (e.g. /%2Evite/manifest.json)
+      if (lookupPath.startsWith("/.vite/") || lookupPath === "/.vite") return false;
+    } else {
+      // Fast: skip decode entirely for clean URLs
+      if (pathname.startsWith("/.vite/") || pathname === "/.vite") return false;
+      lookupPath = pathname;
+    }
+
+    const entry = cache.lookup(lookupPath);
+    if (!entry) return false;
+
+    // 304 Not Modified: string compare against pre-computed ETag
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (
+      responseStatus === 200 &&
+      typeof ifNoneMatch === "string" &&
+      matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)
+    ) {
+      if (extraHeaders) {
+        res.writeHead(304, { ...entry.notModifiedHeaders, ...extraHeaders });
+      } else {
+        res.writeHead(304, entry.notModifiedHeaders);
+      }
+      res.end();
+      return true;
+    }
+
+    // Pick the best precompressed variant: zstd → br → gzip → original.
+    // Each variant has pre-computed headers — zero string building.
+    // Encoding tokens are case-insensitive per RFC 9110; lowercase once.
+    // NOTE: compress=false skips precompressed variants too, not just on-the-fly
+    // compression. This is correct for current callers (image optimization passes
+    // compress=false, and images are never precompressed). If a future caller
+    // needs precompressed variants without on-the-fly compression, split the flag.
+    // NOTE: HAS_ZSTD is intentionally not checked here — we're serving a
+    // pre-existing .zst file from disk, not calling zstdCompress() at runtime.
+    // The HAS_ZSTD guard only matters for the slow-path's on-the-fly compression.
+    const rawAe = compress ? req.headers["accept-encoding"] : undefined;
+    const ae = typeof rawAe === "string" ? rawAe.toLowerCase() : undefined;
+    const variant = ae
+      ? (ae.includes("zstd") && entry.zst) ||
+        (ae.includes("br") && entry.br) ||
+        (ae.includes("gzip") && entry.gz) ||
+        entry.original
+      : entry.original;
+
+    if (extraHeaders) {
+      res.writeHead(responseStatus, { ...variant.headers, ...extraHeaders });
+    } else {
+      res.writeHead(responseStatus, variant.headers);
+    }
+
+    if (omitBody || req.method === "HEAD") {
+      res.end();
+      return true;
+    }
+
+    // Small files: serve from in-memory buffer (no fd open/close overhead).
+    // Large files: stream from disk to avoid holding them in the heap.
+    if (variant.buffer) {
+      res.end(variant.buffer);
+    } else {
+      pipeline(fs.createReadStream(variant.path), res, (err) => {
+        if (err) {
+          // Headers already sent — can't write a 500. Destroy the connection
+          // so the client sees a reset instead of a truncated response.
+          console.warn(`[vinext] Static file stream error for ${variant.path}:`, err.message);
+          res.destroy(err);
+        }
+      });
+    }
+    return true;
+  }
+
+  // ── Slow path: async filesystem probe (no cache) ───────────────
   const resolvedClient = path.resolve(clientDir);
   let decodedPathname: string;
   try {
@@ -392,77 +491,138 @@ function tryServeStatic(
   } catch {
     return false;
   }
-
-  // Block access to internal build metadata directories. The .vite/
-  // directory contains manifests and other build artifacts that should
-  // not be publicly served. Check after decoding to catch encoded
-  // variants like /%2Evite/manifest.json.
-  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") {
-    return false;
-  }
+  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") return false;
   const staticFile = path.resolve(clientDir, "." + decodedPathname);
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
   }
 
-  // Resolve the actual file to serve. For extension-less paths (prerendered
-  // pages like /about → about.html, /blog/post → blog/post.html), try:
-  //   1. The exact path (e.g. /about.css, /assets/foo.js)
-  //   2. <path>.html (e.g. /about → about.html)
-  //   3. <path>/index.html (e.g. /about/ → about/index.html)
-  // Pathname "/" is always skipped — the index.html is served by SSR/RSC.
-  let resolvedStaticFile = staticFile;
-  if (pathname === "/") {
-    return false;
-  }
-  if (!fs.existsSync(resolvedStaticFile) || !fs.statSync(resolvedStaticFile).isFile()) {
-    // Try .html extension fallback for prerendered pages
-    const htmlFallback = staticFile + ".html";
-    if (fs.existsSync(htmlFallback) && fs.statSync(htmlFallback).isFile()) {
-      resolvedStaticFile = htmlFallback;
-    } else {
-      // Try index.html inside directory (trailing-slash variant)
-      const indexFallback = path.join(staticFile, "index.html");
-      if (fs.existsSync(indexFallback) && fs.statSync(indexFallback).isFile()) {
-        resolvedStaticFile = indexFallback;
-      } else {
-        return false;
-      }
-    }
-  }
+  const resolved = await resolveStaticFile(staticFile);
+  if (!resolved) return false;
 
-  const ext = path.extname(resolvedStaticFile);
+  const ext = path.extname(resolved.path);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  // Use a filename-hash ETag for hashed assets (matches the fast-path cache
+  // behaviour and survives deploys). Use resolved.path (not pathname) so that
+  // ext and the hash extraction both come from the same file — they can diverge
+  // after HTML fallback (e.g. /assets/widget-abc123 → widget-abc123.html).
+  // Fall back to mtime for non-hashed files.
+  const etag =
+    (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
+    `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`;
+  const baseType = ct.split(";")[0].trim();
+  const isCompressible = compress && COMPRESSIBLE_TYPES.has(baseType);
 
-  const baseHeaders = {
+  // 304 Not Modified — parity with the fast (cache) path.
+  // Include Vary: Accept-Encoding only when compress=true AND the content type
+  // is compressible. When compress=false (e.g. image optimization caller),
+  // Vary is intentionally omitted — matching the fast-path behaviour where
+  // compress=false also skips all compressed variants.
+  // Spreading undefined is a no-op in object literals (ES2018+).
+  const ifNoneMatch = req.headers["if-none-match"];
+  if (
+    responseStatus === 200 &&
+    typeof ifNoneMatch === "string" &&
+    matchesIfNoneMatchHeader(ifNoneMatch, etag)
+  ) {
+    const notModifiedHeaders: Record<string, string | string[]> = {
+      ETag: etag,
+      "Cache-Control": cacheControl,
+      ...(isCompressible ? { Vary: "Accept-Encoding" } : undefined),
+      ...extraHeaders,
+    };
+    res.writeHead(304, notModifiedHeaders);
+    res.end();
+    return true;
+  }
+
+  const baseHeaders: Record<string, string | string[]> = {
     "Content-Type": ct,
     "Cache-Control": cacheControl,
+    ETag: etag,
     ...extraHeaders,
   };
 
-  const baseType = ct.split(";")[0].trim();
-  if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
+  if (isCompressible) {
     const encoding = negotiateEncoding(req);
     if (encoding) {
-      const fileStream = fs.createReadStream(resolvedStaticFile);
-      const compressor = createCompressor(encoding);
-      res.writeHead(200, {
+      // Content-Length omitted intentionally: compressed size isn't known
+      // ahead of time, so Node.js uses chunked transfer encoding.
+      res.writeHead(responseStatus, {
         ...baseHeaders,
         "Content-Encoding": encoding,
         Vary: "Accept-Encoding",
       });
-      pipeline(fileStream, compressor, res, () => {
-        /* ignore */
+      if (omitBody || req.method === "HEAD") {
+        res.end();
+        return true;
+      }
+      const compressor = createCompressor(encoding);
+      pipeline(fs.createReadStream(resolved.path), compressor, res, (err) => {
+        if (err) {
+          // Headers already sent — can't write a 500. Destroy the connection
+          // so the client sees a reset instead of a truncated response.
+          console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+          res.destroy(err);
+        }
       });
       return true;
     }
   }
 
-  res.writeHead(200, baseHeaders);
-  fs.createReadStream(resolvedStaticFile).pipe(res);
+  res.writeHead(responseStatus, {
+    ...baseHeaders,
+    "Content-Length": String(resolved.size),
+  });
+  if (omitBody || req.method === "HEAD") {
+    res.end();
+    return true;
+  }
+  pipeline(fs.createReadStream(resolved.path), res, (err) => {
+    if (err) {
+      // Headers already sent — can't write a 500. Destroy the connection
+      // so the client sees a reset instead of a truncated response.
+      console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+      res.destroy(err);
+    }
+  });
   return true;
+}
+
+type ResolvedFile = {
+  path: string;
+  size: number;
+  mtimeMs: number;
+};
+
+/**
+ * Resolve the actual file to serve, trying extension-less HTML fallbacks.
+ * Returns the resolved path + size + mtime, or null if not found.
+ */
+async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | null> {
+  const stat = await statIfFile(staticFile);
+  if (stat) return { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs };
+
+  const htmlFallback = staticFile + ".html";
+  const htmlStat = await statIfFile(htmlFallback);
+  if (htmlStat) return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
+
+  const indexFallback = path.join(staticFile, "index.html");
+  const indexStat = await statIfFile(indexFallback);
+  if (indexStat) return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
+
+  return null;
+}
+
+async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+  try {
+    const stat = await fsp.stat(filePath);
+    return stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -779,6 +939,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     );
   }
 
+  // Build the static file metadata cache at startup. Eliminates per-request
+  // stat() calls — all lookups are pure in-memory Map.get(). Precompressed
+  // .br/.gz/.zst variants (generated at build time) are detected automatically.
+  const staticCache = await StaticFileCache.create(clientDir);
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -828,7 +993,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // middleware before serving them.
     if (
       pathname.startsWith("/assets/") &&
-      tryServeStatic(req, res, clientDir, pathname, compress)
+      (await tryServeStatic(req, res, clientDir, pathname, compress, staticCache))
     ) {
       return;
     }
@@ -861,7 +1026,17 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "Content-Disposition":
           imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (
+        await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          params.imageUrl,
+          false,
+          staticCache,
+          imageSecurityHeaders,
+        )
+      ) {
         return;
       }
       res.writeHead(404);
@@ -879,6 +1054,46 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req, normalizedUrl);
       const response = await rscHandler(request);
+
+      const staticFileSignal = response.headers.get("x-vinext-static-file");
+      if (staticFileSignal) {
+        let staticFilePath = "/";
+        try {
+          staticFilePath = decodeURIComponent(staticFileSignal);
+        } catch {
+          staticFilePath = staticFileSignal;
+        }
+
+        const staticResponseHeaders = omitHeadersCaseInsensitive(
+          mergeResponseHeaders({}, response),
+          ["x-vinext-static-file", "content-encoding", "content-length", "content-type"],
+        );
+
+        const served = await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          staticFilePath,
+          compress,
+          staticCache,
+          staticResponseHeaders,
+          response.status,
+        );
+        cancelResponseBody(response);
+        if (served) {
+          return;
+        }
+        await sendWebResponse(
+          new Response("Not Found", {
+            status: 404,
+            headers: toWebHeaders(staticResponseHeaders),
+          }),
+          req,
+          res,
+          compress,
+        );
+        return;
+      }
 
       // Stream the Web Response back to the Node.js response
       await sendWebResponse(response, req, res, compress);
@@ -988,6 +1203,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
   }
 
+  // Build the static file metadata cache at startup (same as App Router).
+  const staticCache = await StaticFileCache.create(clientDir);
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -1066,7 +1284,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     const staticLookupPath = stripBasePath(pathname, basePath);
     if (
       staticLookupPath.startsWith("/assets/") &&
-      tryServeStatic(req, res, clientDir, staticLookupPath, compress)
+      (await tryServeStatic(req, res, clientDir, staticLookupPath, compress, staticCache))
     ) {
       return;
     }
@@ -1096,7 +1314,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "Content-Disposition":
           pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (
+        await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          params.imageUrl,
+          false,
+          staticCache,
+          imageSecurityHeaders,
+        )
+      ) {
         return;
       }
       res.writeHead(404);
@@ -1321,7 +1549,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         staticLookupPath !== "/" &&
         !staticLookupPath.startsWith("/api/") &&
         !staticLookupPath.startsWith("/assets/") &&
-        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
+        (await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          staticLookupPath,
+          compress,
+          staticCache,
+          middlewareHeaders,
+        ))
       ) {
         return;
       }
@@ -1484,4 +1720,5 @@ export {
   nodeToWebRequest,
   mergeResponseHeaders,
   mergeWebResponse,
+  tryServeStatic,
 };

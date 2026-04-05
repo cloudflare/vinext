@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "node:fs";
 import vinext, {
   _parseStaticObjectLiteral as parseStaticObjectLiteral,
+  _findBalancedObject as findBalancedObject,
+  _findCallEnd as findCallEnd,
 } from "../packages/vinext/src/index.js";
 import type { Plugin } from "vite-plus";
 
@@ -551,6 +553,106 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("self-hosts font calls with nested-brace options (e.g. axes: { wght: 400 })", async () => {
+    // Regression: namedCallRe used \{[^}]*\} which stopped at the first '}'
+    // inside a nested object, so calls with nested braces were silently skipped.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-nested");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+
+      // Named-import form with a nested axes object
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      // _selfHostedCSS must have been injected — without the fix this was absent
+      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).toContain("@font-face");
+      // Verify the injected object is syntactically valid (no double-comma)
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("self-hosts namespace member calls with nested-brace options", async () => {
+    // Same regression as above but for the memberCallRe path (fonts.Inter({...}))
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-nested-member");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+
+      const code = [
+        `import fonts from 'next/font/google';`,
+        `const inter = fonts.Inter({ subsets: ["latin"], axes: { wght: 400 } });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("self-hosts font calls whose string values contain brace characters", async () => {
+    // Ensures _findBalancedObject doesn't treat '}' inside a string value as
+    // the end of the options object.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-brace-string");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      // String value contains '}' — old \{[^}]*\} regex would have stopped here.
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ display: "swap", label: "font {bold}" });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("self-hosts aliased lowercase font imports during build", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-alias");
@@ -755,5 +857,86 @@ describe("parseStaticObjectLiteral", () => {
   it("returns null for non-object expressions", () => {
     const result = parseStaticObjectLiteral(`"just a string"`);
     expect(result).toBeNull();
+  });
+});
+
+// ── _findBalancedObject / _findCallEnd unit tests ─────────────
+
+describe("_findBalancedObject", () => {
+  it("returns [start, end] for a simple flat object", () => {
+    const code = `{ a: 1 }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("handles nested objects", () => {
+    const code = `{ outer: { inner: 1 } }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("stops at the correct closing brace, ignoring braces in single-quoted strings", () => {
+    const code = `{ key: 'val }' }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("stops at the correct closing brace, ignoring braces in double-quoted strings", () => {
+    const code = `{ key: "font {bold}" }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("handles backslash escapes inside strings", () => {
+    const code = String.raw`{ key: "a \"quoted\" {value}" }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores braces inside template literals", () => {
+    const code = "{ key: `val {x}` }";
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores braces inside template literal ${...} interpolations", () => {
+    // The '}' inside ${nested} must not end the string scan prematurely
+    const val = "val ${nested}";
+    const code = "{ key: `" + val + "` }";
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("returns null when no opening brace is found", () => {
+    expect(findBalancedObject(`foo`, 0)).toBeNull();
+  });
+
+  it("returns null for an unbalanced object", () => {
+    expect(findBalancedObject(`{ a: 1`, 0)).toBeNull();
+  });
+
+  it("skips leading whitespace before the opening brace", () => {
+    const code = `   { a: 1 }`;
+    const result = findBalancedObject(code, 0);
+    expect(result).not.toBeNull();
+    expect(result![0]).toBe(3); // points to '{'
+    expect(result![1]).toBe(code.length);
+  });
+});
+
+describe("_findCallEnd", () => {
+  it("returns index after ')' when it immediately follows objEnd", () => {
+    const code = `foo({})`;
+    // '{}' spans indices 4-5; objEnd (just after '}') is 6; ')' is at 6
+    expect(findCallEnd(code, 6)).toBe(7);
+  });
+
+  it("skips whitespace before ')'", () => {
+    const code = `foo({}\n)`;
+    // objEnd is 6; whitespace at 6; ')' at 7
+    expect(findCallEnd(code, 6)).toBe(code.length);
+  });
+
+  it("returns null when next non-whitespace is not ')'", () => {
+    const code = `foo({}, extra)`;
+    // objEnd is 6; next non-whitespace is ',' not ')'
+    expect(findCallEnd(code, 6)).toBeNull();
+  });
+
+  it("returns null at end of string", () => {
+    expect(findCallEnd(`{`, 1)).toBeNull();
   });
 });

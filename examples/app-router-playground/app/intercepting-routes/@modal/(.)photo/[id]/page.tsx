@@ -60,7 +60,7 @@ export default async function Page({
               was intercepted by the parallel slot.
             </p>
             <div className="font-mono text-sm text-cyan-300">
-              ${product.price.toFixed(2)}
+              {`$${product.price.toFixed(2)}`}
             </div>
             <div className="text-xs text-gray-500">
               Refresh this URL to see the standalone detail page instead.

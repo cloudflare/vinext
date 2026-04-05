@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
+  getClientTreeshakeConfigForVite,
   computeLazyChunks,
   _augmentSsrManifestFromBundle,
   _stripServerExports,
@@ -387,7 +388,6 @@ describe("treeshake config integration", () => {
 
       // treeshake should be set on bundler options for non-SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
     } finally {
@@ -479,7 +479,6 @@ describe("treeshake config integration", () => {
 
       // Client environment should have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
-        preset: "recommended",
         moduleSideEffects: "no-external",
       });
 
@@ -1630,5 +1629,36 @@ export const getStaticPaths = () => [
     expect(result).not.toBeNull();
     expect(result).toContain("export const getStaticPaths = undefined;");
     expect(result).not.toContain("a;b");
+  });
+});
+
+// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+
+describe("getClientTreeshakeConfigForVite", () => {
+  it("returns preset for Vite 7 (Rollup compatibility)", () => {
+    const config = getClientTreeshakeConfigForVite(7);
+    expect(config).toEqual({
+      preset: "recommended",
+      moduleSideEffects: "no-external",
+    });
+  });
+
+  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
+    const config = getClientTreeshakeConfigForVite(8);
+    expect(config).toEqual({
+      moduleSideEffects: "no-external",
+    });
+  });
+
+  it("returns config without preset for Vite 9+", () => {
+    const config9 = getClientTreeshakeConfigForVite(9);
+    expect(config9).toEqual({
+      moduleSideEffects: "no-external",
+    });
+
+    const config10 = getClientTreeshakeConfigForVite(10);
+    expect(config10).toEqual({
+      moduleSideEffects: "no-external",
+    });
   });
 });

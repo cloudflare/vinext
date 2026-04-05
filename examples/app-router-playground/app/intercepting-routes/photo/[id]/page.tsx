@@ -48,7 +48,7 @@ export default async function Page({
             in the parallel modal slot instead.
           </p>
           <div className="font-mono text-sm text-cyan-300">
-            ${product.price.toFixed(2)}
+            {`$${product.price.toFixed(2)}`}
           </div>
         </div>
       </div>

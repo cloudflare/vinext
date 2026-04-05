@@ -229,6 +229,23 @@ describe("App Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
+  it("generateRscEntry awaits buildPageElement in the server-action re-render path", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    // The action re-render path must await buildPageElement so that:
+    //   1. redirect()/notFound() thrown inside generateMetadata() becomes an HTTP
+    //      redirect instead of an RSC stream error.
+    //   2. getAndClearPendingCookies() runs after the page tree resolves, not
+    //      before (which would miss cookies set during page building).
+    const actionRerenderIdx = code.indexOf(
+      "// After the action, re-render the current page so the client",
+    );
+    expect(actionRerenderIdx).toBeGreaterThan(-1);
+    const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 700);
+    expect(rerenderSlice).toContain(
+      "element = await buildPageElement(actionRoute, actionParams, undefined, url.searchParams);",
+    );
+  });
+
   it("generateSsrEntry snapshot", () => {
     const code = generateSsrEntry();
     expect(stabilize(code)).toMatchSnapshot();

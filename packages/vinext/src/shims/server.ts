@@ -161,6 +161,9 @@ export class NextRequest extends Request {
 // NextResponse
 // ---------------------------------------------------------------------------
 
+/** Valid HTTP redirect status codes, matching Next.js's REDIRECTS set. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 export class NextResponse<_Body = unknown> extends Response {
   private _cookies: ResponseCookies;
 
@@ -192,6 +195,9 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
+    if (!REDIRECT_STATUSES.has(status)) {
+      throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
+    }
     const destination = typeof url === "string" ? url : url.toString();
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
     headers.set("Location", destination);
@@ -560,96 +566,105 @@ function validateCookieAttributeValue(value: string, attributeName: string): voi
 
 export class ResponseCookies {
   private _headers: Headers;
+  /** Internal map keyed by cookie name — single source of truth. */
+  private _parsed: Map<string, { serialized: string; entry: CookieEntry }> = new Map();
 
   constructor(headers: Headers) {
     this._headers = headers;
-  }
 
-  set(name: string, value: string, options?: CookieOptions): this {
-    validateCookieName(name);
-    const parts = [`${name}=${encodeURIComponent(value)}`];
-    if (options?.path) {
-      validateCookieAttributeValue(options.path, "Path");
-      parts.push(`Path=${options.path}`);
-    }
-    if (options?.domain) {
-      validateCookieAttributeValue(options.domain, "Domain");
-      parts.push(`Domain=${options.domain}`);
-    }
-    if (options?.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
-    if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
-    if (options?.httpOnly) parts.push("HttpOnly");
-    if (options?.secure) parts.push("Secure");
-    if (options?.sameSite) parts.push(`SameSite=${options.sameSite}`);
-    this._headers.append("Set-Cookie", parts.join("; "));
-    return this;
-  }
-
-  get(name: string): CookieEntry | undefined {
-    for (const header of this._headers.getSetCookie()) {
+    // Hydrate internal map from any existing Set-Cookie headers
+    for (const header of headers.getSetCookie()) {
       const eq = header.indexOf("=");
       if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
-      if (cookieName === name) {
-        const semi = header.indexOf(";", eq);
-        const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-        let value: string;
-        try {
-          value = decodeURIComponent(raw);
-        } catch {
-          value = raw;
-        }
-        return { name, value };
+      const semi = header.indexOf(";", eq);
+      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
+      let value: string;
+      try {
+        value = decodeURIComponent(raw);
+      } catch {
+        value = raw;
       }
+      this._parsed.set(cookieName, { serialized: header, entry: { name: cookieName, value } });
     }
-    return undefined;
+  }
+
+  set(
+    ...args:
+      | [name: string, value: string, options?: CookieOptions]
+      | [options: CookieOptions & { name: string; value: string }]
+  ): this {
+    const [name, value, opts] = parseCookieSetArgs(args);
+    validateCookieName(name);
+
+    const parts = [`${name}=${encodeURIComponent(value)}`];
+    const path = opts?.path ?? "/";
+    validateCookieAttributeValue(path, "Path");
+    parts.push(`Path=${path}`);
+    if (opts?.domain) {
+      validateCookieAttributeValue(opts.domain, "Domain");
+      parts.push(`Domain=${opts.domain}`);
+    }
+    if (opts?.maxAge !== undefined) parts.push(`Max-Age=${opts.maxAge}`);
+    if (opts?.expires) parts.push(`Expires=${opts.expires.toUTCString()}`);
+    if (opts?.httpOnly) parts.push("HttpOnly");
+    if (opts?.secure) parts.push("Secure");
+    if (opts?.sameSite) parts.push(`SameSite=${opts.sameSite}`);
+
+    this._parsed.set(name, { serialized: parts.join("; "), entry: { name, value } });
+    this._syncHeaders();
+    return this;
+  }
+
+  get(...args: [name: string] | [options: { name: string }]): CookieEntry | undefined {
+    const key = typeof args[0] === "string" ? args[0] : args[0].name;
+    return this._parsed.get(key)?.entry;
   }
 
   has(name: string): boolean {
-    return this.get(name) !== undefined;
+    return this._parsed.has(name);
   }
 
-  getAll(): CookieEntry[] {
-    const entries: CookieEntry[] = [];
-    for (const header of this._headers.getSetCookie()) {
-      const eq = header.indexOf("=");
-      if (eq === -1) continue;
-      const cookieName = header.slice(0, eq);
-      const semi = header.indexOf(";", eq);
-      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      let value: string;
-      try {
-        value = decodeURIComponent(raw);
-      } catch {
-        value = raw;
-      }
-      entries.push({ name: cookieName, value });
-    }
-    return entries;
+  getAll(...args: [name: string] | [options: { name: string }] | []): CookieEntry[] {
+    const all = [...this._parsed.values()].map((v) => v.entry);
+    if (args.length === 0) return all;
+    const key = typeof args[0] === "string" ? args[0] : args[0].name;
+    return all.filter((c) => c.name === key);
   }
 
-  delete(name: string): this {
-    this.set(name, "", { maxAge: 0, path: "/" });
-    return this;
+  delete(
+    ...args:
+      | [name: string]
+      | [options: Omit<CookieOptions & { name: string }, "maxAge" | "expires">]
+  ): this {
+    const [name, opts] =
+      typeof args[0] === "string" ? [args[0], undefined] : [args[0].name, args[0]];
+    return this.set({
+      name,
+      value: "",
+      expires: new Date(0),
+      path: opts?.path,
+      domain: opts?.domain,
+      httpOnly: opts?.httpOnly,
+      secure: opts?.secure,
+      sameSite: opts?.sameSite,
+    });
   }
 
   [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
-    const entries: [string, CookieEntry][] = [];
-    for (const header of this._headers.getSetCookie()) {
-      const eq = header.indexOf("=");
-      if (eq === -1) continue;
-      const cookieName = header.slice(0, eq);
-      const semi = header.indexOf(";", eq);
-      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      let value: string;
-      try {
-        value = decodeURIComponent(raw);
-      } catch {
-        value = raw;
-      }
-      entries.push([cookieName, { name: cookieName, value }]);
-    }
+    const entries: [string, CookieEntry][] = [...this._parsed.values()].map((v) => [
+      v.entry.name,
+      v.entry,
+    ]);
     return entries[Symbol.iterator]();
+  }
+
+  /** Delete all Set-Cookie headers and re-append from the internal map. */
+  private _syncHeaders(): void {
+    this._headers.delete("Set-Cookie");
+    for (const { serialized } of this._parsed.values()) {
+      this._headers.append("Set-Cookie", serialized);
+    }
   }
 }
 
@@ -662,6 +677,23 @@ type CookieOptions = {
   secure?: boolean;
   sameSite?: "Strict" | "Lax" | "None";
 };
+
+/**
+ * Parse the overloaded arguments for ResponseCookies.set():
+ *   - (name, value, options?) — positional form
+ *   - ({ name, value, ...options }) — object form
+ */
+function parseCookieSetArgs(
+  args:
+    | [name: string, value: string, options?: CookieOptions]
+    | [options: CookieOptions & { name: string; value: string }],
+): [string, string, CookieOptions | undefined] {
+  if (typeof args[0] === "string") {
+    return [args[0], args[1] as string, args[2] as CookieOptions | undefined];
+  }
+  const { name, value, ...opts } = args[0];
+  return [name, value, opts as CookieOptions];
+}
 
 // ---------------------------------------------------------------------------
 // Types

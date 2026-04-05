@@ -4,15 +4,12 @@
 
 import { test, expect } from "@playwright/test";
 import { promises as fs } from "node:fs";
+import { waitForAppRouterHydration } from "../helpers";
 
 const instrumentationClientPath = `${process.cwd()}/tests/fixtures/app-basic/instrumentation-client.ts`;
 
 function filterNavigationStartLogs(logs: string[]): string[] {
   return logs.filter((message) => message.startsWith("[Router Transition Start]"));
-}
-
-async function waitForHydration(page: import("@playwright/test").Page): Promise<void> {
-  await page.waitForFunction(() => !!window.__VINEXT_RSC_ROOT__);
 }
 
 test.describe.serial("instrumentation-client (App Router)", () => {
@@ -21,7 +18,7 @@ test.describe.serial("instrumentation-client (App Router)", () => {
     page.on("console", (message) => logs.push(message.text()));
 
     await page.goto("/instrumentation-client");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await page.waitForFunction(() => {
       const win = window as Window & {
         __INSTRUMENTATION_CLIENT_EXECUTED_AT?: number;
@@ -62,14 +59,14 @@ test.describe.serial("instrumentation-client (App Router)", () => {
     page.on("console", (message) => logs.push(message.text()));
 
     await page.goto("/instrumentation-client");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await page.getByRole("link", { name: "Go to Some Page" }).click();
     await expect(page.locator("#instrumentation-client-some-page")).toBeVisible();
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.getByRole("link", { name: "Go Home" }).click();
     await expect(page.locator("#instrumentation-client-home")).toBeVisible();
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     expect(filterNavigationStartLogs(logs)).toEqual([
       "[Router Transition Start] [push] /instrumentation-client/some-page",
@@ -84,18 +81,18 @@ test.describe.serial("instrumentation-client (App Router)", () => {
     page.on("console", (message) => logs.push(message.text()));
 
     await page.goto("/instrumentation-client");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await page.getByRole("link", { name: "Go to Some Page" }).click();
     await expect(page.locator("#instrumentation-client-some-page")).toBeVisible();
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.goBack();
     await expect(page.locator("#instrumentation-client-home")).toBeVisible();
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     await page.goForward();
     await expect(page.locator("#instrumentation-client-some-page")).toBeVisible();
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     expect(filterNavigationStartLogs(logs)).toEqual([
       "[Router Transition Start] [push] /instrumentation-client/some-page",
@@ -109,7 +106,7 @@ test.describe.serial("instrumentation-client (App Router)", () => {
 
     try {
       await page.goto("/instrumentation-client");
-      await waitForHydration(page);
+      await waitForAppRouterHydration(page);
       await page.waitForFunction(() => {
         const win = window as Window & { __INSTRUMENTATION_CLIENT_EXECUTED_AT?: number };
         return win.__INSTRUMENTATION_CLIENT_EXECUTED_AT !== undefined;

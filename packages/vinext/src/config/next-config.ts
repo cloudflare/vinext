@@ -8,7 +8,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
 
@@ -271,6 +271,12 @@ function isCjsError(e: unknown): boolean {
   );
 }
 
+// Dev-server phase is the safe default for config loading: it enables all
+// optional config sections (headers, redirects, rewrites) without triggering
+// build-only behaviour. Used in two default parameter values below to avoid
+// repeating PHASE_DEVELOPMENT_SERVER inline.
+const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
+
 /**
  * Emit a warning when config loading fails, with a targeted hint for
  * known plugin wrappers that are unnecessary in vinext.
@@ -301,7 +307,7 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
  */
 async function resolveConfigValue(
   config: unknown,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig> {
   if (typeof config === "function") {
     const result = await config(phase, {
@@ -351,7 +357,7 @@ export async function resolveNextConfigInput(
  */
 export async function loadNextConfig(
   root: string,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
   const configPath = findNextConfigPath(root);
   if (!configPath) return null;
@@ -843,3 +849,5 @@ function extractPluginsFromOptions(opts: any): MdxOptions | null {
 
   return null;
 }
+
+export { PHASE_PRODUCTION_BUILD } from "../shims/constants.js";

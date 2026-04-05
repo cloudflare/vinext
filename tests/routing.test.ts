@@ -10,7 +10,7 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
   appRouter,
-  collectInterceptTargetPatterns,
+  collectUniqueInterceptTargetPatterns,
   matchAppRoute,
   invalidateAppRouteCache,
   type AppRoute,
@@ -1144,6 +1144,7 @@ describe("matchAppRoute - URL matching", () => {
         layoutPath: null,
         loadingPath: null,
         errorPath: null,
+        routeSegments: null,
         interceptingRoutes: [
           {
             convention: "..",
@@ -1165,6 +1166,7 @@ describe("matchAppRoute - URL matching", () => {
         layoutPath: null,
         loadingPath: null,
         errorPath: null,
+        routeSegments: null,
         interceptingRoutes: [
           {
             convention: "..",
@@ -1177,7 +1179,7 @@ describe("matchAppRoute - URL matching", () => {
       },
     ];
 
-    expect(collectInterceptTargetPatterns([firstRoute, secondRoute])).toEqual(["/photo/:id"]);
+    expect(collectUniqueInterceptTargetPatterns([firstRoute, secondRoute])).toEqual(["/photo/:id"]);
   });
 
   it("intercepting route pages are not standalone routes", async () => {

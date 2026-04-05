@@ -1,5 +1,3 @@
-'use cache';
-
 import db from '#/lib/db';
 import { Mdx } from '#/ui/codehike';
 import { Boundary } from '#/ui/boundary';

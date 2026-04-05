@@ -23,6 +23,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { isrCacheKey } from "../server/isr-cache.js";
+import { ENTRY_PREFIX } from "./kv-cache-handler.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -659,30 +661,28 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
 
 // ─── KV Upload ───────────────────────────────────────────────────────────────
 
-/**
- * Upload pre-rendered pages to KV using the Cloudflare REST API.
- * Writes in the same KVCacheEntry format that KVCacheHandler reads
- * at runtime, so ISR serves these entries without any code changes.
- */
-async function uploadToKV(
-  entries: Map<string, PrerenderResult>,
-  namespaceId: string,
-  accountId: string,
-  apiToken: string,
-  defaultRevalidateSeconds: number,
-): Promise<void> {
-  const now = Date.now();
+/** KV bulk API accepts up to 10,000 pairs per request */
+const KV_BATCH_SIZE = 10_000;
 
-  // Build the bulk write payload
-  const pairs: Array<{
-    key: string;
-    value: string;
-    expiration_ttl?: number;
-  }> = [];
+/** Maximum KV expiration TTL: 30 days */
+const MAX_KV_TTL_SECONDS = 30 * 24 * 3600;
+
+/**
+ * Build KV bulk API pairs from pre-rendered entries.
+ *
+ * Key format matches the runtime KVCacheHandler exactly:
+ *   ENTRY_PREFIX + isrCacheKey("app", pathname, buildId) + ":html"
+ *   → "cache:app:<buildId>:<pathname>:html"
+ */
+export function buildTprKVPairs(
+  entries: Map<string, PrerenderResult>,
+  buildId: string | undefined,
+  defaultRevalidateSeconds: number,
+): Array<{ key: string; value: string; expiration_ttl: number }> {
+  const now = Date.now();
+  const pairs: Array<{ key: string; value: string; expiration_ttl: number }> = [];
 
   for (const [routePath, result] of entries) {
-    // Determine revalidation window — use the page's revalidate header
-    // if present, otherwise fall back to the default
     const revalidateHeader = result.headers["x-vinext-revalidate"];
     const revalidateSeconds =
       revalidateHeader && !isNaN(Number(revalidateHeader))
@@ -691,12 +691,10 @@ async function uploadToKV(
 
     const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
 
-    // KV TTL: 10x the revalidation period, clamped to [60s, 30d]
-    // (matches the logic in KVCacheHandler.set)
-    const kvTtl =
-      revalidateSeconds > 0
-        ? Math.max(Math.min(revalidateSeconds * 10, 30 * 24 * 3600), 60)
-        : 24 * 3600; // 24h fallback if no revalidation
+    // For revalidating entries: 30-day TTL matches runtime KVCacheHandler.set().
+    // For non-revalidating entries: runtime uses no TTL (entries persist indefinitely),
+    // but TPR uses a 24h fallback so pre-warmed entries don't accumulate forever.
+    const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
 
     const entry = {
       value: {
@@ -710,17 +708,34 @@ async function uploadToKV(
       revalidateAt,
     };
 
+    const cacheKey = ENTRY_PREFIX + isrCacheKey("app", routePath, buildId) + ":html";
+
     pairs.push({
-      key: `cache:${routePath}`,
+      key: cacheKey,
       value: JSON.stringify(entry),
       expiration_ttl: kvTtl,
     });
   }
 
-  // Upload in batches (KV bulk API accepts up to 10,000 per request)
-  const BATCH_SIZE = 10_000;
-  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
-    const batch = pairs.slice(i, i + BATCH_SIZE);
+  return pairs;
+}
+
+/**
+ * Upload pre-rendered pages to KV using the Cloudflare REST API.
+ * Writes in the same KVCacheEntry format that KVCacheHandler reads
+ * at runtime, so ISR serves these entries without any code changes.
+ */
+async function uploadToKV(
+  entries: Map<string, PrerenderResult>,
+  namespaceId: string,
+  accountId: string,
+  apiToken: string,
+  defaultRevalidateSeconds: number,
+  buildId?: string,
+): Promise<void> {
+  const pairs = buildTprKVPairs(entries, buildId, defaultRevalidateSeconds);
+  for (let i = 0; i < pairs.length; i += KV_BATCH_SIZE) {
+    const batch = pairs.slice(i, i + KV_BATCH_SIZE);
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/bulk`,
       {
@@ -736,7 +751,7 @@ async function uploadToKV(
     if (!response.ok) {
       const text = await response.text();
       throw new Error(
-        `KV bulk upload failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${response.status} — ${text}`,
+        `KV bulk upload failed (batch ${Math.floor(i / KV_BATCH_SIZE) + 1}): ${response.status} — ${text}`,
       );
     }
   }
@@ -854,6 +869,20 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 10. Upload to KV ──────────────────────────────────────────
+  // Read buildId from the BUILD_ID file written by vinext:build-id plugin.
+  let buildId: string;
+  try {
+    buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
+  } catch {
+    // BUILD_ID is written by vinext:build-id during every production build.
+    // If missing, the build output is likely corrupted or incomplete.
+    // Proceeding without buildId would write keys that never match runtime.
+    console.warn(
+      "  TPR: Could not read BUILD_ID from dist/server/ — KV keys will not match runtime. Skipping KV upload.",
+    );
+    return skip("BUILD_ID not found in dist/server/ — build output may be incomplete");
+  }
+
   try {
     await uploadToKV(
       rendered,
@@ -861,6 +890,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
       accountId,
       apiToken,
       DEFAULT_REVALIDATE_SECONDS,
+      buildId,
     );
   } catch (err) {
     return skip(`KV upload failed: ${err instanceof Error ? err.message : String(err)}`);
