@@ -63,6 +63,16 @@ describe("app elements payload helpers", () => {
           [APP_ROUTE_KEY]: "route:/dashboard",
         }),
       ),
-    ).toThrow("[vinext] Missing or invalid __rootLayout in App Router payload");
+    ).toThrow("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
+  });
+
+  it("rejects payloads with a missing __rootLayout key", () => {
+    expect(() =>
+      readAppElementsMetadata(
+        normalizeAppElements({
+          [APP_ROUTE_KEY]: "route:/dashboard",
+        }),
+      ),
+    ).toThrow("[vinext] Missing __rootLayout key in App Router payload");
   });
 });

@@ -256,20 +256,10 @@ describe("app page route wiring helpers", () => {
       rootNotFoundModule: null,
     });
 
-    const body = await withTimeout(
-      renderHtml(
-        createElement(
-          Fragment,
-          null,
-          readChildren(elements["layout:/"]),
-          readChildren(elements["page:/layout-only"]),
-        ),
-      ),
-      1_000,
-    );
+    const body = await withTimeout(renderRouteEntry(elements, "route:/layout-only"), 1_000);
 
     expect(body).toContain("Layout only");
-    expect(body).toContain("Page content");
+    expect(body).not.toContain("Page content");
   });
 
   it("preserves route subtree when a layout entry has no default export", async () => {

@@ -336,7 +336,9 @@ function BrowserRoot({
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
-  // performing module writes during render.
+  // performing module writes during render. __VINEXT_RSC_NAVIGATE__ is assigned
+  // after hydrateRoot() returns; by then this layout effect has already run for
+  // the hydration commit, so getBrowserRouterState() never observes a null ref.
   useLayoutEffect(() => {
     dispatchBrowserRouterAction = dispatchTreeState;
     browserRouterStateRef = stateRef;
@@ -632,6 +634,11 @@ function registerServerActionCallback(): void {
         nextRootLayoutTreePath: pending.rootLayoutTreePath,
         startedNavigationId,
       });
+      // Known limitation: if a same-URL navigation fully commits while this
+      // server action is awaiting createPendingNavigationCommit(), the action
+      // can still dispatch its older payload afterward. The old pre-2c code had
+      // the same race, and Next.js has similar behavior. Tightening this would
+      // need a stronger commit-version gate than activeNavigationId alone.
       if (disposition === "hard-navigate") {
         window.location.assign(window.location.href);
         return undefined;
