@@ -8508,6 +8508,27 @@ describe("Pages Router concurrent navigation", () => {
     return { promise, resolve, reject };
   }
 
+  function trackHrefAssignments(win: {
+    location: {
+      href: string;
+    };
+  }): string[] {
+    let currentHref = win.location.href;
+    const assignments: string[] = [];
+
+    Object.defineProperty(win.location, "href", {
+      configurable: true,
+      enumerable: true,
+      get: () => currentHref,
+      set: (value: string) => {
+        currentHref = value;
+        assignments.push(value);
+      },
+    });
+
+    return assignments;
+  }
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -8715,6 +8736,34 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("known navigation failures schedule a single hard navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/failing-page");
+
+      expect(result).toBe(false);
+      expect(hrefAssignments.filter((value) => value.endsWith("/failing-page"))).toHaveLength(2);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("replace() also cancels superseded navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -8901,6 +8950,7 @@ describe("Pages Router concurrent navigation", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
   it("__NEXT_DATA__ is not stale when routeChangeError fires for a cancelled navigation", async () => {
     // Regression test: __NEXT_DATA__ must not reflect the cancelled route's data
     // at the moment routeChangeError fires.  The fix defers the global write until

@@ -353,6 +353,18 @@ class NavigationCancelledError extends Error {
 }
 
 /**
+ * Error thrown after queueing a hard navigation fallback for a known failure
+ * mode. Callers can use this to avoid scheduling the same hard navigation twice.
+ */
+class HardNavigationScheduledError extends Error {
+  hardNavigationScheduled = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "HardNavigationScheduledError";
+  }
+}
+
+/**
  * Monotonically increasing ID for tracking the current navigation.
  * Each call to navigateClient() increments this and captures the value.
  * After each async boundary, the navigation checks whether it is still
@@ -367,6 +379,11 @@ let _navigationId = 0;
 
 /** AbortController for the in-flight fetch, so superseded navigations abort network I/O. */
 let _activeAbortController: AbortController | null = null;
+
+function scheduleHardNavigationAndThrow(url: string, message: string): never {
+  window.location.href = url;
+  throw new HardNavigationScheduledError(message);
+}
 
 /**
  * Perform client-side navigation: fetch the target page's HTML,
@@ -425,9 +442,7 @@ async function navigateClient(url: string): Promise<void> {
       // Contract: routeChangeError listeners MUST be synchronous; async listeners
       // will not fire before the navigation completes.  Callers (runNavigateClient)
       // must NOT schedule a second hard navigation — this assignment already queues one.
-      window.location.href = url;
-      const err = new Error(`Navigation failed: ${res.status} ${res.statusText}`);
-      throw err;
+      scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
     }
 
     const html = await res.text();
@@ -436,8 +451,7 @@ async function navigateClient(url: string): Promise<void> {
     // Extract __NEXT_DATA__ from the HTML
     const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
     if (!match) {
-      window.location.href = url;
-      throw new Error("Navigation failed: missing __NEXT_DATA__ in response");
+      scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
     }
 
     const nextData = JSON.parse(match[1]);
@@ -458,16 +472,14 @@ async function navigateClient(url: string): Promise<void> {
     }
 
     if (!pageModuleUrl) {
-      window.location.href = url;
-      throw new Error("Navigation failed: no page module URL found");
+      scheduleHardNavigationAndThrow(url, "Navigation failed: no page module URL found");
     }
 
     // Validate the module URL before importing — defense-in-depth against
     // unexpected __NEXT_DATA__ or malformed HTML responses
     if (!isValidModulePath(pageModuleUrl)) {
       console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
-      window.location.href = url;
-      throw new Error("Navigation failed: invalid page module path");
+      scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
     }
 
     // Dynamically import the new page module
@@ -477,8 +489,7 @@ async function navigateClient(url: string): Promise<void> {
     const PageComponent = pageModule.default;
 
     if (!PageComponent) {
-      window.location.href = url;
-      throw new Error("Navigation failed: page module has no default export");
+      scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
     }
 
     // Import React for createElement
@@ -554,11 +565,10 @@ async function runNavigateClient(
       return "cancelled";
     }
     // Genuine error (network, parse, import failure): fall back to a hard
-    // navigation so the browser lands on the correct page.  navigateClient
-    // already assigns window.location.href for known failure modes (non-OK
-    // response, missing __NEXT_DATA__), but unexpected errors (dynamic import
-    // failure, etc.) would otherwise leave URL and content out of sync.
-    if (typeof window !== "undefined") {
+    // navigation so the browser lands on the correct page. Known failure modes
+    // already scheduled that fallback inside navigateClient(); only unexpected
+    // failures (parse, import, render) need recovery here.
+    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
       window.location.href = fullUrl;
     }
     return "failed";
