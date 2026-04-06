@@ -8,6 +8,7 @@ import {
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import {
+  createPendingSameUrlCommit,
   createPendingNavigationCommit,
   routerReducer,
   resolvePendingNavigationCommitDisposition,
@@ -176,6 +177,26 @@ describe("app browser entry state helpers", () => {
     expect(refreshCommit.action.type).toBe("navigate");
     expect(refreshCommit.routeId).toBe("route:/dashboard");
     expect(refreshCommit.rootLayoutTreePath).toBe("/");
+  });
+
+  it("classifies same-url payload commits in one step", async () => {
+    const currentState = createState({
+      rootLayoutTreePath: "/(marketing)",
+    });
+
+    const result = await createPendingSameUrlCommit({
+      activeNavigationId: 7,
+      currentState,
+      navigationSnapshot: currentState.navigationSnapshot,
+      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
+      renderId: 3,
+      startedNavigationId: 7,
+      type: "navigate",
+    });
+
+    expect(result.disposition).toBe("hard-navigate");
+    expect(result.pending.routeId).toBe("route:/dashboard");
+    expect(result.pending.action.renderId).toBe(3);
   });
 
   it("treats null root-layout identities as soft-navigation compatible", () => {

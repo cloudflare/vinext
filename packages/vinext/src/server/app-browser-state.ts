@@ -26,6 +26,10 @@ export type PendingNavigationCommit = {
 };
 
 export type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
+export type PendingSameUrlCommit = {
+  disposition: PendingNavigationCommitDisposition;
+  pending: PendingNavigationCommit;
+};
 
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
@@ -104,5 +108,33 @@ export async function createPendingNavigationCommit(options: {
     },
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
+  };
+}
+
+export async function createPendingSameUrlCommit(options: {
+  activeNavigationId: number;
+  currentState: AppRouterState;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+  nextElements: Promise<AppElements>;
+  renderId?: number;
+  startedNavigationId: number;
+  type: "navigate" | "replace";
+}): Promise<PendingSameUrlCommit> {
+  const pending = await createPendingNavigationCommit({
+    currentState: options.currentState,
+    nextElements: options.nextElements,
+    navigationSnapshot: options.navigationSnapshot,
+    renderId: options.renderId,
+    type: options.type,
+  });
+
+  return {
+    disposition: resolvePendingNavigationCommitDisposition({
+      activeNavigationId: options.activeNavigationId,
+      currentRootLayoutTreePath: options.currentState.rootLayoutTreePath,
+      nextRootLayoutTreePath: pending.rootLayoutTreePath,
+      startedNavigationId: options.startedNavigationId,
+    }),
+    pending,
   };
 }

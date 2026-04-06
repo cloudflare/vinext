@@ -53,6 +53,7 @@ import {
   type AppWireElements,
 } from "./app-elements.js";
 import {
+  createPendingSameUrlCommit,
   createPendingNavigationCommit,
   resolvePendingNavigationCommitDisposition,
   routerReducer,
@@ -312,6 +313,58 @@ function normalizeAppElementsPromise(payload: Promise<AppWireElements>): Promise
   return Promise.resolve(payload).then((elements) => normalizeAppElements(elements));
 }
 
+async function commitSameUrlPayload(
+  nextElements: Promise<AppElements>,
+  returnValue?: ServerActionResult["returnValue"],
+): Promise<unknown> {
+  const navigationSnapshot = createClientNavigationRenderSnapshot(
+    window.location.href,
+    latestClientParams,
+  );
+  const currentState = getBrowserRouterState();
+  const startedNavigationId = activeNavigationId;
+  const { disposition, pending } = await createPendingSameUrlCommit({
+    activeNavigationId,
+    currentState,
+    navigationSnapshot,
+    nextElements,
+    renderId: ++nextNavigationRenderId,
+    startedNavigationId,
+    type: "navigate",
+  });
+
+  // Known limitation: if a same-URL navigation fully commits while this
+  // server action is awaiting createPendingNavigationCommit(), the action
+  // can still dispatch its older payload afterward. The old pre-2c code had
+  // the same race, and Next.js has similar behavior. Tightening this would
+  // need a stronger commit-version gate than activeNavigationId alone.
+  if (disposition === "hard-navigate") {
+    window.location.assign(window.location.href);
+    return undefined;
+  }
+
+  if (disposition === "dispatch") {
+    dispatchBrowserTree(
+      pending.action.elements,
+      navigationSnapshot,
+      pending.action.renderId,
+      "navigate",
+      pending.routeId,
+      pending.rootLayoutTreePath,
+      false,
+    );
+  }
+
+  if (returnValue) {
+    if (!returnValue.ok) {
+      throw returnValue.data;
+    }
+    return returnValue.data;
+  }
+
+  return undefined;
+}
+
 function BrowserRoot({
   initialElements,
   initialNavigationSnapshot,
@@ -330,7 +383,8 @@ function BrowserRoot({
   });
 
   // Keep the latest router state in a ref so external callers (navigate(),
-  // server actions, HMR) always read the current state.
+  // server actions, HMR) always read the current state. Safe: those readers
+  // run from events/effects, never from React render itself.
   const stateRef = useRef(treeState);
   stateRef.current = treeState;
 
@@ -615,87 +669,13 @@ function registerServerActionCallback(): void {
     // If server actions ever trigger URL changes via RSC payload (instead of hard
     // redirects), this would need renderNavigationPayload() + snapshotActivated=true.
     if (isServerActionResult(result)) {
-      const navigationSnapshot = createClientNavigationRenderSnapshot(
-        window.location.href,
-        latestClientParams,
+      return commitSameUrlPayload(
+        Promise.resolve(normalizeAppElements(result.root)),
+        result.returnValue,
       );
-      const currentState = getBrowserRouterState();
-      const startedNavigationId = activeNavigationId;
-      const pending = await createPendingNavigationCommit({
-        currentState,
-        nextElements: Promise.resolve(normalizeAppElements(result.root)),
-        navigationSnapshot,
-        renderId: ++nextNavigationRenderId,
-        type: "navigate",
-      });
-      const disposition = resolvePendingNavigationCommitDisposition({
-        activeNavigationId,
-        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
-        nextRootLayoutTreePath: pending.rootLayoutTreePath,
-        startedNavigationId,
-      });
-      // Known limitation: if a same-URL navigation fully commits while this
-      // server action is awaiting createPendingNavigationCommit(), the action
-      // can still dispatch its older payload afterward. The old pre-2c code had
-      // the same race, and Next.js has similar behavior. Tightening this would
-      // need a stronger commit-version gate than activeNavigationId alone.
-      if (disposition === "hard-navigate") {
-        window.location.assign(window.location.href);
-        return undefined;
-      }
-      if (disposition === "dispatch") {
-        dispatchBrowserTree(
-          pending.action.elements,
-          navigationSnapshot,
-          pending.action.renderId,
-          "navigate",
-          pending.routeId,
-          pending.rootLayoutTreePath,
-          false,
-        );
-      }
-      if (result.returnValue) {
-        if (!result.returnValue.ok) throw result.returnValue.data;
-        return result.returnValue.data;
-      }
-      return undefined;
     }
 
-    const navigationSnapshot = createClientNavigationRenderSnapshot(
-      window.location.href,
-      latestClientParams,
-    );
-    const currentState = getBrowserRouterState();
-    const startedNavigationId = activeNavigationId;
-    const pending = await createPendingNavigationCommit({
-      currentState,
-      nextElements: Promise.resolve(normalizeAppElements(result)),
-      navigationSnapshot,
-      renderId: ++nextNavigationRenderId,
-      type: "navigate",
-    });
-    const disposition = resolvePendingNavigationCommitDisposition({
-      activeNavigationId,
-      currentRootLayoutTreePath: currentState.rootLayoutTreePath,
-      nextRootLayoutTreePath: pending.rootLayoutTreePath,
-      startedNavigationId,
-    });
-    if (disposition === "hard-navigate") {
-      window.location.assign(window.location.href);
-      return undefined;
-    }
-    if (disposition === "dispatch") {
-      dispatchBrowserTree(
-        pending.action.elements,
-        navigationSnapshot,
-        pending.action.renderId,
-        "navigate",
-        pending.routeId,
-        pending.rootLayoutTreePath,
-        false,
-      );
-    }
-    return undefined;
+    return commitSameUrlPayload(Promise.resolve(normalizeAppElements(result)));
   });
 }
 
