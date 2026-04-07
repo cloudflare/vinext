@@ -911,6 +911,8 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
     const _noExportRouteId = "route:" + routePath;
     let _noExportRootLayout = null;
     if (route.layouts?.length > 0) {
+      // Compute the root layout tree path inline for this error payload. This
+      // mirrors the createAppPageTreePath() logic used by buildAppPageElements().
       const _tp = route.layoutTreePositions?.[0] ?? 0;
       const _segs = route.routeSegments?.slice(0, _tp) ?? [];
       _noExportRootLayout = _segs.length === 0 ? "/" : "/" + _segs.join("/");

@@ -313,7 +313,7 @@ function normalizeAppElementsPromise(payload: Promise<AppWireElements>): Promise
   return Promise.resolve(payload).then((elements) => normalizeAppElements(elements));
 }
 
-async function commitSameUrlPayload(
+async function commitSameUrlNavigatePayload(
   nextElements: Promise<AppElements>,
   returnValue?: ServerActionResult["returnValue"],
 ): Promise<unknown> {
@@ -385,6 +385,8 @@ function BrowserRoot({
   // Keep the latest router state in a ref so external callers (navigate(),
   // server actions, HMR) always read the current state. Safe: those readers
   // run from events/effects, never from React render itself.
+  // Note: stateRef.current is written during render, not in an effect, to
+  // avoid a stale-read window between commit and layout effects.
   const stateRef = useRef(treeState);
   stateRef.current = treeState;
 
@@ -669,13 +671,13 @@ function registerServerActionCallback(): void {
     // If server actions ever trigger URL changes via RSC payload (instead of hard
     // redirects), this would need renderNavigationPayload() + snapshotActivated=true.
     if (isServerActionResult(result)) {
-      return commitSameUrlPayload(
+      return commitSameUrlNavigatePayload(
         Promise.resolve(normalizeAppElements(result.root)),
         result.returnValue,
       );
     }
 
-    return commitSameUrlPayload(Promise.resolve(normalizeAppElements(result)));
+    return commitSameUrlNavigatePayload(Promise.resolve(normalizeAppElements(result)));
   });
 }
 
