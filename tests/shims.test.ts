@@ -8736,7 +8736,7 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
-  it("known navigation failures schedule a single hard navigation", async () => {
+  it("known navigation failures schedule exactly one hard-navigation fallback", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
     const { win } = createNavWindow();
@@ -8751,12 +8751,18 @@ describe("Pages Router concurrent navigation", () => {
       const Router = routerModule.default;
 
       const result = await Router.push("/failing-page");
+      // Distinguish the history update from the hard-navigation fallback:
+      // pushState writes the absolute browser URL, while the fallback helper
+      // writes the raw app-relative URL. The guard is correct only if each
+      // happens exactly once.
+      const fallbackAssignments = hrefAssignments.filter((value) => value === "/failing-page");
+      const pushStateAssignments = hrefAssignments.filter(
+        (value) => value === "http://localhost/failing-page",
+      );
 
       expect(result).toBe(false);
-      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
-      expect(
-        hrefAssignments.filter((value) => value === "http://localhost/failing-page"),
-      ).toHaveLength(1);
+      expect(fallbackAssignments).toHaveLength(1);
+      expect(pushStateAssignments).toHaveLength(1);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -8777,7 +8783,6 @@ describe("Pages Router concurrent navigation", () => {
       listeners.set(type, handler);
     });
 
-    const hrefAssignments = trackHrefAssignments(win);
     (globalThis as any).window = win;
     (globalThis as any).CustomEvent = class CustomEventMock {
       constructor(public type: string) {}
@@ -8795,9 +8800,12 @@ describe("Pages Router concurrent navigation", () => {
 
       win.location.pathname = "/failing-page";
       win.location.href = "http://localhost/failing-page";
+      // Install tracking after test setup so we only capture popstate-driven
+      // writes, not the setup assignment above.
+      const hrefAssignments = trackHrefAssignments(win);
       popstateHandler!({ state: null });
-      await Promise.resolve();
-      await Promise.resolve();
+      // Cross a task boundary so the async popstate chain has fully settled.
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
     } finally {

@@ -444,7 +444,9 @@ async function navigateClient(url: string): Promise<void> {
       // listeners still run — and observe the error — before the page unloads.
       // Contract: routeChangeError listeners MUST be synchronous; async listeners
       // will not fire before the navigation completes.  Callers (runNavigateClient)
-      // must NOT schedule a second hard navigation — this assignment already queues one.
+      // must NOT schedule a second hard navigation — this assignment already queues
+      // the browser fallback, and the helper-level HardNavigationScheduledError
+      // makes that contract explicit to callers.
       scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
     }
 
@@ -533,9 +535,10 @@ async function navigateClient(url: string): Promise<void> {
 
     // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
     // so a stale navigation can never pollute the global.
-    // INVARIANT: Everything from the last assertStillCurrent() through root.render()
-    // is synchronous. If any step here ever becomes async, add another
-    // assertStillCurrent() before writing __NEXT_DATA__.
+    // INVARIANT: Everything after the last assertStillCurrent() (the checkpoint
+    // after the optional _app import) through root.render() is synchronous.
+    // If any step here ever becomes async, add another assertStillCurrent()
+    // before writing __NEXT_DATA__.
     window.__NEXT_DATA__ = nextData;
     root.render(element);
   } finally {
