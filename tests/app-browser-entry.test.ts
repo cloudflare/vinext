@@ -40,6 +40,16 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
 }
 
 describe("app browser entry state helpers", () => {
+  it("requires renderId when creating pending commits", () => {
+    // @ts-expect-error renderId is required to avoid duplicate commit ids.
+    void createPendingNavigationCommit({
+      currentState: createState(),
+      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+      navigationSnapshot: createState().navigationSnapshot,
+      type: "navigate",
+    });
+  });
+
   it("merges elements on navigate", async () => {
     const previousElements = createResolvedElements("route:/initial", "/", {
       "layout:/": React.createElement("div", null, "layout"),
@@ -98,6 +108,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
       navigationSnapshot: currentState.navigationSnapshot,
+      renderId: 1,
       type: "navigate",
     });
 
@@ -121,6 +132,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements,
       navigationSnapshot: createState().navigationSnapshot,
+      renderId: 1,
       type: "navigate",
     }).then((result) => {
       resolved = true;
@@ -153,6 +165,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: currentState.navigationSnapshot,
+      renderId: 1,
       type: "navigate",
     });
 
@@ -171,6 +184,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: createState().navigationSnapshot,
+      renderId: 1,
       type: "navigate",
     });
 

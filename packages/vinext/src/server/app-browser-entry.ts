@@ -667,14 +667,12 @@ function registerServerActionCallback(): void {
       { temporaryReferences },
     );
 
-    // Note: Server actions update the tree via updateBrowserTree directly (not
-    // renderNavigationPayload) because they stay on the same URL. This means
-    // activateNavigationSnapshot is not called, so hooks use useSyncExternalStore
-    // values directly. snapshotActivated is intentionally omitted (defaults false)
-    // so handleAsyncError skips commitClientNavigationState() — decrementing an
-    // unincremented counter would corrupt it for concurrent RSC navigations.
-    // If server actions ever trigger URL changes via RSC payload (instead of hard
-    // redirects), this would need renderNavigationPayload() + snapshotActivated=true.
+    // Server actions stay on the same URL and use commitSameUrlNavigatePayload()
+    // for merge-based dispatch. This path does not call
+    // activateNavigationSnapshot() because there is no URL change to commit, so
+    // hooks continue reading the live external-store values directly. If server
+    // actions ever trigger URL changes via RSC payload (instead of hard
+    // redirects), this would need renderNavigationPayload().
     if (isServerActionResult(result)) {
       return commitSameUrlNavigatePayload(
         Promise.resolve(normalizeAppElements(result.root)),

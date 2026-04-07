@@ -91,7 +91,7 @@ export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
-  renderId?: number;
+  renderId: number;
   type: "navigate" | "replace";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
@@ -101,7 +101,7 @@ export async function createPendingNavigationCommit(options: {
     action: {
       elements,
       navigationSnapshot: options.navigationSnapshot,
-      renderId: options.renderId ?? options.currentState.renderId + 1,
+      renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
       routeId: metadata.routeId,
       type: options.type,
@@ -116,7 +116,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   currentState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   nextElements: Promise<AppElements>;
-  renderId?: number;
+  renderId: number;
   startedNavigationId: number;
   type: "navigate" | "replace";
 }): Promise<ClassifiedPendingNavigationCommit> {
