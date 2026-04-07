@@ -381,6 +381,9 @@ let _navigationId = 0;
 let _activeAbortController: AbortController | null = null;
 
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
+  if (typeof window === "undefined") {
+    throw new HardNavigationScheduledError(message);
+  }
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
 }
@@ -530,6 +533,9 @@ async function navigateClient(url: string): Promise<void> {
 
     // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
     // so a stale navigation can never pollute the global.
+    // INVARIANT: Everything from the last assertStillCurrent() through root.render()
+    // is synchronous. If any step here ever becomes async, add another
+    // assertStillCurrent() before writing __NEXT_DATA__.
     window.__NEXT_DATA__ = nextData;
     root.render(element);
   } finally {
@@ -852,21 +858,14 @@ if (typeof window !== "undefined") {
     // precedes that call, not the URL change itself. We emit it here for API
     // compatibility.
     routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
-    void navigateClient(browserUrl).then(
-      () => {
+    void (async () => {
+      const result = await runNavigateClient(browserUrl, fullAppUrl);
+      if (result === "completed") {
         routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
         restoreScrollPosition(e.state);
         window.dispatchEvent(new CustomEvent("vinext:navigate"));
-      },
-      (err: unknown) => {
-        routerEvents.emit("routeChangeError", err, fullAppUrl, { shallow: false });
-        // For genuine errors (not cancellations), fall back to a hard navigation
-        // so the browser recovers to a consistent URL/content state.
-        if (!(err instanceof NavigationCancelledError)) {
-          window.location.href = browserUrl;
-        }
-      },
-    );
+      }
+    })();
   });
 }
 

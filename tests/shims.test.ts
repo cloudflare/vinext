@@ -8753,7 +8753,10 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push("/failing-page");
 
       expect(result).toBe(false);
-      expect(hrefAssignments.filter((value) => value.endsWith("/failing-page"))).toHaveLength(2);
+      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
+      expect(
+        hrefAssignments.filter((value) => value === "http://localhost/failing-page"),
+      ).toHaveLength(1);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -8761,6 +8764,51 @@ describe("Pages Router concurrent navigation", () => {
         (globalThis as any).window = previousWindow;
       }
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("popstate known failures schedule a single hard navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/failing-page";
+      win.location.href = "http://localhost/failing-page";
+      popstateHandler!({ state: null });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
     }
   });
 
