@@ -535,10 +535,10 @@ async function navigateClient(url: string): Promise<void> {
 
     // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
     // so a stale navigation can never pollute the global.
-    // INVARIANT: Everything after the last assertStillCurrent() (the checkpoint
-    // after the optional _app import) through root.render() is synchronous.
-    // If any step here ever becomes async, add another assertStillCurrent()
-    // before writing __NEXT_DATA__.
+    // INVARIANT: Everything after the final assertStillCurrent() above (the
+    // checkpoint immediately after the optional _app import) through
+    // root.render() is synchronous. If any step here ever becomes async, add
+    // another assertStillCurrent() before writing __NEXT_DATA__.
     window.__NEXT_DATA__ = nextData;
     root.render(element);
   } finally {
@@ -575,8 +575,8 @@ async function runNavigateClient(
     }
     // Genuine error (network, parse, import failure): fall back to a hard
     // navigation so the browser lands on the correct page. Known failure modes
-    // already scheduled that fallback inside navigateClient(); only unexpected
-    // failures (parse, import, render) need recovery here.
+    // throw HardNavigationScheduledError, and this guard skips those; only
+    // unexpected failures (parse, import, render) need recovery here.
     if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
       window.location.href = fullUrl;
     }
@@ -868,6 +868,8 @@ if (typeof window !== "undefined") {
         restoreScrollPosition(e.state);
         window.dispatchEvent(new CustomEvent("vinext:navigate"));
       }
+      // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
+      // "failed": runNavigateClient already scheduled the hard-navigation fallback.
     })();
   });
 }

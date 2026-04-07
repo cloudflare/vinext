@@ -8763,6 +8763,8 @@ describe("Pages Router concurrent navigation", () => {
       expect(result).toBe(false);
       expect(fallbackAssignments).toHaveLength(1);
       expect(pushStateAssignments).toHaveLength(1);
+      // Catch-all: exactly one history write plus exactly one hard-nav fallback.
+      expect(hrefAssignments).toHaveLength(2);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -8808,6 +8810,7 @@ describe("Pages Router concurrent navigation", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
+      expect(hrefAssignments).toHaveLength(1);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
