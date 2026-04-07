@@ -53,8 +53,8 @@ import {
   type AppWireElements,
 } from "./app-elements.js";
 import {
-  createPendingSameUrlCommit,
   createPendingNavigationCommit,
+  resolveAndClassifyNavigationCommit,
   resolvePendingNavigationCommitDisposition,
   routerReducer,
   type AppRouterAction,
@@ -323,7 +323,7 @@ async function commitSameUrlNavigatePayload(
   );
   const currentState = getBrowserRouterState();
   const startedNavigationId = activeNavigationId;
-  const { disposition, pending } = await createPendingSameUrlCommit({
+  const { disposition, pending } = await resolveAndClassifyNavigationCommit({
     activeNavigationId,
     currentState,
     navigationSnapshot,
@@ -386,7 +386,8 @@ function BrowserRoot({
   // server actions, HMR) always read the current state. Safe: those readers
   // run from events/effects, never from React render itself.
   // Note: stateRef.current is written during render, not in an effect, to
-  // avoid a stale-read window between commit and layout effects.
+  // avoid a stale-read window between commit and layout effects. This mirrors
+  // the same render-phase ref update pattern used by Next.js's own router.
   const stateRef = useRef(treeState);
   stateRef.current = treeState;
 

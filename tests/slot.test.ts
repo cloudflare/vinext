@@ -115,6 +115,48 @@ describe("slot primitives", () => {
     expect(html).toBe("");
   });
 
+  it("warns in development when a non-slot entry is absent", async () => {
+    const mod = await import("../packages/vinext/src/shims/slot.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const html = await renderHtml(
+        createContextProvider(
+          mod.ElementsContext,
+          {},
+          React.createElement(mod.Slot, { id: "route:/missing" }),
+        ),
+      );
+
+      expect(html).toBe("");
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Missing App Router element entry during render: route:/missing",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn when an absent parallel slot key is omitted on soft navigation", async () => {
+    const mod = await import("../packages/vinext/src/shims/slot.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const html = await renderHtml(
+        createContextProvider(
+          mod.ElementsContext,
+          {},
+          React.createElement(mod.Slot, { id: "slot:modal:/" }),
+        ),
+      );
+
+      expect(html).toBe("");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("Slot throws the notFound signal for an unmatched slot sentinel", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
     const renderPromise = renderHtml(

@@ -49,7 +49,9 @@ export function renderWithAppDependencyBarrier(
     // This render-time release is intentional. The dependency barrier is only
     // used inside the RSC render graph, where producing this leaf means the
     // owning entry has reached the serialization point that downstream entries
-    // are allowed to observe.
+    // are allowed to observe. If Phase 2 adds AbortSignal-based render
+    // timeouts, this dependency will also need an abort/reject path so stuck
+    // async layouts do not suspend downstream entries forever.
     dependency.release();
     return null;
   }

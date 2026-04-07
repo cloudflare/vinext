@@ -26,7 +26,7 @@ export type PendingNavigationCommit = {
 };
 
 export type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
-export type PendingSameUrlCommit = {
+export type ClassifiedPendingNavigationCommit = {
   disposition: PendingNavigationCommitDisposition;
   pending: PendingNavigationCommit;
 };
@@ -111,7 +111,7 @@ export async function createPendingNavigationCommit(options: {
   };
 }
 
-export async function createPendingSameUrlCommit(options: {
+export async function resolveAndClassifyNavigationCommit(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
@@ -119,7 +119,7 @@ export async function createPendingSameUrlCommit(options: {
   renderId?: number;
   startedNavigationId: number;
   type: "navigate" | "replace";
-}): Promise<PendingSameUrlCommit> {
+}): Promise<ClassifiedPendingNavigationCommit> {
   const pending = await createPendingNavigationCommit({
     currentState: options.currentState,
     nextElements: options.nextElements,

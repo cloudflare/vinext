@@ -5,6 +5,7 @@ import { UNMATCHED_SLOT, type AppElementValue, type AppElements } from "../serve
 import { notFound } from "./navigation.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
+const warnedMissingEntryIds = new Set<string>();
 
 export { UNMATCHED_SLOT };
 
@@ -46,6 +47,12 @@ export function Slot({
   const elements = React.useContext(ElementsContext);
 
   if (!Object.hasOwn(elements, id)) {
+    if (process.env.NODE_ENV !== "production" && !id.startsWith("slot:")) {
+      if (!warnedMissingEntryIds.has(id)) {
+        warnedMissingEntryIds.add(id);
+        console.warn("[vinext] Missing App Router element entry during render: " + id);
+      }
+    }
     return null;
   }
 

@@ -8,8 +8,8 @@ import {
 } from "../packages/vinext/src/server/app-elements.js";
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import {
-  createPendingSameUrlCommit,
   createPendingNavigationCommit,
+  resolveAndClassifyNavigationCommit,
   routerReducer,
   resolvePendingNavigationCommitDisposition,
   shouldHardNavigate,
@@ -179,12 +179,12 @@ describe("app browser entry state helpers", () => {
     expect(refreshCommit.rootLayoutTreePath).toBe("/");
   });
 
-  it("classifies same-url payload commits in one step", async () => {
+  it("classifies pending commits in one step for same-url payloads", async () => {
     const currentState = createState({
       rootLayoutTreePath: "/(marketing)",
     });
 
-    const result = await createPendingSameUrlCommit({
+    const result = await resolveAndClassifyNavigationCommit({
       activeNavigationId: 7,
       currentState,
       navigationSnapshot: currentState.navigationSnapshot,
