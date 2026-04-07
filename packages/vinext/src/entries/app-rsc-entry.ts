@@ -385,6 +385,7 @@ import {
 } from ${JSON.stringify(appPageBoundaryRenderPath)};
 import {
   buildAppPageElements as __buildAppPageElements,
+  createAppPageTreePath as __createAppPageTreePath,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import {
@@ -911,11 +912,10 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
     const _noExportRouteId = "route:" + routePath;
     let _noExportRootLayout = null;
     if (route.layouts?.length > 0) {
-      // Compute the root layout tree path inline for this error payload. This
-      // mirrors the createAppPageTreePath() logic used by buildAppPageElements().
+      // Compute the root layout tree path for this error payload using the
+      // canonical helper so it stays aligned with buildAppPageElements().
       const _tp = route.layoutTreePositions?.[0] ?? 0;
-      const _segs = route.routeSegments?.slice(0, _tp) ?? [];
-      _noExportRootLayout = _segs.length === 0 ? "/" : "/" + _segs.join("/");
+      _noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);
     }
     return {
       __route: _noExportRouteId,

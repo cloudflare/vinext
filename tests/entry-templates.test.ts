@@ -245,6 +245,15 @@ describe("App Router entry templates", () => {
     expect(rerenderSlice).toContain("element = buildPageElements(");
   });
 
+  it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("createAppPageTreePath as __createAppPageTreePath");
+    expect(code).toContain(
+      "_noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);",
+    );
+  });
+
   it("generateSsrEntry snapshot", () => {
     const code = generateSsrEntry();
     expect(stabilize(code)).toMatchSnapshot();

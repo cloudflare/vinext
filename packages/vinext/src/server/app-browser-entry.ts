@@ -355,6 +355,10 @@ async function commitSameUrlNavigatePayload(
     );
   }
 
+  // Same-URL server actions still return their action value even if the UI
+  // update was skipped due to a superseding navigation. That preserves the
+  // existing caller contract; a future Phase 2 router state model could make
+  // skipped UI updates observable to the caller without conflating them here.
   if (returnValue) {
     if (!returnValue.ok) {
       throw returnValue.data;
