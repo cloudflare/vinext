@@ -273,6 +273,120 @@ describe("app page route wiring helpers", () => {
     expect(templateDepth).toBeLessThan(notFoundDepth!);
   });
 
+  it("metadata heads are siblings of the loading Suspense boundary, not children of it", () => {
+    // Regression: when a route has both loading.tsx and metadata, the metadata tags
+    // (<meta charSet>, <MetadataHead>, <ViewportHead>) must appear OUTSIDE the
+    // Suspense boundary so they land in the initial HTML shell unconditionally.
+    // If they are inside Suspense, a suspending page will delay title/OG tags,
+    // breaking SEO and social previews.
+    //
+    // We verify structure by walking the React element tree: find the Suspense node,
+    // then confirm its subtree does NOT contain the metadata elements. The outer
+    // fragment has the shape:
+    //   <><meta charSet /><MetadataHead /><ViewportHead /><Suspense>…page…</Suspense></>
+    // so metadata is a sibling of Suspense, not a descendant of it.
+
+    function LoadingFallback() {
+      return createElement("div", { "data-testid": "loading" }, "Loading…");
+    }
+
+    function LeafPage() {
+      return createElement("main", null, "Content");
+    }
+
+    const element = buildAppPageRouteElement({
+      element: createElement(LeafPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: { title: "Test Title", description: "Test desc" },
+      resolvedViewport: { width: "device-width", initialScale: 1 },
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: LoadingFallback },
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["test"],
+        slots: {},
+        templates: [null],
+      },
+      rootNotFoundModule: null,
+    });
+
+    // Utilities for tree traversal.
+    function getTypeName(node: unknown): string {
+      if (!isValidElement(node)) return "";
+      const el = node as { type: unknown };
+      if (typeof el.type === "function") {
+        return (
+          (el.type as { displayName?: string; name?: string }).displayName ??
+          (el.type as { name?: string }).name ??
+          ""
+        );
+      }
+      if (typeof el.type === "string") return el.type;
+      if (typeof el.type === "symbol") return String(el.type);
+      return "";
+    }
+
+    function walkChildren(node: unknown, visit: (n: unknown) => boolean): boolean {
+      if (!isValidElement(node)) return false;
+      if (visit(node)) return true;
+      const el = node as { props: Record<string, unknown> };
+      const { children, ...rest } = el.props;
+      for (const val of Object.values(rest)) {
+        if (walkChildren(val, visit)) return true;
+      }
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (walkChildren(child, visit)) return true;
+        }
+      } else if (walkChildren(children, visit)) {
+        return true;
+      }
+      return false;
+    }
+
+    // Find the Suspense element in the tree.
+    let suspenseElement: unknown = undefined;
+    walkChildren(element, (node) => {
+      if (getTypeName(node).includes("react.suspense")) {
+        suspenseElement = node;
+        return true;
+      }
+      return false;
+    });
+
+    expect(suspenseElement, "expected Suspense in tree (route has loading.tsx)").toBeDefined();
+
+    // Verify that metadata elements are NOT inside the Suspense subtree.
+    // The Suspense boundary should only contain the page content.
+    const metaInsideSuspense = walkChildren(suspenseElement, (n) => getTypeName(n) === "meta");
+    const metadataHeadInsideSuspense = walkChildren(
+      suspenseElement,
+      (n) => getTypeName(n) === "MetadataHead",
+    );
+    const viewportHeadInsideSuspense = walkChildren(
+      suspenseElement,
+      (n) => getTypeName(n) === "ViewportHead",
+    );
+
+    // <meta charSet>, MetadataHead, and ViewportHead must NOT be inside the loading Suspense
+    expect(metaInsideSuspense).toBe(false);
+    expect(metadataHeadInsideSuspense).toBe(false);
+    expect(viewportHeadInsideSuspense).toBe(false);
+
+    // Additionally verify metadata IS present somewhere in the full tree (sanity check).
+    const metaInTree = walkChildren(element, (n) => getTypeName(n) === "meta");
+    const metadataHeadInTree = walkChildren(element, (n) => getTypeName(n) === "MetadataHead");
+    expect(metaInTree).toBe(true);
+    expect(metadataHeadInTree).toBe(true);
+  });
+
   it("interleaves templates with their corresponding layouts (Layout[i] > Template[i])", () => {
     // Next.js nesting order per segment: Layout > Template > ErrorBoundary > children
     // With two levels, the correct tree is:

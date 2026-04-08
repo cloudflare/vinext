@@ -195,6 +195,12 @@ export function buildAppPageRouteElement<
     <LayoutSegmentProvider segmentMap={{ children: [] }}>{options.element}</LayoutSegmentProvider>
   );
 
+  const loadingComponent = getDefaultExport(options.route.loading);
+  if (loadingComponent) {
+    const LoadingComponent = loadingComponent;
+    element = <Suspense fallback={<LoadingComponent />}>{element}</Suspense>;
+  }
+
   element = (
     <>
       <meta charSet="utf-8" />
@@ -203,12 +209,6 @@ export function buildAppPageRouteElement<
       {element}
     </>
   );
-
-  const loadingComponent = getDefaultExport(options.route.loading);
-  if (loadingComponent) {
-    const LoadingComponent = loadingComponent;
-    element = <Suspense fallback={<LoadingComponent />}>{element}</Suspense>;
-  }
 
   const lastLayoutErrorModule =
     options.route.errors && options.route.errors.length > 0
