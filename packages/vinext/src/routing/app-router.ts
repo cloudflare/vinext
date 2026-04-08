@@ -268,7 +268,10 @@ function discoverSlotSubRoutes(
     >();
 
     for (const slot of parentRoute.parallelSlots) {
-      const slotDir = path.join(parentPageDir, `@${slot.name}`);
+      // Only scan sub-pages from slots owned by this route directory.
+      // Inherited slots with the same name live in different owner dirs.
+      if (path.dirname(slot.ownerDir) !== parentPageDir) continue;
+      const slotDir = slot.ownerDir;
       if (!fs.existsSync(slotDir)) continue;
 
       const subPages = findSlotSubPages(slotDir, matcher);

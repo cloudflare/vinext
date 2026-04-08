@@ -233,8 +233,28 @@ export function buildAppPageRouteElement<
 
   const templates = options.route.templates ?? [];
   const routeSlots = options.route.slots ?? {};
+  const slotNameCounts = new Map<string, number>();
+  for (const [slotKey, slot] of Object.entries(routeSlots)) {
+    const slotName = slot.name ?? slotKey;
+    slotNameCounts.set(slotName, (slotNameCounts.get(slotName) ?? 0) + 1);
+  }
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const routeThenableParams = options.makeThenableParams(options.matchedParams);
+
+  const resolveSlotOverride = (slotKey: string, slotName: string) => {
+    const overrideByKey = options.slotOverrides?.[slotKey];
+    if (overrideByKey) {
+      return overrideByKey;
+    }
+
+    // Legacy callers may still provide overrides by slot prop name.
+    // Only allow that fallback when it is unambiguous.
+    if (slotKey === slotName || (slotNameCounts.get(slotName) ?? 0) === 1) {
+      return options.slotOverrides?.[slotName];
+    }
+
+    return undefined;
+  };
 
   for (let index = layoutEntries.length - 1; index >= 0; index--) {
     const layoutEntry = layoutEntries[index];
@@ -276,7 +296,7 @@ export function buildAppPageRouteElement<
         continue;
       }
 
-      const slotOverride = options.slotOverrides?.[slotKey] ?? options.slotOverrides?.[slotName];
+      const slotOverride = resolveSlotOverride(slotKey, slotName);
       const slotParams = slotOverride?.params ?? options.matchedParams;
       const slotComponent =
         getDefaultExport(slotOverride?.pageModule) ??

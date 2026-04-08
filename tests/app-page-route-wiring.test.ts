@@ -257,6 +257,87 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain("child-slot");
   });
 
+  it("does not apply ambiguous name-only slot overrides when same-named slots exist", () => {
+    function ParentModalLayout(props: Record<string, unknown>) {
+      return createElement(
+        "div",
+        { "data-layout": "parent-modal-layout" },
+        createElement("div", { "data-parent-modal": "true" }, readChildren(props.modal)),
+        readChildren(props.children),
+      );
+    }
+
+    function ChildModalLayout(props: Record<string, unknown>) {
+      return createElement(
+        "section",
+        { "data-layout": "child-modal-layout" },
+        createElement("div", { "data-child-modal": "true" }, readChildren(props.modal)),
+        readChildren(props.children),
+      );
+    }
+
+    const element = buildAppPageRouteElement({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "child"],
+        slots: {
+          "modal@parent/@modal": {
+            default: {
+              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+          "modal@parent/child/@modal": {
+            default: {
+              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templates: [null, null],
+      },
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          pageModule: { default: SlotPage },
+          props: { label: "ambiguous-override" },
+        },
+      },
+    });
+
+    const html = ReactDOMServer.renderToStaticMarkup(element);
+    expect(html).toContain('data-parent-slot="true"');
+    expect(html).toContain("parent-slot");
+    expect(html).toContain('data-child-slot="true"');
+    expect(html).toContain("child-slot");
+    expect(html).not.toContain('data-slot-page="ambiguous-override"');
+  });
+
   it("NotFoundBoundary is nested inside Template in the element tree (Layout > Template > NotFound > Page)", () => {
     // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > Page
     // NotFoundBoundary must be INSIDE Template so that when notFound() fires, the Template
