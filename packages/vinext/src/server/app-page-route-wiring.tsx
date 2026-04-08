@@ -26,6 +26,8 @@ export type AppPageRouteWiringSlot<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
+  /** Slot prop name passed to the owning layout (e.g. "modal" from @modal). */
+  name?: string;
   default?: TModule | null;
   error?: TErrorModule | null;
   layout?: TModule | null;
@@ -52,6 +54,9 @@ export type AppPageRouteWiringRoute<
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
+  /**
+   * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
+   */
   slots?: Readonly<Record<string, AppPageRouteWiringSlot<TModule, TErrorModule>>> | null;
   templates?: readonly (TModule | null | undefined)[] | null;
 };
@@ -264,13 +269,14 @@ export function buildAppPageRouteElement<
       params: routeThenableParams,
     };
 
-    for (const [slotName, slot] of Object.entries(routeSlots)) {
+    for (const [slotKey, slot] of Object.entries(routeSlots)) {
+      const slotName = slot.name ?? slotKey;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (index !== targetIndex) {
         continue;
       }
 
-      const slotOverride = options.slotOverrides?.[slotName];
+      const slotOverride = options.slotOverrides?.[slotKey] ?? options.slotOverrides?.[slotName];
       const slotParams = slotOverride?.params ?? options.matchedParams;
       const slotComponent =
         getDefaultExport(slotOverride?.pageModule) ??
@@ -327,7 +333,8 @@ export function buildAppPageRouteElement<
         options.matchedParams,
       ),
     };
-    for (const [slotName, slot] of Object.entries(routeSlots)) {
+    for (const [slotKey, slot] of Object.entries(routeSlots)) {
+      const slotName = slot.name ?? slotKey;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (index !== targetIndex) {
         continue;

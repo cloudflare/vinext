@@ -1285,9 +1285,9 @@ describe("matchAppRoute - URL matching", () => {
     expect(result!.params["auth-method"]).toBe("google");
   });
 
-  // --- Inherited parallel slot priority ---
+  // --- Inherited parallel slots ---
 
-  it("closest ancestor parallel slot wins over farthest when same name exists at multiple levels", async () => {
+  it("preserves same-named parallel slots from multiple layout levels", async () => {
     await withTempDir("vinext-app-parallel-slot-priority-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
 
@@ -1312,12 +1312,19 @@ describe("matchAppRoute - URL matching", () => {
       const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
       expect(settingsRoute).toBeDefined();
 
-      const sidebarSlot = settingsRoute!.parallelSlots.find((s) => s.name === "sidebar");
-      expect(sidebarSlot).toBeDefined();
+      const sidebarSlots = settingsRoute!.parallelSlots.filter((s) => s.name === "sidebar");
+      expect(sidebarSlots).toHaveLength(2);
 
-      // The dashboard-level @sidebar (closest ancestor) should win
-      expect(sidebarSlot!.defaultPath).not.toBeNull();
-      expect(sidebarSlot!.defaultPath).toContain(path.join("dashboard", "@sidebar"));
+      const sidebarByOwner = new Map(
+        sidebarSlots.map((slot) => [
+          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
+          slot,
+        ]),
+      );
+
+      expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);
+      expect(sidebarByOwner.get("@sidebar")!.layoutIndex).toBe(0);
+      expect(sidebarByOwner.get("dashboard/@sidebar")!.layoutIndex).toBe(1);
     });
   });
 });
