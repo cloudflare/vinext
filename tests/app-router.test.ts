@@ -877,6 +877,19 @@ describe("App Router integration", () => {
     expect(html).toMatch(/name="description".*content="Read about my-post"/);
   });
 
+  it("layout generateMetadata() receives searchParams from URL query string", async () => {
+    // Regression test: layout generateMetadata() was always passed `undefined` for
+    // searchParams. Only page generateMetadata() received the real value.
+    const res = await fetch(`${baseUrl}/layout-metadata-search?tab=settings`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The layout's generateMetadata reads searchParams.tab — should produce
+    // "Layout Section: settings", not "Layout Section: home" (the fallback for
+    // undefined searchParams).
+    expect(html).toContain("<title>Layout Section: settings</title>");
+  });
+
   it("renders catch-all routes with multiple segments", async () => {
     const res = await fetch(`${baseUrl}/docs/getting-started/install`);
     expect(res.status).toBe(200);

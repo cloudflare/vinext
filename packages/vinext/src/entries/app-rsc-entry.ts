@@ -955,30 +955,9 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
   // route it to the nearest error.tsx boundary (or global-error.tsx).
   const layoutMods = route.layouts.filter(Boolean);
 
-  // Build the parent promise chain and kick off metadata resolution in one pass.
-  // Each layout module is called exactly once. layoutMetaPromises[i] is the
-  // promise for layout[i]'s own metadata result.
-  //
-  // All calls are kicked off immediately (concurrent I/O), but each layout's
-  // "parent" promise only resolves after the preceding layout's metadata is done.
-  const layoutMetaPromises = [];
-  let accumulatedMetaPromise = Promise.resolve({});
-  for (let i = 0; i < layoutMods.length; i++) {
-    const parentForThisLayout = accumulatedMetaPromise;
-    // Kick off this layout's metadata resolution now (concurrent with others).
-    const metaPromise = resolveModuleMetadata(layoutMods[i], params, undefined, parentForThisLayout)
-      .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
-    layoutMetaPromises.push(metaPromise);
-    // Advance accumulator: resolves to merged(layouts[0..i]) once layout[i] is done.
-    accumulatedMetaPromise = metaPromise.then(async (result) =>
-      result ? mergeMetadata([await parentForThisLayout, result]) : await parentForThisLayout
-    );
-  }
-  // Page's parent is the fully-accumulated layout metadata.
-  const pageParentPromise = accumulatedMetaPromise;
-
   // Convert URLSearchParams → plain object so we can pass it to
   // resolveModuleMetadata (which expects Record<string, string | string[]>).
+  // Must be built before the layout loop so layouts receive the real searchParams.
   // This same object is reused for pageProps.searchParams below.
   const spObj = {};
   let hasSearchParams = false;
@@ -992,6 +971,28 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
       }
     });
   }
+
+  // Build the parent promise chain and kick off metadata resolution in one pass.
+  // Each layout module is called exactly once. layoutMetaPromises[i] is the
+  // promise for layout[i]'s own metadata result.
+  //
+  // All calls are kicked off immediately (concurrent I/O), but each layout's
+  // "parent" promise only resolves after the preceding layout's metadata is done.
+  const layoutMetaPromises = [];
+  let accumulatedMetaPromise = Promise.resolve({});
+  for (let i = 0; i < layoutMods.length; i++) {
+    const parentForThisLayout = accumulatedMetaPromise;
+    // Kick off this layout's metadata resolution now (concurrent with others).
+    const metaPromise = resolveModuleMetadata(layoutMods[i], params, spObj, parentForThisLayout)
+      .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
+    layoutMetaPromises.push(metaPromise);
+    // Advance accumulator: resolves to merged(layouts[0..i]) once layout[i] is done.
+    accumulatedMetaPromise = metaPromise.then(async (result) =>
+      result ? mergeMetadata([await parentForThisLayout, result]) : await parentForThisLayout
+    );
+  }
+  // Page's parent is the fully-accumulated layout metadata.
+  const pageParentPromise = accumulatedMetaPromise;
 
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
