@@ -72,6 +72,7 @@ describe("app route handler response helpers", () => {
     const middlewareHeaders = new Headers();
     middlewareHeaders.append("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
+    middlewareHeaders.append("set-cookie", "mw=2; Path=/; HttpOnly");
 
     const result = applyRouteHandlerMiddlewareContext(response, {
       headers: middlewareHeaders,
@@ -79,7 +80,11 @@ describe("app route handler response helpers", () => {
     });
 
     expect(result.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
-    expect(result.headers.getSetCookie()).toEqual(["existing=1; Path=/", "mw=1; Path=/"]);
+    expect(result.headers.getSetCookie()).toEqual([
+      "existing=1; Path=/",
+      "mw=1; Path=/",
+      "mw=2; Path=/; HttpOnly",
+    ]);
     await expect(result.text()).resolves.toBe("hello");
   });
 

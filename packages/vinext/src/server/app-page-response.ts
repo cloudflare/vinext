@@ -1,3 +1,5 @@
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
@@ -173,33 +175,7 @@ export function resolveAppPageHtmlResponsePolicy(
   return { shouldWriteToCache: false };
 }
 
-/**
- * Merge middleware response headers into a target Headers object.
- *
- * Set-Cookie and Vary are accumulated (append) since multiple sources can
- * contribute values. All other headers use set() so middleware owns singular
- * response headers like Cache-Control.
- *
- * Used by buildAppPageRscResponse and the generated entry for intercepting
- * route and server action responses that bypass the normal page render path.
- */
-export function mergeMiddlewareResponseHeaders(
-  target: Headers,
-  middlewareHeaders: Headers | null,
-): void {
-  if (!middlewareHeaders) {
-    return;
-  }
-
-  for (const [key, value] of middlewareHeaders) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === "set-cookie" || lowerKey === "vary") {
-      target.append(key, value);
-    } else {
-      target.set(key, value);
-    }
-  }
-}
+export { mergeMiddlewareResponseHeaders };
 
 export function buildAppPageRscResponse(
   body: ReadableStream,
