@@ -794,7 +794,7 @@ async function main(): Promise<void> {
       // before re-throwing, so this guard correctly skips the double-decrement case.
       if (_snapshotPending) {
         _snapshotPending = false;
-        commitClientNavigationState();
+        commitClientNavigationState(navId);
       }
       // Clear pending pathname on error so subsequent navigations compare correctly.
       // Only clear if this is still the active navigation — a newer navigation
