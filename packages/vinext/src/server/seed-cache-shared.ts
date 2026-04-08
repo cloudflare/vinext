@@ -12,6 +12,7 @@ import type { CachedAppPageValue } from "../shims/cache.js";
 
 export type PrerenderManifest = {
   buildId: string;
+  basePath?: string;
   trailingSlash?: boolean;
   routes: PrerenderManifestRoute[];
 };

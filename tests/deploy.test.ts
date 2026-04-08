@@ -14,6 +14,7 @@ import {
   ensureESModule,
   renameCJSConfigs,
   buildWranglerDeployArgs,
+  copyPrerenderToAssets,
   parseDeployArgs,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
@@ -88,6 +89,50 @@ describe("buildWranglerDeployArgs", () => {
 
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+describe("copyPrerenderToAssets", () => {
+  it("copies prerender output and injects basePath into copied manifest", () => {
+    writeFile(
+      tmpDir,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-123",
+        trailingSlash: false,
+        routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+      }),
+    );
+    writeFile(tmpDir, "dist/server/prerendered-routes/about.html", "<html>About</html>");
+    writeFile(tmpDir, "dist/server/prerendered-routes/about.rsc", "RSC about");
+
+    copyPrerenderToAssets(tmpDir, "/docs");
+
+    const copiedManifestPath = path.join(tmpDir, "dist/client/__prerender/vinext-prerender.json");
+    const copiedManifest = JSON.parse(fs.readFileSync(copiedManifestPath, "utf-8"));
+    expect(copiedManifest.basePath).toBe("/docs");
+    expect(copiedManifest.buildId).toBe("build-123");
+
+    expect(fs.readFileSync(path.join(tmpDir, "dist/client/__prerender/about.html"), "utf-8")).toBe(
+      "<html>About</html>",
+    );
+    expect(fs.readFileSync(path.join(tmpDir, "dist/client/__prerender/about.rsc"), "utf-8")).toBe(
+      "RSC about",
+    );
+  });
+
+  it("falls back to byte-copying manifest when source manifest is invalid JSON", () => {
+    writeFile(tmpDir, "dist/server/vinext-prerender.json", "{ not-json");
+    writeFile(tmpDir, "dist/server/prerendered-routes/index.html", "<html>Home</html>");
+
+    copyPrerenderToAssets(tmpDir, "/docs");
+
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/client/__prerender/vinext-prerender.json"), "utf-8"),
+    ).toBe("{ not-json");
+    expect(fs.readFileSync(path.join(tmpDir, "dist/client/__prerender/index.html"), "utf-8")).toBe(
+      "<html>Home</html>",
+    );
   });
 });
 

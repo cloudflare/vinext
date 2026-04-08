@@ -82,11 +82,13 @@ export async function seedRouteFromAssets(
   try {
     const loaded = await loadManifest(fetchAsset);
     if (!loaded) return;
+    const normalizedPathname = normalizeSeedPathname(pathname, loaded.manifest.basePath);
 
-    const route = loaded.lookup.get(pathname);
+    const route = loaded.lookup.get(normalizedPathname);
     if (!route) return;
 
-    const baseKey = isrCacheKey("app", pathname, loaded.manifest.buildId);
+    const routePathname = route.path ?? route.route;
+    const baseKey = isrCacheKey("app", routePathname, loaded.manifest.buildId);
     const htmlKey = baseKey + ":html";
 
     // Already in cache — nothing to do
@@ -104,7 +106,13 @@ export async function seedRouteFromAssets(
     }
 
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
-    const promise = doSeedRoute(loaded.manifest, pathname, baseKey, revalidateSeconds, fetchAsset)
+    const promise = doSeedRoute(
+      loaded.manifest,
+      routePathname,
+      baseKey,
+      revalidateSeconds,
+      fetchAsset,
+    )
       .catch(() => {}) // seeding is best-effort — never propagate to joiners
       .finally(() => seedInFlight.delete(htmlKey));
 
@@ -114,6 +122,17 @@ export async function seedRouteFromAssets(
     // Catches errors from loadManifest, getCacheHandler().get(), or any
     // unexpected throw before doSeedRoute. Never crash the request.
   }
+}
+
+function normalizeSeedPathname(pathname: string, basePath = ""): string {
+  const noRscSuffix = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+  const noBasePath =
+    basePath && (noRscSuffix === basePath || noRscSuffix.startsWith(basePath + "/"))
+      ? noRscSuffix.slice(basePath.length) || "/"
+      : noRscSuffix;
+  if (noBasePath === "/") return "/";
+  const trimmed = noBasePath.replace(/\/+$/, "");
+  return trimmed || "/";
 }
 
 /**

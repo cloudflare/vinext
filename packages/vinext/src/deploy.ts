@@ -1210,16 +1210,31 @@ export function buildWranglerDeployArgs(
  * as static assets and accessible via env.ASSETS.fetch() at runtime.
  * No-op if no prerender manifest exists.
  */
-function copyPrerenderToAssets(root: string): void {
+export function copyPrerenderToAssets(root: string, basePath = ""): void {
   const serverDir = path.join(root, "dist", "server");
   const manifestPath = path.join(serverDir, "vinext-prerender.json");
   if (!fs.existsSync(manifestPath)) return;
 
   const targetDir = path.join(root, "dist", "client", "__prerender");
   fs.mkdirSync(targetDir, { recursive: true });
+  const targetManifestPath = path.join(targetDir, "vinext-prerender.json");
 
-  // Copy manifest
-  fs.copyFileSync(manifestPath, path.join(targetDir, "vinext-prerender.json"));
+  // Copy manifest, enriching with basePath for Workers-side cache lookup.
+  if (!basePath) {
+    fs.copyFileSync(manifestPath, targetManifestPath);
+  } else {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
+      manifest.basePath = basePath;
+      fs.writeFileSync(targetManifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+    } catch {
+      // Best-effort enrichment only. If parse fails, preserve the source bytes.
+      fs.copyFileSync(manifestPath, targetManifestPath);
+    }
+  }
 
   // Copy prerendered HTML/RSC files
   const sourceDir = path.join(serverDir, "prerendered-routes");
@@ -1356,22 +1371,20 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
+  const rawNextConfig = await loadNextConfig(info.root);
+  const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
+
   // Step 6a: prerender — render every discovered route into dist.
   // Triggered by --prerender-all, or automatically when next.config.js
   // sets `output: 'export'` (every route must be statically exportable).
-  {
-    const rawNextConfig = await loadNextConfig(info.root);
-    const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
-    const isStaticExport = nextConfig.output === "export";
-
-    if (options.prerenderAll || isStaticExport) {
-      const label =
-        isStaticExport && !options.prerenderAll
-          ? "Pre-rendering all routes (output: 'export')..."
-          : "Pre-rendering all routes...";
-      console.log(`\n  ${label}`);
-      await runPrerender({ root: info.root });
-    }
+  const isStaticExport = nextConfig.output === "export";
+  if (options.prerenderAll || isStaticExport) {
+    const label =
+      isStaticExport && !options.prerenderAll
+        ? "Pre-rendering all routes (output: 'export')..."
+        : "Pre-rendering all routes...";
+    console.log(`\n  ${label}`);
+    await runPrerender({ root: info.root });
   }
 
   // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
@@ -1393,7 +1406,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // can access it via env.ASSETS.fetch() for lazy per-route cache seeding.
   // With not_found_handling: "none", these files are never auto-served —
   // only accessible programmatically through the assets binding.
-  copyPrerenderToAssets(root);
+  copyPrerenderToAssets(root, nextConfig.basePath);
 
   // Step 7: Deploy via wrangler
   const url = runWranglerDeploy(root, {

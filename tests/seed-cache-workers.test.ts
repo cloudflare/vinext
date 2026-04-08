@@ -105,6 +105,58 @@ describe("seedRouteFromAssets", () => {
     expect(entry).not.toBeNull();
   });
 
+  it("seeds trailing-slash routes when request pathname has trailing slash", async () => {
+    const manifest = makeManifest(
+      [{ route: "/about", status: "rendered", revalidate: 30, router: "app" }],
+      true,
+    );
+    const { fetcher, calls } = createMockFetcher({
+      "/__prerender/vinext-prerender.json": JSON.stringify(manifest),
+      "/__prerender/about/index.html": "<html>About</html>",
+      "/__prerender/about.rsc": "RSC about",
+    });
+
+    await seedRouteFromAssets("/about/", fetcher);
+
+    const htmlKey = isrCacheKey("app", "/about", BUILD_ID) + ":html";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(calls).toContain("/__prerender/about/index.html");
+  });
+
+  it("seeds when request pathname uses .rsc suffix", async () => {
+    const manifest = makeManifest([
+      { route: "/about", status: "rendered", revalidate: 30, router: "app" },
+    ]);
+    const { fetcher } = createMockFetcher({
+      "/__prerender/vinext-prerender.json": JSON.stringify(manifest),
+      "/__prerender/about.html": "<html>About</html>",
+      "/__prerender/about.rsc": "RSC about",
+    });
+
+    await seedRouteFromAssets("/about.rsc", fetcher);
+
+    const htmlKey = isrCacheKey("app", "/about", BUILD_ID) + ":html";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+  });
+
+  it("strips basePath from request pathname before manifest lookup", async () => {
+    const manifest = {
+      ...makeManifest([{ route: "/about", status: "rendered", revalidate: 30, router: "app" }]),
+      basePath: "/docs",
+    };
+    const { fetcher, calls } = createMockFetcher({
+      "/__prerender/vinext-prerender.json": JSON.stringify(manifest),
+      "/__prerender/about.html": "<html>About</html>",
+      "/__prerender/about.rsc": "RSC about",
+    });
+
+    await seedRouteFromAssets("/docs/about", fetcher);
+
+    const htmlKey = isrCacheKey("app", "/about", BUILD_ID) + ":html";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(calls).toContain("/__prerender/about.html");
+  });
+
   it("seeds dynamic routes using their concrete path", async () => {
     const manifest = makeManifest([
       {
