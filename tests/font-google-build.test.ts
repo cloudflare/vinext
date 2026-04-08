@@ -33,6 +33,7 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
 
   try {
     const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.rm(nodeModulesLink, { recursive: true, force: true });
     await fs.symlink(projectNodeModules, nodeModulesLink);
 
     const builder = await createBuilder({
@@ -51,7 +52,7 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
 
     await builder.buildApp();
 
-    return path.join(outDir, "server", "index.mjs");
+    return path.join(outDir, "server", "index.js");
   } finally {
     globalThis.fetch = originalFetch;
     await fs.unlink(nodeModulesLink).catch(() => {});
