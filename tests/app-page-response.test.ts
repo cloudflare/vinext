@@ -313,6 +313,7 @@ describe("app page response helpers", () => {
     const middlewareHeaders = new Headers();
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
     middlewareHeaders.append("x-extra", "present");
+    middlewareHeaders.set("cache-control", "private, max-age=5");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
@@ -335,7 +336,7 @@ describe("app page response helpers", () => {
 
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
