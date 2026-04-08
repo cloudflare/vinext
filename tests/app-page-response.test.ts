@@ -309,9 +309,11 @@ describe("app page response helpers", () => {
     expect(JSON.parse(decodeURIComponent(rawHeader))).toEqual({ slug: [koreanSlug] });
   });
 
-  it("builds HTML responses with draft cookies, preload links, middleware, and timing", async () => {
+  it("builds HTML responses with middleware override/append header semantics", async () => {
     const middlewareHeaders = new Headers();
+    middlewareHeaders.set("cache-control", "private, max-age=5");
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
+    middlewareHeaders.set("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("x-extra", "present");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
@@ -335,8 +337,9 @@ describe("app page response helpers", () => {
 
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
+    expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
