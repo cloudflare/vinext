@@ -432,6 +432,24 @@ describe("seedRouteFromAssets", () => {
     expect(manifestCallCount).toBe(1);
   });
 
+  it("does not retry manifest load after invalid JSON", async () => {
+    let manifestCallCount = 0;
+
+    const fetcher = async (assetPath: string): Promise<Response> => {
+      if (assetPath.includes("vinext-prerender.json")) {
+        manifestCallCount++;
+        return new Response("{ not-json", { status: 200 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    await seedRouteFromAssets("/a", fetcher);
+    await seedRouteFromAssets("/b", fetcher);
+
+    // Invalid JSON is a permanent deployment issue — should not retry per request.
+    expect(manifestCallCount).toBe(1);
+  });
+
   // ── Graceful degradation ──────────────────────────────────────────────────
 
   it("seeds HTML even when RSC file is missing", async () => {

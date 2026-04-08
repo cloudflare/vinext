@@ -151,27 +151,44 @@ async function loadManifest(fetchAsset: AssetFetcher): Promise<LoadedManifest | 
     // Assignment is synchronous — concurrent callers that arrive before the
     // first await will see loadedPromise !== null and join the same promise.
     loadedPromise = (async () => {
+      let res: Response;
       try {
-        const res = await fetchAsset("/__prerender/vinext-prerender.json");
-        if (!res.ok) return null;
-        const manifest: PrerenderManifest = await res.json();
-        if (!manifest.buildId || !Array.isArray(manifest.routes)) return null;
-
-        const lookup = new Map<string, PrerenderManifestRoute>();
-        for (const route of manifest.routes) {
-          if (route.status !== "rendered") continue;
-          if (route.router !== "app") continue;
-          lookup.set(route.path ?? route.route, route);
-        }
-
-        return { manifest, lookup };
+        res = await fetchAsset("/__prerender/vinext-prerender.json");
       } catch {
         // Transient failure (network error, timeout) — allow retry on next request.
-        // Permanent failures (!res.ok, invalid JSON structure) return null above
-        // without resetting, since those indicate a malformed deployment.
         loadedPromise = null;
         return null;
       }
+
+      if (!res.ok) return null;
+
+      let manifestText: string;
+      try {
+        manifestText = await res.text();
+      } catch {
+        // Transient stream/body read failure — allow retry on next request.
+        loadedPromise = null;
+        return null;
+      }
+
+      let manifest: PrerenderManifest;
+      try {
+        manifest = JSON.parse(manifestText) as PrerenderManifest;
+      } catch {
+        // Invalid JSON is a permanent deployment issue; keep cached null.
+        return null;
+      }
+
+      if (!manifest.buildId || !Array.isArray(manifest.routes)) return null;
+
+      const lookup = new Map<string, PrerenderManifestRoute>();
+      for (const route of manifest.routes) {
+        if (route.status !== "rendered") continue;
+        if (route.router !== "app") continue;
+        lookup.set(route.path ?? route.route, route);
+      }
+
+      return { manifest, lookup };
     })();
   }
   return loadedPromise;
