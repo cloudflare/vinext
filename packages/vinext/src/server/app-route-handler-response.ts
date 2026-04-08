@@ -39,7 +39,12 @@ export function applyRouteHandlerMiddlewareContext(
   const responseHeaders = new Headers(response.headers);
   if (middlewareContext.headers) {
     for (const [key, value] of middlewareContext.headers) {
-      responseHeaders.append(key, value);
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === "set-cookie" || lowerKey === "vary") {
+        responseHeaders.append(key, value);
+      } else {
+        responseHeaders.set(key, value);
+      }
     }
   }
 
