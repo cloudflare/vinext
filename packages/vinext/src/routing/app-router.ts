@@ -36,6 +36,8 @@ export type InterceptingRoute = {
 };
 
 export type ParallelSlot = {
+  /** Stable slot identity (name + owning directory), used for route serialization keys. */
+  key: string;
   /** Slot name (e.g. "team" from @team) */
   name: string;
   /** Absolute path to the @slot directory that owns this slot. Internal routing metadata. */
@@ -225,15 +227,13 @@ function discoverSlotSubRoutes(
   // Updated as new synthetic routes are pushed so that later parents can see earlier synthetic entries.
   const routesByPattern = new Map<string, AppRoute>(routes.map((r) => [r.pattern, r]));
 
-  const slotKey = (slotName: string, ownerDir: string): string => `${slotName}\u0000${ownerDir}`;
-
   const applySlotSubPages = (
     route: AppRoute,
     slotPages: Map<string, string>,
     rawSegments: string[],
   ): void => {
     route.parallelSlots = route.parallelSlots.map((slot) => {
-      const subPage = slotPages.get(slotKey(slot.name, slot.ownerDir));
+      const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
         return { ...slot, pagePath: subPage, routeSegments: rawSegments };
       }
@@ -263,7 +263,12 @@ function discoverSlotSubRoutes(
     >();
 
     for (const slot of parentRoute.parallelSlots) {
-      const slotDir = path.join(parentPageDir, `@${slot.name}`);
+      // Only scan sub-pages from slots owned by this route directory.
+      // Inherited slots with the same name live in different owner dirs.
+      if (path.dirname(slot.ownerDir) !== parentPageDir) {
+        continue;
+      }
+      const slotDir = slot.ownerDir;
       if (!fs.existsSync(slotDir)) continue;
 
       const subPages = findSlotSubPages(slotDir, matcher);
@@ -285,8 +290,7 @@ function discoverSlotSubRoutes(
           subPathMap.set(normalizedSubPath, subPathEntry);
         }
 
-        const slotId = slotKey(slot.name, slot.ownerDir);
-        const existingSlotPage = subPathEntry.slotPages.get(slotId);
+        const existingSlotPage = subPathEntry.slotPages.get(slot.key);
         if (existingSlotPage) {
           const pattern = joinRoutePattern(parentRoute.pattern, normalizedSubPath);
           throw new Error(
@@ -294,7 +298,7 @@ function discoverSlotSubRoutes(
           );
         }
 
-        subPathEntry.slotPages.set(slotId, pagePath);
+        subPathEntry.slotPages.set(slot.key, pagePath);
       }
     }
 
@@ -328,7 +332,7 @@ function discoverSlotSubRoutes(
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
-        const subPage = slotPages.get(slotKey(slot.name, slot.ownerDir));
+        const subPage = slotPages.get(slot.key);
         return {
           ...slot,
           pagePath: subPage || null,
@@ -675,7 +679,7 @@ function discoverInheritedParallelSlots(
       if (isOwnDir) {
         // At the route's own directory: use page.tsx (normal behavior)
         slot.layoutIndex = lvlLayoutIdx;
-        slotMap.set(slot.name, slot);
+        slotMap.set(slot.key, slot);
       } else {
         // At an ancestor directory: use default.tsx as the page, not page.tsx
         // (the slot's page.tsx is for the parent route, not this child route)
@@ -686,9 +690,7 @@ function discoverInheritedParallelSlots(
           routeSegments: null,
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
-        // Iteration goes root-to-leaf, so later (closer) ancestors overwrite
-        // earlier (farther) ones — the closest ancestor's slot wins.
-        slotMap.set(slot.name, inheritedSlot);
+        slotMap.set(slot.key, inheritedSlot);
       }
     }
   }
@@ -724,6 +726,7 @@ function discoverParallelSlots(
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
     slots.push({
+      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
       name: slotName,
       ownerDir: slotDir,
       pagePath,

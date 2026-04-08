@@ -26,7 +26,7 @@ export type BuildAppPageElementResult<TElement> = {
 export type AppPageInterceptMatch<TPage = unknown> = {
   matchedParams: AppPageParams;
   page: TPage;
-  slotName: string;
+  slotKey: string;
   sourceRouteIndex: number;
 };
 

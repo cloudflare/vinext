@@ -300,6 +300,20 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="team-default"');
   });
 
+  it("keeps same-named parallel slots from parent and child layouts", async () => {
+    const res = await fetch(`${baseUrl}/slot-collision/child`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="slot-collision-parent-layout"');
+    expect(html).toContain('data-testid="slot-collision-child-layout"');
+    expect(html).toContain('data-testid="slot-collision-parent-default"');
+    expect(html).toContain("Parent modal default");
+    expect(html).toContain('data-testid="slot-collision-child-default"');
+    expect(html).toContain("Child modal default");
+    expect(html).toContain('data-testid="slot-collision-page"');
+  });
+
   it("parallel slots do not affect URL routing", async () => {
     // @team and @analytics should NOT be accessible as direct routes
     const teamRes = await fetch(`${baseUrl}/dashboard/team`);

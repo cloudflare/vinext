@@ -559,9 +559,82 @@ describe("App Router route sorting (additional)", () => {
       const settingsRoute = routes.find((route) => route.pattern === "/dashboard/settings");
 
       expect(settingsRoute).toBeDefined();
-      expect(settingsRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
+      const teamSlots = settingsRoute!.parallelSlots.filter((slot) => slot.name === "team");
+      const slotsByOwner = new Map(
+        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+      );
+
+      expect(teamSlots).toHaveLength(2);
+      expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
         path.join("settings", "@team", "page.tsx"),
       );
+      expect(slotsByOwner.get("dashboard/@team")!.pagePath).toContain(
+        path.join("@team", "settings", "page.tsx"),
+      );
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("does not assign child slot sub-pages to inherited same-named slots in generated sub-routes", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-subroute-ownership-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "settings", "@team", "member"), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function DashboardPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function DashboardDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function ParentTeamDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "page.tsx"),
+        "export default function SettingsPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "default.tsx"),
+        "export default function SettingsDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "@team", "default.tsx"),
+        "export default function ChildTeamDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "@team", "member", "page.tsx"),
+        "export default function ChildTeamMember() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const memberRoute = routes.find((route) => route.pattern === "/dashboard/settings/member");
+
+      expect(memberRoute).toBeDefined();
+
+      const teamSlots = memberRoute!.parallelSlots.filter((slot) => slot.name === "team");
+      const slotsByOwner = new Map(
+        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+      );
+
+      expect(teamSlots).toHaveLength(2);
+      expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
+        path.join("settings", "@team", "member", "page.tsx"),
+      );
+      expect(slotsByOwner.get("dashboard/@team")!.pagePath).toBeNull();
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();

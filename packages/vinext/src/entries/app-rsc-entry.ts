@@ -190,7 +190,8 @@ export function generateRscEntry(
           params: ${JSON.stringify(ir.params)},
         }`,
       );
-      return `      ${JSON.stringify(slot.name)}: {
+      return `      ${JSON.stringify(slot.key)}: {
+        name: ${JSON.stringify(slot.name)},
         page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
         layout: ${slot.layoutPath ? getImportVar(slot.layoutPath) : "null"},
@@ -871,17 +872,17 @@ function matchPattern(urlParts, patternParts) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotName, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
   if (!r.slots) continue;
-  for (const [slotName, slotMod] of Object.entries(r.slots)) {
+  for (const [slotKey, slotMod] of Object.entries(r.slots)) {
     if (!slotMod.intercepts) continue;
     for (const intercept of slotMod.intercepts) {
       interceptLookup.push({
         sourceRouteIndex: ri,
-        slotName,
+        slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
         page: intercept.page,
@@ -1030,9 +1031,9 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
     route,
     slotOverrides:
-      opts && opts.interceptSlot && opts.interceptPage
+      opts && opts.interceptSlotKey && opts.interceptPage
         ? {
-            [opts.interceptSlot]: {
+            [opts.interceptSlotKey]: {
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -2229,7 +2230,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     setNavigationContext,
     toInterceptOpts(intercept) {
       return {
-        interceptSlot: intercept.slotName,
+        interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
       };

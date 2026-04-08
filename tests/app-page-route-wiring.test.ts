@@ -93,11 +93,13 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 
 function RootLayout(props: Record<string, unknown>) {
   const segments = useSelectedLayoutSegments();
+  const sidebarSegments = useSelectedLayoutSegments("sidebar");
   return createElement(
     "div",
     {
       "data-layout": "root",
       "data-segments": segments.join("|"),
+      "data-sidebar-segments": sidebarSegments.join("|"),
     },
     createElement("aside", { "data-slot": "sidebar" }, readChildren(props.sidebar)),
     readChildren(props.children),
@@ -122,6 +124,24 @@ function SlotLayout(props: Record<string, unknown>) {
 
 function SlotPage(props: Record<string, unknown>) {
   return createElement("p", { "data-slot-page": readNode(props.label) }, readNode(props.label));
+}
+
+function ParentModalLayout(props: Record<string, unknown>) {
+  return createElement(
+    "div",
+    { "data-layout": "parent-modal-layout" },
+    createElement("div", { "data-parent-modal": "true" }, readChildren(props.modal)),
+    readChildren(props.children),
+  );
+}
+
+function ChildModalLayout(props: Record<string, unknown>) {
+  return createElement(
+    "section",
+    { "data-layout": "child-modal-layout" },
+    createElement("div", { "data-child-modal": "true" }, readChildren(props.modal)),
+    readChildren(props.children),
+  );
 }
 
 function RootTemplate(props: Record<string, unknown>) {
@@ -228,6 +248,182 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-page-segments=""');
     expect(html).toContain('data-segments="(marketing)|blog|post"');
     expect(html).toContain('data-segments="blog|post"');
+  });
+
+  it("uses override params for slot segment maps when an override page is active", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            page: { default: SlotPage },
+            routeSegments: ["members", "[id]"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        sidebar: {
+          pageModule: { default: SlotPage },
+          params: { id: "42" },
+          props: { label: "override" },
+        },
+      },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+
+    expect(html).toContain('data-slot-page="override"');
+    expect(html).toContain('data-sidebar-segments="members|42"');
+  });
+
+  it("renders same-named slot props independently at different layout levels", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "child"],
+        slots: {
+          "modal@parent/@modal": {
+            default: {
+              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+          "modal@parent/child/@modal": {
+            default: {
+              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [0, 1],
+        templates: [null, null],
+      },
+      routePath: "/parent/child",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/parent/child");
+
+    expect(html).toContain('data-layout="parent-modal-layout"');
+    expect(html).toContain('data-layout="child-modal-layout"');
+    expect(html).toContain('data-parent-slot="true"');
+    expect(html).toContain("parent-slot");
+    expect(html).toContain('data-child-slot="true"');
+    expect(html).toContain("child-slot");
+  });
+
+  it("does not apply ambiguous name-only slot overrides when same-named slots exist", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "child"],
+        slots: {
+          "modal@parent/@modal": {
+            default: {
+              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+          "modal@parent/child/@modal": {
+            default: {
+              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [0, 1],
+        templates: [null, null],
+      },
+      routePath: "/parent/child",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          pageModule: { default: SlotPage },
+          props: { label: "ambiguous-override" },
+        },
+      },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/parent/child");
+
+    expect(html).toContain('data-parent-slot="true"');
+    expect(html).toContain("parent-slot");
+    expect(html).toContain('data-child-slot="true"');
+    expect(html).toContain("child-slot");
+    expect(html).not.toContain('data-slot-page="ambiguous-override"');
   });
 
   it("does not deadlock when a layout renders without children", async () => {
