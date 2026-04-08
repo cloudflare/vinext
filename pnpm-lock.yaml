@@ -1143,6 +1143,31 @@ importers:
         specifier: 'catalog:'
         version: 0.1.12(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
+  tests/fixtures/font-google-multiple:
+    dependencies:
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.21(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.4
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.4(react@19.2.4)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
+        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+    devDependencies:
+      vite-plus:
+        specifier: 'catalog:'
+        version: 0.1.12(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+
   tests/fixtures/pages-basic:
     dependencies:
       react:
