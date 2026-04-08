@@ -75,7 +75,7 @@ describe("app page request helpers", () => {
         return {
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
-          slotName: "modal",
+          slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
         };
       },
@@ -93,7 +93,7 @@ describe("app page request helpers", () => {
         return {
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
-          interceptSlot: intercept.slotName,
+          interceptSlotKey: intercept.slotKey,
         };
       },
     });
@@ -111,7 +111,7 @@ describe("app page request helpers", () => {
       {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
-        interceptSlot: "modal",
+        interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
     );
@@ -131,7 +131,7 @@ describe("app page request helpers", () => {
         return {
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
-          slotName: "modal",
+          slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
         };
       },
@@ -151,7 +151,7 @@ describe("app page request helpers", () => {
         return {
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
-          interceptSlot: intercept.slotName,
+          interceptSlotKey: intercept.slotKey,
         };
       },
     });
@@ -160,7 +160,7 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toEqual({
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
-      interceptSlot: "modal",
+      interceptSlotKey: "modal@app/feed/@modal",
     });
   });
 
