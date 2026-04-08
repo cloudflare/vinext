@@ -40,7 +40,7 @@ export type AppPageRouteWiringSlot<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
   /** Slot prop name passed to the owning layout (e.g. "modal" from @modal). */
-  name?: string;
+  name: string;
   default?: TModule | null;
   error?: TErrorModule | null;
   layout?: TModule | null;
@@ -262,7 +262,7 @@ function createAppPageParallelSlotEntries<
   const parallelSlots: Record<string, ReactNode> = {};
 
   for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
-    const slotName = slot.name ?? slotKey;
+    const slotName = slot.name;
     const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
     if (targetIndex !== layoutIndex) {
       continue;
@@ -324,8 +324,8 @@ export function buildAppPageElements<
   const routeThenableParams = options.makeThenableParams(options.matchedParams);
   const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
   const slotNameCounts = new Map<string, number>();
-  for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
-    const slotName = slot.name ?? slotKey;
+  for (const slot of Object.values(options.route.slots ?? {})) {
+    const slotName = slot.name;
     slotNameCounts.set(slotName, (slotNameCounts.get(slotName) ?? 0) + 1);
   }
   const orderedTreePositions = Array.from(
@@ -415,8 +415,8 @@ export function buildAppPageElements<
       params: routeThenableParams,
     };
 
-    for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
-      const slotName = slot.name ?? slotKey;
+    for (const slot of Object.values(options.route.slots ?? {})) {
+      const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (targetIndex !== index) {
         continue;
@@ -445,7 +445,7 @@ export function buildAppPageElements<
   }
 
   for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
-    const slotName = slot.name ?? slotKey;
+    const slotName = slot.name;
     const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
     const treePath = layoutEntries[targetIndex]?.treePath ?? "/";
     const slotId = `slot:${slotName}:${treePath}`;
@@ -585,7 +585,7 @@ export function buildAppPageElements<
       ),
     };
     for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
-      const slotName = slot.name ?? slotKey;
+      const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (targetIndex !== layoutIndex) {
         continue;

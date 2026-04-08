@@ -254,11 +254,7 @@ export function buildAppPageHtmlResponse(
     headers.set("Link", options.fontLinkHeader);
   }
 
-  if (options.middlewareContext.headers) {
-    for (const [key, value] of options.middlewareContext.headers) {
-      headers.append(key, value);
-    }
-  }
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
 
   applyTimingHeader(headers, options.timing);
 
