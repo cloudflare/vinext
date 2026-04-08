@@ -150,6 +150,7 @@ describe("app page route wiring helpers", () => {
             layout: { default: SlotLayout },
             layoutIndex: 0,
             loading: null,
+            name: "sidebar",
             page: { default: SlotPage },
           },
         },

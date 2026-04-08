@@ -27,7 +27,7 @@ export type AppPageRouteWiringSlot<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
   /** Slot prop name passed to the owning layout (e.g. "modal" from @modal). */
-  name?: string;
+  name: string;
   default?: TModule | null;
   error?: TErrorModule | null;
   layout?: TModule | null;
@@ -234,8 +234,8 @@ export function buildAppPageRouteElement<
   const templates = options.route.templates ?? [];
   const routeSlots = options.route.slots ?? {};
   const slotNameCounts = new Map<string, number>();
-  for (const [slotKey, slot] of Object.entries(routeSlots)) {
-    const slotName = slot.name ?? slotKey;
+  for (const slot of Object.values(routeSlots)) {
+    const slotName = slot.name;
     slotNameCounts.set(slotName, (slotNameCounts.get(slotName) ?? 0) + 1);
   }
   const layoutEntries = createAppPageLayoutEntries(options.route);
@@ -290,7 +290,7 @@ export function buildAppPageRouteElement<
     };
 
     for (const [slotKey, slot] of Object.entries(routeSlots)) {
-      const slotName = slot.name ?? slotKey;
+      const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (index !== targetIndex) {
         continue;
@@ -353,8 +353,8 @@ export function buildAppPageRouteElement<
         options.matchedParams,
       ),
     };
-    for (const [slotKey, slot] of Object.entries(routeSlots)) {
-      const slotName = slot.name ?? slotKey;
+    for (const slot of Object.values(routeSlots)) {
+      const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (index !== targetIndex) {
         continue;
