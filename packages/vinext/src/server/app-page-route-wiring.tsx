@@ -332,12 +332,14 @@ export function buildAppPageRouteElement<
       if (index !== targetIndex) {
         continue;
       }
+      const slotOverride = options.slotOverrides?.[slotName];
+      const slotParams = slotOverride?.params ?? options.matchedParams;
       if (slot.routeSegments) {
         // Slot has an active page — resolve its segments (dynamic params → values)
         segmentMap[slotName] = resolveAppPageChildSegments(
           slot.routeSegments,
           0, // Slot segments are already relative to the slot root
-          options.matchedParams,
+          slotParams,
         );
       } else {
         // Slot is showing default.tsx or has no page — empty segments

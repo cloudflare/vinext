@@ -36,11 +36,13 @@ function readChildren(value: unknown): ReactNode {
 
 function RootLayout(props: Record<string, unknown>) {
   const segments = useSelectedLayoutSegments();
+  const sidebarSegments = useSelectedLayoutSegments("sidebar");
   return createElement(
     "div",
     {
       "data-layout": "root",
       "data-segments": segments.join("|"),
+      "data-sidebar-segments": sidebarSegments.join("|"),
     },
     createElement("aside", { "data-slot": "sidebar" }, readChildren(props.sidebar)),
     readChildren(props.children),
@@ -179,6 +181,90 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-page-segments=""');
     expect(html).toContain('data-segments="(marketing)|blog|post"');
     expect(html).toContain('data-segments="blog|post"');
+  });
+
+  it("resolves slot segmentMap with slot override params", () => {
+    const element = buildAppPageRouteElement({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            page: { default: SlotPage },
+            routeSegments: ["members", "[id]"],
+          },
+        },
+        templates: [null],
+      },
+      rootNotFoundModule: null,
+      slotOverrides: {
+        sidebar: {
+          pageModule: { default: SlotPage },
+          params: { id: "42" },
+          props: { label: "override" },
+        },
+      },
+    });
+
+    const html = ReactDOMServer.renderToStaticMarkup(element);
+    expect(html).toContain('data-slot-page="override"');
+    expect(html).toContain('data-sidebar-segments="members|42"');
+  });
+
+  it("resolves slot segmentMap from matched params when no override exists", () => {
+    const element = buildAppPageRouteElement({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { id: "24" },
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            page: { default: SlotPage },
+            routeSegments: ["members", "[id]"],
+          },
+        },
+        templates: [null],
+      },
+      rootNotFoundModule: null,
+    });
+
+    const html = ReactDOMServer.renderToStaticMarkup(element);
+    expect(html).toContain('data-sidebar-segments="members|24"');
   });
 
   it("NotFoundBoundary is nested inside Template in the element tree (Layout > Template > NotFound > Page)", () => {
