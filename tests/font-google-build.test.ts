@@ -2,16 +2,11 @@ import { describe, it, expect, afterAll } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { createBuilder } from "vite";
+import { createBuilder } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/font-google-multiple");
 
-/**
- * Build an App Router fixture's RSC/SSR/client bundles using the actual Vite
- * build pipeline (createBuilder + buildApp). This exercises the full build
- * pipeline for font-google transforms.
- */
 async function buildFontGoogleMultipleFixture(): Promise<string> {
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-font-google-multiple-"));
 
@@ -19,7 +14,6 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   const ssrOutDir = path.join(outDir, "server", "ssr");
   const clientOutDir = path.join(outDir, "client");
 
-  // Mock fetch before building to avoid network calls
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {
     const url = String(input);
@@ -38,7 +32,6 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   const nodeModulesLink = path.join(APP_FIXTURE_DIR, "node_modules");
 
   try {
-    // Symlink node_modules before building so imports work
     const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fs.symlink(projectNodeModules, nodeModulesLink);
 
@@ -61,7 +54,6 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
     return path.join(outDir, "server", "index.mjs");
   } finally {
     globalThis.fetch = originalFetch;
-    // Cleanup symlink
     await fs.unlink(nodeModulesLink).catch(() => {});
   }
 }
@@ -71,22 +63,17 @@ describe("font-google build integration", () => {
   let outDir: string;
 
   afterAll(async () => {
-    // Cleanup temp directory
     if (outDir) {
       await fs.rm(outDir, { recursive: true, force: true });
     }
   });
 
-  it("should build successfully with multiple Google fonts (Geist + Geist_Mono)", async () => {
-    // This test validates that the build pipeline can handle multiple
-    // Google font imports without errors. It exercises the font transform
-    // plugin during the full createBuilder + buildApp() flow.
+  it("should build and transform multiple Google fonts (Geist + Geist_Mono)", async () => {
     buildOutputPath = await buildFontGoogleMultipleFixture();
     outDir = path.dirname(path.dirname(buildOutputPath));
 
-    // Verify the build produced output
-    expect(buildOutputPath).toBeTruthy();
-    const stats = await fs.stat(buildOutputPath);
-    expect(stats.isFile()).toBe(true);
-  }, 120000); // 2 minute timeout for full build
+    const content = await fs.readFile(buildOutputPath, "utf-8");
+    expect(content).toContain("Geist");
+    expect(content).toContain("_selfHostedCSS");
+  }, 120000);
 });
