@@ -5832,6 +5832,7 @@ describe("proxyExternalRequest", () => {
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -5855,6 +5856,7 @@ describe("proxyExternalRequest", () => {
       // Internal middleware headers must be stripped
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
