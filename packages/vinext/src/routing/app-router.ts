@@ -79,7 +79,7 @@ export type AppRoute = {
   routePath: string | null;
   /** Ordered list of layout files from root to leaf */
   layouts: string[];
-  /** Ordered list of template files from root to leaf (parallel to layouts) */
+  /** Ordered list of all discovered template files from root to leaf (not necessarily aligned 1:1 with layouts) */
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];

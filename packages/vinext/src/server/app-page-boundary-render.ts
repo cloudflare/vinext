@@ -40,7 +40,6 @@ type AppPageBoundaryOnError = (
 
 type AppPageBoundaryRscPayloadOptions<TModule extends AppPageModule = AppPageModule> = {
   element: ReactNode;
-  layoutModules: readonly (TModule | null | undefined)[];
   pathname: string;
   route?: AppPageBoundaryRoute<TModule> | null;
 };
@@ -211,7 +210,6 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
 
 function resolveAppPageBoundaryRootLayoutTreePath<TModule extends AppPageModule>(
   route: AppPageBoundaryRoute<TModule> | null | undefined,
-  layoutModules: readonly (TModule | null | undefined)[],
 ): string | null {
   if (route?.layouts) {
     const rootLayoutEntry = createAppPageLayoutEntries({
@@ -227,7 +225,9 @@ function resolveAppPageBoundaryRootLayoutTreePath<TModule extends AppPageModule>
     }
   }
 
-  return layoutModules.length > 0 ? "/" : null;
+  // Without route tree metadata we cannot derive a canonical root layout tree path.
+  // Returning null keeps boundary payloads soft-navigation compatible.
+  return null;
 }
 
 function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
@@ -237,10 +237,7 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
 
   return {
     [APP_ROUTE_KEY]: routeId,
-    [APP_ROOT_LAYOUT_KEY]: resolveAppPageBoundaryRootLayoutTreePath(
-      options.route,
-      options.layoutModules,
-    ),
+    [APP_ROOT_LAYOUT_KEY]: resolveAppPageBoundaryRootLayoutTreePath(options.route),
     [routeId]: options.element,
   };
 }
@@ -257,7 +254,6 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
   const pathname = new URL(options.requestUrl).pathname;
   const payload = createAppPageBoundaryRscPayload({
     element: options.element,
-    layoutModules: options.layoutModules,
     pathname,
     route: options.route,
   });

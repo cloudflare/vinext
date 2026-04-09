@@ -230,6 +230,28 @@ describe("app page boundary render helpers", () => {
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
+  it("uses null root layout metadata when a boundary payload has no route context", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback({
+      ...common,
+      boundaryComponent: NotFoundBoundary,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      rootLayouts: [rootLayoutModule],
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__rootLayout).toBeNull();
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
     const common = createCommonOptions();
     const sanitizeErrorForClient = vi.fn((error: Error) => new Error(`safe:${error.message}`));
