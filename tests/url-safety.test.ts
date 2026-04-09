@@ -84,9 +84,11 @@ describe("isDangerousScheme", () => {
   });
 
   describe("whitespace between scheme name and colon", () => {
-    it("detects schemes with spaces before the colon", () => {
-      expect(isDangerousScheme("javascript :alert(1)")).toBe(true);
-      expect(isDangerousScheme("javascript   :alert(1)")).toBe(true);
+    it("does not flag spaces before the colon", () => {
+      // Browsers do not normalize plain spaces before the colon into a valid
+      // scheme separator, so these are not treated as javascript: URLs.
+      expect(isDangerousScheme("javascript :alert(1)")).toBe(false);
+      expect(isDangerousScheme("javascript   :alert(1)")).toBe(false);
     });
 
     it("detects schemes with tab before the colon", () => {
@@ -99,9 +101,33 @@ describe("isDangerousScheme", () => {
       expect(isDangerousScheme("javascript\u200B:alert(1)")).toBe(false);
     });
 
-    it("detects BOM (U+FEFF) between scheme and colon because \\s matches it", () => {
-      // In ES2015+, \s matches U+FEFF, so it is consumed by \s* before the colon.
-      expect(isDangerousScheme("javascript\uFEFF:alert(1)")).toBe(true);
+    it("does not flag BOM (U+FEFF) between scheme and colon", () => {
+      expect(isDangerousScheme("javascript\uFEFF:alert(1)")).toBe(false);
+    });
+  });
+
+  describe("embedded control-character bypass attempts", () => {
+    it("detects javascript: with embedded newline characters", () => {
+      expect(isDangerousScheme("java\nscript:alert(1)")).toBe(true);
+      expect(isDangerousScheme("ja\nvascript:alert(1)")).toBe(true);
+      expect(isDangerousScheme("JAVA\nSCRIPT:alert(1)")).toBe(true);
+    });
+
+    it("detects javascript: with embedded carriage returns and tabs", () => {
+      expect(isDangerousScheme("java\rscript:alert(1)")).toBe(true);
+      expect(isDangerousScheme("java\tscript:alert(1)")).toBe(true);
+      expect(isDangerousScheme("java\r\nscript:alert(1)")).toBe(true);
+    });
+
+    it("detects dangerous schemes with leading NUL characters", () => {
+      expect(isDangerousScheme("\x00javascript:alert(1)")).toBe(true);
+      expect(isDangerousScheme("\x00data:text/html,<h1>XSS</h1>")).toBe(true);
+      expect(isDangerousScheme("\x00vbscript:MsgBox")).toBe(true);
+    });
+
+    it("detects data: and vbscript: with embedded newlines", () => {
+      expect(isDangerousScheme("da\nta:text/html,<h1>XSS</h1>")).toBe(true);
+      expect(isDangerousScheme("vb\nscript:MsgBox")).toBe(true);
     });
   });
 
@@ -176,8 +202,8 @@ describe("isDangerousScheme", () => {
     });
 
     it("detects scheme with combined bypass techniques", () => {
-      // Leading zero-width + mixed case + whitespace before colon
-      expect(isDangerousScheme("\u200B\uFEFF JaVaScRiPt \t:alert(1)")).toBe(true);
+      // Leading control/zero-width chars and embedded tab/newline remain blocked.
+      expect(isDangerousScheme("\u200B\uFEFF\x00JaVa\nScRiPt\t:alert(1)")).toBe(true);
     });
   });
 });
