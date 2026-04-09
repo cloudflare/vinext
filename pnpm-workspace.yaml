@@ -1,5 +1,10 @@
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - "@vitejs/plugin-rsc"
+  - react-server-dom-webpack
+  - react-dom
+  - react
 
 packages:
   - packages/*

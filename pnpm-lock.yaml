@@ -1147,16 +1147,16 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.21(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
-        version: 19.2.4
+        version: 19.2.5
       react-dom:
         specifier: 'catalog:'
-        version: 19.2.4(react@19.2.4)
+        version: 19.2.5(react@19.2.5)
       react-server-dom-webpack:
         specifier: 'catalog:'
-        version: 19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       vinext:
         specifier: workspace:*
         version: link:../../../packages/vinext
