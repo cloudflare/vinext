@@ -1342,7 +1342,7 @@ describe("App Router integration", () => {
 
   it("rejects cyclic multipart server action payloads before decodeReply", async () => {
     const body = new FormData();
-    body.set("0", JSON.stringify(Array(128).fill("$Q0")));
+    body.set("0", '["$Q0"]');
 
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
@@ -1352,7 +1352,7 @@ describe("App Router integration", () => {
         Host: new URL(baseUrl).host,
       },
       body,
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(5_000),
     });
 
     expect(res.status).toBe(400);

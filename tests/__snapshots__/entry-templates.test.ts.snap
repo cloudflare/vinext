@@ -51,7 +51,7 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -1386,6 +1386,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
         throw sizeErr;
       }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -2132,7 +2138,7 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -3473,6 +3479,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
         throw sizeErr;
       }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -4219,7 +4231,7 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -5555,6 +5567,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
         throw sizeErr;
       }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -6301,7 +6319,7 @@ import * as _instrumentation from "/tmp/test/instrumentation.ts";
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -7669,6 +7687,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
         throw sizeErr;
       }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -8415,7 +8439,7 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 import { sitemapToXml, robotsToText, manifestToJson } from "<ROOT>/packages/vinext/src/server/metadata-routes.js";
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -9757,6 +9781,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
         throw sizeErr;
       }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -10503,7 +10533,7 @@ import * as middlewareModule from "/tmp/test/middleware.ts";
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { decodePathParams as __decodePathParams } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-runtime.js";
@@ -12201,6 +12231,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           return new Response("Payload Too Large", { status: 413 });
         }
         throw sizeErr;
+      }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
       }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
