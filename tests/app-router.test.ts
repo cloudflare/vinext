@@ -495,7 +495,7 @@ describe("App Router integration", () => {
   });
 
   // --- Intercepting routes with dynamic source route ---
-  // Regression: matchSourceRouteParams must extract actual URL param values
+  // Regression: pickRouteParams must extract actual URL param values
   // (e.g. "42") from the request pathname, not the literal pattern strings
   // (e.g. ":teamId") that result from feeding the pattern into the route trie.
 
@@ -536,7 +536,7 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("Settings Modal");
     expect(rscPayload).toContain("settings-modal");
     // The source route (members page) should render with the actual teamId value.
-    // The source page component receives params from matchSourceRouteParams.
+    // The source page component receives params from pickRouteParams.
     expect(rscPayload).toContain("members-page");
     // The literal pattern string ":teamId" must NOT appear as a param value anywhere
     expect(rscPayload).not.toContain('":teamId"');

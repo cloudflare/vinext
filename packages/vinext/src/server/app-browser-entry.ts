@@ -129,8 +129,9 @@ function applyClientParams(params: Record<string, string | string[]>): void {
 
 function stageClientParams(params: Record<string, string | string[]>): void {
   // NB: latestClientParams diverges from ClientNavigationState.clientParams
-  // between staging and commit. Server action snapshots (updateBrowserTree
-  // calls inside registerServerActionCallback) read latestClientParams, so a
+  // between staging and commit. Server action snapshots (same-URL
+  // commitSameUrlNavigatePayload() calls inside registerServerActionCallback)
+  // read latestClientParams, so a
   // server action fired during this window would get the pending (not yet
   // committed) params. This is acceptable because the commit effect fires
   // synchronously in the same React commit phase, keeping the window
