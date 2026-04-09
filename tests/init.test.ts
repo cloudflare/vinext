@@ -39,6 +39,36 @@ function readFile(dir: string, relativePath: string): string {
   return fs.readFileSync(path.join(dir, relativePath), "utf-8");
 }
 
+function readPluginRscVendoredEdgeBundle(fileName: string): string {
+  return fs.readFileSync(
+    path.resolve(
+      import.meta.dirname,
+      "../node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/cjs",
+      fileName,
+    ),
+    "utf-8",
+  );
+}
+
+function expectConsumedBeforeInitialization(
+  source: string,
+  functionName: "createMap" | "createSet" | "extractIterator",
+  initializationSnippet: string,
+): void {
+  const start = source.indexOf(`function ${functionName}(response, model) {`);
+  expect(start).toBeGreaterThanOrEqual(0);
+
+  const nextFunction = source.indexOf("function ", start + 1);
+  const body = nextFunction === -1 ? source.slice(start) : source.slice(start, nextFunction);
+
+  const consumedIndex = body.indexOf("model.$$consumed = !0;");
+  const initializationIndex = body.indexOf(initializationSnippet);
+
+  expect(consumedIndex).toBeGreaterThanOrEqual(0);
+  expect(initializationIndex).toBeGreaterThanOrEqual(0);
+  expect(consumedIndex).toBeLessThan(initializationIndex);
+}
+
 /**
  * Create a minimal Next.js-like project structure in a temp directory.
  */
@@ -282,9 +312,9 @@ function setupFakeReact(dir: string, version: string): void {
 }
 
 describe("getReactUpgradeDeps", () => {
-  it("returns react@latest + react-dom@latest when React is too old", () => {
+  it("returns react@latest + react-dom@latest when React is below the RSDW security floor", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.3");
+    setupFakeReact(tmpDir, "19.2.4");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
@@ -292,7 +322,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.4");
+    setupFakeReact(tmpDir, "19.2.5");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
@@ -319,6 +349,24 @@ describe("getReactUpgradeDeps", () => {
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
   });
+});
+
+describe("@vitejs/plugin-rsc vendored React Flight protections", () => {
+  // Regression for CVE-2026-23869. plugin-rsc vendors its own Flight decoder,
+  // so the fix must be present in the vendored edge bundle that vinext uses.
+  // React fix: https://github.com/facebook/react/pull/36236
+  for (const fileName of [
+    "react-server-dom-webpack-server.edge.development.js",
+    "react-server-dom-webpack-server.edge.production.js",
+  ]) {
+    it(`${fileName} marks outlined containers consumed before materializing them`, () => {
+      const source = readPluginRscVendoredEdgeBundle(fileName);
+
+      expectConsumedBeforeInitialization(source, "createMap", "new Map(model)");
+      expectConsumedBeforeInitialization(source, "createSet", "new Set(model)");
+      expectConsumedBeforeInitialization(source, "extractIterator", "model[Symbol.iterator]()");
+    });
+  }
 });
 
 describe("isDepInstalled", () => {
@@ -556,7 +604,7 @@ describe("init — dependency installation", () => {
 
   it("does not upgrade React when version is already compatible", async () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.4");
+    setupFakeReact(tmpDir, "19.2.5");
 
     const { execCalls } = await runInit(tmpDir);
 

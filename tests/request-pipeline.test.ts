@@ -5,6 +5,7 @@ import {
   stripBasePath,
   normalizeTrailingSlash,
   validateCsrfOrigin,
+  validateServerActionPayload,
   validateImageUrl,
   processMiddlewareHeaders,
 } from "../packages/vinext/src/server/request-pipeline.js";
@@ -222,6 +223,79 @@ describe("validateCsrfOrigin", () => {
     const res = validateCsrfOrigin(req);
     expect(res).not.toBeNull();
     expect(res!.status).toBe(403);
+  });
+});
+
+// ── validateServerActionPayload ─────────────────────────────────────────
+
+describe("validateServerActionPayload", () => {
+  it("allows plain JSON action bodies with no Flight container references", async () => {
+    await expect(validateServerActionPayload('["hello",1]')).resolves.toBeNull();
+  });
+
+  it("allows valid Map backing-field payloads", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+    body.set("1", '[["a",1],["b",2]]');
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("allows file-backed numeric fields when the backing graph is valid", async () => {
+    const body = new FormData();
+    body.set("0", new File(['["$Q1"]'], "root.txt", { type: "application/json" }));
+    body.set("1", new File(['[["a",1],["b",2]]'], "map.txt", { type: "application/json" }));
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("ignores normal user form fields", async () => {
+    const body = new FormData();
+    body.set("message", "$Q0 should stay user data");
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("rejects missing container backing fields", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects self-referential root container payloads", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q0","$Q0"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects self-referential file-backed root container payloads", async () => {
+    const body = new FormData();
+    body.set("0", new File(['["$Q0","$Q0"]'], "root.txt", { type: "application/json" }));
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects cyclic container reference graphs across backing fields", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+    body.set("1", '["$Q2"]');
+    body.set("2", '["$Q1"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
 });
 

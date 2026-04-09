@@ -1340,6 +1340,25 @@ describe("App Router integration", () => {
     expect(res.status).not.toBe(403);
   });
 
+  it("rejects cyclic multipart server action payloads before decodeReply", async () => {
+    const body = new FormData();
+    body.set("0", JSON.stringify(Array(128).fill("$Q0")));
+
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
+      },
+      body,
+      signal: AbortSignal.timeout(2_000),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid server action payload");
+  });
+
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
@@ -3034,6 +3053,18 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(csrfIdx).toBeGreaterThan(-1);
     expect(actionIdx).toBeGreaterThan(-1);
     expect(csrfIdx).toBeLessThan(actionIdx);
+  });
+
+  it("generates server action payload validation before decodeReply", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("validateServerActionPayload(body)");
+
+    const payloadValidationIdx = code.indexOf("validateServerActionPayload(body)");
+    const decodeIdx = code.indexOf("decodeReply(body, { temporaryReferences })");
+
+    expect(payloadValidationIdx).toBeGreaterThan(-1);
+    expect(decodeIdx).toBeGreaterThan(-1);
+    expect(payloadValidationIdx).toBeLessThan(decodeIdx);
   });
 
   it("embeds allowedOrigins when provided", () => {

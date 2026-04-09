@@ -358,7 +358,7 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
-import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
+import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
 } from ${JSON.stringify(appRouteHandlerRuntimePath)};
@@ -1661,6 +1661,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           return new Response("Payload Too Large", { status: 413 });
         }
         throw sizeErr;
+      }
+      const payloadResponse = await validateServerActionPayload(body);
+      if (payloadResponse) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return payloadResponse;
       }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });

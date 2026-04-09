@@ -34,7 +34,7 @@ catalog:
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
-  "@vitejs/plugin-rsc": ^0.5.21
+  "@vitejs/plugin-rsc": ^0.5.23
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
@@ -57,9 +57,9 @@ catalog:
   nuqs: ^2.8.8
   playwright: ^1.52.0
   postcss: 8.5.3
-  react: ^19.2.4
-  react-dom: ^19.2.4
-  react-server-dom-webpack: ^19.2.4
+  react: ^19.2.5
+  react-dom: ^19.2.5
+  react-server-dom-webpack: ^19.2.5
   server-only: ^0.0.1
   swr: ^2.0.0
   tailwind-merge: ^3.3.0
