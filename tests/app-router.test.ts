@@ -3413,6 +3413,25 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain('id="cookie-count">0<');
   });
 
+  it("middleware request header overrides also apply to App Route request.headers", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      requestAuthorization: null,
+      requestCookie: null,
+      requestMiddlewareHeader: "hello-from-middleware",
+      headersApiAuthorization: null,
+      headersApiCookie: null,
+      headersApiMiddlewareHeader: "hello-from-middleware",
+    });
+  });
+
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete", {
       headers: {

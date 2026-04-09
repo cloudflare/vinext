@@ -127,7 +127,7 @@ export function middleware(request: NextRequest, event: NextFetchEvent) {
     return res;
   }
 
-  if (pathname === "/header-override-delete") {
+  if (pathname === "/header-override-delete" || pathname === "/api/header-override-delete") {
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("cookie");
@@ -217,6 +217,7 @@ export const config = {
     "/search-query",
     "/headers/override-from-middleware",
     "/header-override-delete",
+    "/api/header-override-delete",
     "/pages-header-override-delete",
     "/revalidate-test",
     "/script-nonce/:path*",

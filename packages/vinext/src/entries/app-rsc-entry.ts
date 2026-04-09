@@ -1188,7 +1188,7 @@ export default async function handler(request, ctx) {
     // Per-request container for middleware state. Passed into
     // _handleRequest which fills in .headers and .status;
     // avoids module-level variables that race on Workers.
-    const _mwCtx = { headers: null, status: null };
+    const _mwCtx = { headers: null, requestHeaders: null, status: null };
     const response = await _handleRequest(request, __reqCtx, _mwCtx);
     // Apply custom headers from next.config.js to non-redirect responses.
     // Skip redirects (3xx) because Response.redirect() creates immutable headers,
@@ -1500,6 +1500,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // be merged into the outgoing HTTP response — this prefix is reserved for
   // internal routing signals and must never reach clients.
   if (_mwCtx.headers) {
+    // Preserve the pre-strip header set so route handlers can reconstruct
+    // a request object with middleware header overrides applied.
+    _mwCtx.requestHeaders = new Headers(_mwCtx.headers);
     applyMiddlewareRequestHeaders(_mwCtx.headers);
     processMiddlewareHeaders(_mwCtx.headers);
   }
@@ -2004,6 +2007,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         markDynamicUsage,
         method,
         middlewareContext: _mwCtx,
+        middlewareRequestHeaders: _mwCtx.requestHeaders,
         params: makeThenableParams(params),
         reportRequestError: _reportRequestError,
         request,
