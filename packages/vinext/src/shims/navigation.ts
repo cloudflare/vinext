@@ -920,6 +920,13 @@ function withSuppressedUrlNotifications<T>(fn: () => T): T {
   }
 }
 
+/**
+ * Commit pending client navigation state to committed snapshots.
+ *
+ * navId is optional: callers that don't own pendingPathname (for example,
+ * superseded pre-paint cleanup) may pass undefined to flush snapshot/params
+ * state without clearing pendingPathname owned by the active navigation.
+ */
 export function commitClientNavigationState(navId?: number): void {
   if (isServer) return;
   const state = getClientNavigationState();
@@ -943,7 +950,12 @@ export function commitClientNavigationState(navId?: number): void {
   // Clear pending pathname when navigation commits, but only if:
   // - The navId matches the one that set pendingPathname
   // - No newer navigation has overwritten pendingPathname (pendingPathnameNavId === null or matches)
-  if (state.pendingPathnameNavId === null || state.pendingPathnameNavId === navId) {
+  // - navId is undefined only for non-owning callers, which must not clear
+  //   pendingPathname for an active navigation.
+  const canClearPendingPathname =
+    state.pendingPathnameNavId === null ||
+    (navId !== undefined && state.pendingPathnameNavId === navId);
+  if (canClearPendingPathname) {
     state.pendingPathname = null;
     state.pendingPathnameNavId = null;
   }

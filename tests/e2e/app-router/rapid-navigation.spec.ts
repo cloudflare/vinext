@@ -92,7 +92,7 @@ test.describe("rapid navigation", () => {
     expect(navigationErrors).toHaveLength(0);
   });
 
-  test("rapid back-forward navigation maintains state consistency", async ({ page }) => {
+  test("back-forward navigation maintains state consistency", async ({ page }) => {
     const errors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") {
@@ -113,7 +113,7 @@ test.describe("rapid navigation", () => {
     await page.click('[data-testid="link-to-c"]');
     await expect(page.locator("h1")).toHaveText("Page C");
 
-    // Rapid back navigation
+    // Back navigation
     await page.goBack();
     await page.goBack();
 
@@ -121,7 +121,7 @@ test.describe("rapid navigation", () => {
     await expect(page.locator("h1")).toHaveText("Page A");
     await expect(page).toHaveURL(`${BASE}/nav-rapid/page-a`);
 
-    // Rapid forward navigation
+    // Forward navigation
     await page.goForward();
     await page.goForward();
 

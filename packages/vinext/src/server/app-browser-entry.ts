@@ -164,8 +164,10 @@ function drainPrePaintEffects(upToRenderId: number): void {
         // Winning navigation: run its actual pre-paint effect
         effect();
       } else {
-        // Superseded navigation: balance its activateNavigationSnapshot()
-        commitClientNavigationState();
+        // Superseded navigation: balance its activateNavigationSnapshot().
+        // Pass undefined navId intentionally so this cleanup cannot clear
+        // pendingPathname owned by the current active navigation.
+        commitClientNavigationState(undefined);
       }
     }
   }
@@ -362,11 +364,7 @@ function updateBrowserTree(
     const resolve = pendingNavigationCommits.get(renderId);
     pendingNavigationCommits.delete(renderId);
     if (snapshotActivated) {
-      if (navId !== undefined) {
-        commitClientNavigationState(navId);
-      } else {
-        commitClientNavigationState();
-      }
+      commitClientNavigationState(navId);
     }
     resolve?.();
   };
@@ -398,7 +396,7 @@ function renderNavigationPayload(
   navigationSnapshot: ClientNavigationRenderSnapshot,
   prePaintEffect: (() => void) | null = null,
   useTransition = true,
-  navId?: number,
+  navId: number,
 ): Promise<void> {
   const renderId = ++nextNavigationRenderId;
   queuePrePaintNavigationEffect(renderId, prePaintEffect);
@@ -418,11 +416,7 @@ function renderNavigationPayload(
     pendingNavigationPrePaintEffects.delete(renderId);
     const resolve = pendingNavigationCommits.get(renderId);
     pendingNavigationCommits.delete(renderId);
-    if (navId !== undefined) {
-      commitClientNavigationState(navId);
-    } else {
-      commitClientNavigationState();
-    }
+    commitClientNavigationState(navId);
     resolve?.();
     throw error; // Re-throw to maintain error propagation
   }

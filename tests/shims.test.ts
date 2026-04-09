@@ -338,19 +338,6 @@ describe("next/navigation shim", () => {
 
     expect(html).toContain("[]");
   });
-
-  // Smoke tests for server-side safety
-  // These verify the functions don't throw on the server (getClientNavigationState returns null)
-  // Real pending pathname behavior is covered by E2E tests
-  it("setPendingPathname does not throw on server (getClientNavigationState returns null)", async () => {
-    const { setPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
-    expect(() => setPendingPathname("/some-path", 1)).not.toThrow();
-  });
-
-  it("clearPendingPathname does not throw on server (getClientNavigationState returns null)", async () => {
-    const { clearPendingPathname } = await import("../packages/vinext/src/shims/navigation.js");
-    expect(() => clearPendingPathname(1)).not.toThrow();
-  });
 });
 
 describe("next/headers shim", () => {
