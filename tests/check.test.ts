@@ -435,13 +435,27 @@ describe("checkLibraries", () => {
     writeFile(
       "package.json",
       JSON.stringify({
-        dependencies: { "@clerk/nextjs": "^5.0.0", "next-auth": "^4.0.0" },
+        dependencies: { "@auth/nextjs": "^5.0.0", "next-auth": "^4.0.0" },
       }),
     );
 
     const items = checkLibraries(tmpDir);
     expect(items).toHaveLength(2);
     expect(items.every((i) => i.status === "unsupported")).toBe(true);
+  });
+
+  it("detects @clerk/nextjs as partial", () => {
+    writeFile(
+      "package.json",
+      JSON.stringify({
+        dependencies: { "@clerk/nextjs": "^7.0.0" },
+      }),
+    );
+
+    const items = checkLibraries(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe("partial");
+    expect(items[0].detail).toContain("clerkMiddleware");
   });
 
   it("detects supported CSS-in-JS libraries", () => {
