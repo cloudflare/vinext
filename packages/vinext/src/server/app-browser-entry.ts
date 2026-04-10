@@ -860,7 +860,12 @@ async function main(): Promise<void> {
         stripBasePath(window.location.pathname, __basePath);
       const elementsAtNavStart = getBrowserRouterState().elements;
       const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
-      const cachedRoute = getVisitedResponse(rscUrl, requestInterceptionContext, mountedSlotsHeader, navigationKind);
+      const cachedRoute = getVisitedResponse(
+        rscUrl,
+        requestInterceptionContext,
+        mountedSlotsHeader,
+        navigationKind,
+      );
       if (cachedRoute) {
         // Check stale-navigation before and after createFromFetch. The pre-check
         // avoids wasted parse work; the post-check catches supersessions that
@@ -908,7 +913,11 @@ async function main(): Promise<void> {
       let navResponse: Response | undefined;
       let navResponseUrl: string | null = null;
       if (navigationKind !== "refresh") {
-        const prefetchedResponse = consumePrefetchResponse(rscUrl, requestInterceptionContext, mountedSlotsHeader);
+        const prefetchedResponse = consumePrefetchResponse(
+          rscUrl,
+          requestInterceptionContext,
+          mountedSlotsHeader,
+        );
         if (prefetchedResponse) {
           navResponse = restoreRscResponse(prefetchedResponse, false);
           navResponseUrl = prefetchedResponse.url;
