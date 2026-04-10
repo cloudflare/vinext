@@ -547,7 +547,7 @@ function __normalizeMountedSlotsHeader(raw) {
   const normalized = Array.from(
     new Set(
       raw
-        .split(/[ \t\r\n]+/)
+        .split(/[\\t\\r\\n ]+/)
         .map((slotId) => slotId.trim())
         .filter(Boolean),
     ),
