@@ -1070,6 +1070,8 @@ async function main(): Promise<void> {
           window.location.href,
           latestClientParams,
         );
+        // Intentionally omit interception context for HMR re-renders.
+        // Preserving intercepted modal state across HMR belongs to PR 5.
         const pending = await createPendingNavigationCommit({
           currentState: getBrowserRouterState(),
           nextElements: normalizeAppElementsPromise(
