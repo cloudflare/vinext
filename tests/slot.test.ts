@@ -277,6 +277,43 @@ describe("slot primitives", () => {
     expect(merged["slot:modal:/"]).toBe(UNMATCHED_SLOT);
   });
 
+  it("mergeElements clears stale slots absent from next when clearAbsentSlots is set", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/feed": React.createElement("div", null, "feed"),
+        "slot:modal:/feed": React.createElement("div", null, "intercepted modal"),
+      },
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/feed": React.createElement("div", null, "feed"),
+      },
+      true,
+    );
+
+    expect(Object.hasOwn(merged, "slot:modal:/feed")).toBe(false);
+  });
+
+  it("mergeElements preserves absent slots when clearAbsentSlots is not set", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/dashboard": React.createElement("div", null, "dashboard"),
+        "slot:team:/dashboard": React.createElement("div", null, "team panel"),
+      },
+      {
+        "page:/dashboard/settings": React.createElement("div", null, "settings"),
+      },
+    );
+
+    // Without clearAbsentSlots, absent slots survive (soft nav to child route)
+    expect(Object.hasOwn(merged, "slot:team:/dashboard")).toBe(true);
+  });
+
   it("Slot renders element from resolved context", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
 

@@ -16,7 +16,7 @@ export type AppRouterAction = {
   renderId: number;
   rootLayoutTreePath: string | null;
   routeId: string;
-  type: "navigate" | "replace";
+  type: "navigate" | "replace" | "traverse";
 };
 
 export type PendingNavigationCommit = {
@@ -36,6 +36,14 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
     case "navigate":
       return {
         elements: mergeElements(state.elements, action.elements),
+        navigationSnapshot: action.navigationSnapshot,
+        renderId: action.renderId,
+        rootLayoutTreePath: action.rootLayoutTreePath,
+        routeId: action.routeId,
+      };
+    case "traverse":
+      return {
+        elements: mergeElements(state.elements, action.elements, true),
         navigationSnapshot: action.navigationSnapshot,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
@@ -92,7 +100,7 @@ export async function createPendingNavigationCommit(options: {
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   renderId: number;
-  type: "navigate" | "replace";
+  type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
   const metadata = readAppElementsMetadata(elements);
@@ -118,7 +126,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   nextElements: Promise<AppElements>;
   renderId: number;
   startedNavigationId: number;
-  type: "navigate" | "replace";
+  type: "navigate" | "replace" | "traverse";
 }): Promise<ClassifiedPendingNavigationCommit> {
   const pending = await createPendingNavigationCommit({
     currentState: options.currentState,

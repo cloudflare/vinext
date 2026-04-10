@@ -453,7 +453,7 @@ function dispatchBrowserTree(
   elements: AppElements,
   navigationSnapshot: ClientNavigationRenderSnapshot,
   renderId: number,
-  actionType: "navigate" | "replace",
+  actionType: "navigate" | "replace" | "traverse",
   routeId: string,
   rootLayoutTreePath: string | null,
   useTransitionMode: boolean,
@@ -484,7 +484,7 @@ async function renderNavigationPayload(
   navId: number,
   prePaintEffect: (() => void) | null = null,
   useTransition = true,
-  actionType: "navigate" | "replace" = "navigate",
+  actionType: "navigate" | "replace" | "traverse" = "navigate",
 ): Promise<void> {
   const renderId = ++nextNavigationRenderId;
   const committed = new Promise<void>((resolve) => {
@@ -783,6 +783,7 @@ async function main(): Promise<void> {
             navId,
             createNavigationCommitEffect(href, historyUpdateMode, cachedParams),
             isSameRoute,
+            navigationKind === "traverse" ? "traverse" : "navigate",
           );
         } finally {
           // Always clear _snapshotPending so the outer catch does not
@@ -871,6 +872,7 @@ async function main(): Promise<void> {
           navId,
           createNavigationCommitEffect(href, historyUpdateMode, navParams),
           isSameRoute,
+          navigationKind === "traverse" ? "traverse" : "navigate",
         );
       } finally {
         // Always clear _snapshotPending after renderNavigationPayload returns or

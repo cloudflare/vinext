@@ -22,7 +22,11 @@ export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
 
-export function mergeElements(prev: AppElements, next: AppElements): AppElements {
+export function mergeElements(
+  prev: AppElements,
+  next: AppElements,
+  clearAbsentSlots = false,
+): AppElements {
   const merged: Record<string, AppElementValue> = { ...prev, ...next };
   // On soft navigation, unmatched parallel slots preserve their previous subtree
   // instead of firing notFound(). Only hard navigation (full page load) should 404.
@@ -30,6 +34,18 @@ export function mergeElements(prev: AppElements, next: AppElements): AppElements
   for (const key of Object.keys(merged)) {
     if (key.startsWith("slot:") && merged[key] === UNMATCHED_SLOT && Object.hasOwn(prev, key)) {
       merged[key] = prev[key];
+    }
+  }
+  // On traversal (browser back/forward), the server renders the full destination
+  // route tree. A slot absent from next means the destination route tree does not
+  // include it, so clear it rather than keeping the stale prev value. This only
+  // runs for traversals because soft forward navigations may omit parent layout
+  // slots that should be preserved.
+  if (clearAbsentSlots) {
+    for (const key of Object.keys(merged)) {
+      if (key.startsWith("slot:") && !Object.hasOwn(next, key)) {
+        delete merged[key];
+      }
     }
   }
   return merged;
