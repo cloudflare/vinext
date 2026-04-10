@@ -33,17 +33,10 @@ export type ClassifiedPendingNavigationCommit = {
 
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
+    case "traverse":
     case "navigate":
       return {
-        elements: mergeElements(state.elements, action.elements),
-        navigationSnapshot: action.navigationSnapshot,
-        renderId: action.renderId,
-        rootLayoutTreePath: action.rootLayoutTreePath,
-        routeId: action.routeId,
-      };
-    case "traverse":
-      return {
-        elements: mergeElements(state.elements, action.elements, true),
+        elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
         navigationSnapshot: action.navigationSnapshot,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
