@@ -2160,6 +2160,50 @@ describe("App Router Production server (startProdServer)", () => {
     const body = await headRes.text();
     expect(body).toBe("");
   });
+
+  it("middleware request header overrides still apply after middleware calls headers() first", async () => {
+    // Regression for a bug where a middleware that reads `next/headers` →
+    // `headers()` *before* returning `NextResponse.next({ request: { headers } })`
+    // leaked the pre-override snapshot into the Server Component.
+    //
+    // The `headers()` call cached the sealed read-only Headers view on the
+    // shared HeadersContext (`ctx.readonlyHeaders = _sealHeaders(ctx.headers)`).
+    // `applyMiddlewareRequestHeaders()` then replaced `ctx.headers` with the
+    // override view but did not invalidate the cached sealed snapshot, so the
+    // Server Component's subsequent `headers()` call returned the original
+    // pre-override request headers.
+    //
+    // Discovered with @clerk/nextjs, whose `clerkClient()` calls
+    // `await headers()` via its internal `buildRequestLike()` helper during
+    // middleware execution. Clerk's `auth()` in a Server Component then threw
+    //
+    //   "auth() was called but Clerk can't detect usage of clerkMiddleware()"
+    //
+    // because Clerk's own x-clerk-auth-* request header overrides never
+    // reached the render. The fixture middleware reproduces the same prime-
+    // then-override sequence without a Clerk dependency by calling
+    // `await headers()` first and then returning the override response.
+    //
+    // The test runs against the production server (startProdServer) because
+    // the bug only manifests on the inline RSC entry path that wraps the
+    // entire request — including middleware execution — in the headers
+    // context. The dev-mode middleware path runs middleware before the
+    // headers context exists, so calling `headers()` from middleware is
+    // instead an immediate error there.
+    const res = await fetch(`${baseUrl}/header-override-after-prior-access`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="authorization">null<');
+    expect(html).toContain('id="cookie">null<');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('id="cookie-count">0<');
+  });
 });
 
 describe("App Router Production server worker entry compatibility", () => {

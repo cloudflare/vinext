@@ -1,3 +1,4 @@
+import { headers as nextHeaders } from "next/headers";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
 
@@ -12,7 +13,7 @@ import { recordMiddlewareInvocation } from "./instrumentation-state";
  * - Block with 403
  * - Search params forwarding
  */
-export function middleware(request: NextRequest, event: NextFetchEvent) {
+export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
@@ -135,6 +136,33 @@ export function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Regression for a bug where a middleware that reads `next/headers` →
+  // `headers()` before returning a `NextResponse.next({ request: { headers } })`
+  // override leaked the pre-override snapshot into the Server Component.
+  //
+  // Discovered with @clerk/nextjs, whose internal `clerkClient()` calls
+  // `await headers()` via `buildRequestLike()` during middleware execution.
+  // That call cached the sealed read-only Headers view on the shared
+  // HeadersContext. Afterwards, `applyMiddlewareRequestHeaders()` replaced
+  // `ctx.headers` with the override view but never invalidated the cached
+  // sealed snapshot, so the Server Component's later `headers()` call
+  // returned the original request headers — `x-from-middleware` was missing
+  // and deleted credential headers were still visible.
+  if (pathname === "/header-override-after-prior-access") {
+    // 1. Prime the sealed Headers cache via an early `headers()` read — this
+    //    is the step that a real-world middleware like Clerk performs under
+    //    the covers.
+    await nextHeaders();
+
+    // 2. Apply the header override. A correct implementation must invalidate
+    //    the cached sealed snapshot so this override reaches the render.
+    const headers = new Headers(request.headers);
+    headers.delete("authorization");
+    headers.delete("cookie");
+    headers.set("x-from-middleware", "hello-from-middleware");
+    return NextResponse.next({ request: { headers } });
+  }
+
   if (pathname === "/pages-header-override-delete") {
     const headers = new Headers(request.headers);
     headers.delete("authorization");
@@ -218,6 +246,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/header-override-after-prior-access",
     "/pages-header-override-delete",
     "/revalidate-test",
     "/script-nonce/:path*",

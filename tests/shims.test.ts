@@ -5031,6 +5031,66 @@ describe("middleware request header overrides", () => {
       expect(liveCookies.getAll()).toEqual([]);
     });
   });
+
+  it("next/headers applyMiddlewareRequestHeaders invalidates headers() snapshot taken before the override", async () => {
+    // Regression: a middleware that reads `headers()` (or `cookies()`) before
+    // applying a request-header override would prime a sealed read-only
+    // snapshot built from the *pre*-override request. Discovered with
+    // @clerk/nextjs whose `clerkClient()` reads `headers()` via
+    // `buildRequestLike()` during middleware execution; before the fix, the
+    // Server Component subsequently received the stale snapshot and saw the
+    // pre-override credentials and missing middleware-injected headers.
+    const {
+      applyMiddlewareRequestHeaders,
+      cookies,
+      headers,
+      headersContextFromRequest,
+      runWithHeadersContext,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+        "x-keep": "original",
+      },
+    });
+
+    await runWithHeadersContext(headersContextFromRequest(request), async () => {
+      // 1. Prime the sealed snapshot — this is exactly what
+      //    `clerkMiddleware()` does internally via `buildRequestLike()`.
+      const preHeaders = await headers();
+      const preCookies = await cookies();
+      expect(preHeaders.get("authorization")).toBe("Bearer secret");
+      expect(preHeaders.get("x-keep")).toBe("original");
+      expect(preCookies.getAll()).toEqual([
+        { name: "a", value: "1" },
+        { name: "b", value: "2" },
+      ]);
+
+      // 2. Apply the override — drops `authorization`/`cookie`, adds `x-added`,
+      //    and updates `x-keep`.
+      applyMiddlewareRequestHeaders(
+        new Headers({
+          "x-middleware-override-headers": "x-keep,x-added",
+          "x-middleware-request-x-keep": "updated",
+          "x-middleware-request-x-added": "1",
+        }),
+      );
+
+      // 3. A subsequent `headers()` call — for example from the Server
+      //    Component's render — must observe the override, not the snapshot
+      //    captured in step 1.
+      const postHeaders = await headers();
+      const postCookies = await cookies();
+
+      expect(postHeaders.get("authorization")).toBeNull();
+      expect(postHeaders.get("cookie")).toBeNull();
+      expect(postHeaders.get("x-keep")).toBe("updated");
+      expect(postHeaders.get("x-added")).toBe("1");
+      expect(postCookies.getAll()).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
