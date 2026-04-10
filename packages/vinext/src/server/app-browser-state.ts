@@ -113,6 +113,7 @@ export async function createPendingNavigationCommit(options: {
       routeId: metadata.routeId,
       type: options.type,
     },
+    // Convenience aliases — always equal action.interceptionContext / action.rootLayoutTreePath / action.routeId.
     interceptionContext: metadata.interceptionContext,
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,

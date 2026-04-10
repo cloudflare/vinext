@@ -125,12 +125,11 @@ describe("prefetch cache eviction", () => {
   });
 
   it("allows separate interception-context entries for the same RSC URL", () => {
+    storePrefetchResponse("/photos/42.rsc", new Response("feed"), "/feed");
+    storePrefetchResponse("/photos/42.rsc", new Response("gallery"), "/gallery");
+
     const feedKey = createAppPayloadCacheKey("/photos/42.rsc", "/feed");
     const galleryKey = createAppPayloadCacheKey("/photos/42.rsc", "/gallery");
-
-    storePrefetchResponse(feedKey, new Response("feed"));
-    storePrefetchResponse(galleryKey, new Response("gallery"));
-
     expect(feedKey).not.toBe(galleryKey);
     expect(getPrefetchCache().has(feedKey)).toBe(true);
     expect(getPrefetchCache().has(galleryKey)).toBe(true);
