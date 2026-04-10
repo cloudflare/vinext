@@ -412,7 +412,6 @@ function BrowserRoot({
   useLayoutEffect(() => {
     dispatchBrowserRouterAction = dispatchTreeState;
     browserRouterStateRef = stateRef;
-    setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
     return () => {
       if (dispatchBrowserRouterAction === dispatchTreeState) {
         dispatchBrowserRouterAction = null;
@@ -422,7 +421,11 @@ function BrowserRoot({
       }
       setMountedSlotsHeader(null);
     };
-  }, [dispatchTreeState, treeState.elements]);
+  }, [dispatchTreeState]);
+
+  useLayoutEffect(() => {
+    setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
+  }, [treeState.elements]);
 
   const committedTree = createElement(
     NavigationCommitSignal,

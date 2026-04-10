@@ -421,6 +421,8 @@ export function prefetchRscResponse(
       if (response.ok) {
         entry.snapshot = {
           ...(await snapshotRscResponse(response)),
+          // Prefetch compatibility is defined by the slot context at fetch
+          // time, not by whatever header a reused response happens to carry.
           mountedSlotsHeader,
         };
       } else {

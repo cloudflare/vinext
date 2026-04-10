@@ -172,6 +172,8 @@ export async function readAppPageCacheResponse(
         ];
 
         if (!options.isRscRequest) {
+          // HTML remains canonical across slot-state variants; only RSC cache
+          // entries fan out by mounted-slot header.
           writes.push(
             options.isrSet(
               options.isrHtmlKey(options.cleanPathname),
