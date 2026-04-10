@@ -75,6 +75,14 @@ type ServerActionResult = {
 };
 
 type NavigationKind = "navigate" | "traverse" | "refresh";
+
+// Maps NavigationKind to the AppRouterAction type used by the reducer.
+// "refresh" is intentionally treated as "navigate" (merge, preserve absent slots).
+// Both call sites must stay in sync — update here if NavigationKind gains new values.
+function toActionType(kind: NavigationKind): "navigate" | "traverse" {
+  return kind === "traverse" ? "traverse" : "navigate";
+}
+
 type HistoryUpdateMode = "push" | "replace";
 type VisitedResponseCacheEntry = {
   params: Record<string, string | string[]>;
@@ -783,7 +791,7 @@ async function main(): Promise<void> {
             navId,
             createNavigationCommitEffect(href, historyUpdateMode, cachedParams),
             isSameRoute,
-            navigationKind === "traverse" ? "traverse" : "navigate",
+            toActionType(navigationKind),
           );
         } finally {
           // Always clear _snapshotPending so the outer catch does not
@@ -872,7 +880,7 @@ async function main(): Promise<void> {
           navId,
           createNavigationCommitEffect(href, historyUpdateMode, navParams),
           isSameRoute,
-          navigationKind === "traverse" ? "traverse" : "navigate",
+          toActionType(navigationKind),
         );
       } finally {
         // Always clear _snapshotPending after renderNavigationPayload returns or

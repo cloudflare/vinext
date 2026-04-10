@@ -221,6 +221,46 @@ describe("app browser entry state helpers", () => {
     expect(shouldHardNavigate(null, "/")).toBe(false);
     expect(shouldHardNavigate("/", null)).toBe(false);
   });
+
+  it("clears stale parallel slots on traverse", () => {
+    const state = createState({
+      elements: createResolvedElements("route:/feed", "/", {
+        "slot:modal:/feed": React.createElement("div", null, "modal"),
+      }),
+    });
+    const nextElements = createResolvedElements("route:/feed", "/");
+
+    const nextState = routerReducer(state, {
+      elements: nextElements,
+      navigationSnapshot: createState().navigationSnapshot,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/feed",
+      type: "traverse",
+    });
+
+    expect(Object.hasOwn(nextState.elements, "slot:modal:/feed")).toBe(false);
+  });
+
+  it("preserves absent parallel slots on navigate", () => {
+    const state = createState({
+      elements: createResolvedElements("route:/feed", "/", {
+        "slot:modal:/feed": React.createElement("div", null, "modal"),
+      }),
+    });
+    const nextElements = createResolvedElements("route:/feed/comments", "/");
+
+    const nextState = routerReducer(state, {
+      elements: nextElements,
+      navigationSnapshot: createState().navigationSnapshot,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/feed/comments",
+      type: "navigate",
+    });
+
+    expect(Object.hasOwn(nextState.elements, "slot:modal:/feed")).toBe(true);
+  });
 });
 
 describe("mounted slot helpers", () => {
