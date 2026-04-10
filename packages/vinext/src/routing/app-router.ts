@@ -726,7 +726,7 @@ function discoverParallelSlots(
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
     slots.push({
-      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
+      key: `${slotName}::${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
       name: slotName,
       ownerDir: slotDir,
       pagePath,
