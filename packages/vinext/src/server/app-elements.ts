@@ -22,14 +22,7 @@ export function normalizeMountedSlotsHeader(header: string | null | undefined): 
     return null;
   }
 
-  const slotIds = Array.from(
-    new Set(
-      header
-        .split(/\s+/)
-        .map((slotId) => slotId.trim())
-        .filter(Boolean),
-    ),
-  ).sort();
+  const slotIds = Array.from(new Set(header.split(/\s+/).filter(Boolean))).sort();
 
   return slotIds.length > 0 ? slotIds.join(" ") : null;
 }

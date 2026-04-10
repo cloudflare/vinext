@@ -548,7 +548,6 @@ function __normalizeMountedSlotsHeader(raw) {
     new Set(
       raw
         .split(/\\s+/)
-        .map((slotId) => slotId.trim())
         .filter(Boolean),
     ),
   ).sort().join(" ");
@@ -2176,6 +2175,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return _runWithUnifiedCtx(__revalUCtx, async () => {
           _ensureFetchPatch();
           setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
+          // Slot context (X-Vinext-Mounted-Slots) is inherited from the
+          // triggering request so the regen result is cached under the
+          // correct slot-variant key.
           const __revalElement = await buildPageElements(
             route,
             params,
