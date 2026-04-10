@@ -494,6 +494,7 @@ export class RequestCookies {
       cookieName = nameOrOptions.name;
       cookieValue = nameOrOptions.value;
     }
+    validateCookieName(cookieName);
     this._parsed.set(cookieName, cookieValue);
     this._syncHeader();
     return this;
@@ -501,10 +502,14 @@ export class RequestCookies {
 
   delete(names: string | string[]): boolean | boolean[] {
     if (Array.isArray(names)) {
-      const results = names.map((name) => this._parsed.delete(name));
+      const results = names.map((name) => {
+        validateCookieName(name);
+        return this._parsed.delete(name);
+      });
       this._syncHeader();
       return results;
     }
+    validateCookieName(names);
     const result = this._parsed.delete(names);
     this._syncHeader();
     return result;

@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
+let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
@@ -33,6 +34,7 @@ beforeEach(async () => {
   vi.resetModules();
   const nav = await import("../packages/vinext/src/shims/navigation.js");
   storePrefetchResponse = nav.storePrefetchResponse;
+  consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
@@ -68,6 +70,48 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
 }
 
 describe("prefetch cache eviction", () => {
+  it("reuses a prefetched response only when mounted-slot context matches", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/dashboard.rsc";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: "slot:auth:/",
+      paramsHeader: null,
+      url: rscUrl,
+    };
+
+    cache.set(rscUrl, { snapshot, timestamp: Date.now() });
+    prefetched.add(rscUrl);
+
+    expect(consumePrefetchResponse(rscUrl, "slot:auth:/")).toEqual(snapshot);
+    expect(cache.has(rscUrl)).toBe(false);
+    expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("rejects a prefetched response when mounted-slot context differs", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/dashboard.rsc";
+
+    cache.set(rscUrl, {
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: "slot:auth:/",
+        paramsHeader: null,
+        url: rscUrl,
+      },
+      timestamp: Date.now(),
+    });
+    prefetched.add(rscUrl);
+
+    expect(consumePrefetchResponse(rscUrl, "slot:nav:/")).toBeNull();
+    expect(cache.has(rscUrl)).toBe(false);
+    expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
   it("preserves X-Vinext-Params when replaying cached RSC responses", async () => {
     const response = new Response("flight", {
       headers: {

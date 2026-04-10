@@ -23,6 +23,7 @@ import React, {
 import {
   toRscUrl,
   getPrefetchedUrls,
+  getMountedSlotsHeader,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
@@ -135,15 +136,21 @@ function prefetchUrl(href: string): void {
 
   schedule(() => {
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+      const mountedSlotsHeader = getMountedSlotsHeader();
+      const headers: Record<string, string> = { Accept: "text/x-component" };
+      if (mountedSlotsHeader) {
+        headers["X-Vinext-Mounted-Slots"] = mountedSlotsHeader;
+      }
       prefetchRscResponse(
         rscUrl,
         fetch(rscUrl, {
-          headers: { Accept: "text/x-component" },
+          headers,
           credentials: "include",
           priority: "low" as const,
           // @ts-expect-error — purpose is a valid fetch option in some browsers
           purpose: "prefetch",
         }),
+        mountedSlotsHeader,
       );
     } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module

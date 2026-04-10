@@ -31,6 +31,7 @@ const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", impo
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
+const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -273,7 +274,7 @@ import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
-import { safeJsonStringify } from "vinext/html";
+import { createNonceAttribute as __createNonceAttribute, safeJsonStringify } from "vinext/html";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
@@ -289,6 +290,7 @@ import {
   isrCacheKey as __sharedIsrCacheKey,
   triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration,
 } from ${JSON.stringify(_isrCachePath)};
+import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
@@ -387,13 +389,14 @@ function patternToNextFormat(pattern) {
     .replace(/:([\\w]+)/g, "[$1]");
 }
 
-function collectAssetTags(manifest, moduleIds) {
+function collectAssetTags(manifest, moduleIds, scriptNonce) {
   // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
   const m = (manifest && Object.keys(manifest).length > 0)
     ? manifest
     : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
   const tags = [];
   const seen = new Set();
+  const nonceAttr = __createNonceAttribute(scriptNonce);
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
@@ -406,8 +409,8 @@ function collectAssetTags(manifest, moduleIds) {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
-    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
-    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
+    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
+    tags.push('<script type="module"' + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -482,13 +485,13 @@ function collectAssetTags(manifest, moduleIds) {
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
+        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="/' + tf + '" />');
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
+        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
+        tags.push('<script type="module"' + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
       }
     }
   }
@@ -542,12 +545,12 @@ function parseCookieLocaleFromHeader(cookieHeader) {
   return null;
 }
 
-export async function renderPage(request, url, manifest, ctx) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
-  return _renderPage(request, url, manifest);
+export async function renderPage(request, url, manifest, ctx, middlewareHeaders) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders));
+  return _renderPage(request, url, manifest, middlewareHeaders);
 }
 
-async function _renderPage(request, url, manifest) {
+async function _renderPage(request, url, manifest, middlewareHeaders) {
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -575,198 +578,201 @@ async function _renderPage(request, url, manifest) {
       { status: 404, headers: { "Content-Type": "text/html" } });
   }
 
-	  const { route, params } = match;
-	  const __uCtx = _createUnifiedCtx({
-	    executionContext: _getRequestExecutionContext(),
-	  });
-	  return _runWithUnifiedCtx(__uCtx, async () => {
-	    ensureFetchPatch();
-	    try {
-	    const routePattern = patternToNextFormat(route.pattern);
-	    if (typeof setSSRContext === "function") {
-	      setSSRContext({
-	        pathname: routePattern,
-	        query: { ...params, ...parseQuery(routeUrl) },
-	        asPath: routeUrl,
-	        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-      });
-    }
-
-    if (i18nConfig) {
-      setI18nContext({
-        locale: locale,
-        locales: i18nConfig.locales,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-        hostname: new URL(request.url).hostname,
-      });
-    }
-
-    const pageModule = route.module;
-    const PageComponent = pageModule.default;
-	    if (!PageComponent) {
-	      return new Response("Page has no default export", { status: 500 });
-	    }
-	    // Build font Link header early so it's available for ISR cached responses too.
-	    // Font preloads are module-level state populated at import time and persist across requests.
-	    var _fontLinkHeader = "";
-	    var _allFp = [];
+  const { route, params } = match;
+  const __uCtx = _createUnifiedCtx({
+    executionContext: _getRequestExecutionContext(),
+  });
+  return _runWithUnifiedCtx(__uCtx, async () => {
+    ensureFetchPatch();
     try {
-      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
-      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
-      _allFp = _fpGoogle.concat(_fpLocal);
-	      if (_allFp.length > 0) {
-	        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
-	      }
-	    } catch (e) { /* font preloads not available */ }
-	    const query = parseQuery(routeUrl);
-	    const pageDataResult = await __resolvePagesPageData({
-	      applyRequestContexts() {
-	        if (typeof setSSRContext === "function") {
-	          setSSRContext({
-	            pathname: routePattern,
-	            query: { ...params, ...query },
-	            asPath: routeUrl,
-	            locale: locale,
-	            locales: i18nConfig ? i18nConfig.locales : undefined,
-	            defaultLocale: currentDefaultLocale,
-	            domainLocales: domainLocales,
-	          });
-	        }
-	        if (i18nConfig) {
-	          setI18nContext({
-	            locale: locale,
-	            locales: i18nConfig.locales,
-	            defaultLocale: currentDefaultLocale,
-	            domainLocales: domainLocales,
-	            hostname: new URL(request.url).hostname,
-	          });
-	        }
-	      },
-	      buildId,
-	      createGsspReqRes() {
-	        return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
-	      },
-	      createPageElement(currentPageProps) {
-	        var currentElement = AppComponent
-	          ? React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps })
-	          : React.createElement(PageComponent, currentPageProps);
-	        return wrapWithRouterContext(currentElement);
-	      },
-	      fontLinkHeader: _fontLinkHeader,
-	      i18n: {
-	        locale: locale,
-	        locales: i18nConfig ? i18nConfig.locales : undefined,
-	        defaultLocale: currentDefaultLocale,
-	        domainLocales: domainLocales,
-	      },
-	      isrCacheKey,
-	      isrGet,
-	      isrSet,
-	      pageModule,
-	      params,
-	      query,
-	      renderIsrPassToStringAsync,
-	      route: {
-	        isDynamic: route.isDynamic,
-	      },
-	      routePattern,
-	      routeUrl,
-	      runInFreshUnifiedContext(callback) {
-	        var revalCtx = _createUnifiedCtx({
-	          executionContext: _getRequestExecutionContext(),
-	        });
-	        return _runWithUnifiedCtx(revalCtx, async () => {
-	          ensureFetchPatch();
-	          return callback();
-	        });
-	      },
-	      safeJsonStringify,
-	      sanitizeDestination: sanitizeDestinationLocal,
-	      triggerBackgroundRegeneration,
-	    });
-	    if (pageDataResult.kind === "response") {
-	      return pageDataResult.response;
-	    }
-	    let pageProps = pageDataResult.pageProps;
-	    var gsspRes = pageDataResult.gsspRes;
-	    let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+      const routePattern = patternToNextFormat(route.pattern);
+      if (typeof setSSRContext === "function") {
+        setSSRContext({
+          pathname: routePattern,
+          query: { ...params, ...parseQuery(routeUrl) },
+          asPath: routeUrl,
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+        });
+      }
 
-	    const pageModuleIds = route.filePath ? [route.filePath] : [];
-	    const assetTags = collectAssetTags(manifest, pageModuleIds);
+      if (i18nConfig) {
+        setI18nContext({
+          locale: locale,
+          locales: i18nConfig.locales,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+          hostname: new URL(request.url).hostname,
+        });
+      }
 
-    return __renderPagesPageResponse({
-      assetTags,
-      buildId,
-      clearSsrContext() {
-        if (typeof setSSRContext === "function") setSSRContext(null);
-      },
-      createPageElement(currentPageProps) {
-        var currentElement;
-        if (AppComponent) {
-          currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
-        } else {
-          currentElement = React.createElement(PageComponent, currentPageProps);
+      const pageModule = route.module;
+      const PageComponent = pageModule.default;
+      if (!PageComponent) {
+        return new Response("Page has no default export", { status: 500 });
+      }
+      const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
+      // Build font Link header early so it's available for ISR cached responses too.
+      // Font preloads are module-level state populated at import time and persist across requests.
+      var _fontLinkHeader = "";
+      var _allFp = [];
+      try {
+        var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
+        var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
+        _allFp = _fpGoogle.concat(_fpLocal);
+        if (_allFp.length > 0) {
+          _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
         }
-        return wrapWithRouterContext(currentElement);
-      },
-      DocumentComponent,
-      flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-      fontLinkHeader: _fontLinkHeader,
-      fontPreloads: _allFp,
-      getFontLinks() {
-        try {
-          return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
-        } catch (e) {
-          return [];
-        }
-      },
-      getFontStyles() {
-        try {
-          var allFontStyles = [];
-          if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
-          if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
-          return allFontStyles;
-        } catch (e) {
-          return [];
-        }
-      },
-	      getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-	      gsspRes,
-      isrCacheKey,
-      isrRevalidateSeconds,
-      isrSet,
-      i18n: {
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: currentDefaultLocale,
-        domainLocales: domainLocales,
-      },
-      pageProps,
-      params,
-      renderDocumentToString(element) {
-        return renderToStringAsync(element);
-      },
-      renderIsrPassToStringAsync,
-      renderToReadableStream(element) {
-        return renderToReadableStream(element);
-      },
-      resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
-	      routePattern,
-      routeUrl,
-      safeJsonStringify,
-    });
+      } catch (e) { /* font preloads not available */ }
+      const query = parseQuery(routeUrl);
+      const pageDataResult = await __resolvePagesPageData({
+        applyRequestContexts() {
+          if (typeof setSSRContext === "function") {
+            setSSRContext({
+              pathname: routePattern,
+              query: { ...params, ...query },
+              asPath: routeUrl,
+              locale: locale,
+              locales: i18nConfig ? i18nConfig.locales : undefined,
+              defaultLocale: currentDefaultLocale,
+              domainLocales: domainLocales,
+            });
+          }
+          if (i18nConfig) {
+            setI18nContext({
+              locale: locale,
+              locales: i18nConfig.locales,
+              defaultLocale: currentDefaultLocale,
+              domainLocales: domainLocales,
+              hostname: new URL(request.url).hostname,
+            });
+          }
+        },
+        buildId,
+        createGsspReqRes() {
+          return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
+        },
+        createPageElement(currentPageProps) {
+          var currentElement = AppComponent
+            ? React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps })
+            : React.createElement(PageComponent, currentPageProps);
+          return wrapWithRouterContext(currentElement);
+        },
+        fontLinkHeader: _fontLinkHeader,
+        i18n: {
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+        },
+        isrCacheKey,
+        isrGet,
+        isrSet,
+        pageModule,
+        params,
+        query,
+        renderIsrPassToStringAsync,
+        route: {
+          isDynamic: route.isDynamic,
+        },
+        routePattern,
+        routeUrl,
+        runInFreshUnifiedContext(callback) {
+          var revalCtx = _createUnifiedCtx({
+            executionContext: _getRequestExecutionContext(),
+          });
+          return _runWithUnifiedCtx(revalCtx, async () => {
+            ensureFetchPatch();
+            return callback();
+          });
+        },
+        safeJsonStringify,
+        sanitizeDestination: sanitizeDestinationLocal,
+        scriptNonce,
+        triggerBackgroundRegeneration,
+      });
+      if (pageDataResult.kind === "response") {
+        return pageDataResult.response;
+      }
+      let pageProps = pageDataResult.pageProps;
+      var gsspRes = pageDataResult.gsspRes;
+      let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+
+      const pageModuleIds = route.filePath ? [route.filePath] : [];
+      const assetTags = collectAssetTags(manifest, pageModuleIds, scriptNonce);
+
+      return __renderPagesPageResponse({
+        assetTags,
+        buildId,
+        clearSsrContext() {
+          if (typeof setSSRContext === "function") setSSRContext(null);
+        },
+        createPageElement(currentPageProps) {
+          var currentElement;
+          if (AppComponent) {
+            currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
+          } else {
+            currentElement = React.createElement(PageComponent, currentPageProps);
+          }
+          return wrapWithRouterContext(currentElement);
+        },
+        DocumentComponent,
+        flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+        fontLinkHeader: _fontLinkHeader,
+        fontPreloads: _allFp,
+        getFontLinks() {
+          try {
+            return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+          } catch (e) {
+            return [];
+          }
+        },
+        getFontStyles() {
+          try {
+            var allFontStyles = [];
+            if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+            if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+            return allFontStyles;
+          } catch (e) {
+            return [];
+          }
+        },
+        getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+        gsspRes,
+        isrCacheKey,
+        isrRevalidateSeconds,
+        isrSet,
+        i18n: {
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+        },
+        pageProps,
+        params,
+        renderDocumentToString(element) {
+          return renderToStringAsync(element);
+        },
+        renderIsrPassToStringAsync,
+        renderToReadableStream(element) {
+          return renderToReadableStream(element);
+        },
+        resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+        routePattern,
+        routeUrl,
+        safeJsonStringify,
+        scriptNonce,
+      });
     } catch (e) {
-    console.error("[vinext] SSR error:", e);
-    _reportRequestError(
-      e instanceof Error ? e : new Error(String(e)),
-      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
-    ).catch(() => { /* ignore reporting errors */ });
-    return new Response("Internal Server Error", { status: 500 });
+      console.error("[vinext] SSR error:", e);
+      _reportRequestError(
+        e instanceof Error ? e : new Error(String(e)),
+        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+      ).catch(() => { /* ignore reporting errors */ });
+      return new Response("Internal Server Error", { status: 500 });
     }
   });
 }

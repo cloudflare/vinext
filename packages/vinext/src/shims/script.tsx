@@ -14,6 +14,7 @@
  */
 import React, { useEffect, useRef } from "react";
 import { escapeInlineContent } from "./head.js";
+import { useScriptNonce } from "./script-nonce-context.js";
 
 export type ScriptProps = {
   /** Script source URL */
@@ -51,6 +52,50 @@ export type ScriptProps = {
 // Track scripts that have already been loaded to avoid duplicates
 const loadedScripts = new Set<string>();
 
+function getClientAutoNonce(): string | undefined {
+  if (typeof document === "undefined") return undefined;
+
+  const existingNonceElement = document.querySelector("[nonce]");
+  if (!(existingNonceElement instanceof HTMLElement)) {
+    return undefined;
+  }
+
+  return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
+}
+
+function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): string | undefined {
+  if (typeof explicitNonce === "string" && explicitNonce.length > 0) {
+    return explicitNonce;
+  }
+
+  if (typeof window === "undefined") {
+    return contextualNonce;
+  }
+
+  return getClientAutoNonce();
+}
+
+function buildBeforeInteractiveScriptProps(options: {
+  src?: string;
+  id?: string;
+  rest: Record<string, unknown>;
+  resolvedNonce?: string;
+  dangerouslySetInnerHTML?: { __html: string };
+}): Record<string, unknown> {
+  const scriptProps: Record<string, unknown> = { ...options.rest };
+  if (options.src) scriptProps.src = options.src;
+  if (options.id) scriptProps.id = options.id;
+  if (options.resolvedNonce) {
+    scriptProps.nonce = options.resolvedNonce;
+  }
+  if (options.dangerouslySetInnerHTML) {
+    scriptProps.dangerouslySetInnerHTML = {
+      __html: escapeInlineContent(options.dangerouslySetInnerHTML.__html, "script"),
+    };
+  }
+  return scriptProps;
+}
+
 /**
  * Load a script imperatively (outside of React).
  */
@@ -73,6 +118,7 @@ export function handleClientScriptLoad(props: ScriptProps): void {
   const el = document.createElement("script");
   if (src) el.src = src;
   if (id) el.id = id;
+  const resolvedNonce = resolveScriptNonce(rest.nonce);
 
   for (const [attr, value] of Object.entries(rest)) {
     if (attr === "dangerouslySetInnerHTML" || attr === "className") continue;
@@ -81,6 +127,9 @@ export function handleClientScriptLoad(props: ScriptProps): void {
     } else if (typeof value === "boolean" && value) {
       el.setAttribute(attr, "");
     }
+  }
+  if (resolvedNonce && !el.getAttribute("nonce")) {
+    el.setAttribute("nonce", resolvedNonce);
   }
 
   if (children && typeof children === "string") {
@@ -118,12 +167,18 @@ function Script(props: ScriptProps): React.ReactElement | null {
 
   const hasMounted = useRef(false);
   const key = id ?? src ?? "";
+  const contextualNonce = useScriptNonce();
+  const resolvedNonce = resolveScriptNonce(rest.nonce, contextualNonce);
 
   // Client path: load scripts via useEffect based on strategy.
   // useEffect never runs during SSR, so it's safe to call unconditionally.
   useEffect(() => {
     if (hasMounted.current) return;
     hasMounted.current = true;
+
+    if (strategy === "beforeInteractive") {
+      return;
+    }
 
     // Already loaded — just fire onReady
     if (key && loadedScripts.has(key)) {
@@ -149,6 +204,9 @@ function Script(props: ScriptProps): React.ReactElement | null {
         } else if (typeof value === "boolean" && value) {
           el.setAttribute(attr, "");
         }
+      }
+      if (resolvedNonce && !el.getAttribute("nonce")) {
+        el.setAttribute("nonce", resolvedNonce);
       }
 
       if (strategy === "worker") {
@@ -199,26 +257,51 @@ function Script(props: ScriptProps): React.ReactElement | null {
       // "afterInteractive" (default), "beforeInteractive" (client re-mount), "worker"
       load();
     }
-  }, [src, id, strategy, onLoad, onReady, onError, children, dangerouslySetInnerHTML, key, rest]);
+  }, [
+    src,
+    id,
+    strategy,
+    onLoad,
+    onReady,
+    onError,
+    children,
+    dangerouslySetInnerHTML,
+    key,
+    resolvedNonce,
+    rest,
+  ]);
 
   // SSR path: only "beforeInteractive" renders a <script> tag server-side
   if (typeof window === "undefined") {
     if (strategy === "beforeInteractive") {
-      const scriptProps: Record<string, unknown> = { ...rest };
-      if (src) scriptProps.src = src;
-      if (id) scriptProps.id = id;
-      if (dangerouslySetInnerHTML) {
-        // Escape closing </script> sequences in inline content so the HTML
-        // parser doesn't prematurely terminate the element during SSR.
-        const raw = dangerouslySetInnerHTML.__html;
-        scriptProps.dangerouslySetInnerHTML = {
-          __html: escapeInlineContent(raw, "script"),
-        };
-      }
-      return React.createElement("script", scriptProps, children);
+      return React.createElement(
+        "script",
+        buildBeforeInteractiveScriptProps({
+          src,
+          id,
+          rest,
+          resolvedNonce,
+          dangerouslySetInnerHTML,
+        }),
+        children,
+      );
     }
     // Other strategies don't render during SSR
     return null;
+  }
+
+  if (strategy === "beforeInteractive") {
+    return React.createElement(
+      "script",
+      buildBeforeInteractiveScriptProps({
+        src,
+        id,
+        rest,
+        resolvedNonce,
+        dangerouslySetInnerHTML,
+      }),
+      children,
+    );
   }
 
   // The component itself renders nothing — scripts are injected imperatively

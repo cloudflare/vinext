@@ -62,6 +62,45 @@ describe("next/navigation shim", () => {
     }
   });
 
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() without an explicit type uses an empty sentinel so
+  // the context (action vs render) can resolve the default at the catch site.
+  it("redirect() without explicit type uses empty sentinel (context-dependent default)", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      // Empty string sentinel — the catch site determines push vs replace
+      expect(parts[1]).toBe("");
+      expect(decodeURIComponent(parts[2])).toBe("/dashboard");
+    }
+  });
+
+  it("redirect() with explicit 'push' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("push");
+    }
+  });
+
+  it("redirect() with explicit 'replace' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "replace");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
+    }
+  });
+
   it("redirect() encodes semicolons in URL to prevent digest injection", async () => {
     const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
     try {
@@ -72,8 +111,34 @@ describe("next/navigation shim", () => {
       // The URL field must not leak into the status code position
       expect(parts).toHaveLength(3); // NEXT_REDIRECT, type, encoded-url
       expect(parts[0]).toBe("NEXT_REDIRECT");
-      expect(parts[1]).toBe("replace");
+      // Empty sentinel — no explicit type passed
+      expect(parts[1]).toBe("");
       expect(decodeURIComponent(parts[2])).toBe("http://example.com;301");
+    }
+  });
+
+  it("permanentRedirect() accepts an optional type parameter", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      expect(parts[1]).toBe("push");
+      expect(decodeURIComponent(parts[2])).toBe("/new-page");
+      expect(parts[3]).toBe("308");
+    }
+  });
+
+  it("permanentRedirect() defaults to 'replace' when no type given", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
     }
   });
 
@@ -3688,6 +3753,25 @@ describe("RequestCookies API", () => {
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
   });
 
+  it("set() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set("foo=bar; Path=/", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo\r\nCookie: evil=1", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("set({ name, value }) rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set({ name: "foo=bar", value: "val" })).toThrow("Invalid cookie name");
+  });
+
   it("delete() removes a cookie from the Cookie header", async () => {
     const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers({ cookie: "a=1; b=2; c=3" });
@@ -3722,6 +3806,15 @@ describe("RequestCookies API", () => {
     expect(cookies.has("a")).toBe(false);
     expect(cookies.has("c")).toBe(false);
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+  });
+
+  it("delete() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2" });
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.delete("foo=bar")).toThrow("Invalid cookie name");
+    expect(() => cookies.delete(["a", "foo;bar"])).toThrow("Invalid cookie name");
   });
 
   it("delete() is a no-op for missing cookies", async () => {
@@ -4936,6 +5029,66 @@ describe("middleware request header overrides", () => {
       expect(liveHeaders.get("x-keep")).toBe("updated");
       expect(liveHeaders.get("x-added")).toBe("1");
       expect(liveCookies.getAll()).toEqual([]);
+    });
+  });
+
+  it("next/headers applyMiddlewareRequestHeaders invalidates headers() snapshot taken before the override", async () => {
+    // Regression: a middleware that reads `headers()` (or `cookies()`) before
+    // applying a request-header override would prime a sealed read-only
+    // snapshot built from the *pre*-override request. Discovered with
+    // @clerk/nextjs whose `clerkClient()` reads `headers()` via
+    // `buildRequestLike()` during middleware execution; before the fix, the
+    // Server Component subsequently received the stale snapshot and saw the
+    // pre-override credentials and missing middleware-injected headers.
+    const {
+      applyMiddlewareRequestHeaders,
+      cookies,
+      headers,
+      headersContextFromRequest,
+      runWithHeadersContext,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+        "x-keep": "original",
+      },
+    });
+
+    await runWithHeadersContext(headersContextFromRequest(request), async () => {
+      // 1. Prime the sealed snapshot — this is exactly what
+      //    `clerkMiddleware()` does internally via `buildRequestLike()`.
+      const preHeaders = await headers();
+      const preCookies = await cookies();
+      expect(preHeaders.get("authorization")).toBe("Bearer secret");
+      expect(preHeaders.get("x-keep")).toBe("original");
+      expect(preCookies.getAll()).toEqual([
+        { name: "a", value: "1" },
+        { name: "b", value: "2" },
+      ]);
+
+      // 2. Apply the override — drops `authorization`/`cookie`, adds `x-added`,
+      //    and updates `x-keep`.
+      applyMiddlewareRequestHeaders(
+        new Headers({
+          "x-middleware-override-headers": "x-keep,x-added",
+          "x-middleware-request-x-keep": "updated",
+          "x-middleware-request-x-added": "1",
+        }),
+      );
+
+      // 3. A subsequent `headers()` call — for example from the Server
+      //    Component's render — must observe the override, not the snapshot
+      //    captured in step 1.
+      const postHeaders = await headers();
+      const postCookies = await cookies();
+
+      expect(postHeaders.get("authorization")).toBeNull();
+      expect(postHeaders.get("cookie")).toBeNull();
+      expect(postHeaders.get("x-keep")).toBe("updated");
+      expect(postHeaders.get("x-added")).toBe("1");
+      expect(postCookies.getAll()).toEqual([]);
     });
   });
 });
@@ -6294,6 +6447,7 @@ describe("proxyExternalRequest", () => {
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -6317,6 +6471,7 @@ describe("proxyExternalRequest", () => {
       // Internal middleware headers must be stripped
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
@@ -8398,6 +8553,676 @@ describe("Pages Router router helpers", () => {
         delete (globalThis as any).window;
       }
     });
+  });
+});
+
+describe("Pages Router concurrent navigation", () => {
+  /**
+   * Helper: create a mock window suitable for non-shallow Router.push().
+   * Returns an object with the window mock plus helpers for controlling
+   * the fetch responses (deferred promises).
+   */
+  function createNavWindow() {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const render = vi.fn();
+
+    const win = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState: pushState as any,
+        replaceState: replaceState as any,
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: vi.fn(),
+      __NEXT_DATA__: {
+        page: "/",
+        query: {},
+        isFallback: false,
+        props: { pageProps: {} },
+        __vinext: { pageModuleUrl: "/@fs/pages/index.js" },
+      },
+      __VINEXT_ROOT__: { render },
+      __VINEXT_APP__: undefined,
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    // Make pushState update location to simulate real browser behavior
+    pushState.mockImplementation((_state: unknown, _title: string, url: string) => {
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        // Relative URL — just set pathname
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+
+    replaceState.mockImplementation((_state: unknown, _title: string, url?: string) => {
+      if (!url) return;
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+
+    return { win, pushState, replaceState, render };
+  }
+
+  /**
+   * Build a minimal HTML response that navigateClient can parse.
+   * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.
+   */
+  function buildNavHtml(page: string, pageModuleUrl: string): string {
+    const nextData = JSON.stringify({
+      page,
+      query: {},
+      isFallback: false,
+      props: { pageProps: { page } },
+      __vinext: { pageModuleUrl },
+    });
+    return `<html><head></head><body><script>window.__NEXT_DATA__ = ${nextData}</script></body></html>`;
+  }
+
+  /**
+   * Create a deferred promise for controlling fetch timing.
+   */
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function trackHrefAssignments(win: {
+    location: {
+      href: string;
+    };
+  }): string[] {
+    let currentHref = win.location.href;
+    const assignments: string[] = [];
+
+    Object.defineProperty(win.location, "href", {
+      configurable: true,
+      enumerable: true,
+      get: () => currentHref,
+      set: (value: string) => {
+        currentHref = value;
+        assignments.push(value);
+      },
+    });
+
+    return assignments;
+  }
+
+  it("last push() wins when two overlap — superseded navigation does not render", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    // Two deferred fetches so we control resolution order
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      // Start two navigations — don't await yet
+      const navA = Router.push("/page-a");
+      // Let microtask queue process so navA's fetch has been called
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B first (the winning navigation)
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      // Resolve A after B (stale — should be ignored)
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) must NOT have committed its data.
+      // In a real browser page-b would render; in the test env B's dynamic import
+      // may fail, so we verify the important invariant: A never writes.
+      expect(win.__NEXT_DATA__.page).not.toBe("/page-a");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("routeChangeComplete does not fire for the superseded navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+
+      // Start two overlapping navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B first, then A
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) must NOT fire routeChangeComplete.
+      // page-b may or may not complete fully (dynamic import may fail in test
+      // env), but that's a separate concern. The critical fix is that the
+      // cancelled navigation never fires routeChangeComplete.
+      expect(completedUrls).not.toContain("/page-a");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("routeChangeError fires for superseded navigation with cancelled error", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start two overlapping navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve both
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) should emit routeChangeError
+      // with a cancelled error, matching Next.js behavior
+      const cancelledError = errors.find((e) => e.url === "/page-a");
+      expect(cancelledError).toBeDefined();
+      const errObj = cancelledError?.err;
+      expect(errObj).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("failed navigation (non-OK response) does not emit routeChangeComplete", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    const completedUrls: string[] = [];
+    const errorUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errorUrls.push(String(args[1]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      await Router.push("/failing-page");
+
+      // Should NOT have fired routeChangeComplete for a failed navigation
+      expect(completedUrls).not.toContain("/failing-page");
+      // Should have fired routeChangeError
+      expect(errorUrls).toContain("/failing-page");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("known navigation failures schedule exactly one hard-navigation fallback", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/failing-page");
+      // Distinguish the history update from the hard-navigation fallback:
+      // pushState writes the absolute browser URL, while the fallback helper
+      // writes the raw app-relative URL. The guard is correct only if each
+      // happens exactly once.
+      const fallbackAssignments = hrefAssignments.filter((value) => value === "/failing-page");
+      const pushStateAssignments = hrefAssignments.filter(
+        (value) => value === "http://localhost/failing-page",
+      );
+
+      expect(result).toBe(false);
+      expect(fallbackAssignments).toHaveLength(1);
+      expect(pushStateAssignments).toHaveLength(1);
+      // Catch-all: exactly one history write plus exactly one hard-nav fallback.
+      expect(hrefAssignments).toHaveLength(2);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("popstate known failures schedule a single hard navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/failing-page";
+      win.location.href = "http://localhost/failing-page";
+      // Install tracking after test setup so we only capture popstate-driven
+      // writes, not the setup assignment above.
+      const hrefAssignments = trackHrefAssignments(win);
+      popstateHandler!({ state: null });
+      // Cross a task boundary so the async popstate chain has fully settled.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
+      expect(hrefAssignments).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  it("replace() also cancels superseded navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // First push, then replace overlapping
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.replace("/page-b");
+
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded push (page-a) should be cancelled, not completed
+      expect(completedUrls).not.toContain("/page-a");
+      // page-a should have a cancelled error
+      const cancelledA = errors.find((e) => e.url === "/page-a");
+      expect(cancelledA).toBeDefined();
+      expect(cancelledA?.err).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("abort signal fires when navigation is superseded — AbortError becomes NavigationCancelledError", async () => {
+    // Verify that the AbortController signal passed to fetch actually fires when a
+    // newer navigation starts, and that the resulting AbortError is converted into
+    // a NavigationCancelledError (the routeChangeError path, not a plain rejection).
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    // Signal-aware mock: the first fetch rejects with AbortError when its signal fires.
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        return new Promise<Response>((resolve, reject) => {
+          fetchA.promise.then(resolve, reject);
+          _init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      }
+      return fetchB.promise;
+    };
+
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start navigation A then immediately supersede it with B
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B; A is aborted via its signal — no manual resolution needed
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // navA's fetch was aborted via signal → AbortError → NavigationCancelledError
+      const cancelledError = errors.find((e) => e.url === "/page-a");
+      expect(cancelledError).toBeDefined();
+      expect(cancelledError?.err).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("stale response arriving first does not render before the winning navigation", async () => {
+    // fetchA (stale, page-a) resolves before fetchB (winning, page-b).
+    // assertStillCurrent() in navigateClient must catch the stale navigation
+    // after it processes the response, so page-a's data never reaches the DOM.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+
+      // Start two navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Stale fetch (A) resolves first this time
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+      // Winning fetch (B) resolves after
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // Stale navigation must not have committed its data to the DOM.
+      // B may also fail at dynamic import in test env, so we only verify A never wrote.
+      expect(win.__NEXT_DATA__.page).not.toBe("/page-a");
+      // Stale navigation must not fire routeChangeComplete
+      expect(completedUrls).not.toContain("/page-a");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("__NEXT_DATA__ is not stale when routeChangeError fires for a cancelled navigation", async () => {
+    // Regression test: __NEXT_DATA__ must not reflect the cancelled route's data
+    // at the moment routeChangeError fires.  The fix defers the global write until
+    // just before root.render(), after all assertStillCurrent() checks pass.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    // Track __NEXT_DATA__.page at the moment of each routeChangeError
+    const nextDataPageAtError: string[] = [];
+    const onRouteChangeError = () => {
+      nextDataPageAtError.push(win.__NEXT_DATA__.page);
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start two navigations — A will be superseded by B
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve stale (A) first, then winning (B)
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // At the moment routeChangeError fired for nav A, __NEXT_DATA__ must NOT
+      // have been overwritten with page-a's data
+      for (const page of nextDataPageAtError) {
+        expect(page).not.toBe("/page-a");
+      }
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

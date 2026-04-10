@@ -1058,6 +1058,10 @@ export async function proxyExternalRequest(
   for (const key of keysToDelete) {
     headers.delete(key);
   }
+  // Internal prerender authentication header must never be forwarded to
+  // external rewrite destinations. It authorizes hidden production endpoints
+  // used only by vinext's own prerender pipeline.
+  headers.delete("x-vinext-prerender-secret");
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";

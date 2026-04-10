@@ -1,5 +1,6 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import { NextRequest, type NextURL } from "../shims/server.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 
 export const ROUTE_HANDLER_HTTP_METHODS = [
   "GET",
@@ -78,6 +79,7 @@ export type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamic
 export type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
+  middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
 };
 
@@ -102,6 +104,31 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
   };
+}
+
+function rebuildRequestWithHeaders(input: Request, headers: Headers): Request {
+  const method = input.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const init: RequestInit & { duplex?: "half" } = {
+    method,
+    headers,
+    cache: input.cache,
+    credentials: input.credentials,
+    integrity: input.integrity,
+    keepalive: input.keepalive,
+    mode: input.mode,
+    redirect: input.redirect,
+    referrer: input.referrer,
+    referrerPolicy: input.referrerPolicy,
+    signal: input.signal,
+  };
+
+  if (hasBody && input.body) {
+    init.body = input.body;
+    init.duplex = "half";
+  }
+
+  return new Request(input.url, init);
 }
 
 export function createTrackedAppRouteRequest(
@@ -144,10 +171,16 @@ export function createTrackedAppRouteRequest(
   };
 
   const wrapRequest = (input: Request): NextRequest => {
+    const requestHeaders = options.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(input.headers, options.middlewareHeaders)
+      : null;
+    const requestWithOverrides = requestHeaders
+      ? rebuildRequestWithHeaders(input, requestHeaders)
+      : input;
     const nextRequest =
-      input instanceof NextRequest
-        ? input
-        : new NextRequest(input, { nextConfig: nextConfig ?? undefined });
+      requestWithOverrides instanceof NextRequest
+        ? requestWithOverrides
+        : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
     let proxiedNextUrl: NextURL | null = null;
 
     const requestHandler: ProxyHandler<NextRequest> = {

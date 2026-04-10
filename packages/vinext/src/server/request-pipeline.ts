@@ -156,6 +156,91 @@ export function validateCsrfOrigin(
 }
 
 /**
+ * Reject malformed Flight container reference graphs in server action payloads.
+ *
+ * `@vitejs/plugin-rsc` vendors its own React Flight decoder. Malicious action
+ * payloads can abuse container references (`$Q`, `$W`, `$i`) to trigger very
+ * expensive deserialization before the action is even looked up.
+ *
+ * Legitimate React-encoded container payloads use separate numeric backing
+ * fields (e.g. field `1` plus root field `0` containing `"$Q1"`). We reject
+ * numeric backing-field graphs that contain missing backing fields or cycles.
+ * Regular user form fields are ignored entirely.
+ */
+export async function validateServerActionPayload(
+  body: string | FormData,
+): Promise<Response | null> {
+  const containerRefRe = /"\$([QWi])(\d+)"/g;
+  const fieldRefs = new Map<string, Set<string>>();
+
+  const collectRefs = (fieldKey: string, text: string): void => {
+    const refs = new Set<string>();
+    let match: RegExpExecArray | null;
+    containerRefRe.lastIndex = 0;
+    while ((match = containerRefRe.exec(text)) !== null) {
+      refs.add(match[2]);
+    }
+    fieldRefs.set(fieldKey, refs);
+  };
+
+  if (typeof body === "string") {
+    collectRefs("0", body);
+  } else {
+    for (const [key, value] of body.entries()) {
+      if (!/^\d+$/.test(key)) continue;
+      if (typeof value === "string") {
+        collectRefs(key, value);
+        continue;
+      }
+      if (typeof value?.text === "function") {
+        collectRefs(key, await value.text());
+      }
+    }
+  }
+
+  if (fieldRefs.size === 0) return null;
+
+  const knownFields = new Set(fieldRefs.keys());
+  for (const refs of fieldRefs.values()) {
+    for (const ref of refs) {
+      if (!knownFields.has(ref)) {
+        return new Response("Invalid server action payload", {
+          status: 400,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+    }
+  }
+
+  const visited = new Set<string>();
+  const stack = new Set<string>();
+
+  const hasCycle = (node: string): boolean => {
+    if (stack.has(node)) return true;
+    if (visited.has(node)) return false;
+
+    visited.add(node);
+    stack.add(node);
+    for (const ref of fieldRefs.get(node) ?? []) {
+      if (hasCycle(ref)) return true;
+    }
+    stack.delete(node);
+    return false;
+  };
+
+  for (const node of fieldRefs.keys()) {
+    if (hasCycle(node)) {
+      return new Response("Invalid server action payload", {
+        status: 400,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+  }
+
+  return null;
+}
+
+/**
  * Check if an origin matches any pattern in the allowed origins list.
  * Supports wildcard subdomains (e.g. `*.example.com`).
  */

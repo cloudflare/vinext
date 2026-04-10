@@ -21,6 +21,9 @@ export default function HomePage() {
         <Link href="/nav-flash/list" data-testid="nav-flash-list-link">
           Nav Flash List
         </Link>
+        <Link href="/error-test" data-testid="error-test-link">
+          Error Test
+        </Link>
       </nav>
     </main>
   );

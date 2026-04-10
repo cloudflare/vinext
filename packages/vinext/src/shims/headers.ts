@@ -235,6 +235,16 @@ export function runWithHeadersContext<T>(
  * middleware response. This function decodes that protocol and applies the
  * resulting request header set to the live `HeadersContext`. When an override
  * list is present, omitted headers are deleted as part of the rebuild.
+ *
+ * Cached `readonlyHeaders` and `readonlyCookies` snapshots on the
+ * HeadersContext must be invalidated whenever this function rebuilds the
+ * underlying `headers`/`cookies`. Otherwise a middleware that reads
+ * `headers()` (or `cookies()`) before returning a request-header override —
+ * for example `@clerk/nextjs`, whose `clerkClient()` reads `headers()` via
+ * `buildRequestLike()` during middleware execution — primes a sealed snapshot
+ * built from the *pre*-override request, and any subsequent `headers()` call
+ * from a Server Component would return that stale snapshot instead of the
+ * middleware-modified view.
  */
 export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers): void {
   const state = _getState();
@@ -250,11 +260,18 @@ export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers
   if (!nextHeaders) return;
 
   ctx.headers = nextHeaders;
+  // Invalidate any sealed snapshot of the pre-override headers. A middleware
+  // that read `headers()` before returning the override (e.g. clerkMiddleware)
+  // would otherwise leak the pre-override view into the Server Component.
+  ctx.readonlyHeaders = undefined;
   const nextCookieHeader = nextHeaders.get("cookie");
   if (previousCookieHeader === nextCookieHeader) return;
 
-  // If middleware modified the cookie header, rebuild the cookies map.
+  // If middleware modified the cookie header, rebuild the cookies map and
+  // drop any sealed snapshots that were captured from the pre-override map.
   ctx.cookies.clear();
+  ctx.readonlyCookies = undefined;
+  ctx.mutableCookies = undefined;
   if (nextCookieHeader !== null) {
     const nextCookies = parseCookieHeader(nextCookieHeader);
     for (const [name, value] of nextCookies) {

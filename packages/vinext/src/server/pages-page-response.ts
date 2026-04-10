@@ -1,4 +1,6 @@
 import React, { type ComponentType, type ReactNode } from "react";
+import { withScriptNonce } from "../shims/script-nonce-context.js";
+import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 
 export type PagesFontPreload = {
   href: string;
@@ -57,29 +59,28 @@ export type RenderPagesPageResponseOptions = {
   routePattern: string;
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
+  scriptNonce?: string;
 };
-
-function escapeAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
 
 function buildPagesFontHeadHtml(
   fontLinks: string[],
   fontPreloads: PagesFontPreload[],
   fontStyles: string[],
+  scriptNonce?: string,
 ): string {
   let html = "";
+  const nonceAttr = createNonceAttribute(scriptNonce);
 
   for (const link of fontLinks) {
-    html += `<link rel="stylesheet" href="${escapeAttr(link)}" />\n  `;
+    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(link)}" />\n  `;
   }
 
   for (const preload of fontPreloads) {
-    html += `<link rel="preload" href="${escapeAttr(preload.href)}" as="font" type="${escapeAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
   }
 
   if (fontStyles.length > 0) {
-    html += `<style data-vinext-fonts>${fontStyles.join("\n")}</style>\n  `;
+    html += `<style data-vinext-fonts${nonceAttr}>${fontStyles.join("\n")}</style>\n  `;
   }
 
   return html;
@@ -88,7 +89,13 @@ function buildPagesFontHeadHtml(
 export function buildPagesNextDataScript(
   options: Pick<
     RenderPagesPageResponseOptions,
-    "buildId" | "i18n" | "pageProps" | "params" | "routePattern" | "safeJsonStringify"
+    | "buildId"
+    | "i18n"
+    | "pageProps"
+    | "params"
+    | "routePattern"
+    | "safeJsonStringify"
+    | "scriptNonce"
   >,
 ): string {
   const nextDataPayload: Record<string, unknown> = {
@@ -112,7 +119,10 @@ export function buildPagesNextDataScript(
       `;window.__VINEXT_DEFAULT_LOCALE__=${options.safeJsonStringify(options.i18n.defaultLocale)}`
     : "";
 
-  return `<script>window.__NEXT_DATA__ = ${options.safeJsonStringify(nextDataPayload)}${localeGlobals}</script>`;
+  return createInlineScriptTag(
+    `window.__NEXT_DATA__ = ${options.safeJsonStringify(nextDataPayload)}${localeGlobals}`,
+    options.scriptNonce,
+  );
 }
 
 async function buildPagesShellHtml(
@@ -213,7 +223,10 @@ function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): 
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
-  const pageElement = options.createPageElement(options.pageProps);
+  const pageElement = withScriptNonce(
+    React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
+    options.scriptNonce,
+  );
 
   options.resetSSRHead?.();
   await options.flushPreloads?.();
@@ -222,6 +235,7 @@ export async function renderPagesPageResponse(
     options.getFontLinks(),
     options.fontPreloads,
     options.getFontStyles(),
+    options.scriptNonce,
   );
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
@@ -230,6 +244,7 @@ export async function renderPagesPageResponse(
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
+    scriptNonce: options.scriptNonce,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
@@ -247,8 +262,18 @@ export async function renderPagesPageResponse(
   const bodyStream = await options.renderToReadableStream(pageElement);
   const compositeStream = await buildPagesCompositeStream(bodyStream, shellPrefix, shellSuffix);
 
-  if (options.isrRevalidateSeconds !== null && options.isrRevalidateSeconds > 0) {
-    const isrElement = options.createPageElement(options.pageProps);
+  if (
+    // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()
+    // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
+    !options.scriptNonce &&
+    options.isrRevalidateSeconds !== null &&
+    options.isrRevalidateSeconds > 0
+  ) {
+    const isrElement = React.createElement(
+      React.Fragment,
+      null,
+      options.createPageElement(options.pageProps),
+    );
     const isrHtml = await options.renderIsrPassToStringAsync(isrElement);
     const fullHtml = shellPrefix + isrHtml + shellSuffix;
     const isrPathname = options.routeUrl.split("?")[0];
@@ -269,7 +294,9 @@ export async function renderPagesPageResponse(
   const responseHeaders = new Headers({ "Content-Type": "text/html" });
   const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes);
 
-  if (options.isrRevalidateSeconds) {
+  if (options.scriptNonce) {
+    responseHeaders.set("Cache-Control", "no-store, must-revalidate");
+  } else if (options.isrRevalidateSeconds) {
     responseHeaders.set(
       "Cache-Control",
       `s-maxage=${options.isrRevalidateSeconds}, stale-while-revalidate`,

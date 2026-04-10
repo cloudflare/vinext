@@ -47,6 +47,7 @@ export type RunAppRouteHandlerOptions = {
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
+  middlewareRequestHeaders?: Headers | null;
   params: AppRouteParams;
   request: Request;
 };
@@ -85,6 +86,7 @@ export async function runAppRouteHandler(
   const trackedRequest = createTrackedAppRouteRequest(options.request, {
     basePath: options.basePath,
     i18n: options.i18n,
+    middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
     },

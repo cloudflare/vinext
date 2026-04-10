@@ -128,6 +128,24 @@ describe("App Router integration", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
+  it("returns flat payload metadata for app route RSC responses", async () => {
+    const res = await fetch(`${baseUrl}/dashboard.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    const rscText = await res.text();
+    if (res.status !== 200) {
+      throw new Error(rscText);
+    }
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(rscText).toContain("__route");
+    expect(rscText).toContain("__rootLayout");
+    expect(rscText).toContain("route:/dashboard");
+    expect(rscText).toContain("layout:/");
+    expect(rscText).toContain("layout:/dashboard");
+    expect(rscText).toContain("slot:team:/dashboard");
+    expect(rscText).toContain("slot:analytics:/dashboard");
+  });
+
   it("wraps pages in the root layout", async () => {
     const res = await fetch(`${baseUrl}/about`);
     const html = await res.text();
@@ -282,6 +300,20 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="team-default"');
   });
 
+  it("keeps same-named parallel slots from parent and child layouts", async () => {
+    const res = await fetch(`${baseUrl}/slot-collision/child`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="slot-collision-parent-layout"');
+    expect(html).toContain('data-testid="slot-collision-child-layout"');
+    expect(html).toContain('data-testid="slot-collision-parent-default"');
+    expect(html).toContain("Parent modal default");
+    expect(html).toContain('data-testid="slot-collision-child-default"');
+    expect(html).toContain("Child modal default");
+    expect(html).toContain('data-testid="slot-collision-page"');
+  });
+
   it("parallel slots do not affect URL routing", async () => {
     // @team and @analytics should NOT be accessible as direct routes
     const teamRes = await fetch(`${baseUrl}/dashboard/team`);
@@ -367,11 +399,11 @@ describe("App Router integration", () => {
   });
 
   // --- parallelRoutesKey support ---
-  // These tests verify the segmentMap context migration works end-to-end.
-  // Until PR 2 populates per-slot segment data, useSelectedLayoutSegments("team")
-  // returns [] (key absent in segmentMap → fallback). This is structurally correct.
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-use-selected-layout-segment
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-use-selected-layout-segment
 
-  it("useSelectedLayoutSegments('team') returns [] for flat slot (no per-slot wiring yet)", async () => {
+  it("useSelectedLayoutSegments('team') returns [] when slot page is at root", async () => {
+    // On /dashboard, @team/page.tsx is active — page at slot root means no child segments
     const res = await fetch(`${baseUrl}/dashboard`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -380,8 +412,29 @@ describe("App Router integration", () => {
     expect(html).toMatch(/data-testid="team-segment"[^>]*>null</);
   });
 
-  it("useSelectedLayoutSegments('analytics') returns [] for flat slot", async () => {
+  it("useSelectedLayoutSegments('analytics') returns [] when slot page is at root", async () => {
     const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="analytics-segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegments('team') returns slot sub-route segments", async () => {
+    // On /dashboard/members, @team/members/page.tsx is active
+    // useSelectedLayoutSegments("team") should return ["members"]
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/data-testid="team-segments"[^>]*>\[&quot;members&quot;\]/);
+    expect(html).toMatch(/data-testid="team-segment"[^>]*>members</);
+  });
+
+  it("useSelectedLayoutSegments('analytics') returns [] when slot shows default on sub-route", async () => {
+    // On /dashboard/members, @analytics shows default.tsx (no members page)
+    // useSelectedLayoutSegments("analytics") should return [] (fallback)
+    const res = await fetch(`${baseUrl}/dashboard/members`);
     expect(res.status).toBe(200);
     const html = await res.text();
 
@@ -439,6 +492,54 @@ describe("App Router integration", () => {
     // It should also contain the feed page content (the source route)
     expect(rscPayload).toContain("Photo Feed");
     expect(rscPayload).toContain("feed-page");
+  });
+
+  // --- Intercepting routes with dynamic source route ---
+  // Regression: pickRouteParams must extract actual URL param values
+  // (e.g. "42") from the request pathname, not the literal pattern strings
+  // (e.g. ":teamId") that result from feeding the pattern into the route trie.
+
+  it("renders members page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/members`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="members-page"');
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("renders settings page on direct SSR navigation", async () => {
+    const res = await fetch(`${baseUrl}/team/42/settings`);
+    const html = await res.text();
+    if (res.status !== 200) {
+      throw new Error(`Expected 200, got ${res.status}. Body: ${html.slice(0, 2000)}`);
+    }
+    expect(html).toContain('data-testid="settings-page"');
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/team-id:\s*(<!--\s*-->)?\s*42/);
+    expect(html).not.toContain('data-testid="settings-modal"');
+  });
+
+  it("extracts actual URL params for intercepted routes with dynamic source routes", async () => {
+    // RSC request simulates client-side navigation from /team/[teamId]/members
+    // to /team/[teamId]/settings. The source route has a dynamic :teamId segment.
+    // The intercepting route handler must extract "42" from the URL, not ":teamId".
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscPayload = await res.text();
+    // The RSC payload should contain the intercepted settings modal with the actual team ID
+    expect(rscPayload).toContain("Settings Modal");
+    expect(rscPayload).toContain("settings-modal");
+    // The source route (members page) should render with the actual teamId value.
+    // The source page component receives params from pickRouteParams.
+    expect(rscPayload).toContain("members-page");
+    // The literal pattern string ":teamId" must NOT appear as a param value anywhere
+    expect(rscPayload).not.toContain('":teamId"');
   });
 
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
@@ -774,6 +875,20 @@ describe("App Router integration", () => {
     // Title from generateMetadata should use the dynamic slug
     expect(html).toContain("<title>Blog: my-post</title>");
     expect(html).toMatch(/name="description".*content="Read about my-post"/);
+  });
+
+  it("layout generateMetadata() does not receive searchParams (Next.js parity)", async () => {
+    // Parity test: In Next.js, layout generateMetadata() does NOT receive
+    // searchParams — only page generateMetadata() does. The layout should
+    // always see undefined and fall back to "home", even when the URL has
+    // a query string.
+    // See: next.js resolve-metadata.ts — `isPage ? { params, searchParams } : { params }`
+    const res = await fetch(`${baseUrl}/layout-metadata-search?tab=settings`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Layout falls back to "home" because it never receives searchParams.
+    expect(html).toContain("<title>Layout Section: home</title>");
   });
 
   it("renders catch-all routes with multiple segments", async () => {
@@ -1271,6 +1386,25 @@ describe("App Router integration", () => {
     expect(res.status).not.toBe(403);
   });
 
+  it("rejects cyclic multipart server action payloads before decodeReply", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q0"]');
+
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
+      },
+      body,
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid server action payload");
+  });
+
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
@@ -1588,6 +1722,27 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  it("does not reuse cached HTML across requests with different CSP nonces", async () => {
+    const firstRes = await fetch(`${baseUrl}/revalidate-test?csp-nonce=first`);
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(firstRes.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-first' 'strict-dynamic';",
+    );
+    const firstHtml = await firstRes.text();
+    expect(firstHtml).toContain('<script nonce="first">self.__VINEXT_RSC_PARAMS__={}</script>');
+
+    const secondRes = await fetch(`${baseUrl}/revalidate-test?csp-nonce=second`);
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(secondRes.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-second' 'strict-dynamic';",
+    );
+    const secondHtml = await secondRes.text();
+    expect(secondHtml).toContain('<script nonce="second">self.__VINEXT_RSC_PARAMS__={}</script>');
+    expect(secondHtml).not.toContain('nonce="first"');
+  });
+
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
     expect(encodedRes.status).toBe(404);
@@ -1596,6 +1751,24 @@ describe("App Router Production server (startProdServer)", () => {
     const nestedRes = await fetch(`${baseUrl}/headers/override-from-middleware`);
     expect(nestedRes.status).toBe(200);
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
+  });
+
+  it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
+    const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Pages Header Override Delete");
+    expect(html).toContain('<p id="authorization"></p>');
+    expect(html).toContain('<p id="cookie"></p>');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('"authorization":null');
+    expect(html).toContain('"cookie":null');
   });
 
   it("serves dynamic routes", async () => {
@@ -2004,6 +2177,50 @@ describe("App Router Production server (startProdServer)", () => {
     expect(headRes.headers.get("x-vinext-cache")).toBe("HIT");
     const body = await headRes.text();
     expect(body).toBe("");
+  });
+
+  it("middleware request header overrides still apply after middleware calls headers() first", async () => {
+    // Regression for a bug where a middleware that reads `next/headers` →
+    // `headers()` *before* returning `NextResponse.next({ request: { headers } })`
+    // leaked the pre-override snapshot into the Server Component.
+    //
+    // The `headers()` call cached the sealed read-only Headers view on the
+    // shared HeadersContext (`ctx.readonlyHeaders = _sealHeaders(ctx.headers)`).
+    // `applyMiddlewareRequestHeaders()` then replaced `ctx.headers` with the
+    // override view but did not invalidate the cached sealed snapshot, so the
+    // Server Component's subsequent `headers()` call returned the original
+    // pre-override request headers.
+    //
+    // Discovered with @clerk/nextjs, whose `clerkClient()` calls
+    // `await headers()` via its internal `buildRequestLike()` helper during
+    // middleware execution. Clerk's `auth()` in a Server Component then threw
+    //
+    //   "auth() was called but Clerk can't detect usage of clerkMiddleware()"
+    //
+    // because Clerk's own x-clerk-auth-* request header overrides never
+    // reached the render. The fixture middleware reproduces the same prime-
+    // then-override sequence without a Clerk dependency by calling
+    // `await headers()` first and then returning the override response.
+    //
+    // The test runs against the production server (startProdServer) because
+    // the bug only manifests on the inline RSC entry path that wraps the
+    // entire request — including middleware execution — in the headers
+    // context. The dev-mode middleware path runs middleware before the
+    // headers context exists, so calling `headers()` from middleware is
+    // instead an immediate error there.
+    const res = await fetch(`${baseUrl}/header-override-after-prior-access`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="authorization">null<');
+    expect(html).toContain('id="cookie">null<');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('id="cookie-count">0<');
   });
 });
 
@@ -2967,6 +3184,18 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(csrfIdx).toBeLessThan(actionIdx);
   });
 
+  it("generates server action payload validation before decodeReply", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("validateServerActionPayload(body)");
+
+    const payloadValidationIdx = code.indexOf("validateServerActionPayload(body)");
+    const decodeIdx = code.indexOf("decodeReply(body, { temporaryReferences })");
+
+    expect(payloadValidationIdx).toBeGreaterThan(-1);
+    expect(decodeIdx).toBeGreaterThan(-1);
+    expect(payloadValidationIdx).toBeLessThan(decodeIdx);
+  });
+
   it("embeds allowedOrigins when provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       allowedOrigins: ["my-proxy.com", "*.my-domain.com"],
@@ -3290,6 +3519,25 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain('id="cookie">null<');
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('id="cookie-count">0<');
+  });
+
+  it("middleware request header overrides also apply to App Route request.headers", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      requestAuthorization: null,
+      requestCookie: null,
+      requestMiddlewareHeader: "hello-from-middleware",
+      headersApiAuthorization: null,
+      headersApiCookie: null,
+      headersApiMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
@@ -3751,6 +3999,7 @@ describe("App Router external rewrite proxy credential forwarding", () => {
         "x-api-key": "sk_live_secret",
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-safe": "keep-me",
       },
     });
@@ -3763,6 +4012,7 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["proxy-authorization"]).toBe("Basic cHJveHk=");
     // Internal middleware headers must be stripped
     expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
+    expect(capturedHeaders!["x-vinext-prerender-secret"]).toBeUndefined();
     // Non-sensitive headers must be preserved
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
@@ -3910,6 +4160,9 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");
     expect(code).toContain("renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback");
+    expect(code).toContain(
+      "const _scriptNonce = __getScriptNonceFromHeaderSources(request.headers, _mwCtx.headers);",
+    );
     expect(code).toContain("return __renderAppPageHttpAccessFallback({");
     expect(code).toContain("return __renderAppPageErrorBoundary({");
   });
@@ -4064,5 +4317,30 @@ describe("generateRscEntry ISR code generation", () => {
     const redirectEnd = code.indexOf('return new Response(""', redirectStart);
     const redirectBody = code.slice(redirectStart, redirectEnd);
     expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
+    // Framework-owned redirect headers must be written after the middleware merge
+    // so middleware cannot clobber the target URL or redirect type.
+    const mergeIndex = redirectBody.indexOf("__mergeMiddlewareResponseHeaders");
+    const redirectHeaderIndex = redirectBody.indexOf('redirectHeaders.set("x-action-redirect"');
+    expect(mergeIndex).toBeGreaterThan(-1);
+    expect(redirectHeaderIndex).toBeGreaterThan(-1);
+    expect(mergeIndex).toBeLessThan(redirectHeaderIndex);
+  });
+
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() defaults to "push" in Server Action context so
+  // the Back button works after form submissions. The empty sentinel in the
+  // digest (parts[1] === "") should resolve to "push" in the action handler.
+  it("generated action handler defaults empty redirect type to 'push'", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // Find the action redirect digest parsing block
+    const digestStart = code.indexOf('if (digest.startsWith("NEXT_REDIRECT;"))');
+    const actionRedirectEnd = code.indexOf(
+      "returnValue = { ok: true, data: undefined }",
+      digestStart,
+    );
+    const digestBlock = code.slice(digestStart, actionRedirectEnd);
+    // The fallback for empty type must be "push", not "replace"
+    expect(digestBlock).toContain('parts[1] || "push"');
+    expect(digestBlock).not.toContain('parts[1] || "replace"');
   });
 });

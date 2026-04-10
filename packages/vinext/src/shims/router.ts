@@ -341,10 +341,61 @@ function getPathnameAndQuery(): {
 }
 
 /**
+ * Error thrown when a navigation is superseded by a newer one.
+ * Matches Next.js's convention of an Error with `.cancelled = true`.
+ */
+class NavigationCancelledError extends Error {
+  cancelled = true;
+  constructor(route: string) {
+    super(`Abort fetching component for route: "${route}"`);
+    this.name = "NavigationCancelledError";
+  }
+}
+
+/**
+ * Error thrown after queueing a hard navigation fallback for a known failure
+ * mode. Callers can use this to avoid scheduling the same hard navigation twice.
+ */
+class HardNavigationScheduledError extends Error {
+  hardNavigationScheduled = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "HardNavigationScheduledError";
+  }
+}
+
+/**
+ * Monotonically increasing ID for tracking the current navigation.
+ * Each call to navigateClient() increments this and captures the value.
+ * After each async boundary, the navigation checks whether it is still
+ * the active one. If a newer navigation has started, the stale one
+ * throws NavigationCancelledError so the caller can emit routeChangeError
+ * and skip routeChangeComplete.
+ *
+ * Replaces the old boolean `_navInProgress` guard which silently dropped
+ * the second navigation, causing URL/content mismatch.
+ */
+let _navigationId = 0;
+
+/** AbortController for the in-flight fetch, so superseded navigations abort network I/O. */
+let _activeAbortController: AbortController | null = null;
+
+function scheduleHardNavigationAndThrow(url: string, message: string): never {
+  if (typeof window === "undefined") {
+    throw new HardNavigationScheduledError(message);
+  }
+  window.location.href = url;
+  throw new HardNavigationScheduledError(message);
+}
+
+/**
  * Perform client-side navigation: fetch the target page's HTML,
  * extract __NEXT_DATA__, and re-render the React root.
+ *
+ * Throws NavigationCancelledError if a newer navigation supersedes this one.
+ * Throws on hard-navigation failures (non-OK response, missing data) so the
+ * caller can distinguish success from failure for event emission.
  */
-let _navInProgress = false;
 async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
@@ -355,30 +406,64 @@ async function navigateClient(url: string): Promise<void> {
     return;
   }
 
-  // Prevent re-entrant navigation (e.g., double popstate events)
-  if (_navInProgress) return;
-  _navInProgress = true;
+  // Cancel any in-flight navigation (abort its fetch, mark it stale)
+  _activeAbortController?.abort();
+  const controller = new AbortController();
+  _activeAbortController = controller;
+
+  const navId = ++_navigationId;
+
+  /** Check if this navigation is still the active one. If not, throw. */
+  function assertStillCurrent(): void {
+    if (navId !== _navigationId) {
+      throw new NavigationCancelledError(url);
+    }
+  }
 
   try {
     // Fetch the target page's SSR HTML
-    const res = await fetch(url, { headers: { Accept: "text/html" } });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { Accept: "text/html" },
+        signal: controller.signal,
+      });
+    } catch (err: unknown) {
+      // AbortError means a newer navigation cancelled this fetch
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new NavigationCancelledError(url);
+      }
+      throw err;
+    }
+    assertStillCurrent();
+
     if (!res.ok) {
-      window.location.href = url;
-      return;
+      // Set window.location.href first so the browser navigates to the correct
+      // page even if the caller suppresses the error.  The assignment schedules
+      // the navigation asynchronously (as a task), so synchronous routeChangeError
+      // listeners still run — and observe the error — before the page unloads.
+      // Contract: routeChangeError listeners MUST be synchronous; async listeners
+      // will not fire before the navigation completes.  Callers (runNavigateClient)
+      // must NOT schedule a second hard navigation — this assignment already queues
+      // the browser fallback, and the helper-level HardNavigationScheduledError
+      // makes that contract explicit to callers.
+      scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
     }
 
     const html = await res.text();
+    assertStillCurrent();
 
     // Extract __NEXT_DATA__ from the HTML
     const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
     if (!match) {
-      window.location.href = url;
-      return;
+      scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
     }
 
     const nextData = JSON.parse(match[1]);
     const { pageProps } = nextData.props;
-    window.__NEXT_DATA__ = nextData;
+    // Defer writing window.__NEXT_DATA__ until just before root.render() —
+    // writing it here would let a stale navigation briefly pollute the global
+    // between this assertStillCurrent() and the next one after await import().
 
     // Get the page module URL from __NEXT_DATA__.__vinext (preferred),
     // or fall back to parsing the hydration script
@@ -392,29 +477,29 @@ async function navigateClient(url: string): Promise<void> {
     }
 
     if (!pageModuleUrl) {
-      window.location.href = url;
-      return;
+      scheduleHardNavigationAndThrow(url, "Navigation failed: no page module URL found");
     }
 
     // Validate the module URL before importing — defense-in-depth against
     // unexpected __NEXT_DATA__ or malformed HTML responses
     if (!isValidModulePath(pageModuleUrl)) {
       console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
-      window.location.href = url;
-      return;
+      scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
     }
 
     // Dynamically import the new page module
     const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
+    assertStillCurrent();
+
     const PageComponent = pageModule.default;
 
     if (!PageComponent) {
-      window.location.href = url;
-      return;
+      scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
     }
 
     // Import React for createElement
     const React = (await import("react")).default;
+    assertStillCurrent();
 
     // Re-render with the new page, loading _app if needed
     let AppComponent = window.__VINEXT_APP__;
@@ -433,6 +518,7 @@ async function navigateClient(url: string): Promise<void> {
         }
       }
     }
+    assertStillCurrent();
 
     let element;
     if (AppComponent) {
@@ -447,13 +533,54 @@ async function navigateClient(url: string): Promise<void> {
     // Wrap with RouterContext.Provider so next/compat/router works
     element = wrapWithRouterContext(element);
 
+    // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
+    // so a stale navigation can never pollute the global.
+    // INVARIANT: Everything after the final assertStillCurrent() above (the
+    // checkpoint immediately after the optional _app import) through
+    // root.render() is synchronous. If any step here ever becomes async, add
+    // another assertStillCurrent() before writing __NEXT_DATA__.
+    window.__NEXT_DATA__ = nextData;
     root.render(element);
-  } catch (err) {
-    console.error("[vinext] Client navigation failed:", err);
-    routerEvents.emit("routeChangeError", err, url, { shallow: false });
-    window.location.href = url;
   } finally {
-    _navInProgress = false;
+    // Clean up the abort controller if this navigation is still the active one
+    if (navId === _navigationId) {
+      _activeAbortController = null;
+    }
+  }
+}
+
+/**
+ * Run navigateClient and handle errors: emit routeChangeError on failure,
+ * and fall back to a hard navigation for non-cancel errors so the browser
+ * recovers to a consistent state.
+ *
+ * Returns:
+ * - "completed" — navigation finished, caller should emit routeChangeComplete
+ * - "cancelled" — superseded by a newer navigation, caller should return true
+ *   without emitting routeChangeComplete (matches Next.js behaviour)
+ * - "failed" — genuine error, caller should return false (hard nav is already
+ *   scheduled as recovery)
+ */
+async function runNavigateClient(
+  fullUrl: string,
+  resolvedUrl: string,
+): Promise<"completed" | "cancelled" | "failed"> {
+  try {
+    await navigateClient(fullUrl);
+    return "completed";
+  } catch (err: unknown) {
+    routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
+    if (err instanceof NavigationCancelledError) {
+      return "cancelled";
+    }
+    // Genuine error (network, parse, import failure): fall back to a hard
+    // navigation so the browser lands on the correct page. Known failure modes
+    // throw HardNavigationScheduledError, and this guard skips those; only
+    // unexpected failures (parse, import, render) need recovery here.
+    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
+      window.location.href = fullUrl;
+    }
+    return "failed";
   }
 }
 
@@ -564,7 +691,9 @@ export function useRouter(): NextRouter {
       window.history.pushState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
-        await navigateClient(full);
+        const result = await runNavigateClient(full, resolved);
+        if (result === "cancelled") return true;
+        if (result === "failed") return false;
       }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
@@ -621,7 +750,9 @@ export function useRouter(): NextRouter {
       window.history.replaceState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
-        await navigateClient(full);
+        const result = await runNavigateClient(full, resolved);
+        if (result === "cancelled") return true;
+        if (result === "failed") return false;
       }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
@@ -730,11 +861,16 @@ if (typeof window !== "undefined") {
     // precedes that call, not the URL change itself. We emit it here for API
     // compatibility.
     routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
-    void navigateClient(browserUrl).then(() => {
-      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
-      restoreScrollPosition(e.state);
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    });
+    void (async () => {
+      const result = await runNavigateClient(browserUrl, fullAppUrl);
+      if (result === "completed") {
+        routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
+        restoreScrollPosition(e.state);
+        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      }
+      // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
+      // "failed": runNavigateClient already scheduled the hard-navigation fallback.
+    })();
   });
 }
 
@@ -802,7 +938,9 @@ const Router = {
     window.history.pushState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
-      await navigateClient(full);
+      const result = await runNavigateClient(full, resolved);
+      if (result === "cancelled") return true;
+      if (result === "failed") return false;
     }
     routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
@@ -852,7 +990,9 @@ const Router = {
     window.history.replaceState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
-      await navigateClient(full);
+      const result = await runNavigateClient(full, resolved);
+      if (result === "cancelled") return true;
+      if (result === "failed") return false;
     }
     routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 

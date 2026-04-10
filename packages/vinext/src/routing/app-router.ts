@@ -36,6 +36,8 @@ export type InterceptingRoute = {
 };
 
 export type ParallelSlot = {
+  /** Stable slot identity (name + owning directory), used for route serialization keys. */
+  key: string;
   /** Slot name (e.g. "team" from @team) */
   name: string;
   /** Absolute path to the @slot directory that owns this slot. Internal routing metadata. */
@@ -58,6 +60,14 @@ export type ParallelSlot = {
    * necessarily the innermost layout. -1 means "innermost" (legacy default).
    */
   layoutIndex: number;
+  /**
+   * Filesystem segments from the slot's root directory to its active page.
+   * Used at render time to compute segments for useSelectedLayoutSegment(slotName).
+   * For a page at the slot root (@team/page.tsx), this is [].
+   * For a sub-page (@team/members/page.tsx), this is ["members"].
+   * null when the slot has no active page (showing default.tsx fallback).
+   */
+  routeSegments: string[] | null;
 };
 
 export type AppRoute = {
@@ -69,7 +79,7 @@ export type AppRoute = {
   routePath: string | null;
   /** Ordered list of layout files from root to leaf */
   layouts: string[];
-  /** Ordered list of template files from root to leaf (parallel to layouts) */
+  /** Ordered list of all discovered template files from root to leaf (not necessarily aligned 1:1 with layouts) */
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
@@ -104,6 +114,8 @@ export type AppRoute = {
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
    */
   routeSegments: string[];
+  /** Tree position (directory depth from app/ root) for each template. */
+  templateTreePositions?: number[];
   /**
    * Tree position (directory depth from app/ root) for each layout.
    * Used to slice routeSegments and determine which segments are below each layout.
@@ -173,13 +185,16 @@ export async function appRouter(
   routes.push(...slotSubRoutes);
 
   validateRoutePatterns(routes.map((route) => route.pattern));
-  validateRoutePatterns(
-    routes.flatMap((route) =>
-      route.parallelSlots.flatMap((slot) =>
-        slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
+  const interceptTargetPatterns = [
+    ...new Set(
+      routes.flatMap((route) =>
+        route.parallelSlots.flatMap((slot) =>
+          slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
+        ),
       ),
     ),
-  );
+  ];
+  validateRoutePatterns(interceptTargetPatterns);
 
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort(compareRoutes);
@@ -212,13 +227,18 @@ function discoverSlotSubRoutes(
   // Updated as new synthetic routes are pushed so that later parents can see earlier synthetic entries.
   const routesByPattern = new Map<string, AppRoute>(routes.map((r) => [r.pattern, r]));
 
-  const slotKey = (slotName: string, ownerDir: string): string => `${slotName}\u0000${ownerDir}`;
-
-  const applySlotSubPages = (route: AppRoute, slotPages: Map<string, string>): void => {
-    route.parallelSlots = route.parallelSlots.map((slot) => ({
-      ...slot,
-      pagePath: slotPages.get(slotKey(slot.name, slot.ownerDir)) ?? slot.pagePath,
-    }));
+  const applySlotSubPages = (
+    route: AppRoute,
+    slotPages: Map<string, string>,
+    rawSegments: string[],
+  ): void => {
+    route.parallelSlots = route.parallelSlots.map((slot) => {
+      const subPage = slotPages.get(slot.key);
+      if (subPage !== undefined) {
+        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+      }
+      return slot;
+    });
   };
 
   for (const parentRoute of routes) {
@@ -243,7 +263,12 @@ function discoverSlotSubRoutes(
     >();
 
     for (const slot of parentRoute.parallelSlots) {
-      const slotDir = path.join(parentPageDir, `@${slot.name}`);
+      // Only scan sub-pages from slots owned by this route directory.
+      // Inherited slots with the same name live in different owner dirs.
+      if (path.dirname(slot.ownerDir) !== parentPageDir) {
+        continue;
+      }
+      const slotDir = slot.ownerDir;
       if (!fs.existsSync(slotDir)) continue;
 
       const subPages = findSlotSubPages(slotDir, matcher);
@@ -265,8 +290,7 @@ function discoverSlotSubRoutes(
           subPathMap.set(normalizedSubPath, subPathEntry);
         }
 
-        const slotId = slotKey(slot.name, slot.ownerDir);
-        const existingSlotPage = subPathEntry.slotPages.get(slotId);
+        const existingSlotPage = subPathEntry.slotPages.get(slot.key);
         if (existingSlotPage) {
           const pattern = joinRoutePattern(parentRoute.pattern, normalizedSubPath);
           throw new Error(
@@ -274,7 +298,7 @@ function discoverSlotSubRoutes(
           );
         }
 
-        subPathEntry.slotPages.set(slotId, pagePath);
+        subPathEntry.slotPages.set(slot.key, pagePath);
       }
     }
 
@@ -301,16 +325,20 @@ function discoverSlotSubRoutes(
             `You cannot have two routes that resolve to the same path ("${pattern}").`,
           );
         }
-        applySlotSubPages(existingRoute, slotPages);
+        applySlotSubPages(existingRoute, slotPages, rawSegments);
         continue;
       }
 
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
-      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => ({
-        ...slot,
-        pagePath: slotPages.get(slotKey(slot.name, slot.ownerDir)) || null,
-      }));
+      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
+        const subPage = slotPages.get(slot.key);
+        return {
+          ...slot,
+          pagePath: subPage || null,
+          routeSegments: subPage ? rawSegments : null,
+        };
+      });
 
       const newRoute: AppRoute = {
         pattern,
@@ -327,6 +355,7 @@ function discoverSlotSubRoutes(
         forbiddenPath: parentRoute.forbiddenPath,
         unauthorizedPath: parentRoute.unauthorizedPath,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+        templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
         isDynamic: parentRoute.isDynamic || subIsDynamic,
         params: [...parentRoute.params, ...subParams],
@@ -405,6 +434,7 @@ function fileToAppRoute(
   // Discover layouts and templates from root to leaf
   const layouts = discoverLayouts(segments, appDir, matcher);
   const templates = discoverTemplates(segments, appDir, matcher);
+  const templateTreePositions = computeLayoutTreePositions(appDir, templates);
 
   // Compute the tree position (directory depth) for each layout.
   const layoutTreePositions = computeLayoutTreePositions(appDir, layouts);
@@ -449,6 +479,7 @@ function fileToAppRoute(
     forbiddenPath,
     unauthorizedPath,
     routeSegments: segments,
+    templateTreePositions,
     layoutTreePositions,
     isDynamic,
     params,
@@ -648,7 +679,7 @@ function discoverInheritedParallelSlots(
       if (isOwnDir) {
         // At the route's own directory: use page.tsx (normal behavior)
         slot.layoutIndex = lvlLayoutIdx;
-        slotMap.set(slot.name, slot);
+        slotMap.set(slot.key, slot);
       } else {
         // At an ancestor directory: use default.tsx as the page, not page.tsx
         // (the slot's page.tsx is for the parent route, not this child route)
@@ -656,11 +687,10 @@ function discoverInheritedParallelSlots(
           ...slot,
           pagePath: null, // Don't use ancestor's page.tsx
           layoutIndex: lvlLayoutIdx,
+          routeSegments: null,
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
-        // Iteration goes root-to-leaf, so later (closer) ancestors overwrite
-        // earlier (farther) ones — the closest ancestor's slot wins.
-        slotMap.set(slot.name, inheritedSlot);
+        slotMap.set(slot.key, inheritedSlot);
       }
     }
   }
@@ -696,6 +726,7 @@ function discoverParallelSlots(
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
     slots.push({
+      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
       name: slotName,
       ownerDir: slotDir,
       pagePath,
@@ -705,6 +736,7 @@ function discoverParallelSlots(
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,
       layoutIndex: -1, // Will be set by discoverInheritedParallelSlots
+      routeSegments: pagePath ? [] : null,
     });
   }
 

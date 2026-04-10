@@ -26,3 +26,19 @@ export function safeJsonStringify(data: unknown): string {
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 }
+
+export function escapeHtmlAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+export function createNonceAttribute(nonce?: string): string {
+  if (!nonce) {
+    return "";
+  }
+
+  return ` nonce="${escapeHtmlAttr(nonce)}"`;
+}
+
+export function createInlineScriptTag(content: string, nonce?: string): string {
+  return `<script${createNonceAttribute(nonce)}>${content}</script>`;
+}

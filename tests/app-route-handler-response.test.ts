@@ -33,17 +33,19 @@ describe("app route handler response helpers", () => {
     ).toBe(response);
   });
 
-  it("applies middleware headers and status overrides to route handler responses", async () => {
+  it("overrides singular headers and status with middleware values", async () => {
     const response = new Response("hello", {
       status: 200,
       headers: {
         "content-type": "text/plain",
+        "cache-control": "s-maxage=60, stale-while-revalidate",
         "x-response": "app",
       },
     });
 
     const result = applyRouteHandlerMiddlewareContext(response, {
       headers: new Headers([
+        ["cache-control", "private, max-age=5"],
         ["x-middleware", "mw"],
         ["x-response", "middleware-copy"],
       ]),
@@ -52,8 +54,37 @@ describe("app route handler response helpers", () => {
 
     expect(result.status).toBe(202);
     expect(result.headers.get("content-type")).toBe("text/plain");
-    expect(result.headers.get("x-response")).toBe("app, middleware-copy");
+    expect(result.headers.get("cache-control")).toBe("private, max-age=5");
+    expect(result.headers.get("x-response")).toBe("middleware-copy");
     expect(result.headers.get("x-middleware")).toBe("mw");
+    await expect(result.text()).resolves.toBe("hello");
+  });
+
+  it("appends additive middleware headers for Set-Cookie and Vary", async () => {
+    const response = new Response("hello", {
+      status: 200,
+      headers: [
+        ["vary", "RSC, Accept"],
+        ["set-cookie", "existing=1; Path=/"],
+      ],
+    });
+
+    const middlewareHeaders = new Headers();
+    middlewareHeaders.append("vary", "Next-Router-State-Tree");
+    middlewareHeaders.append("set-cookie", "mw=1; Path=/");
+    middlewareHeaders.append("set-cookie", "mw=2; Path=/; HttpOnly");
+
+    const result = applyRouteHandlerMiddlewareContext(response, {
+      headers: middlewareHeaders,
+      status: null,
+    });
+
+    expect(result.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    expect(result.headers.getSetCookie()).toEqual([
+      "existing=1; Path=/",
+      "mw=1; Path=/",
+      "mw=2; Path=/; HttpOnly",
+    ]);
     await expect(result.text()).resolves.toBe("hello");
   });
 

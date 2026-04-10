@@ -167,4 +167,42 @@ describe("pages page response", () => {
       60,
     );
   });
+
+  it("adds nonce attributes to inline scripts and font tags when provided", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      assetTags:
+        '<link rel="modulepreload" nonce="pages-test-nonce" href="/entry.js" />\n' +
+        '<script type="module" nonce="pages-test-nonce" src="/entry.js" crossorigin></script>',
+      scriptNonce: "pages-test-nonce",
+    });
+
+    const html = await response.text();
+    expect(html).toContain('<script nonce="pages-test-nonce">window.__NEXT_DATA__ = ');
+    expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
+    expect(html).toContain(
+      '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',
+    );
+    expect(html).toContain('<style data-vinext-fonts nonce="pages-test-nonce">');
+    expect(html).toContain(
+      '<script type="module" nonce="pages-test-nonce" src="/entry.js" crossorigin></script>',
+    );
+  });
+
+  it("disables pages ISR caching when a script nonce is present", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isrRevalidateSeconds: 60,
+      scriptNonce: "pages-test-nonce",
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
 });

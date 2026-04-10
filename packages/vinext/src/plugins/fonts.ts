@@ -729,6 +729,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
 
           const replacement = `${calleeSource}(${optionsWithCSS})`;
           s.overwrite(callStart, callEnd, replacement);
+          overwrittenRanges.push([callStart, callEnd]);
           hasChanges = true;
         }
 

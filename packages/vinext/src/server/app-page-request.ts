@@ -26,7 +26,7 @@ export type BuildAppPageElementResult<TElement> = {
 export type AppPageInterceptMatch<TPage = unknown> = {
   matchedParams: AppPageParams;
   page: TPage;
-  slotName: string;
+  slotKey: string;
   sourceRouteIndex: number;
 };
 
@@ -40,10 +40,9 @@ export type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
-  getRoutePattern: (route: TRoute) => string;
+  getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   isRscRequest: boolean;
-  matchSourceRouteParams: (pattern: string) => AppPageParams | null;
   renderInterceptResponse: (route: TRoute, element: unknown) => Promise<Response> | Response;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -58,6 +57,22 @@ export type ResolveAppPageInterceptResult<TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
   response: Response | null;
 };
+
+function pickRouteParams(
+  matchedParams: AppPageParams,
+  routeParamNames: readonly string[],
+): AppPageParams {
+  const params: AppPageParams = {};
+
+  for (const paramName of routeParamNames) {
+    const value = matchedParams[paramName];
+    if (value !== undefined) {
+      params[paramName] = value;
+    }
+  }
+
+  return params;
+}
 
 function areStaticParamsAllowed(
   params: AppPageParams,
@@ -133,8 +148,10 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts>(
   const interceptOpts = options.toInterceptOpts(intercept);
 
   if (sourceRoute && sourceRoute !== options.currentRoute) {
-    const sourceParams =
-      options.matchSourceRouteParams(options.getRoutePattern(sourceRoute)) ?? ({} as AppPageParams);
+    const sourceParams = pickRouteParams(
+      intercept.matchedParams,
+      options.getRouteParamNames(sourceRoute),
+    );
     options.setNavigationContext({
       params: intercept.matchedParams,
       pathname: options.cleanPathname,

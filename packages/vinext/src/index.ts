@@ -1472,6 +1472,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ) {
                     return;
                   }
+                  // proxy.ts / middleware.ts may export either a named handler
+                  // or default export. The generated virtual entries probe both
+                  // forms and validate at runtime, which can trigger noisy
+                  // IMPORT_IS_UNDEFINED warnings when only one form exists.
+                  // Match any file extension because findMiddlewareFile() scans
+                  // all configured pageExtensions, not just .ts/.js.
+                  if (
+                    warning.code === "IMPORT_IS_UNDEFINED" &&
+                    /Import `(?:default|proxy|middleware)` will always be undefined/.test(
+                      warning.message ?? "",
+                    ) &&
+                    /\b(?:proxy|middleware)\.\w+\b/.test(warning.message ?? "") &&
+                    (warning.message?.includes("virtual:vinext-rsc-entry") ||
+                      warning.message?.includes("virtual:vinext-server-entry"))
+                  ) {
+                    return;
+                  }
                   if (userOnwarn) {
                     userOnwarn(warning, defaultHandler);
                   } else {

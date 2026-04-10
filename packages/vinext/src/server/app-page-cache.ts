@@ -20,6 +20,7 @@ export type AppPageCacheRenderResult = {
 export type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   isRscRequest: boolean;
+  mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
 };
 
@@ -30,8 +31,9 @@ export type ReadAppPageCacheResponseOptions = {
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (pathname: string) => string;
+  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
+  mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
   renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
@@ -43,7 +45,7 @@ export type FinalizeAppPageHtmlCacheResponseOptions = {
   getPageTags: () => string[];
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (pathname: string) => string;
+  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
   revalidateSeconds: number;
   waitUntil?: (promise: Promise<void>) => void;
@@ -56,8 +58,9 @@ export type ScheduleAppPageRscCacheWriteOptions = {
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
   isrDebug?: AppPageDebugLogger;
-  isrRscKey: (pathname: string) => string;
+  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
+  mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
   waitUntil?: (promise: Promise<void>) => void;
 };
@@ -95,12 +98,17 @@ export function buildAppPageCachedResponse(
       return null;
     }
 
+    const rscHeaders: Record<string, string> = {
+      "Content-Type": "text/x-component; charset=utf-8",
+      ...headers,
+    };
+    if (options.mountedSlotsHeader) {
+      rscHeaders["X-Vinext-Mounted-Slots"] = options.mountedSlotsHeader;
+    }
+
     return new Response(cachedValue.rscData, {
       status,
-      headers: {
-        "Content-Type": "text/x-component; charset=utf-8",
-        ...headers,
-      },
+      headers: rscHeaders,
     });
   }
 
@@ -121,7 +129,7 @@ export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
   const isrKey = options.isRscRequest
-    ? options.isrRscKey(options.cleanPathname)
+    ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader)
     : options.isrHtmlKey(options.cleanPathname);
 
   try {
@@ -132,6 +140,7 @@ export async function readAppPageCacheResponse(
       const hitResponse = buildAppPageCachedResponse(cachedValue, {
         cacheState: "HIT",
         isRscRequest: options.isRscRequest,
+        mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
       });
 
@@ -151,29 +160,43 @@ export async function readAppPageCacheResponse(
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
+      // Dedup key is pathname-only: if multiple slot variants are stale
+      // concurrently, only one regen runs. Other variants refresh on
+      // their next STALE read.
       options.scheduleBackgroundRegeneration(options.cleanPathname, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
-
-        await Promise.all([
+        const writes = [
           options.isrSet(
-            options.isrHtmlKey(options.cleanPathname),
-            buildAppPageCacheValue(revalidatedPage.html, undefined, 200),
-            options.revalidateSeconds,
-            revalidatedPage.tags,
-          ),
-          options.isrSet(
-            options.isrRscKey(options.cleanPathname),
+            options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader),
             buildAppPageCacheValue("", revalidatedPage.rscData, 200),
             options.revalidateSeconds,
             revalidatedPage.tags,
           ),
-        ]);
+        ];
+
+        if (!options.isRscRequest) {
+          // HTML cache is slot-state-independent (canonical), so only refresh it
+          // during HTML-triggered regens. RSC-triggered regens only update the
+          // requesting client's RSC slot variant; a stale HTML cache entry will
+          // be regenerated independently by the next full-page HTML request.
+          writes.push(
+            options.isrSet(
+              options.isrHtmlKey(options.cleanPathname),
+              buildAppPageCacheValue(revalidatedPage.html, undefined, 200),
+              options.revalidateSeconds,
+              revalidatedPage.tags,
+            ),
+          );
+        }
+
+        await Promise.all(writes);
         options.isrDebug?.("regen complete", options.cleanPathname);
       });
 
       const staleResponse = buildAppPageCachedResponse(cachedValue, {
         cacheState: "STALE",
         isRscRequest: options.isRscRequest,
+        mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
       });
 
@@ -209,7 +232,7 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
-  const rscKey = options.isrRscKey(options.cleanPathname);
+  const rscKey = options.isrRscKey(options.cleanPathname, null);
 
   const cachePromise = (async () => {
     try {
@@ -272,7 +295,7 @@ export function scheduleAppPageRscCacheWrite(
     return false;
   }
 
-  const rscKey = options.isrRscKey(options.cleanPathname);
+  const rscKey = options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader);
   const cachePromise = (async () => {
     try {
       const rscData = await capturedRscDataPromise;

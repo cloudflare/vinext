@@ -5,6 +5,7 @@ import {
   renderAppPageErrorBoundary,
   renderAppPageHttpAccessFallback,
 } from "../packages/vinext/src/server/app-page-boundary-render.js";
+import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -15,8 +16,24 @@ function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   });
 }
 
-function renderElementToStream(element: React.ReactNode): ReadableStream<Uint8Array> {
+function renderElementToStream(element: React.ReactNode | AppElements): ReadableStream<Uint8Array> {
+  if (element !== null && typeof element === "object" && !React.isValidElement(element)) {
+    // Flat map payload — extract the route element and render it to HTML
+    // (mirrors what the real SSR entry does after deserializing the Flight stream)
+    const record = element as Record<string, unknown>;
+    const routeId = record.__route;
+    if (typeof routeId === "string" && React.isValidElement(record[routeId])) {
+      return createStreamFromMarkup(
+        ReactDOMServer.renderToStaticMarkup(record[routeId] as React.ReactNode),
+      );
+    }
+    return createStreamFromMarkup(JSON.stringify(element));
+  }
   return createStreamFromMarkup(ReactDOMServer.renderToStaticMarkup(element));
+}
+
+function renderWirePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+  return createStreamFromMarkup(JSON.stringify(payload));
 }
 
 function createCommonOptions() {
@@ -60,7 +77,7 @@ function createCommonOptions() {
     resolveChildSegments() {
       return [];
     },
-    rootLayouts: [],
+    rootLayouts: EMPTY_ROOT_LAYOUTS,
   };
 }
 
@@ -122,6 +139,15 @@ const globalErrorModule = {
   default: GlobalErrorBoundary as React.ComponentType<any>,
 };
 
+type TestModule =
+  | typeof rootLayoutModule
+  | typeof leafLayoutModule
+  | typeof notFoundModule
+  | typeof routeErrorModule
+  | typeof globalErrorModule;
+
+const EMPTY_ROOT_LAYOUTS: readonly TestModule[] = [];
+
 describe("app page boundary render helpers", () => {
   it("returns null when no HTTP access fallback boundary exists", async () => {
     const common = createCommonOptions();
@@ -175,6 +201,57 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("renders HTTP access fallback RSC responses as flat payloads", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback({
+      ...common,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      rootLayouts: [rootLayoutModule],
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("uses null root layout metadata when a boundary payload has no route context", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback({
+      ...common,
+      boundaryComponent: NotFoundBoundary,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      rootLayouts: [rootLayoutModule],
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__rootLayout).toBeNull();
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
     const common = createCommonOptions();
     const sanitizeErrorForClient = vi.fn((error: Error) => new Error(`safe:${error.message}`));
@@ -200,6 +277,37 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("renders error boundary RSC responses as flat payloads", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary({
+      ...common,
+      error: new Error("secret"),
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        error: routeErrorModule,
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      sanitizeErrorForClient(error: Error) {
+        return new Error(`safe:${error.message}`);
+      },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
   it("renders global-error boundaries without layout wrapping", async () => {

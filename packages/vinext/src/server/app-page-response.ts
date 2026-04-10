@@ -1,3 +1,5 @@
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
@@ -29,6 +31,7 @@ export type ResolveAppPageRscResponsePolicyOptions = {
 
 export type ResolveAppPageHtmlResponsePolicyOptions = {
   dynamicUsedDuringRender: boolean;
+  hasScriptNonce: boolean;
 } & ResolveAppPageResponsePolicyBaseOptions;
 
 export type AppPageHtmlResponsePolicy = {
@@ -37,6 +40,7 @@ export type AppPageHtmlResponsePolicy = {
 
 export type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
+  mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
@@ -82,6 +86,14 @@ export function resolveAppPageRscResponsePolicy(
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
 
+  // revalidate = 0 means "always dynamic, never cache" — equivalent to
+  // force-dynamic for caching purposes. Must be checked before the
+  // isForceStatic/isDynamicError branch below, which uses !revalidateSeconds
+  // and would incorrectly catch 0 as a falsy value.
+  if (options.revalidateSeconds === 0) {
+    return { cacheControl: NO_STORE_CACHE_CONTROL };
+  }
+
   if (
     ((options.isForceStatic || options.isDynamicError) && !options.revalidateSeconds) ||
     options.revalidateSeconds === Infinity
@@ -116,10 +128,25 @@ export function resolveAppPageHtmlResponsePolicy(
     };
   }
 
-  if (
-    (options.isForceStatic || options.isDynamicError) &&
-    (options.revalidateSeconds === null || options.revalidateSeconds === 0)
-  ) {
+  if (options.hasScriptNonce) {
+    return {
+      cacheControl: NO_STORE_CACHE_CONTROL,
+      shouldWriteToCache: false,
+    };
+  }
+
+  // revalidate = 0 means "always dynamic, never cache" — equivalent to
+  // force-dynamic for caching purposes. Must be checked before the
+  // isForceStatic/isDynamicError branch below, which matches revalidateSeconds
+  // === 0 and would incorrectly return a static Cache-Control.
+  if (options.revalidateSeconds === 0) {
+    return {
+      cacheControl: NO_STORE_CACHE_CONTROL,
+      shouldWriteToCache: false,
+    };
+  }
+
+  if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
@@ -157,33 +184,7 @@ export function resolveAppPageHtmlResponsePolicy(
   return { shouldWriteToCache: false };
 }
 
-/**
- * Merge middleware response headers into a target Headers object.
- *
- * Set-Cookie and Vary are accumulated (append) since multiple sources can
- * contribute values. All other headers use set() so middleware owns singular
- * response headers like Cache-Control.
- *
- * Used by buildAppPageRscResponse and the generated entry for intercepting
- * route and server action responses that bypass the normal page render path.
- */
-export function mergeMiddlewareResponseHeaders(
-  target: Headers,
-  middlewareHeaders: Headers | null,
-): void {
-  if (!middlewareHeaders) {
-    return;
-  }
-
-  for (const [key, value] of middlewareHeaders) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === "set-cookie" || lowerKey === "vary") {
-      target.append(key, value);
-    } else {
-      target.set(key, value);
-    }
-  }
-}
+export { mergeMiddlewareResponseHeaders };
 
 export function buildAppPageRscResponse(
   body: ReadableStream,
@@ -198,6 +199,9 @@ export function buildAppPageRscResponse(
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
     // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
     headers.set("X-Vinext-Params", encodeURIComponent(JSON.stringify(options.params)));
+  }
+  if (options.mountedSlotsHeader) {
+    headers.set("X-Vinext-Mounted-Slots", options.mountedSlotsHeader);
   }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
@@ -238,11 +242,7 @@ export function buildAppPageHtmlResponse(
     headers.set("Link", options.fontLinkHeader);
   }
 
-  if (options.middlewareContext.headers) {
-    for (const [key, value] of options.middlewareContext.headers) {
-      headers.append(key, value);
-    }
-  }
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
 
   applyTimingHeader(headers, options.timing);
 
