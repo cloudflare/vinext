@@ -32,6 +32,17 @@ export function mergeElements(prev: AppElements, next: AppElements): AppElements
       merged[key] = prev[key];
     }
   }
+  // On traversal (browser back/forward), the RSC response omits slots that are
+  // not part of the target route tree. A slot absent from next means the server
+  // considers it inactive, so clear it rather than keeping the stale prev value.
+  // This is distinct from the UNMATCHED_SLOT case above: the server emits
+  // UNMATCHED_SLOT for slots defined in the layout but not matched by the route;
+  // it omits a slot entirely when the route tree does not include it at all.
+  for (const key of Object.keys(merged)) {
+    if (key.startsWith("slot:") && !Object.hasOwn(next, key)) {
+      delete merged[key];
+    }
+  }
   return merged;
 }
 

@@ -277,6 +277,28 @@ describe("slot primitives", () => {
     expect(merged["slot:modal:/"]).toBe(UNMATCHED_SLOT);
   });
 
+  it("mergeElements clears stale slots absent from next response", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/feed": React.createElement("div", null, "feed"),
+        "slot:modal:/feed": React.createElement("div", null, "intercepted modal"),
+      },
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/feed": React.createElement("div", null, "feed"),
+        // slot:modal:/feed is absent: server's route tree does not include it
+      },
+    );
+
+    // A slot key absent from next means the route tree no longer includes it.
+    // This happens on browser back from an intercepted route. The stale modal
+    // must not survive the merge.
+    expect(Object.hasOwn(merged, "slot:modal:/feed")).toBe(false);
+  });
+
   it("Slot renders element from resolved context", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
 
