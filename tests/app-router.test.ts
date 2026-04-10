@@ -1753,6 +1753,24 @@ describe("App Router Production server (startProdServer)", () => {
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
+  it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
+    const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Pages Header Override Delete");
+    expect(html).toContain('<p id="authorization"></p>');
+    expect(html).toContain('<p id="cookie"></p>');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('"authorization":null');
+    expect(html).toContain('"cookie":null');
+  });
+
   it("serves dynamic routes", async () => {
     const res = await fetch(`${baseUrl}/blog/test-post`);
     expect(res.status).toBe(200);

@@ -31,6 +31,10 @@ import { isProxyFile } from "../server/middleware.js";
 // resolve these at code-generation time and embed them as absolute paths.
 const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
 const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
+const middlewareRequestHeadersPath = resolveEntryPath(
+  "../server/middleware-request-headers.js",
+  import.meta.url,
+);
 const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
 const appRouteHandlerRuntimePath = resolveEntryPath(
@@ -359,6 +363,7 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
+import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -1910,12 +1915,24 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (!isRscRequest) {
       const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
       if (typeof __pagesEntry.renderPage === "function") {
+        const __pagesRequestHeaders = _mwCtx.requestHeaders
+          ? __buildRequestHeadersFromMiddlewareResponse(request.headers, _mwCtx.requestHeaders)
+          : null;
+        const __pagesRequest = __pagesRequestHeaders
+          ? new Request(request.url, { method: request.method, headers: __pagesRequestHeaders })
+          : request;
         // Use segment-wise decoding to preserve encoded path delimiters (%2F).
         // decodeURIComponent would turn /admin%2Fpanel into /admin/panel,
         // changing the path structure and bypassing middleware matchers.
         // Ported from Next.js: packages/next/src/server/lib/router-utils/decode-path-params.ts
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/decode-path-params.ts
-        const __pagesRes = await __pagesEntry.renderPage(request, __decodePathParams(url.pathname) + (url.search || ""), {});
+        const __pagesRes = await __pagesEntry.renderPage(
+          __pagesRequest,
+          __decodePathParams(url.pathname) + (url.search || ""),
+          {},
+          undefined,
+          _mwCtx.requestHeaders,
+        );
         // Only return the Pages Router response if it matched a route
         // (non-404). A 404 means the path isn't a Pages route either,
         // so fall through to the App Router not-found page below.
