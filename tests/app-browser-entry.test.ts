@@ -120,6 +120,7 @@ describe("app browser entry state helpers", () => {
         }),
       ),
       navigationSnapshot: createState().navigationSnapshot,
+      renderId: 1,
       type: "navigate",
     });
 
@@ -290,7 +291,7 @@ describe("app browser entry state helpers", () => {
 
 describe("mounted slot helpers", () => {
   it("collects only mounted slot ids", () => {
-    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", null, {
       "layout:/": React.createElement("div", null, "layout"),
       "slot:modal:/": React.createElement("div", null, "modal"),
       "slot:sidebar:/": React.createElement("div", null, "sidebar"),
@@ -302,7 +303,7 @@ describe("mounted slot helpers", () => {
   });
 
   it("serializes mounted slot ids into a stable header value", () => {
-    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", null, {
       "slot:z:/": React.createElement("div", null, "z"),
       "slot:a:/": React.createElement("div", null, "a"),
     });
@@ -311,7 +312,7 @@ describe("mounted slot helpers", () => {
   });
 
   it("returns null when there are no mounted slots", () => {
-    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", null, {
       "slot:ghost:/": null,
       "slot:missing:/": UNMATCHED_SLOT,
     });
