@@ -100,9 +100,9 @@ test.describe("Layout persistence", () => {
     await page.goto(`${BASE}/dashboard`);
     await waitForAppRouterHydration(page);
 
-    await waitForInteractiveCounter(page, layoutCounter);
-    await incrementCounter(page, layoutCounter, 2);
-    await incrementCounter(page, layoutCounter, 3);
+    const countAfterHydration = await waitForInteractiveCounter(page, layoutCounter);
+    await incrementCounter(page, layoutCounter, countAfterHydration + 1);
+    await incrementCounter(page, layoutCounter, countAfterHydration + 2);
 
     // Hard navigation (full page load) should reset everything
     await page.goto(`${BASE}/dashboard`);
@@ -202,7 +202,7 @@ test.describe("Error recovery across navigation", () => {
 
     // Error should be gone — fresh page renders normally
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator("#error-boundary")).not.toBeVisible();
+    await expect(page.locator("#error-boundary")).not.toBeAttached();
   });
 });
 
@@ -271,8 +271,8 @@ test.describe("Parallel slot persistence", () => {
     await expect(page.locator('[data-testid="analytics-panel"]')).toBeVisible();
     await expect(page.locator('[data-testid="team-slot"]')).toBeVisible();
     await expect(page.locator('[data-testid="analytics-slot"]')).toBeVisible();
-    await expect(page.locator('[data-testid="team-default"]')).not.toBeVisible();
-    await expect(page.locator('[data-testid="analytics-default"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="team-default"]')).not.toBeAttached();
+    await expect(page.locator('[data-testid="analytics-default"]')).not.toBeAttached();
   });
 
   test("parallel slots show default.tsx on hard navigation to child route", async ({ page }) => {
