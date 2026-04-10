@@ -1,11 +1,11 @@
-import React, { Suspense } from "react";
+import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { UNMATCHED_SLOT } from "../packages/vinext/src/server/app-elements.js";
 
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-};
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/",
+}));
 
 function createContextProvider<TValue>(
   context: React.Context<TValue>,
@@ -13,20 +13,6 @@ function createContextProvider<TValue>(
   child: React.ReactNode,
 ): React.ReactElement {
   return React.createElement(context.Provider, { value }, child);
-}
-
-function createDeferred<T>(): Deferred<T> {
-  let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => {
-    resolvePromise = resolve;
-  });
-  if (!resolvePromise) {
-    throw new Error("Deferred promise resolver was not created");
-  }
-  return {
-    promise,
-    resolve: resolvePromise,
-  };
 }
 
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -58,7 +44,7 @@ describe("slot primitives", () => {
     expect(typeof mod.Slot).toBe("function");
     expect(typeof mod.Children).toBe("function");
     expect(typeof mod.ParallelSlot).toBe("function");
-    expect(typeof mod.mergeElementsPromise).toBe("function");
+    expect(typeof mod.mergeElements).toBe("function");
     expect(mod.ElementsContext).toBeDefined();
     expect(mod.ChildrenContext).toBeDefined();
     expect(mod.ParallelSlotsContext).toBeDefined();
@@ -97,7 +83,7 @@ describe("slot primitives", () => {
 
     const slotElement = createContextProvider(
       mod.ElementsContext,
-      Promise.resolve({ "layout:/": React.createElement(LayoutShell) }),
+      { "layout:/": React.createElement(LayoutShell) },
       React.createElement(
         mod.Slot,
         {
@@ -121,7 +107,7 @@ describe("slot primitives", () => {
     const html = await renderHtml(
       createContextProvider(
         mod.ElementsContext,
-        Promise.resolve({}),
+        {},
         React.createElement(mod.Slot, { id: "slot:modal:/" }),
       ),
     );
@@ -129,18 +115,60 @@ describe("slot primitives", () => {
     expect(html).toBe("");
   });
 
-  it("Slot throws the notFound signal for an unmatched slot sentinel", async () => {
+  it("warns in development when a non-slot entry is absent", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      const renderPromise = renderHtml(
+      const html = await renderHtml(
         createContextProvider(
           mod.ElementsContext,
-          Promise.resolve({ "slot:modal:/": mod.UNMATCHED_SLOT }),
+          {},
+          React.createElement(mod.Slot, { id: "route:/missing" }),
+        ),
+      );
+
+      expect(html).toBe("");
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Missing App Router element entry during render: route:/missing",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn when an absent parallel slot key is omitted on soft navigation", async () => {
+    const mod = await import("../packages/vinext/src/shims/slot.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const html = await renderHtml(
+        createContextProvider(
+          mod.ElementsContext,
+          {},
           React.createElement(mod.Slot, { id: "slot:modal:/" }),
         ),
       );
+
+      expect(html).toBe("");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("Slot throws the notFound signal for an unmatched slot sentinel", async () => {
+    const mod = await import("../packages/vinext/src/shims/slot.js");
+    const renderPromise = renderHtml(
+      createContextProvider(
+        mod.ElementsContext,
+        { "slot:modal:/": mod.UNMATCHED_SLOT },
+        React.createElement(mod.Slot, { id: "slot:modal:/" }),
+      ),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
       await expect(renderPromise).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
     } finally {
       consoleError.mockRestore();
@@ -154,7 +182,7 @@ describe("slot primitives", () => {
     const stream = await renderToReadableStream(
       createContextProvider(
         mod.ElementsContext,
-        Promise.resolve({ "slot:modal:/": null }),
+        { "slot:modal:/": null },
         React.createElement(mod.Slot, { id: "slot:modal:/" }),
       ),
       {
@@ -173,94 +201,103 @@ describe("slot primitives", () => {
     expect(errors).toEqual([]);
   });
 
-  it("mergeElementsPromise shallow-merges previous and next elements", async () => {
-    const { mergeElementsPromise } = await import("../packages/vinext/src/shims/slot.js");
+  it("normalizes the server unmatched-slot marker to the client sentinel", async () => {
+    const { normalizeAppElements, APP_UNMATCHED_SLOT_WIRE_VALUE } =
+      await import("../packages/vinext/src/server/app-elements.js");
+    const mod = await import("../packages/vinext/src/shims/slot.js");
 
-    const merged = await mergeElementsPromise(
-      Promise.resolve({
+    const normalized = normalizeAppElements({
+      __rootLayout: "/",
+      __route: "route:/dashboard",
+      "slot:modal:/": APP_UNMATCHED_SLOT_WIRE_VALUE,
+    });
+
+    expect(normalized["slot:modal:/"]).toBe(mod.UNMATCHED_SLOT);
+  });
+
+  it("mergeElements shallow-merges previous and next elements", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
         "layout:/": React.createElement("div", null, "layout"),
         "slot:modal:/": React.createElement("div", null, "previous slot"),
-      }),
-      Promise.resolve({
+      },
+      {
         "page:/blog/hello": React.createElement("div", null, "page"),
         "slot:modal:/": React.createElement("div", null, "next slot"),
-      }),
+      },
     );
 
     expect(Object.keys(merged)).toEqual(["layout:/", "slot:modal:/", "page:/blog/hello"]);
     expect(merged["layout:/"]).toBeDefined();
     expect(merged["page:/blog/hello"]).toBeDefined();
-    // {…prev, …next} means next wins for duplicate keys
-    const modalSlot = merged["slot:modal:/"];
-    if (!React.isValidElement(modalSlot)) {
-      throw new Error("Expected ReactElement for slot:modal:/");
-    }
-    const html = await renderHtml(modalSlot);
-    expect(html).toContain("next slot");
+    expect(merged["slot:modal:/"]).not.toBeNull();
   });
 
-  it("mergeElementsPromise caches by input promise pair", async () => {
-    const { mergeElementsPromise } = await import("../packages/vinext/src/shims/slot.js");
+  it("mergeElements preserves previous slot content when next marks it unmatched", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
 
-    const previous = Promise.resolve({ "layout:/": React.createElement("div", null, "layout") });
-    const next = Promise.resolve({ "page:/blog/hello": React.createElement("div", null, "page") });
+    const previousSlotContent = React.createElement("div", null, "previous modal");
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "slot:modal:/": previousSlotContent,
+        "page:/dashboard": React.createElement("div", null, "dashboard"),
+      },
+      {
+        "page:/blog": React.createElement("div", null, "blog page"),
+        "slot:modal:/": UNMATCHED_SLOT,
+      },
+    );
 
-    const first = mergeElementsPromise(previous, next);
-    const second = mergeElementsPromise(previous, next);
-    const third = mergeElementsPromise(previous, Promise.resolve({}));
-
-    expect(first).toBe(second);
-    expect(first).not.toBe(third);
+    // The slot should keep its previous content, not become UNMATCHED_SLOT.
+    // This matches Next.js soft navigation behavior: unmatched parallel slots
+    // preserve their previous subtree instead of showing 404.
+    expect(merged["slot:modal:/"]).toBe(previousSlotContent);
+    expect(merged["page:/blog"]).toBeDefined();
+    expect(merged["layout:/"]).toBeDefined();
   });
 
-  it("Slot suspends on the elements promise and streams the Suspense fallback first", async () => {
+  it("mergeElements allows UNMATCHED_SLOT for slots absent from previous state", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/": React.createElement("div", null, "home"),
+      },
+      {
+        "page:/blog": React.createElement("div", null, "blog"),
+        "slot:modal:/": UNMATCHED_SLOT,
+      },
+    );
+
+    // No previous value to preserve — the sentinel passes through.
+    expect(merged["slot:modal:/"]).toBe(UNMATCHED_SLOT);
+  });
+
+  it("Slot renders element from resolved context", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
-    const deferred = createDeferred<Awaited<React.ContextType<typeof mod.ElementsContext>>>();
 
     const stream = await renderToReadableStream(
-      React.createElement(
-        Suspense,
-        { fallback: React.createElement("p", null, "loading slot") },
-        createContextProvider(
-          mod.ElementsContext,
-          deferred.promise,
-          React.createElement(mod.Slot, { id: "layout:/" }),
-        ),
+      createContextProvider(
+        mod.ElementsContext,
+        { "layout:/": React.createElement("div", null, "resolved slot") },
+        React.createElement(mod.Slot, { id: "layout:/" }),
       ),
     );
 
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    const firstChunkPromise = reader.read();
-
-    // Verify the stream is suspended — reader.read() should not resolve synchronously
-    // because React.use() on the unresolved deferred throws to trigger Suspense.
-    // NOTE: Promise.race between two microtasks is engine-dependent, but reliable here
-    // because renderToReadableStream won't enqueue any chunk while the component is suspended.
-    const firstReadState = await Promise.race([
-      firstChunkPromise.then(() => "resolved"),
-      Promise.resolve("pending"),
-    ]);
-    expect(firstReadState).toBe("pending");
-
-    // Resolve the deferred so the stream can flush
-    deferred.resolve({
-      "layout:/": React.createElement("div", null, "resolved slot"),
-    });
-
-    const firstChunk = await firstChunkPromise;
-    const firstHtml = decoder.decode(firstChunk.value, { stream: true });
-
-    let rest = "";
+    let html = "";
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      rest += decoder.decode(value, { stream: true });
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
     }
-    rest += decoder.decode();
+    html += decoder.decode();
 
-    expect(firstHtml + rest).toContain("resolved slot");
-  }, 10000);
+    expect(html).toContain("resolved slot");
+  });
 });

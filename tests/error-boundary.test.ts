@@ -181,11 +181,6 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     expect(state).toMatchObject({ error: e });
   });
 
-  // No direct Next.js test equivalent; behavior inferred from
-  // packages/next/src/client/components/error-boundary.tsx (getDerivedStateFromProps).
-  // Next.js uses the same pathname !== previousPathname guard at line 93 to clear
-  // error state on navigation. Their E2E test (test/e2e/app-dir/errors/index.test.ts)
-  // only covers the button-click reset path, not pathname-based reset.
   it("resets caught errors when the pathname changes", () => {
     expect(ErrorBoundaryInner).not.toBeNull();
     if (!ErrorBoundaryInner) {
@@ -214,10 +209,6 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     });
   });
 
-  // Validates the getDerivedStateFromError → getDerivedStateFromProps sequence
-  // on the same pathname. Inferred from Next.js error-boundary.tsx: getDerivedStateFromError
-  // returns { error } (partial state), React merges it preserving previousPathname, then
-  // getDerivedStateFromProps sees matching pathnames and preserves the error.
   it("does not immediately clear a caught error on the same pathname", () => {
     expect(ErrorBoundaryInner).not.toBeNull();
     if (!ErrorBoundaryInner) {

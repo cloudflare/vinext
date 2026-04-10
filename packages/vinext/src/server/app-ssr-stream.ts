@@ -1,4 +1,4 @@
-import { safeJsonStringify } from "./html.js";
+import { createInlineScriptTag, safeJsonStringify } from "./html.js";
 
 export type RscEmbedTransform = {
   flush(): string;
@@ -20,6 +20,7 @@ export function fixFlightHints(text: string): string {
  */
 export function createRscEmbedTransform(
   embedStream: ReadableStream<Uint8Array>,
+  scriptNonce?: string,
 ): RscEmbedTransform {
   const reader = embedStream.getReader();
   const decoder = new TextDecoder();
@@ -59,10 +60,12 @@ export function createRscEmbedTransform(
 
       let scripts = "";
       for (const chunk of chunks) {
-        scripts +=
-          "<script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push(" +
-          safeJsonStringify(chunk) +
-          ")</script>";
+        scripts += createInlineScriptTag(
+          "self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push(" +
+            safeJsonStringify(chunk) +
+            ")",
+          scriptNonce,
+        );
       }
       return scripts;
     },
@@ -70,7 +73,7 @@ export function createRscEmbedTransform(
     async finalize(): Promise<string> {
       await pumpPromise;
       let scripts = this.flush();
-      scripts += "<script>self.__VINEXT_RSC_DONE__=true</script>";
+      scripts += createInlineScriptTag("self.__VINEXT_RSC_DONE__=true", scriptNonce);
       return scripts;
     },
   };

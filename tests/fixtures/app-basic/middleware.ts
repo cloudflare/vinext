@@ -127,7 +127,7 @@ export function middleware(request: NextRequest, event: NextFetchEvent) {
     return res;
   }
 
-  if (pathname === "/header-override-delete") {
+  if (pathname === "/header-override-delete" || pathname === "/api/header-override-delete") {
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("cookie");
@@ -153,6 +153,49 @@ export function middleware(request: NextRequest, event: NextFetchEvent) {
   const r = NextResponse.next({
     request: { headers: requestHeaders },
   });
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-nonce")
+  ) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-default-src")
+  ) {
+    r.headers.set("content-security-policy", "default-src 'nonce-vinext-test-nonce';");
+  }
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-report-only")
+  ) {
+    r.headers.set(
+      "content-security-policy-report-only",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (pathname === "/script-nonce" || pathname.startsWith("/script-nonce/")) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (pathname === "/revalidate-test" && request.nextUrl.searchParams.has("csp-nonce")) {
+    const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
+    r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
+  }
+  if (
+    pathname.startsWith("/nextjs-compat/dynamic") &&
+    request.nextUrl.searchParams.has("csp-nonce")
+  ) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
   if (sessionToken) {
@@ -174,7 +217,14 @@ export const config = {
     "/search-query",
     "/headers/override-from-middleware",
     "/header-override-delete",
+    "/api/header-override-delete",
     "/pages-header-override-delete",
+    "/revalidate-test",
+    "/script-nonce/:path*",
+    "/script-manual-nonce",
+    "/pages-script-manual-nonce",
+    "/nextjs-compat/dynamic/:path*",
+    "/use-client-page-pathname/:path*",
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",

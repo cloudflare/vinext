@@ -48,6 +48,7 @@ const minimalAppRoutes: AppRoute[] = [
     forbiddenPath: null,
     unauthorizedPath: null,
     routeSegments: [],
+    templateTreePositions: [],
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
@@ -68,6 +69,7 @@ const minimalAppRoutes: AppRoute[] = [
     forbiddenPath: null,
     unauthorizedPath: null,
     routeSegments: ["about"],
+    templateTreePositions: [],
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
@@ -88,6 +90,7 @@ const minimalAppRoutes: AppRoute[] = [
     forbiddenPath: null,
     unauthorizedPath: null,
     routeSegments: ["blog", ":slug"],
+    templateTreePositions: [],
     layoutTreePositions: [0, 1],
     isDynamic: true,
     params: ["slug"],
@@ -108,6 +111,7 @@ const minimalAppRoutes: AppRoute[] = [
     forbiddenPath: null,
     unauthorizedPath: null,
     routeSegments: ["dashboard"],
+    templateTreePositions: [1],
     layoutTreePositions: [0, 1],
     isDynamic: false,
     params: [],
@@ -229,20 +233,24 @@ describe("App Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
-  it("generateRscEntry awaits buildPageElement in the server-action re-render path", () => {
+  it("generateRscEntry uses buildPageElements in the server-action re-render path", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
-    // The action re-render path must await buildPageElement so that:
-    //   1. redirect()/notFound() thrown inside generateMetadata() becomes an HTTP
-    //      redirect instead of an RSC stream error.
-    //   2. getAndClearPendingCookies() runs after the page tree resolves, not
-    //      before (which would miss cookies set during page building).
+    // PR 2c returns the flat elements payload instead of the monolithic page
+    // element, so the action re-render path should rebuild the keyed map.
     const actionRerenderIdx = code.indexOf(
       "// After the action, re-render the current page so the client",
     );
     expect(actionRerenderIdx).toBeGreaterThan(-1);
     const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 700);
-    expect(rerenderSlice).toContain(
-      "element = await buildPageElement(actionRoute, actionParams, undefined, url.searchParams);",
+    expect(rerenderSlice).toContain("element = buildPageElements(");
+  });
+
+  it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("createAppPageTreePath as __createAppPageTreePath");
+    expect(code).toContain(
+      "_noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);",
     );
   });
 
@@ -314,7 +322,9 @@ describe("Pages Router entry templates", () => {
 
   it("server entry seeds the main Pages Router unified context with executionContext", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
-    const renderPageIndex = code.indexOf("async function _renderPage(request, url, manifest) {");
+    const renderPageIndex = code.indexOf(
+      "async function _renderPage(request, url, manifest, middlewareHeaders) {",
+    );
     const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
 
     expect(renderPageIndex).toBeGreaterThan(-1);

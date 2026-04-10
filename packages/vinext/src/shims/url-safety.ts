@@ -7,11 +7,34 @@
 
 /**
  * Detect dangerous URI schemes that should never be navigated to.
- * Strips leading whitespace and zero-width characters before testing,
- * since browsers ignore these when interpreting the scheme.
+ *
+ * Adapted from Next.js's javascript URL detector:
+ * packages/next/src/client/lib/javascript-url.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/lib/javascript-url.ts
+ *
+ * URL parsing ignores leading C0 control characters / spaces, and treats
+ * embedded tab/newline characters in the scheme as insignificant. We mirror
+ * that behavior here so obfuscated values like `java\nscript:` and
+ * `\x00javascript:` are still blocked.
+ *
+ * Vinext intentionally extends this handling to `data:` and `vbscript:` too,
+ * since both are also dangerous navigation targets.
  */
-const DANGEROUS_SCHEME_RE = /^[\s\u200B\uFEFF]*(javascript|data|vbscript)\s*:/i;
+const LEADING_IGNORED = "[\\u0000-\\u001F \\u200B\\uFEFF]*";
+const SCHEME_IGNORED = "[\\r\\n\\t]*";
+
+function buildDangerousSchemeRegex(scheme: string): RegExp {
+  const chars = scheme.split("").join(SCHEME_IGNORED);
+  return new RegExp(`^${LEADING_IGNORED}${chars}${SCHEME_IGNORED}:`, "i");
+}
+
+const DANGEROUS_SCHEME_RES = [
+  buildDangerousSchemeRegex("javascript"),
+  buildDangerousSchemeRegex("data"),
+  buildDangerousSchemeRegex("vbscript"),
+];
 
 export function isDangerousScheme(url: string): boolean {
-  return DANGEROUS_SCHEME_RE.test(url);
+  const str = "" + (url as unknown as string);
+  return DANGEROUS_SCHEME_RES.some((re) => re.test(str));
 }

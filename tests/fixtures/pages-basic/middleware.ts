@@ -126,6 +126,16 @@ export function middleware(request: NextRequest) {
     return NextResponse.next({ request: { headers } });
   }
 
+  if (
+    (url.pathname === "/dynamic-page" || url.pathname === "/isr-test") &&
+    url.searchParams.has("mw-csp-nonce")
+  ) {
+    response.headers.set(
+      "content-security-policy",
+      `script-src 'nonce-${url.searchParams.get("mw-csp-nonce")}' 'strict-dynamic';`,
+    );
+  }
+
   return response;
 }
 

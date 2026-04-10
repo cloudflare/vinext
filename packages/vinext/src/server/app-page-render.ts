@@ -84,14 +84,15 @@ export type RenderAppPageLifecycleOptions = {
   ) => Promise<Response>;
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   renderToReadableStream: (
-    element: ReactNode,
+    element: ReactNode | Record<string, ReactNode>,
     options: { onError: AppPageBoundaryOnError },
   ) => ReadableStream<Uint8Array>;
   routeHasLocalBoundary: boolean;
   routePattern: string;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
+  scriptNonce?: string;
   waitUntil?: (promise: Promise<void>) => void;
-  element: ReactNode;
+  element: ReactNode | Record<string, ReactNode>;
 };
 
 function buildResponseTiming(
@@ -224,6 +225,7 @@ export async function renderAppPageLifecycle(
         fontData,
         navigationContext: options.getNavigationContext(),
         rscStream: rscForResponse,
+        scriptNonce: options.scriptNonce,
         ssrHandler,
       });
     },
@@ -274,6 +276,7 @@ export async function renderAppPageLifecycle(
 
   const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
     dynamicUsedDuringRender,
+    hasScriptNonce: Boolean(options.scriptNonce),
     isDynamicError: options.isDynamicError,
     isForceDynamic: options.isForceDynamic,
     isForceStatic: options.isForceStatic,

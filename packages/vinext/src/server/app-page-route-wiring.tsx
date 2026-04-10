@@ -1,8 +1,21 @@
 import { Suspense, type ComponentType, type ReactNode } from "react";
+import {
+  APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_KEY,
+  APP_UNMATCHED_SLOT_WIRE_VALUE,
+  type AppElements,
+} from "./app-elements.js";
 import { ErrorBoundary, NotFoundBoundary } from "../shims/error-boundary.js";
 import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
 import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "../shims/metadata.js";
+import { Children, ParallelSlot, Slot } from "../shims/slot.js";
 import type { AppPageParams } from "./app-page-boundary.js";
+import {
+  createAppRenderDependency,
+  renderAfterAppDependencies,
+  renderWithAppDependencyBarrier,
+  type AppRenderDependency,
+} from "./app-render-dependency.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
@@ -34,11 +47,6 @@ export type AppPageRouteWiringSlot<
   layoutIndex: number;
   loading?: TModule | null;
   page?: TModule | null;
-  /**
-   * Filesystem segments from the slot's root to its active page.
-   * Used to populate the LayoutSegmentProvider's segmentMap for this slot.
-   * null when the slot has no active page (showing default.tsx fallback).
-   */
   routeSegments?: readonly string[] | null;
 };
 
@@ -58,6 +66,7 @@ export type AppPageRouteWiringRoute<
    * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
    */
   slots?: Readonly<Record<string, AppPageRouteWiringSlot<TModule, TErrorModule>>> | null;
+  templateTreePositions?: readonly number[] | null;
   templates?: readonly (TModule | null | undefined)[] | null;
 };
 
@@ -92,6 +101,20 @@ export type BuildAppPageRouteElementOptions<
   rootNotFoundModule?: TModule | null;
   route: AppPageRouteWiringRoute<TModule, TErrorModule>;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
+};
+
+export type BuildAppPageElementsOptions<
+  TModule extends AppPageModule = AppPageModule,
+  TErrorModule extends AppPageErrorModule = AppPageErrorModule,
+> = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  routePath: string;
+};
+
+type AppPageTemplateEntry<TModule extends AppPageModule = AppPageModule> = {
+  id: string;
+  templateModule?: TModule | null | undefined;
+  treePath: string;
+  treePosition: number;
 };
 
 function getDefaultExport<TModule extends AppPageModule>(
@@ -140,10 +163,28 @@ export function createAppPageLayoutEntries<
   });
 }
 
+export function createAppPageTemplateEntries<TModule extends AppPageModule>(
+  route: Pick<
+    AppPageRouteWiringRoute<TModule>,
+    "routeSegments" | "templateTreePositions" | "templates"
+  >,
+): AppPageTemplateEntry<TModule>[] {
+  return (route.templates ?? []).map((templateModule, index) => {
+    const treePosition = route.templateTreePositions?.[index] ?? 0;
+    const treePath = createAppPageTreePath(route.routeSegments, treePosition);
+    return {
+      id: `template:${treePath}`,
+      templateModule,
+      treePath,
+      treePosition,
+    };
+  });
+}
+
 export function resolveAppPageChildSegments(
   routeSegments: readonly string[],
   treePosition: number,
-  params: Readonly<Record<string, string | string[] | undefined>>,
+  params: AppPageParams,
 ): string[] {
   const rawSegments = routeSegments.slice(treePosition);
   const resolvedSegments: string[] = [];
@@ -152,7 +193,7 @@ export function resolveAppPageChildSegments(
     if (
       segment.startsWith("[[...") &&
       segment.endsWith("]]") &&
-      segment.length >= "[[...x]]".length
+      segment.length > "[[...x]]".length - 1
     ) {
       const paramName = segment.slice(5, -2);
       const paramValue = params[paramName];
@@ -192,55 +233,107 @@ export function resolveAppPageChildSegments(
   return resolvedSegments;
 }
 
-export function buildAppPageRouteElement<
+function resolveAppPageVisibleSegments(
+  routeSegments: readonly string[],
+  params: AppPageParams,
+): string[] {
+  const resolvedSegments = resolveAppPageChildSegments(routeSegments, 0, params);
+  return resolvedSegments.filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+}
+
+function resolveAppPageTemplateKey(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): string {
+  const visibleSegments = resolveAppPageVisibleSegments(routeSegments.slice(treePosition), params);
+  return visibleSegments[0] ?? "";
+}
+
+function createAppPageParallelSlotEntries<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
->(options: BuildAppPageRouteElementOptions<TModule, TErrorModule>): ReactNode {
-  let element: ReactNode = (
-    <LayoutSegmentProvider segmentMap={{ children: [] }}>{options.element}</LayoutSegmentProvider>
-  );
+>(
+  layoutIndex: number,
+  layoutEntries: readonly AppPageLayoutEntry<TModule, TErrorModule>[],
+  route: AppPageRouteWiringRoute<TModule, TErrorModule>,
+  getEffectiveSlotParams: (slotKey: string, slotName: string) => AppPageParams,
+): Readonly<Record<string, ReactNode>> | undefined {
+  const parallelSlots: Record<string, ReactNode> = {};
 
-  element = (
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    const slotName = slot.name;
+    const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+    if (targetIndex !== layoutIndex) {
+      continue;
+    }
+
+    const layoutEntry = layoutEntries[targetIndex];
+    const treePath = layoutEntry?.treePath ?? "/";
+    const slotParams = getEffectiveSlotParams(slotKey, slotName);
+    const slotSegments = slot.routeSegments
+      ? resolveAppPageChildSegments(slot.routeSegments, 0, slotParams)
+      : [];
+    parallelSlots[slotName] = (
+      <LayoutSegmentProvider segmentMap={{ children: slotSegments }}>
+        <Slot id={`slot:${slotName}:${treePath}`} />
+      </LayoutSegmentProvider>
+    );
+  }
+
+  return Object.keys(parallelSlots).length > 0 ? parallelSlots : undefined;
+}
+
+function createAppPageRouteHead(metadata: Metadata | null, viewport: Viewport): ReactNode {
+  return (
     <>
       <meta charSet="utf-8" />
-      {options.resolvedMetadata ? <MetadataHead metadata={options.resolvedMetadata} /> : null}
-      <ViewportHead viewport={options.resolvedViewport} />
-      {element}
+      {metadata ? <MetadataHead metadata={metadata} /> : null}
+      <ViewportHead viewport={viewport} />
     </>
   );
+}
 
-  const loadingComponent = getDefaultExport(options.route.loading);
-  if (loadingComponent) {
-    const LoadingComponent = loadingComponent;
-    element = <Suspense fallback={<LoadingComponent />}>{element}</Suspense>;
+export function buildAppPageElements<
+  TModule extends AppPageModule,
+  TErrorModule extends AppPageErrorModule,
+>(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
+  const elements: Record<string, ReactNode | string | null> = {};
+  const routeId = `route:${options.routePath}`;
+  const pageId = `page:${options.routePath}`;
+  const layoutEntries = createAppPageLayoutEntries(options.route);
+  const templateEntries = createAppPageTemplateEntries(options.route);
+  const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
+  const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
+  for (const layoutEntry of layoutEntries) {
+    layoutEntriesByTreePosition.set(layoutEntry.treePosition, layoutEntry);
   }
-
-  const lastLayoutErrorModule =
-    options.route.errors && options.route.errors.length > 0
-      ? options.route.errors[options.route.errors.length - 1]
-      : null;
-  const pageErrorComponent = getErrorBoundaryExport(options.route.error);
-  if (pageErrorComponent && options.route.error !== lastLayoutErrorModule) {
-    element = <ErrorBoundary fallback={pageErrorComponent}>{element}</ErrorBoundary>;
+  for (const templateEntry of templateEntries) {
+    templateEntriesByTreePosition.set(templateEntry.treePosition, templateEntry);
   }
-
-  const notFoundComponent =
-    getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
-  if (notFoundComponent) {
-    const NotFoundComponent = notFoundComponent;
-    element = <NotFoundBoundary fallback={<NotFoundComponent />}>{element}</NotFoundBoundary>;
+  const layoutIndicesByTreePosition = new Map<number, number>();
+  for (let index = 0; index < layoutEntries.length; index++) {
+    layoutIndicesByTreePosition.set(layoutEntries[index].treePosition, index);
   }
-
-  const templates = options.route.templates ?? [];
-  const routeSlots = options.route.slots ?? {};
+  const layoutDependenciesByIndex = new Map<number, AppRenderDependency>();
+  const layoutDependenciesBefore: AppRenderDependency[][] = [];
+  const slotDependenciesByLayoutIndex: AppRenderDependency[][] = [];
+  const templateDependenciesById = new Map<string, AppRenderDependency>();
+  const templateDependenciesBeforeById = new Map<string, AppRenderDependency[]>();
+  const pageDependencies: AppRenderDependency[] = [];
+  const routeThenableParams = options.makeThenableParams(options.matchedParams);
+  const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
   const slotNameCounts = new Map<string, number>();
-  for (const slot of Object.values(routeSlots)) {
+  for (const slot of Object.values(options.route.slots ?? {})) {
     const slotName = slot.name;
     slotNameCounts.set(slotName, (slotNameCounts.get(slotName) ?? 0) + 1);
   }
-  const layoutEntries = createAppPageLayoutEntries(options.route);
-  const routeThenableParams = options.makeThenableParams(options.matchedParams);
-
+  const orderedTreePositions = Array.from(
+    new Set<number>([
+      ...layoutEntries.map((entry) => entry.treePosition),
+      ...templateEntries.map((entry) => entry.treePosition),
+    ]),
+  ).sort((left, right) => left - right);
   const resolveSlotOverride = (slotKey: string, slotName: string) => {
     const overrideByKey = options.slotOverrides?.[slotKey];
     if (overrideByKey) {
@@ -255,31 +348,64 @@ export function buildAppPageRouteElement<
 
     return undefined;
   };
+  const getEffectiveSlotParams = (slotKey: string, slotName: string): AppPageParams =>
+    resolveSlotOverride(slotKey, slotName)?.params ?? options.matchedParams;
 
-  for (let index = layoutEntries.length - 1; index >= 0; index--) {
+  for (const treePosition of orderedTreePositions) {
+    const layoutIndex = layoutIndicesByTreePosition.get(treePosition);
+    if (layoutIndex !== undefined) {
+      const layoutEntry = layoutEntries[layoutIndex];
+      layoutDependenciesBefore[layoutIndex] = [...pageDependencies];
+      if (getDefaultExport(layoutEntry.layoutModule)) {
+        const layoutDependency = createAppRenderDependency();
+        layoutDependenciesByIndex.set(layoutIndex, layoutDependency);
+        pageDependencies.push(layoutDependency);
+      }
+      slotDependenciesByLayoutIndex[layoutIndex] = [...pageDependencies];
+    }
+
+    const templateEntry = templateEntriesByTreePosition.get(treePosition);
+    if (!templateEntry || !getDefaultExport(templateEntry.templateModule)) {
+      continue;
+    }
+
+    const templateDependency = createAppRenderDependency();
+    templateDependenciesById.set(templateEntry.id, templateDependency);
+    templateDependenciesBeforeById.set(templateEntry.id, [...pageDependencies]);
+    pageDependencies.push(templateDependency);
+  }
+
+  elements[APP_ROUTE_KEY] = routeId;
+  elements[APP_ROOT_LAYOUT_KEY] = rootLayoutTreePath;
+  elements[pageId] = renderAfterAppDependencies(options.element, pageDependencies);
+
+  for (const templateEntry of templateEntries) {
+    const templateComponent = getDefaultExport(templateEntry.templateModule);
+    if (!templateComponent) {
+      continue;
+    }
+    const TemplateComponent = templateComponent;
+    const templateDependency = templateDependenciesById.get(templateEntry.id);
+    const templateElement = templateDependency ? (
+      renderWithAppDependencyBarrier(
+        <TemplateComponent params={options.matchedParams}>
+          <Children />
+        </TemplateComponent>,
+        templateDependency,
+      )
+    ) : (
+      <TemplateComponent params={options.matchedParams}>
+        <Children />
+      </TemplateComponent>
+    );
+    elements[templateEntry.id] = renderAfterAppDependencies(
+      templateElement,
+      templateDependenciesBeforeById.get(templateEntry.id) ?? [],
+    );
+  }
+
+  for (let index = 0; index < layoutEntries.length; index++) {
     const layoutEntry = layoutEntries[index];
-
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children
-    // Building bottom-up: NotFoundBoundary is the innermost wrapper, then ErrorBoundary, then Template.
-    const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
-    if (layoutNotFoundComponent) {
-      const LayoutNotFoundComponent = layoutNotFoundComponent;
-      element = (
-        <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>{element}</NotFoundBoundary>
-      );
-    }
-
-    const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
-    if (layoutErrorComponent) {
-      element = <ErrorBoundary fallback={layoutErrorComponent}>{element}</ErrorBoundary>;
-    }
-
-    const templateComponent = getDefaultExport(templates[index]);
-    if (templateComponent) {
-      const TemplateComponent = templateComponent;
-      element = <TemplateComponent params={options.matchedParams}>{element}</TemplateComponent>;
-    }
-
     const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
     if (!layoutComponent) {
       continue;
@@ -289,63 +415,168 @@ export function buildAppPageRouteElement<
       params: routeThenableParams,
     };
 
-    for (const [slotKey, slot] of Object.entries(routeSlots)) {
+    for (const slot of Object.values(options.route.slots ?? {})) {
       const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
-      if (index !== targetIndex) {
+      if (targetIndex !== index) {
         continue;
       }
-
-      const slotOverride = resolveSlotOverride(slotKey, slotName);
-      const slotParams = slotOverride?.params ?? options.matchedParams;
-      const slotComponent =
-        getDefaultExport(slotOverride?.pageModule) ??
-        getDefaultExport(slot.page) ??
-        getDefaultExport(slot.default);
-      if (!slotComponent) {
-        continue;
-      }
-
-      const slotProps: Record<string, unknown> = {
-        params: options.makeThenableParams(slotParams),
-      };
-      if (slotOverride?.props) {
-        Object.assign(slotProps, slotOverride.props);
-      }
-
-      const SlotComponent = slotComponent;
-      let slotElement: ReactNode = <SlotComponent {...slotProps} />;
-
-      const slotLayoutComponent = getDefaultExport(slot.layout);
-      if (slotLayoutComponent) {
-        const SlotLayoutComponent = slotLayoutComponent;
-        slotElement = (
-          <SlotLayoutComponent params={options.makeThenableParams(slotParams)}>
-            {slotElement}
-          </SlotLayoutComponent>
-        );
-      }
-
-      const slotLoadingComponent = getDefaultExport(slot.loading);
-      if (slotLoadingComponent) {
-        const SlotLoadingComponent = slotLoadingComponent;
-        slotElement = <Suspense fallback={<SlotLoadingComponent />}>{slotElement}</Suspense>;
-      }
-
-      const slotErrorComponent = getErrorBoundaryExport(slot.error);
-      if (slotErrorComponent) {
-        slotElement = <ErrorBoundary fallback={slotErrorComponent}>{slotElement}</ErrorBoundary>;
-      }
-
-      layoutProps[slotName] = slotElement;
+      layoutProps[slotName] = <ParallelSlot name={slotName} />;
     }
 
     const LayoutComponent = layoutComponent;
-    element = <LayoutComponent {...layoutProps}>{element}</LayoutComponent>;
+    const layoutDependency = layoutDependenciesByIndex.get(index);
+    const layoutElement = layoutDependency ? (
+      renderWithAppDependencyBarrier(
+        <LayoutComponent {...layoutProps}>
+          <Children />
+        </LayoutComponent>,
+        layoutDependency,
+      )
+    ) : (
+      <LayoutComponent {...layoutProps}>
+        <Children />
+      </LayoutComponent>
+    );
+    elements[layoutEntry.id] = renderAfterAppDependencies(
+      layoutElement,
+      layoutDependenciesBefore[index] ?? [],
+    );
+  }
 
-    // Build the segment map for this layout level. The "children" key always
-    // contains the route segments below this layout. Named parallel slots at
-    // this layout level add their own keys with per-slot segment data.
+  for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
+    const slotName = slot.name;
+    const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+    const treePath = layoutEntries[targetIndex]?.treePath ?? "/";
+    const slotId = `slot:${slotName}:${treePath}`;
+    const slotOverride = resolveSlotOverride(slotKey, slotName);
+    const slotParams = getEffectiveSlotParams(slotKey, slotName);
+    const slotComponent =
+      getDefaultExport(slotOverride?.pageModule) ??
+      getDefaultExport(slot.page) ??
+      getDefaultExport(slot.default);
+
+    if (!slotComponent) {
+      elements[slotId] = APP_UNMATCHED_SLOT_WIRE_VALUE;
+      continue;
+    }
+
+    const slotProps: Record<string, unknown> = {
+      params: options.makeThenableParams(slotParams),
+    };
+    if (slotOverride?.props) {
+      Object.assign(slotProps, slotOverride.props);
+    }
+
+    const SlotComponent = slotComponent;
+    let slotElement: ReactNode = <SlotComponent {...slotProps} />;
+
+    const slotLayoutComponent = getDefaultExport(slot.layout);
+    if (slotLayoutComponent) {
+      const SlotLayoutComponent = slotLayoutComponent;
+      slotElement = (
+        <SlotLayoutComponent params={options.makeThenableParams(slotParams)}>
+          {slotElement}
+        </SlotLayoutComponent>
+      );
+    }
+
+    const slotLoadingComponent = getDefaultExport(slot.loading);
+    if (slotLoadingComponent) {
+      const SlotLoadingComponent = slotLoadingComponent;
+      slotElement = <Suspense fallback={<SlotLoadingComponent />}>{slotElement}</Suspense>;
+    }
+
+    const slotErrorComponent = getErrorBoundaryExport(slot.error);
+    if (slotErrorComponent) {
+      slotElement = <ErrorBoundary fallback={slotErrorComponent}>{slotElement}</ErrorBoundary>;
+    }
+
+    elements[slotId] = renderAfterAppDependencies(
+      slotElement,
+      targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : [],
+    );
+  }
+
+  let routeChildren: ReactNode = (
+    <LayoutSegmentProvider segmentMap={{ children: [] }}>
+      <Slot id={pageId} />
+    </LayoutSegmentProvider>
+  );
+
+  const routeLoadingComponent = getDefaultExport(options.route.loading);
+  if (routeLoadingComponent) {
+    const RouteLoadingComponent = routeLoadingComponent;
+    routeChildren = <Suspense fallback={<RouteLoadingComponent />}>{routeChildren}</Suspense>;
+  }
+
+  const lastLayoutErrorModule =
+    options.route.errors && options.route.errors.length > 0
+      ? options.route.errors[options.route.errors.length - 1]
+      : null;
+  const pageErrorComponent = getErrorBoundaryExport(options.route.error);
+  if (pageErrorComponent && options.route.error !== lastLayoutErrorModule) {
+    routeChildren = <ErrorBoundary fallback={pageErrorComponent}>{routeChildren}</ErrorBoundary>;
+  }
+
+  const notFoundComponent =
+    getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
+  if (notFoundComponent) {
+    const NotFoundComponent = notFoundComponent;
+    routeChildren = (
+      <NotFoundBoundary fallback={<NotFoundComponent />}>{routeChildren}</NotFoundBoundary>
+    );
+  }
+
+  for (let index = orderedTreePositions.length - 1; index >= 0; index--) {
+    const treePosition = orderedTreePositions[index];
+    let segmentChildren: ReactNode = routeChildren;
+    const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
+    const templateEntry = templateEntriesByTreePosition.get(treePosition);
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children.
+    // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
+    // then ErrorBoundary, then Template, with the Layout slot outermost.
+    if (layoutEntry) {
+      const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
+      if (layoutNotFoundComponent) {
+        const LayoutNotFoundComponent = layoutNotFoundComponent;
+        segmentChildren = (
+          <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>
+            {segmentChildren}
+          </NotFoundBoundary>
+        );
+      }
+
+      const layoutErrorComponent = getErrorBoundaryExport(layoutEntry.errorModule);
+      if (layoutErrorComponent) {
+        segmentChildren = (
+          <ErrorBoundary fallback={layoutErrorComponent}>{segmentChildren}</ErrorBoundary>
+        );
+      }
+    }
+
+    if (templateEntry && getDefaultExport(templateEntry.templateModule)) {
+      segmentChildren = (
+        <Slot
+          id={templateEntry.id}
+          key={resolveAppPageTemplateKey(
+            options.route.routeSegments ?? [],
+            templateEntry.treePosition,
+            options.matchedParams,
+          )}
+        >
+          {segmentChildren}
+        </Slot>
+      );
+    }
+
+    if (!layoutEntry) {
+      routeChildren = segmentChildren;
+      continue;
+    }
+    const layoutHasElement = getDefaultExport(layoutEntry.layoutModule) !== null;
+    const layoutIndex = layoutIndicesByTreePosition.get(treePosition) ?? -1;
     const segmentMap: { children: string[] } & Record<string, string[]> = {
       children: resolveAppPageChildSegments(
         options.route.routeSegments ?? [],
@@ -353,33 +584,50 @@ export function buildAppPageRouteElement<
         options.matchedParams,
       ),
     };
-    for (const [slotKey, slot] of Object.entries(routeSlots)) {
+    for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
       const slotName = slot.name;
       const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
-      if (index !== targetIndex) {
+      if (targetIndex !== layoutIndex) {
         continue;
       }
-      const slotOverride = resolveSlotOverride(slotKey, slotName);
-      const slotParams = slotOverride?.params ?? options.matchedParams;
-      if (slot.routeSegments) {
-        // Slot has an active page — resolve its segments (dynamic params → values)
-        segmentMap[slotName] = resolveAppPageChildSegments(
-          slot.routeSegments,
-          0, // Slot segments are already relative to the slot root
-          slotParams,
-        );
-      } else {
-        // Slot is showing default.tsx or has no page — empty segments
-        segmentMap[slotName] = [];
-      }
+      const slotParams = getEffectiveSlotParams(slotKey, slotName);
+      segmentMap[slotName] = slot.routeSegments
+        ? resolveAppPageChildSegments(slot.routeSegments, 0, slotParams)
+        : [];
     }
-    element = <LayoutSegmentProvider segmentMap={segmentMap}>{element}</LayoutSegmentProvider>;
+
+    routeChildren = (
+      <LayoutSegmentProvider segmentMap={segmentMap}>
+        {layoutHasElement ? (
+          <Slot
+            id={layoutEntry.id}
+            parallelSlots={createAppPageParallelSlotEntries(
+              layoutIndex,
+              layoutEntries,
+              options.route,
+              getEffectiveSlotParams,
+            )}
+          >
+            {segmentChildren}
+          </Slot>
+        ) : (
+          segmentChildren
+        )}
+      </LayoutSegmentProvider>
+    );
   }
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);
   if (globalErrorComponent) {
-    element = <ErrorBoundary fallback={globalErrorComponent}>{element}</ErrorBoundary>;
+    routeChildren = <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>;
   }
 
-  return element;
+  elements[routeId] = (
+    <>
+      {createAppPageRouteHead(options.resolvedMetadata, options.resolvedViewport)}
+      {routeChildren}
+    </>
+  );
+
+  return elements;
 }

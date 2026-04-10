@@ -188,8 +188,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       "auto-detected from i18n/request.{ts,tsx,js,jsx}; createNextIntlPlugin wrapper not needed",
   },
   "@clerk/nextjs": {
-    status: "unsupported",
-    detail: "deep Next.js middleware integration not compatible",
+    status: "partial",
+    detail:
+      "clerkMiddleware, auth.protect, ClerkProvider, client hooks work; auth() in Server Components requires next/headers shim (wip)",
   },
   "@auth/nextjs": {
     status: "unsupported",

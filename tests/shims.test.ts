@@ -3753,6 +3753,25 @@ describe("RequestCookies API", () => {
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
   });
 
+  it("set() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set("foo=bar; Path=/", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo\r\nCookie: evil=1", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("set({ name, value }) rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set({ name: "foo=bar", value: "val" })).toThrow("Invalid cookie name");
+  });
+
   it("delete() removes a cookie from the Cookie header", async () => {
     const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers({ cookie: "a=1; b=2; c=3" });
@@ -3787,6 +3806,15 @@ describe("RequestCookies API", () => {
     expect(cookies.has("a")).toBe(false);
     expect(cookies.has("c")).toBe(false);
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+  });
+
+  it("delete() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2" });
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.delete("foo=bar")).toThrow("Invalid cookie name");
+    expect(() => cookies.delete(["a", "foo;bar"])).toThrow("Invalid cookie name");
   });
 
   it("delete() is a no-op for missing cookies", async () => {
@@ -6359,6 +6387,7 @@ describe("proxyExternalRequest", () => {
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -6382,6 +6411,7 @@ describe("proxyExternalRequest", () => {
       // Internal middleware headers must be stripped
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");

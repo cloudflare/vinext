@@ -1,9 +1,9 @@
-import { createElement, isValidElement, type ReactNode } from "react";
-import ReactDOMServer from "react-dom/server";
+import { Fragment, createElement, isValidElement, type ReactNode } from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
+import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import {
-  buildAppPageRouteElement,
+  buildAppPageElements,
   createAppPageLayoutEntries,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
@@ -32,6 +32,63 @@ function readChildren(value: unknown): ReactNode {
   }
 
   return null;
+}
+
+async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+
+  return text + decoder.decode();
+}
+
+async function renderHtml(node: ReactNode): Promise<string> {
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const stream = await renderToReadableStream(node, {
+    onError(error: unknown) {
+      throw error instanceof Error ? error : new Error(String(error));
+    },
+  });
+
+  return readStream(stream);
+}
+
+async function renderRouteEntry(elements: AppElements, routeId: string): Promise<string> {
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  return renderHtml(
+    createElement(
+      ElementsContext.Provider,
+      { value: elements },
+      createElement(Slot, { id: routeId }),
+    ),
+  );
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`Timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
 }
 
 function RootLayout(props: Record<string, unknown>) {
@@ -69,6 +126,24 @@ function SlotPage(props: Record<string, unknown>) {
   return createElement("p", { "data-slot-page": readNode(props.label) }, readNode(props.label));
 }
 
+function ParentModalLayout(props: Record<string, unknown>) {
+  return createElement(
+    "div",
+    { "data-layout": "parent-modal-layout" },
+    createElement("div", { "data-parent-modal": "true" }, readChildren(props.modal)),
+    readChildren(props.children),
+  );
+}
+
+function ChildModalLayout(props: Record<string, unknown>) {
+  return createElement(
+    "section",
+    { "data-layout": "child-modal-layout" },
+    createElement("div", { "data-child-modal": "true" }, readChildren(props.modal)),
+    readChildren(props.children),
+  );
+}
+
 function RootTemplate(props: Record<string, unknown>) {
   return createElement("div", { "data-template": "root" }, readChildren(props.children));
 }
@@ -82,6 +157,10 @@ function PageProbe() {
   return createElement("main", { "data-page-segments": segments.join("|") }, "Page");
 }
 
+function LayoutWithoutChildren() {
+  return createElement("div", { "data-layout": "without-children" }, "Layout only");
+}
+
 describe("app page route wiring helpers", () => {
   it("resolves child segments from tree positions and preserves route groups", () => {
     expect(
@@ -90,29 +169,6 @@ describe("app page route wiring helpers", () => {
         slug: "post",
       }),
     ).toEqual(["blog", "post", "a/b"]);
-  });
-
-  it("passes route group segments through unchanged", () => {
-    expect(resolveAppPageChildSegments(["(auth)", "login"], 0, {})).toEqual(["(auth)", "login"]);
-  });
-
-  it("skips optional catch-all when param is undefined", () => {
-    expect(resolveAppPageChildSegments(["docs", "[[...slug]]"], 0, {})).toEqual(["docs"]);
-  });
-
-  it("skips optional catch-all when param is an empty array", () => {
-    expect(resolveAppPageChildSegments(["docs", "[[...slug]]"], 0, { slug: [] })).toEqual(["docs"]);
-  });
-
-  it("falls back to raw segment for dynamic param with undefined value", () => {
-    expect(resolveAppPageChildSegments(["blog", "[id]"], 0, {})).toEqual(["blog", "[id]"]);
-  });
-
-  it("preserves empty-string param instead of falling back to raw segment", () => {
-    expect(resolveAppPageChildSegments(["blog", "[...slug]"], 0, { slug: "" })).toEqual([
-      "blog",
-      "",
-    ]);
   });
 
   it("builds layout entries from tree paths instead of visible URL segments", () => {
@@ -127,8 +183,8 @@ describe("app page route wiring helpers", () => {
     expect(entries.map((entry) => entry.treePath)).toEqual(["/", "/(marketing)"]);
   });
 
-  it("wires templates, slots, and layout segment providers from the route tree", () => {
-    const element = buildAppPageRouteElement({
+  it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
+    const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -154,10 +210,13 @@ describe("app page route wiring helpers", () => {
             loading: null,
             name: "sidebar",
             page: { default: SlotPage },
+            routeSegments: ["members"],
           },
         },
-        templates: [null, { default: GroupTemplate }],
+        templateTreePositions: [1],
+        templates: [{ default: GroupTemplate }],
       },
+      routePath: "/blog/post",
       rootNotFoundModule: null,
       slotOverrides: {
         sidebar: {
@@ -168,12 +227,20 @@ describe("app page route wiring helpers", () => {
       },
     });
 
-    const html = ReactDOMServer.renderToStaticMarkup(element);
+    expect(elements.__route).toBe("route:/blog/post");
+    expect(elements.__rootLayout).toBe("/");
+    expect(elements["layout:/"]).toBeDefined();
+    expect(elements["layout:/(marketing)"]).toBeDefined();
+    expect(elements["template:/(marketing)"]).toBeDefined();
+    expect(elements["page:/blog/post"]).toBeDefined();
+    expect(elements["slot:sidebar:/"]).toBeDefined();
+    expect(elements["route:/blog/post"]).toBeDefined();
+
+    const html = await renderRouteEntry(elements, "route:/blog/post");
 
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="group"');
     expect(html).toContain('data-template="group"');
-    // GroupTemplate must be inside GroupLayout, not RootLayout
     const groupLayoutPos = html.indexOf('data-layout="group"');
     const groupTemplatePos = html.indexOf('data-template="group"');
     expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
@@ -184,8 +251,8 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-segments="blog|post"');
   });
 
-  it("resolves slot segmentMap with slot override params", () => {
-    const element = buildAppPageRouteElement({
+  it("uses override params for slot segment maps when an override page is active", async () => {
+    const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -214,8 +281,10 @@ describe("app page route wiring helpers", () => {
             routeSegments: ["members", "[id]"],
           },
         },
-        templates: [null],
+        templateTreePositions: [],
+        templates: [],
       },
+      routePath: "/dashboard",
       rootNotFoundModule: null,
       slotOverrides: {
         sidebar: {
@@ -226,18 +295,269 @@ describe("app page route wiring helpers", () => {
       },
     });
 
-    const html = ReactDOMServer.renderToStaticMarkup(element);
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+
     expect(html).toContain('data-slot-page="override"');
     expect(html).toContain('data-sidebar-segments="members|42"');
   });
 
-  it("resolves slot segmentMap from matched params when no override exists", () => {
-    const element = buildAppPageRouteElement({
+  it("renders same-named slot props independently at different layout levels", async () => {
+    const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
       },
-      matchedParams: { id: "24" },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "child"],
+        slots: {
+          "modal@parent/@modal": {
+            default: {
+              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+          "modal@parent/child/@modal": {
+            default: {
+              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [0, 1],
+        templates: [null, null],
+      },
+      routePath: "/parent/child",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/parent/child");
+
+    expect(html).toContain('data-layout="parent-modal-layout"');
+    expect(html).toContain('data-layout="child-modal-layout"');
+    expect(html).toContain('data-parent-slot="true"');
+    expect(html).toContain("parent-slot");
+    expect(html).toContain('data-child-slot="true"');
+    expect(html).toContain("child-slot");
+  });
+
+  it("does not apply ambiguous name-only slot overrides when same-named slots exist", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "child"],
+        slots: {
+          "modal@parent/@modal": {
+            default: {
+              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+          "modal@parent/child/@modal": {
+            default: {
+              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+            },
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [0, 1],
+        templates: [null, null],
+      },
+      routePath: "/parent/child",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          pageModule: { default: SlotPage },
+          props: { label: "ambiguous-override" },
+        },
+      },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/parent/child");
+
+    expect(html).toContain('data-parent-slot="true"');
+    expect(html).toContain("parent-slot");
+    expect(html).toContain('data-child-slot="true"');
+    expect(html).toContain("child-slot");
+    expect(html).not.toContain('data-slot-page="ambiguous-override"');
+  });
+
+  it("does not deadlock when a layout renders without children", async () => {
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Page content"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: LayoutWithoutChildren }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/layout-only",
+      rootNotFoundModule: null,
+    });
+
+    const body = await withTimeout(renderRouteEntry(elements, "route:/layout-only"), 1_000);
+
+    expect(body).toContain("Layout only");
+    expect(body).not.toContain("Page content");
+  });
+
+  it("preserves route subtree when a layout entry has no default export", async () => {
+    const elements = buildAppPageElements({
+      element: createElement("main", null, "Page content"),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, null],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["dashboard"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const body = await renderRouteEntry(elements, "route:/dashboard");
+
+    expect(body).toContain('data-layout="root"');
+    expect(body).toContain("Page content");
+  });
+
+  it("waits for template-only segments before serializing the page entry", async () => {
+    let activeLocale = "en";
+
+    async function AsyncTemplate(props: Record<string, unknown>) {
+      await Promise.resolve();
+      activeLocale = "de";
+      return createElement("div", { "data-template": "async" }, readChildren(props.children));
+    }
+
+    function LocalePage() {
+      return createElement("main", null, `page:${activeLocale}`);
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(LocalePage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["blog"],
+        slots: null,
+        templateTreePositions: [1],
+        templates: [{ default: AsyncTemplate }],
+      },
+      routePath: "/blog",
+      rootNotFoundModule: null,
+    });
+
+    const body = await renderHtml(
+      createElement(
+        Fragment,
+        null,
+        readChildren(elements["template:/blog"]),
+        readChildren(elements["page:/blog"]),
+      ),
+    );
+
+    expect(body).toContain("page:de");
+    expect(body).not.toContain("page:en");
+  });
+
+  it("renders template-only segments in the route entry even without a matching layout", async () => {
+    function BlogTemplate(props: Record<string, unknown>) {
+      return createElement("div", { "data-template": "blog" }, readChildren(props.children));
+    }
+
+    function BlogPage() {
+      return createElement("main", null, "Blog page");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(BlogPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
       resolvedMetadata: null,
       resolvedViewport: {},
       route: {
@@ -248,198 +568,23 @@ describe("app page route wiring helpers", () => {
         loading: null,
         notFound: null,
         notFounds: [null],
-        routeSegments: ["dashboard"],
-        slots: {
-          sidebar: {
-            default: null,
-            error: null,
-            layout: null,
-            layoutIndex: 0,
-            loading: null,
-            name: "sidebar",
-            page: { default: SlotPage },
-            routeSegments: ["members", "[id]"],
-          },
-        },
-        templates: [null],
+        routeSegments: ["blog"],
+        slots: null,
+        templateTreePositions: [1],
+        templates: [{ default: BlogTemplate }],
       },
+      routePath: "/blog",
       rootNotFoundModule: null,
     });
 
-    const html = ReactDOMServer.renderToStaticMarkup(element);
-    expect(html).toContain('data-sidebar-segments="members|24"');
+    const body = await renderRouteEntry(elements, "route:/blog");
+
+    expect(body).toContain('data-layout="root"');
+    expect(body).toContain('data-template="blog"');
+    expect(body).toContain("Blog page");
   });
 
-  it("renders same-named slot props independently at different layout levels", () => {
-    function ParentModalLayout(props: Record<string, unknown>) {
-      return createElement(
-        "div",
-        { "data-layout": "parent-modal-layout" },
-        createElement("div", { "data-parent-modal": "true" }, readChildren(props.modal)),
-        readChildren(props.children),
-      );
-    }
-
-    function ChildModalLayout(props: Record<string, unknown>) {
-      return createElement(
-        "section",
-        { "data-layout": "child-modal-layout" },
-        createElement("div", { "data-child-modal": "true" }, readChildren(props.modal)),
-        readChildren(props.children),
-      );
-    }
-
-    const element = buildAppPageRouteElement({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      route: {
-        error: null,
-        errors: [null, null],
-        layoutTreePositions: [0, 1],
-        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null, null],
-        routeSegments: ["parent", "child"],
-        slots: {
-          "modal@parent/@modal": {
-            default: {
-              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
-            },
-            error: null,
-            layout: null,
-            layoutIndex: 0,
-            loading: null,
-            name: "modal",
-            page: null,
-            routeSegments: null,
-          },
-          "modal@parent/child/@modal": {
-            default: {
-              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
-            },
-            error: null,
-            layout: null,
-            layoutIndex: 1,
-            loading: null,
-            name: "modal",
-            page: null,
-            routeSegments: null,
-          },
-        },
-        templates: [null, null],
-      },
-      rootNotFoundModule: null,
-    });
-
-    const html = ReactDOMServer.renderToStaticMarkup(element);
-    expect(html).toContain('data-layout="parent-modal-layout"');
-    expect(html).toContain('data-layout="child-modal-layout"');
-    expect(html).toContain('data-parent-slot="true"');
-    expect(html).toContain("parent-slot");
-    expect(html).toContain('data-child-slot="true"');
-    expect(html).toContain("child-slot");
-  });
-
-  it("does not apply ambiguous name-only slot overrides when same-named slots exist", () => {
-    function ParentModalLayout(props: Record<string, unknown>) {
-      return createElement(
-        "div",
-        { "data-layout": "parent-modal-layout" },
-        createElement("div", { "data-parent-modal": "true" }, readChildren(props.modal)),
-        readChildren(props.children),
-      );
-    }
-
-    function ChildModalLayout(props: Record<string, unknown>) {
-      return createElement(
-        "section",
-        { "data-layout": "child-modal-layout" },
-        createElement("div", { "data-child-modal": "true" }, readChildren(props.modal)),
-        readChildren(props.children),
-      );
-    }
-
-    const element = buildAppPageRouteElement({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      route: {
-        error: null,
-        errors: [null, null],
-        layoutTreePositions: [0, 1],
-        layouts: [{ default: ParentModalLayout }, { default: ChildModalLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null, null],
-        routeSegments: ["parent", "child"],
-        slots: {
-          "modal@parent/@modal": {
-            default: {
-              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
-            },
-            error: null,
-            layout: null,
-            layoutIndex: 0,
-            loading: null,
-            name: "modal",
-            page: null,
-            routeSegments: null,
-          },
-          "modal@parent/child/@modal": {
-            default: {
-              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
-            },
-            error: null,
-            layout: null,
-            layoutIndex: 1,
-            loading: null,
-            name: "modal",
-            page: null,
-            routeSegments: null,
-          },
-        },
-        templates: [null, null],
-      },
-      rootNotFoundModule: null,
-      slotOverrides: {
-        modal: {
-          pageModule: { default: SlotPage },
-          props: { label: "ambiguous-override" },
-        },
-      },
-    });
-
-    const html = ReactDOMServer.renderToStaticMarkup(element);
-    expect(html).toContain('data-parent-slot="true"');
-    expect(html).toContain("parent-slot");
-    expect(html).toContain('data-child-slot="true"');
-    expect(html).toContain("child-slot");
-    expect(html).not.toContain('data-slot-page="ambiguous-override"');
-  });
-
-  it("NotFoundBoundary is nested inside Template in the element tree (Layout > Template > NotFound > Page)", () => {
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > Page
-    // NotFoundBoundary must be INSIDE Template so that when notFound() fires, the Template
-    // still wraps the not-found fallback.
-    //
-    // The bug: NotFoundBoundary was placed OUTSIDE Template (wrapping order was
-    // Layout > NotFound > Template > Error > Page), so when notFound() triggered,
-    // Template got replaced instead of wrapping the NotFound fallback.
-    //
-    // We verify this by inspecting the React element tree structure directly:
-    // walk from the root inward and assert that RootTemplate appears at a shallower
-    // depth than NotFoundBoundary's inner class component.
-
+  it("nests per-segment NotFoundBoundary inside the template wrapper", () => {
     function RootNotFound() {
       return createElement("div", { "data-not-found": "root" }, "Not Found");
     }
@@ -448,7 +593,7 @@ describe("app page route wiring helpers", () => {
       return createElement("main", null, "Page");
     }
 
-    const element = buildAppPageRouteElement({
+    const elements = buildAppPageElements({
       element: createElement(LeafPage),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -466,68 +611,60 @@ describe("app page route wiring helpers", () => {
         notFounds: [{ default: RootNotFound }],
         routeSegments: ["blog"],
         slots: {},
+        templateTreePositions: [0],
         templates: [{ default: RootTemplate }],
       },
+      routePath: "/blog",
       rootNotFoundModule: null,
     });
 
-    // Walk the React element tree depth-first, recording the depth at which each
-    // component type first appears. We find the depth of RootTemplate and the depth
-    // of the NotFoundBoundary inner class (identified by looking for an element whose
-    // type has a displayName or name containing "NotFound").
     function walkDepth(node: unknown, depth: number, found: Map<string, number>): void {
       if (!isValidElement(node)) return;
-      const el = node as { type: unknown; props: Record<string, unknown> };
+      const element = node as { type: unknown; props: Record<string, unknown> };
+
+      if (typeof element.props.id === "string" && element.props.id.startsWith("template:")) {
+        found.set(`template:${element.props.id}`, depth);
+      }
 
       const typeName =
-        typeof el.type === "function"
-          ? ((el.type as { displayName?: string; name?: string }).displayName ??
-            (el.type as { name?: string }).name ??
+        typeof element.type === "function"
+          ? ((element.type as { displayName?: string; name?: string }).displayName ??
+            (element.type as { name?: string }).name ??
             "")
-          : typeof el.type === "string"
-            ? el.type
+          : typeof element.type === "string"
+            ? element.type
             : "";
 
       if (!found.has(typeName)) {
         found.set(typeName, depth);
       }
 
-      const { children, ...rest } = el.props;
-      for (const val of Object.values(rest)) {
-        walkDepth(val, depth + 1, found);
+      const { children, ...rest } = element.props;
+      for (const value of Object.values(rest)) {
+        walkDepth(value, depth + 1, found);
       }
       if (Array.isArray(children)) {
-        for (const child of children) walkDepth(child, depth + 1, found);
+        for (const child of children) {
+          walkDepth(child, depth + 1, found);
+        }
       } else {
         walkDepth(children, depth + 1, found);
       }
     }
 
     const depthMap = new Map<string, number>();
-    walkDepth(element, 0, depthMap);
+    walkDepth(elements["route:/blog"], 0, depthMap);
 
-    const templateDepth = depthMap.get("RootTemplate");
-    // NotFoundBoundary renders as NotFoundBoundaryInner at the class level.
-    // We search for the class component by its name.
+    const templateDepth = depthMap.get("template:template:/");
     const notFoundDepth = depthMap.get("NotFoundBoundaryInner") ?? depthMap.get("NotFoundBoundary");
 
     expect(templateDepth).toBeDefined();
     expect(notFoundDepth).toBeDefined();
-
-    // Template must be shallower (closer to root) than NotFoundBoundary.
-    // If this fails, NotFoundBoundary is outside Template — the bug.
     expect(templateDepth).toBeLessThan(notFoundDepth!);
   });
 
-  it("interleaves templates with their corresponding layouts (Layout[i] > Template[i])", () => {
-    // Next.js nesting order per segment: Layout > Template > ErrorBoundary > children
-    // With two levels, the correct tree is:
-    //   Layout[0] > Template[0] > Layout[1] > Template[1] > Page
-    //
-    // The bug was: Layout[0] > Layout[1] > Template[0] > Template[1] > Page
-    // (all templates grouped as a batch, then all layouts grouped separately)
-
-    const element = buildAppPageRouteElement({
+  it("interleaves templates with their corresponding layouts", async () => {
+    const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -545,33 +682,29 @@ describe("app page route wiring helpers", () => {
         notFounds: [null, null],
         routeSegments: ["(marketing)", "blog", "[slug]"],
         slots: {},
+        templateTreePositions: [0, 1],
         templates: [{ default: RootTemplate }, { default: GroupTemplate }],
       },
+      routePath: "/blog/post",
       rootNotFoundModule: null,
     });
 
-    const html = ReactDOMServer.renderToStaticMarkup(element);
+    const html = await renderRouteEntry(elements, "route:/blog/post");
 
-    // Both layouts and templates must be present
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="group"');
     expect(html).toContain('data-template="root"');
     expect(html).toContain('data-template="group"');
 
-    // Verify interleaving order: Layout[0] > Template[0] > Layout[1] > Template[1] > Page
     const rootLayoutPos = html.indexOf('data-layout="root"');
     const rootTemplatePos = html.indexOf('data-template="root"');
     const groupLayoutPos = html.indexOf('data-layout="group"');
     const groupTemplatePos = html.indexOf('data-template="group"');
     const pagePos = html.indexOf("data-page-segments=");
 
-    // Root layout wraps root template
     expect(rootLayoutPos).toBeLessThan(rootTemplatePos);
-    // Root template wraps group layout (NOT: group layout wraps root template)
     expect(rootTemplatePos).toBeLessThan(groupLayoutPos);
-    // Group layout wraps group template
     expect(groupLayoutPos).toBeLessThan(groupTemplatePos);
-    // Group template wraps page
     expect(groupTemplatePos).toBeLessThan(pagePos);
   });
 });

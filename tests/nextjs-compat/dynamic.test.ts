@@ -128,6 +128,23 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).toContain('id="css-text-dynamic-rsc"');
   });
 
+  // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+  it("SSR: adds nonce attributes to preload links when next/dynamic runs under CSP", async () => {
+    const { html, res } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic?csp-nonce=1");
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const preloadLinks = [
+      ...html.matchAll(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g),
+    ].map((match) => match[0]);
+    expect(preloadLinks.length).toBeGreaterThan(0);
+    for (const tag of preloadLinks) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // SKIP: 'should handle next/dynamic in hydration correctly'

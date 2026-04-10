@@ -17,6 +17,7 @@ export type AppPageSsrHandler = {
     rscStream: ReadableStream<Uint8Array>,
     navigationContext: unknown,
     fontData: AppPageFontData,
+    options?: { scriptNonce?: string },
   ) => Promise<ReadableStream<Uint8Array>>;
 };
 
@@ -24,6 +25,7 @@ export type RenderAppPageHtmlStreamOptions = {
   fontData: AppPageFontData;
   navigationContext: unknown;
   rscStream: ReadableStream<Uint8Array>;
+  scriptNonce?: string;
   ssrHandler: AppPageSsrHandler;
 };
 
@@ -67,10 +69,14 @@ export function createAppPageFontData(options: CreateAppPageFontDataOptions): Ap
 export async function renderAppPageHtmlStream(
   options: RenderAppPageHtmlStreamOptions,
 ): Promise<ReadableStream<Uint8Array>> {
+  const ssrOptions =
+    options.scriptNonce === undefined ? undefined : { scriptNonce: options.scriptNonce };
+
   return options.ssrHandler.handleSsr(
     options.rscStream,
     options.navigationContext,
     options.fontData,
+    ssrOptions,
   );
 }
 

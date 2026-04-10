@@ -106,6 +106,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -120,6 +121,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -135,6 +137,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -152,6 +155,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -198,6 +202,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -213,6 +218,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -243,6 +249,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
         dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -253,6 +260,23 @@ describe("app page response helpers", () => {
       cacheControl: "s-maxage=60, stale-while-revalidate",
       cacheState: "MISS",
       shouldWriteToCache: true,
+    });
+  });
+
+  it("treats HTML responses with a script nonce as no-store", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: true,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
     });
   });
 
@@ -315,6 +339,7 @@ describe("app page response helpers", () => {
     middlewareHeaders.append("set-cookie", "mw=1; Path=/");
     middlewareHeaders.set("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("x-extra", "present");
+    middlewareHeaders.set("cache-control", "private, max-age=5");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",

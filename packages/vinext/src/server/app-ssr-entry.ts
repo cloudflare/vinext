@@ -1,7 +1,7 @@
 /// <reference types="@vitejs/plugin-rsc/types" />
 
 import type { ReactNode } from "react";
-import { Fragment, createElement as createReactElement } from "react";
+import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import * as clientReferences from "virtual:vite-rsc/client-references";
@@ -14,8 +14,20 @@ import {
   useServerInsertedHTML,
 } from "../shims/navigation.js";
 import { runWithNavigationContext } from "../shims/navigation-state.js";
-import { safeJsonStringify } from "./html.js";
+import { withScriptNonce } from "../shims/script-nonce-context.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  escapeHtmlAttr,
+  safeJsonStringify,
+} from "./html.js";
 import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
+import {
+  normalizeAppElements,
+  readAppElementsMetadata,
+  type AppWireElements,
+} from "./app-elements.js";
+import { ElementsContext, Slot } from "../shims/slot.js";
 
 export type FontPreload = {
   href: string;
@@ -60,10 +72,6 @@ async function preloadClientReferences(): Promise<void> {
   clientRefsPreloaded = true;
 }
 
-function escapeHtmlAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
-
 function ssrErrorDigest(input: string): string {
   let hash = 5381;
   for (let i = input.length - 1; i >= 0; i--) {
@@ -94,33 +102,34 @@ function renderInsertedHtml(insertedElements: readonly unknown[]): string {
   return insertedHTML;
 }
 
-function renderFontHtml(fontData?: FontData): string {
+function renderFontHtml(fontData?: FontData, nonce?: string): string {
   if (!fontData) return "";
 
   let fontHTML = "";
+  const nonceAttr = createNonceAttribute(nonce);
 
   for (const url of fontData.links ?? []) {
-    fontHTML += `<link rel="stylesheet" href="${escapeHtmlAttr(url)}" />\n`;
+    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(url)}" />\n`;
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload" href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (fontData.styles && fontData.styles.length > 0) {
-    fontHTML += `<style data-vinext-fonts>${fontData.styles.join("\n")}</style>\n`;
+    fontHTML += `<style data-vinext-fonts${nonceAttr}>${fontData.styles.join("\n")}</style>\n`;
   }
 
   return fontHTML;
 }
 
-function extractModulePreloadHtml(bootstrapScriptContent?: string): string {
+function extractModulePreloadHtml(bootstrapScriptContent?: string, nonce?: string): string {
   if (!bootstrapScriptContent) return "";
 
   const match = bootstrapScriptContent.match(/import\("([^"]+)"\)/);
   if (!match?.[1]) return "";
 
-  return `<link rel="modulepreload" href="${escapeHtmlAttr(match[1])}" />\n`;
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(match[1])}" />\n`;
 }
 
 function buildHeadInjectionHtml(
@@ -128,22 +137,25 @@ function buildHeadInjectionHtml(
   bootstrapScriptContent: string | undefined,
   insertedHTML: string,
   fontHTML: string,
+  scriptNonce?: string,
 ): string {
-  const paramsScript =
-    "<script>self.__VINEXT_RSC_PARAMS__=" +
-    safeJsonStringify(navContext?.params ?? {}) +
-    "</script>";
+  const paramsScript = createInlineScriptTag(
+    "self.__VINEXT_RSC_PARAMS__=" + safeJsonStringify(navContext?.params ?? {}),
+    scriptNonce,
+  );
   const navPayload = {
     pathname: navContext?.pathname ?? "/",
     searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [],
   };
-  const navScript =
-    "<script>self.__VINEXT_RSC_NAV__=" + safeJsonStringify(navPayload) + "</script>";
+  const navScript = createInlineScriptTag(
+    "self.__VINEXT_RSC_NAV__=" + safeJsonStringify(navPayload),
+    scriptNonce,
+  );
 
   return (
     paramsScript +
     navScript +
-    extractModulePreloadHtml(bootstrapScriptContent) +
+    extractModulePreloadHtml(bootstrapScriptContent, scriptNonce) +
     insertedHTML +
     fontHTML
   );
@@ -153,6 +165,7 @@ export async function handleSsr(
   rscStream: ReadableStream<Uint8Array>,
   navContext: NavigationContext | null,
   fontData?: FontData,
+  options?: { scriptNonce?: string },
 ): Promise<ReadableStream<Uint8Array>> {
   return runWithNavigationContext(async () => {
     await preloadClientReferences();
@@ -165,30 +178,39 @@ export async function handleSsr(
 
     try {
       const [ssrStream, embedStream] = rscStream.tee();
-      const rscEmbed = createRscEmbedTransform(embedStream);
+      const rscEmbed = createRscEmbedTransform(embedStream, options?.scriptNonce);
 
-      let flightRoot: Promise<unknown> | null = null;
+      let flightRoot: PromiseLike<AppWireElements> | null = null;
 
       function VinextFlightRoot(): ReactNode {
         if (!flightRoot) {
-          flightRoot = createFromReadableStream(ssrStream);
+          flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
         }
-        return flightRoot as unknown as ReactNode;
+        const wireElements = use(flightRoot);
+        const elements = normalizeAppElements(wireElements);
+        const metadata = readAppElementsMetadata(elements);
+        return createReactElement(
+          ElementsContext.Provider,
+          { value: elements },
+          createReactElement(Slot, { id: metadata.routeId }),
+        );
       }
 
       const root = createReactElement(VinextFlightRoot);
-      const ssrRoot = ServerInsertedHTMLContext
+      const ssrTree = ServerInsertedHTMLContext
         ? createReactElement(
             ServerInsertedHTMLContext.Provider,
             { value: useServerInsertedHTML },
             root,
           )
         : root;
+      const ssrRoot = withScriptNonce(ssrTree, options?.scriptNonce);
 
       const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
       const htmlStream = await renderToReadableStream(ssrRoot, {
         bootstrapScriptContent,
+        nonce: options?.scriptNonce,
         onError(error) {
           if (error && typeof error === "object" && "digest" in error) {
             return String(error.digest);
@@ -205,12 +227,13 @@ export async function handleSsr(
       });
 
       const insertedHTML = renderInsertedHtml(flushServerInsertedHTML());
-      const fontHTML = renderFontHtml(fontData);
+      const fontHTML = renderFontHtml(fontData, options?.scriptNonce);
       const injectHTML = buildHeadInjectionHtml(
         navContext,
         bootstrapScriptContent,
         insertedHTML,
         fontHTML,
+        options?.scriptNonce,
       );
 
       return htmlStream.pipeThrough(createTickBufferedTransform(rscEmbed, injectHTML));

@@ -128,6 +128,24 @@ describe("App Router integration", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
+  it("returns flat payload metadata for app route RSC responses", async () => {
+    const res = await fetch(`${baseUrl}/dashboard.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    const rscText = await res.text();
+    if (res.status !== 200) {
+      throw new Error(rscText);
+    }
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(rscText).toContain("__route");
+    expect(rscText).toContain("__rootLayout");
+    expect(rscText).toContain("route:/dashboard");
+    expect(rscText).toContain("layout:/");
+    expect(rscText).toContain("layout:/dashboard");
+    expect(rscText).toContain("slot:team:/dashboard");
+    expect(rscText).toContain("slot:analytics:/dashboard");
+  });
+
   it("wraps pages in the root layout", async () => {
     const res = await fetch(`${baseUrl}/about`);
     const html = await res.text();
@@ -477,7 +495,7 @@ describe("App Router integration", () => {
   });
 
   // --- Intercepting routes with dynamic source route ---
-  // Regression: matchSourceRouteParams must extract actual URL param values
+  // Regression: pickRouteParams must extract actual URL param values
   // (e.g. "42") from the request pathname, not the literal pattern strings
   // (e.g. ":teamId") that result from feeding the pattern into the route trie.
 
@@ -518,7 +536,7 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("Settings Modal");
     expect(rscPayload).toContain("settings-modal");
     // The source route (members page) should render with the actual teamId value.
-    // The source page component receives params from matchSourceRouteParams.
+    // The source page component receives params from pickRouteParams.
     expect(rscPayload).toContain("members-page");
     // The literal pattern string ":teamId" must NOT appear as a param value anywhere
     expect(rscPayload).not.toContain('":teamId"');
@@ -1354,6 +1372,25 @@ describe("App Router integration", () => {
     expect(res.status).not.toBe(403);
   });
 
+  it("rejects cyclic multipart server action payloads before decodeReply", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q0"]');
+
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
+      },
+      body,
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid server action payload");
+  });
+
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
@@ -1669,6 +1706,27 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  it("does not reuse cached HTML across requests with different CSP nonces", async () => {
+    const firstRes = await fetch(`${baseUrl}/revalidate-test?csp-nonce=first`);
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(firstRes.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-first' 'strict-dynamic';",
+    );
+    const firstHtml = await firstRes.text();
+    expect(firstHtml).toContain('<script nonce="first">self.__VINEXT_RSC_PARAMS__={}</script>');
+
+    const secondRes = await fetch(`${baseUrl}/revalidate-test?csp-nonce=second`);
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(secondRes.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-second' 'strict-dynamic';",
+    );
+    const secondHtml = await secondRes.text();
+    expect(secondHtml).toContain('<script nonce="second">self.__VINEXT_RSC_PARAMS__={}</script>');
+    expect(secondHtml).not.toContain('nonce="first"');
   });
 
   it("does not collapse encoded slashes onto nested routes in production", async () => {
@@ -3050,6 +3108,18 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(csrfIdx).toBeLessThan(actionIdx);
   });
 
+  it("generates server action payload validation before decodeReply", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("validateServerActionPayload(body)");
+
+    const payloadValidationIdx = code.indexOf("validateServerActionPayload(body)");
+    const decodeIdx = code.indexOf("decodeReply(body, { temporaryReferences })");
+
+    expect(payloadValidationIdx).toBeGreaterThan(-1);
+    expect(decodeIdx).toBeGreaterThan(-1);
+    expect(payloadValidationIdx).toBeLessThan(decodeIdx);
+  });
+
   it("embeds allowedOrigins when provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       allowedOrigins: ["my-proxy.com", "*.my-domain.com"],
@@ -3373,6 +3443,25 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain('id="cookie">null<');
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('id="cookie-count">0<');
+  });
+
+  it("middleware request header overrides also apply to App Route request.headers", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete`, {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      requestAuthorization: null,
+      requestCookie: null,
+      requestMiddlewareHeader: "hello-from-middleware",
+      headersApiAuthorization: null,
+      headersApiCookie: null,
+      headersApiMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
@@ -3834,6 +3923,7 @@ describe("App Router external rewrite proxy credential forwarding", () => {
         "x-api-key": "sk_live_secret",
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-safe": "keep-me",
       },
     });
@@ -3846,6 +3936,7 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["proxy-authorization"]).toBe("Basic cHJveHk=");
     // Internal middleware headers must be stripped
     expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
+    expect(capturedHeaders!["x-vinext-prerender-secret"]).toBeUndefined();
     // Non-sensitive headers must be preserved
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
@@ -3993,6 +4084,9 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");
     expect(code).toContain("renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback");
+    expect(code).toContain(
+      "const _scriptNonce = __getScriptNonceFromHeaderSources(request.headers, _mwCtx.headers);",
+    );
     expect(code).toContain("return __renderAppPageHttpAccessFallback({");
     expect(code).toContain("return __renderAppPageErrorBoundary({");
   });
@@ -4147,6 +4241,13 @@ describe("generateRscEntry ISR code generation", () => {
     const redirectEnd = code.indexOf('return new Response(""', redirectStart);
     const redirectBody = code.slice(redirectStart, redirectEnd);
     expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
+    // Framework-owned redirect headers must be written after the middleware merge
+    // so middleware cannot clobber the target URL or redirect type.
+    const mergeIndex = redirectBody.indexOf("__mergeMiddlewareResponseHeaders");
+    const redirectHeaderIndex = redirectBody.indexOf('redirectHeaders.set("x-action-redirect"');
+    expect(mergeIndex).toBeGreaterThan(-1);
+    expect(redirectHeaderIndex).toBeGreaterThan(-1);
+    expect(mergeIndex).toBeLessThan(redirectHeaderIndex);
   });
 
   // Ported from Next.js: packages/next/src/client/components/redirect.ts

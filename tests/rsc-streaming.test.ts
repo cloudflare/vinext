@@ -137,6 +137,25 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     expect(output).toContain("<div>Suspense resolved</div>");
   });
 
+  it("adds nonce attributes to progressive RSC scripts when provided", async () => {
+    const rsc = createMockRscStream();
+    rsc.push('0:D{"name":"page"}\n');
+
+    const rscEmbed = createRscEmbedTransform(rsc.stream, "vinext-test-nonce");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const htmlStream = createMockHtmlStream([["<html><head></head><body></body></html>"]]);
+    rsc.close();
+
+    const transform = createTickBufferedTransform(rscEmbed);
+    const output = await collectStream(htmlStream.pipeThrough(transform));
+
+    expect(output).toContain('<script nonce="vinext-test-nonce">self.__VINEXT_RSC_CHUNKS__=');
+    expect(output).toContain(
+      '<script nonce="vinext-test-nonce">self.__VINEXT_RSC_DONE__=true</script>',
+    );
+  });
+
   it("does not inject scripts mid-HTML-chunk (DOM corruption prevention)", async () => {
     // This tests the core safety invariant: when React Fizz flushes multiple
     // chunks synchronously (same macrotask), scripts must NOT appear between them.

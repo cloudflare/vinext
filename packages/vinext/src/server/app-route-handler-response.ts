@@ -1,4 +1,5 @@
 import type { CachedRouteValue } from "../shims/cache.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -37,11 +38,7 @@ export function applyRouteHandlerMiddlewareContext(
   }
 
   const responseHeaders = new Headers(response.headers);
-  if (middlewareContext.headers) {
-    for (const [key, value] of middlewareContext.headers) {
-      responseHeaders.append(key, value);
-    }
-  }
+  mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
 
   return new Response(response.body, {
     status: middlewareContext.status ?? response.status,

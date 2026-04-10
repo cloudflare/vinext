@@ -1134,7 +1134,7 @@ type PagesRouterServerOptions = {
  * Start the Pages Router production server.
  *
  * Uses the server entry (dist/server/entry.js) which exports:
- * - renderPage(request, url, manifest) — SSR rendering (Web Request → Response)
+ * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
  * - handleApiRoute(request, url) — API route handling (Web Request → Response)
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
@@ -1634,7 +1634,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // ── 10. SSR page rendering ────────────────────────────────────
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        response = await renderPage(webRequest, resolvedUrl, ssrManifest);
+        const middlewareResponseHeaders = toWebHeaders(middlewareHeaders);
+        response = await renderPage(
+          webRequest,
+          resolvedUrl,
+          ssrManifest,
+          undefined,
+          middlewareResponseHeaders,
+        );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
@@ -1649,7 +1656,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
-            response = await renderPage(webRequest, fallbackRewrite, ssrManifest);
+            response = await renderPage(
+              webRequest,
+              fallbackRewrite,
+              ssrManifest,
+              undefined,
+              middlewareResponseHeaders,
+            );
           }
         }
       }

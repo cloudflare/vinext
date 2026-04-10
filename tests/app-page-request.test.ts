@@ -64,8 +64,8 @@ describe("app page request helpers", () => {
     const setNavigationContext = vi.fn();
     const buildPageElementMock = vi.fn(async () => ({ type: "intercept-element" }));
     const renderInterceptResponse = vi.fn(async () => new Response("intercepted"));
-    const currentRoute = { pattern: "/photos/[id]" };
-    const sourceRoute = { pattern: "/feed" };
+    const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
+    const sourceRoute = { params: [], pattern: "/feed" };
 
     const result = await resolveAppPageIntercept({
       buildPageElement: buildPageElementMock,
@@ -75,20 +75,17 @@ describe("app page request helpers", () => {
         return {
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
-          slotName: "modal",
+          slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
         };
       },
-      getRoutePattern(route) {
-        return route.pattern;
+      getRouteParamNames(route) {
+        return route.params;
       },
       getSourceRoute() {
         return sourceRoute;
       },
       isRscRequest: true,
-      matchSourceRouteParams() {
-        return {};
-      },
       renderInterceptResponse,
       searchParams: new URLSearchParams("from=feed"),
       setNavigationContext,
@@ -96,7 +93,7 @@ describe("app page request helpers", () => {
         return {
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
-          interceptSlot: intercept.slotName,
+          interceptSlotKey: intercept.slotKey,
         };
       },
     });
@@ -114,7 +111,7 @@ describe("app page request helpers", () => {
       {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
-        interceptSlot: "modal",
+        interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
     );
@@ -122,7 +119,7 @@ describe("app page request helpers", () => {
   });
 
   it("returns intercept opts when the source route is the current route", async () => {
-    const currentRoute = { pattern: "/photos/[id]" };
+    const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
 
     const result = await resolveAppPageIntercept({
       async buildPageElement() {
@@ -134,20 +131,17 @@ describe("app page request helpers", () => {
         return {
           matchedParams: { id: "123" },
           page: { default: "modal-page" },
-          slotName: "modal",
+          slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
         };
       },
-      getRoutePattern(route) {
-        return route.pattern;
+      getRouteParamNames(route) {
+        return route.params;
       },
       getSourceRoute() {
         return currentRoute;
       },
       isRscRequest: true,
-      matchSourceRouteParams() {
-        return null;
-      },
       async renderInterceptResponse() {
         throw new Error("should not render a separate intercept response");
       },
@@ -157,7 +151,7 @@ describe("app page request helpers", () => {
         return {
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
-          interceptSlot: intercept.slotName,
+          interceptSlotKey: intercept.slotKey,
         };
       },
     });
@@ -166,7 +160,7 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toEqual({
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
-      interceptSlot: "modal",
+      interceptSlotKey: "modal@app/feed/@modal",
     });
   });
 
