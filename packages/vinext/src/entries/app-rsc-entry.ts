@@ -955,11 +955,12 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
   // route it to the nearest error.tsx boundary (or global-error.tsx).
   const layoutMods = route.layouts.filter(Boolean);
 
-  // Convert URLSearchParams → plain object so we can pass it to
-  // resolveModuleMetadata (which expects Record<string, string | string[]>).
-  // Must be built before the layout loop so layouts receive the real searchParams.
-  // This same object is reused for pageProps.searchParams below.
-  const spObj = {};
+  // Convert URLSearchParams → plain object for page generateMetadata() and
+  // pageProps.searchParams. Built before the layout loop so the page metadata
+  // call (below) and pageProps can reference the same object.
+  // NOTE: Layouts do NOT receive searchParams in generateMetadata() — only
+  // pages do. This matches Next.js behavior (resolve-metadata.ts:777).
+  const spObj = Object.create(null);
   let hasSearchParams = false;
   if (searchParams && searchParams.forEach) {
     searchParams.forEach(function(v, k) {
@@ -983,7 +984,7 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
   for (let i = 0; i < layoutMods.length; i++) {
     const parentForThisLayout = accumulatedMetaPromise;
     // Kick off this layout's metadata resolution now (concurrent with others).
-    const metaPromise = resolveModuleMetadata(layoutMods[i], params, spObj, parentForThisLayout)
+    const metaPromise = resolveModuleMetadata(layoutMods[i], params, undefined, parentForThisLayout)
       .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
     layoutMetaPromises.push(metaPromise);
     // Advance accumulator: resolves to merged(layouts[0..i]) once layout[i] is done.
