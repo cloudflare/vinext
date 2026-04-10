@@ -6,7 +6,7 @@ export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
 
-export type AppElementValue = ReactNode | typeof UNMATCHED_SLOT | string | null;
+export type AppElementValue = ReactNode | symbol | string | null;
 export type AppWireElementValue = ReactNode | string | null;
 
 export type AppElements = Readonly<Record<string, AppElementValue>>;
