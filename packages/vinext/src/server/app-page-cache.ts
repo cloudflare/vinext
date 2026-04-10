@@ -172,8 +172,10 @@ export async function readAppPageCacheResponse(
         ];
 
         if (!options.isRscRequest) {
-          // HTML remains canonical across slot-state variants; only RSC cache
-          // entries fan out by mounted-slot header.
+          // HTML cache is slot-state-independent (canonical), so only refresh it
+          // during HTML-triggered regens. RSC-triggered regens only update the
+          // requesting client's RSC slot variant; a stale HTML cache entry will
+          // be regenerated independently by the next full-page HTML request.
           writes.push(
             options.isrSet(
               options.isrHtmlKey(options.cleanPathname),
