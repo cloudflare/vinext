@@ -466,6 +466,8 @@ export function consumePrefetchResponse(
 
   if (entry.snapshot) {
     if ((entry.snapshot.mountedSlotsHeader ?? null) !== mountedSlotsHeader) {
+      // Entry was already removed above. Slot mismatch means the prefetch
+      // used stale slot context and cannot be safely reused.
       return null;
     }
     if (Date.now() - entry.timestamp >= PREFETCH_CACHE_TTL) {

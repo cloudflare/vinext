@@ -160,6 +160,9 @@ export async function readAppPageCacheResponse(
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
+      // Dedup key is pathname-only: if multiple slot variants are stale
+      // concurrently, only one regen runs. Other variants refresh on
+      // their next STALE read.
       options.scheduleBackgroundRegeneration(options.cleanPathname, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
         const writes = [
