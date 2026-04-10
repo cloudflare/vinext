@@ -428,6 +428,142 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain('data-slot-page="ambiguous-override"');
   });
 
+  it("omits slot key on RSC request when slot has only default.tsx (no page) and slot is already mounted", () => {
+    const DefaultPage = () => createElement("p", null, "default-slot");
+    const elements = buildAppPageElements({
+      isRscRequest: true,
+      mountedSlotIds: new Set(["slot:team:/"]),
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          team: {
+            default: { default: DefaultPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "team",
+            page: null,
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/",
+      rootNotFoundModule: null,
+    });
+
+    // On RSC soft nav, a slot with only default.tsx (no page) should have its
+    // key absent so the browser retains prior content — but only when the slot
+    // is already mounted (browser told us via X-Vinext-Mounted-Slots header).
+    expect(elements["slot:team:/"]).toBeUndefined();
+  });
+
+  it("renders slot default.tsx on RSC request when slot is not in mountedSlotIds (first entry)", () => {
+    const DefaultPage = () => createElement("p", null, "default-slot");
+    const elements = buildAppPageElements({
+      isRscRequest: true,
+      mountedSlotIds: new Set([]),
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          team: {
+            default: { default: DefaultPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "team",
+            page: null,
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/",
+      rootNotFoundModule: null,
+    });
+
+    // Even on an RSC request, when the slot has not been mounted on the client
+    // yet (first navigation into this layout), default.tsx must render so the
+    // initial slot content is populated.
+    expect(elements["slot:team:/"]).toBeDefined();
+  });
+
+  it("renders slot default.tsx on hard navigation when slot has no page", () => {
+    const DefaultPage = () => createElement("p", null, "default-slot");
+    const elements = buildAppPageElements({
+      isRscRequest: false,
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          team: {
+            default: { default: DefaultPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "team",
+            page: null,
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/",
+      rootNotFoundModule: null,
+    });
+
+    // On hard navigation the default.tsx must render so the initial HTML is
+    // fully populated.
+    expect(elements["slot:team:/"]).toBeDefined();
+  });
+
   it("does not deadlock when a layout renders without children", async () => {
     const elements = buildAppPageElements({
       element: createElement("main", null, "Page content"),

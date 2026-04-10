@@ -17,6 +17,38 @@ export type AppElementsMetadata = {
   rootLayoutTreePath: string | null;
 };
 
+export function normalizeMountedSlotsHeader(header: string | null | undefined): string | null {
+  if (!header) {
+    return null;
+  }
+
+  const slotIds = Array.from(
+    new Set(
+      header
+        .split(/\s+/)
+        .map((slotId) => slotId.trim())
+        .filter(Boolean),
+    ),
+  ).sort();
+
+  return slotIds.length > 0 ? slotIds.join(" ") : null;
+}
+
+export function getMountedSlotIds(elements: AppElements): string[] {
+  return Object.keys(elements)
+    .filter((key) => {
+      const value = elements[key];
+      return (
+        key.startsWith("slot:") && value !== null && value !== undefined && value !== UNMATCHED_SLOT
+      );
+    })
+    .sort();
+}
+
+export function getMountedSlotIdsHeader(elements: AppElements): string | null {
+  return normalizeMountedSlotsHeader(getMountedSlotIds(elements).join(" "));
+}
+
 export function normalizeAppElements(elements: AppWireElements): AppElements {
   let needsNormalization = false;
   for (const [key, value] of Object.entries(elements)) {

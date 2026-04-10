@@ -40,6 +40,7 @@ export type AppPageHtmlResponsePolicy = {
 
 export type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
+  mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
@@ -198,6 +199,9 @@ export function buildAppPageRscResponse(
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
     // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
     headers.set("X-Vinext-Params", encodeURIComponent(JSON.stringify(options.params)));
+  }
+  if (options.mountedSlotsHeader) {
+    headers.set("X-Vinext-Mounted-Slots", options.mountedSlotsHeader);
   }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);

@@ -35,6 +35,7 @@ import {
   restoreRscResponse,
   setClientParams,
   snapshotRscResponse,
+  setMountedSlotsHeader,
   setNavigationContext,
   toRscUrl,
   type CachedRscResponse,
@@ -47,6 +48,7 @@ import {
   getVinextBrowserGlobal,
 } from "./app-browser-stream.js";
 import {
+  getMountedSlotIdsHeader,
   normalizeAppElements,
   readAppElementsMetadata,
   type AppElements,
@@ -218,10 +220,16 @@ function evictVisitedResponseCacheIfNeeded(): void {
 
 function getVisitedResponse(
   rscUrl: string,
+  mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
 ): VisitedResponseCacheEntry | null {
   const cached = visitedResponseCache.get(rscUrl);
   if (!cached) {
+    return null;
+  }
+
+  if ((cached.response.mountedSlotsHeader ?? null) !== mountedSlotsHeader) {
+    visitedResponseCache.delete(rscUrl);
     return null;
   }
 
@@ -404,6 +412,7 @@ function BrowserRoot({
   useLayoutEffect(() => {
     dispatchBrowserRouterAction = dispatchTreeState;
     browserRouterStateRef = stateRef;
+    setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
     return () => {
       if (dispatchBrowserRouterAction === dispatchTreeState) {
         dispatchBrowserRouterAction = null;
@@ -411,8 +420,9 @@ function BrowserRoot({
       if (browserRouterStateRef === stateRef) {
         browserRouterStateRef = null;
       }
+      setMountedSlotsHeader(null);
     };
-  }, [dispatchTreeState]);
+  }, [dispatchTreeState, treeState.elements]);
 
   const committedTree = createElement(
     NavigationCommitSignal,
@@ -737,7 +747,9 @@ async function main(): Promise<void> {
       const isSameRoute =
         stripBasePath(url.pathname, __basePath) ===
         stripBasePath(window.location.pathname, __basePath);
-      const cachedRoute = getVisitedResponse(rscUrl, navigationKind);
+      const elementsAtNavStart = getBrowserRouterState().elements;
+      const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
+      const cachedRoute = getVisitedResponse(rscUrl, mountedSlotsHeader, navigationKind);
       if (cachedRoute) {
         // Check stale-navigation before and after createFromFetch. The pre-check
         // avoids wasted parse work; the post-check catches supersessions that
@@ -777,10 +789,13 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Continue using the slot state captured at navigation start for fetches
+      // and prefetch compatibility decisions.
+
       let navResponse: Response | undefined;
       let navResponseUrl: string | null = null;
       if (navigationKind !== "refresh") {
-        const prefetchedResponse = consumePrefetchResponse(rscUrl);
+        const prefetchedResponse = consumePrefetchResponse(rscUrl, mountedSlotsHeader);
         if (prefetchedResponse) {
           navResponse = restoreRscResponse(prefetchedResponse, false);
           navResponseUrl = prefetchedResponse.url;
@@ -788,8 +803,12 @@ async function main(): Promise<void> {
       }
 
       if (!navResponse) {
+        const rscFetchHeaders: Record<string, string> = { Accept: "text/x-component" };
+        if (mountedSlotsHeader) {
+          rscFetchHeaders["X-Vinext-Mounted-Slots"] = mountedSlotsHeader;
+        }
         navResponse = await fetch(rscUrl, {
-          headers: { Accept: "text/x-component" },
+          headers: rscFetchHeaders,
           credentials: "include",
         });
       }

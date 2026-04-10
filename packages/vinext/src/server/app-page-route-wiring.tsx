@@ -107,6 +107,8 @@ export type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  isRscRequest?: boolean;
+  mountedSlotIds?: ReadonlySet<string> | null;
   routePath: string;
 };
 
@@ -451,10 +453,24 @@ export function buildAppPageElements<
     const slotId = `slot:${slotName}:${treePath}`;
     const slotOverride = resolveSlotOverride(slotKey, slotName);
     const slotParams = getEffectiveSlotParams(slotKey, slotName);
-    const slotComponent =
-      getDefaultExport(slotOverride?.pageModule) ??
-      getDefaultExport(slot.page) ??
-      getDefaultExport(slot.default);
+    const overrideOrPageComponent =
+      getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
+    const defaultComponent = getDefaultExport(slot.default);
+
+    // On soft nav (RSC): omit key when only default.tsx exists and the slot is
+    // already mounted on the client. Absent key means the browser retains prior
+    // slot content rather than replacing it. When the slot is not yet mounted
+    // (first entry into this layout), include the key so default.tsx renders.
+    if (
+      !overrideOrPageComponent &&
+      defaultComponent &&
+      options.isRscRequest &&
+      options.mountedSlotIds?.has(slotId)
+    ) {
+      continue;
+    }
+
+    const slotComponent = overrideOrPageComponent ?? defaultComponent;
 
     if (!slotComponent) {
       elements[slotId] = APP_UNMATCHED_SLOT_WIRE_VALUE;

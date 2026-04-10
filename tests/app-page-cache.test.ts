@@ -124,7 +124,38 @@ describe("app page cache helpers", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
-  it("serves stale entries and regenerates HTML and RSC cache keys", async () => {
+  it("keys RSC cache reads by mounted-slot header and echoes the variant header", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet(key) {
+        expect(key).toBe("rsc:/cached:slot:auth:/");
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname, mountedSlotsHeader) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
+      },
+      async isrSet() {},
+      mountedSlotsHeader: "slot:auth:/",
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-mounted-slots")).toBe("slot:auth:/");
+  });
+
+  it("serves stale RSC entries and regenerates only the matching RSC cache key", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrSetCalls: Array<{
       key: string;
@@ -145,8 +176,8 @@ describe("app page cache helpers", () => {
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
-      isrRscKey(pathname) {
-        return "rsc:" + pathname;
+      isrRscKey(pathname, mountedSlotsHeader) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
       },
       async isrSet(key, data, revalidateSeconds, tags) {
         isrSetCalls.push({
@@ -157,6 +188,7 @@ describe("app page cache helpers", () => {
           tags,
         });
       },
+      mountedSlotsHeader: "slot:auth:/",
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
         return {
@@ -177,20 +209,52 @@ describe("app page cache helpers", () => {
 
     expect(isrSetCalls).toEqual([
       {
-        key: "html:/stale",
-        html: "<h1>fresh</h1>",
-        hasRscData: false,
-        revalidateSeconds: 60,
-        tags: ["/stale", "_N_T_/stale"],
-      },
-      {
-        key: "rsc:/stale",
+        key: "rsc:/stale:slot:auth:/",
         html: "",
         hasRscData: true,
         revalidateSeconds: 60,
         tags: ["/stale", "_N_T_/stale"],
       },
     ]);
+  });
+
+  it("serves stale HTML entries and regenerates HTML plus canonical RSC cache keys", async () => {
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrSetCalls: Array<string> = [];
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/stale-html",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname, mountedSlotsHeader) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
+      },
+      async isrSet(key) {
+        isrSetCalls.push(key);
+      },
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        return {
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/stale-html", "_N_T_/stale-html"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    await scheduledRegenerations[0]();
+    expect(isrSetCalls).toEqual(["rsc:/stale-html:none", "html:/stale-html"]);
   });
 
   it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {

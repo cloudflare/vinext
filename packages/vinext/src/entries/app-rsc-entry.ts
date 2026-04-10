@@ -538,7 +538,22 @@ function __isrCacheKey(pathname, suffix) {
   return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
 }
 function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname) { return __isrCacheKey(pathname, "rsc"); }
+function __isrRscKey(pathname, mountedSlotsHeader) {
+  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
+  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
+}
+function __normalizeMountedSlotsHeader(raw) {
+  if (!raw) return null;
+  const normalized = Array.from(
+    new Set(
+      raw
+        .split(" ")
+        .map((slotId) => slotId.trim())
+        .filter(Boolean),
+    ),
+  ).sort().join(" ");
+  return normalized || null;
+}
 function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
@@ -911,7 +926,7 @@ function findIntercept(pathname) {
   return null;
 }
 
-async function buildPageElements(route, params, routePath, opts, searchParams) {
+async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request) {
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     const _noExportRouteId = "route:" + routePath;
@@ -1024,9 +1039,18 @@ async function buildPageElements(route, params, routePath, opts, searchParams) {
     // dynamic, and this avoids false positives from React internals.
     if (hasSearchParams) markDynamicUsage();
   }
+  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
+    request?.headers?.get("x-vinext-mounted-slots"),
+  );
+  const mountedSlotIds = __mountedSlotsHeader
+    ? new Set(__mountedSlotsHeader.split(" "))
+    : null;
+
   return __buildAppPageElements({
     element: createElement(PageComponent, pageProps),
     globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+    isRscRequest,
+    mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
     resolvedMetadata,
@@ -1778,6 +1802,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           cleanPathname,
           undefined,
           url.searchParams,
+          isRscRequest,
+          request,
         );
       } else {
         const _actionRouteId = "route:" + cleanPathname;
@@ -2099,6 +2125,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
+    request.headers.get("x-vinext-mounted-slots"),
+  );
 
   // ── ISR cache read (production only) ─────────────────────────────────────
   // Read from cache BEFORE generateStaticParams and all rendering work.
@@ -2132,6 +2161,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       isrHtmlKey: __isrHtmlKey,
       isrRscKey: __isrRscKey,
       isrSet: __isrSet,
+      mountedSlotsHeader: __mountedSlotsHeader,
       revalidateSeconds,
       renderFreshPageForCache: async function() {
         // Re-render the page to produce fresh HTML + RSC data for the cache
@@ -2152,6 +2182,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             cleanPathname,
             undefined,
             new URLSearchParams(),
+            isRscRequest,
+            request,
           );
           const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
           const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
@@ -2208,6 +2240,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         cleanPathname,
         interceptOpts,
         interceptSearchParams,
+        isRscRequest,
+        request,
       );
     },
     cleanPathname,
@@ -2260,7 +2294,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   const __pageBuildResult = await __buildAppPageElement({
     buildPageElement() {
-      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams);
+      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams, isRscRequest, request);
     },
     renderErrorBoundaryPage(buildErr) {
       return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params, _scriptNonce);
@@ -2357,6 +2391,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       return PageComponent({ params: _asyncLayoutParams, searchParams: _asyncSearchParams });
     },
     revalidateSeconds,
+    mountedSlotsHeader: __mountedSlotsHeader,
     renderErrorBoundaryResponse(renderErr) {
       return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params, _scriptNonce);
     },

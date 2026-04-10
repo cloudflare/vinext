@@ -3,6 +3,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
+  UNMATCHED_SLOT,
+  getMountedSlotIds,
+  getMountedSlotIdsHeader,
   normalizeAppElements,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
@@ -217,5 +220,37 @@ describe("app browser entry state helpers", () => {
     expect(shouldHardNavigate(null, null)).toBe(false);
     expect(shouldHardNavigate(null, "/")).toBe(false);
     expect(shouldHardNavigate("/", null)).toBe(false);
+  });
+});
+
+describe("mounted slot helpers", () => {
+  it("collects only mounted slot ids", () => {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+      "layout:/": React.createElement("div", null, "layout"),
+      "slot:modal:/": React.createElement("div", null, "modal"),
+      "slot:sidebar:/": React.createElement("div", null, "sidebar"),
+      "slot:ghost:/": null,
+      "slot:missing:/": UNMATCHED_SLOT,
+    });
+
+    expect(getMountedSlotIds(elements)).toEqual(["slot:modal:/", "slot:sidebar:/"]);
+  });
+
+  it("serializes mounted slot ids into a stable header value", () => {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+      "slot:z:/": React.createElement("div", null, "z"),
+      "slot:a:/": React.createElement("div", null, "a"),
+    });
+
+    expect(getMountedSlotIdsHeader(elements)).toBe("slot:a:/ slot:z:/");
+  });
+
+  it("returns null when there are no mounted slots", () => {
+    const elements: AppElements = createResolvedElements("route:/dashboard", "/", {
+      "slot:ghost:/": null,
+      "slot:missing:/": UNMATCHED_SLOT,
+    });
+
+    expect(getMountedSlotIdsHeader(elements)).toBeNull();
   });
 });
