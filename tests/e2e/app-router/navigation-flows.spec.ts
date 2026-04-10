@@ -225,4 +225,48 @@ test.describe("App Router navigation flows", () => {
     await page.goto(`${BASE}/client-nav-test?q=test-param`);
     await expect(page.locator('[data-testid="client-search-q"]')).toHaveText("test-param");
   });
+
+  test("back/forward through rapid-nav pages maintains state", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") {
+        errors.push(msg.text());
+      }
+    });
+
+    // Start at page A
+    await page.goto(`${BASE}/nav-rapid/page-a`);
+    await expect(page.locator("h1")).toHaveText("Page A");
+    await waitForAppRouterHydration(page);
+
+    // Navigate A -> B
+    await page.click('[data-testid="page-a-link-to-b"]');
+    await expect(page.locator("h1")).toHaveText("Page B");
+
+    // Navigate B -> C
+    await page.click('[data-testid="link-to-c"]');
+    await expect(page.locator("h1")).toHaveText("Page C");
+
+    // Back navigation
+    await page.goBack();
+    await page.goBack();
+
+    // Should be back at A
+    await expect(page.locator("h1")).toHaveText("Page A");
+    await expect(page).toHaveURL(`${BASE}/nav-rapid/page-a`);
+
+    // Forward navigation
+    await page.goForward();
+    await page.goForward();
+
+    // Should be back at C
+    await expect(page.locator("h1")).toHaveText("Page C");
+    await expect(page).toHaveURL(`${BASE}/nav-rapid/page-c`);
+
+    // Verify no navigation-related errors
+    const navigationErrors = errors.filter(
+      (e) => e.includes("navigation") || e.includes("vinext") || e.includes("router"),
+    );
+    expect(navigationErrors).toHaveLength(0);
+  });
 });
