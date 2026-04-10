@@ -331,8 +331,11 @@ function evictPrefetchCacheIfNeeded(): void {
  * (the caller falls back to a fresh fetch, which is acceptable).
  *
  * Prefer prefetchRscResponse() for new call-sites — it handles the full
- * prefetch lifecycle including dedup.  storePrefetchResponse() is kept for
- * backward compatibility and test helpers.
+ * prefetch lifecycle including dedup and explicit slot context.
+ * storePrefetchResponse() is kept for backward compatibility and test
+ * helpers. It is slot-unaware: the snapshot's mountedSlotsHeader comes
+ * from the response headers, not the caller, so consumePrefetchResponse
+ * may reject the entry if the caller's slot context differs.
  *
  * NB: Caller is responsible for managing getPrefetchedUrls() — this
  * function only stores the response in the prefetch cache.
