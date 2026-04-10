@@ -309,6 +309,7 @@ describe("slot primitives", () => {
       {
         "layout:/": React.createElement("div", null, "layout"),
         "page:/feed": React.createElement("div", null, "feed"),
+        // @ts-expect-error - typescript is not correctly inferring the type of the symbol
         "slot:modal:/feed": UNMATCHED_SLOT,
       },
       true,
