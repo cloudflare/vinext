@@ -100,7 +100,9 @@ test.describe("Layout persistence", () => {
     await page.goto(`${BASE}/dashboard`);
     await waitForAppRouterHydration(page);
 
-    expect(await waitForInteractiveCounter(page, layoutCounter)).toBeGreaterThan(0);
+    await waitForInteractiveCounter(page, layoutCounter);
+    await incrementCounter(page, layoutCounter, 2);
+    await incrementCounter(page, layoutCounter, 3);
 
     // Hard navigation (full page load) should reset everything
     await page.goto(`${BASE}/dashboard`);
@@ -151,6 +153,26 @@ test.describe("Template remount", () => {
       `Template count: ${initialCount + 1}`,
     );
   });
+
+  test("template counter does not reset on search param change within same segment", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/dashboard`);
+    await expect(page.locator("h1")).toHaveText("Dashboard");
+    await waitForAppRouterHydration(page);
+
+    const initialCount = await waitForInteractiveCounter(page, templateCounter);
+    await incrementCounter(page, templateCounter, initialCount + 1);
+
+    // Navigate to /dashboard?tab=settings — same pathname, only search params change.
+    // The root segment stays "dashboard", so the root template must NOT remount.
+    await page.getByTestId("dash-tab-link").click();
+    await expect(page.locator("h1")).toHaveText("Dashboard");
+
+    await expect(page.getByTestId("template-count")).toHaveText(
+      `Template count: ${initialCount + 1}`,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -165,13 +187,11 @@ test.describe("Error recovery across navigation", () => {
     await waitForAppRouterHydration(page);
 
     // Trigger error
-    await expect(async () => {
-      await page.click('[data-testid="trigger-error"]');
-      await expect(page.locator("#error-boundary")).toBeVisible({ timeout: 2_000 });
-    }).toPass({ timeout: 15_000 });
+    await page.getByTestId("trigger-error").waitFor({ state: "visible" });
+    await page.getByTestId("trigger-error").click();
 
     // Error boundary should be visible
-    await expect(page.locator("#error-boundary")).toBeVisible();
+    await expect(page.locator("#error-boundary")).toBeVisible({ timeout: 10_000 });
 
     // Client-navigate away to home via the link in the error boundary
     await page.click('[data-testid="error-go-home"]');
@@ -249,6 +269,10 @@ test.describe("Parallel slot persistence", () => {
     // slot content is retained (absent key = persisted from prior soft nav).
     await expect(page.locator('[data-testid="team-panel"]')).toBeVisible();
     await expect(page.locator('[data-testid="analytics-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="team-slot"]')).toBeVisible();
+    await expect(page.locator('[data-testid="analytics-slot"]')).toBeVisible();
+    await expect(page.locator('[data-testid="team-default"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="analytics-default"]')).not.toBeVisible();
   });
 
   test("parallel slots show default.tsx on hard navigation to child route", async ({ page }) => {
