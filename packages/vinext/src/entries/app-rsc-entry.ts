@@ -1412,7 +1412,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context");
+  const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context")?.replaceAll("\0", "") || null;
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
