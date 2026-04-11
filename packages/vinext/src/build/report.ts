@@ -12,11 +12,10 @@
  * execution). Vite's parseAst() is NOT used because it doesn't handle
  * TypeScript syntax.
  *
- * Limitation: without running the build, we cannot detect dynamic API usage
- * (headers(), cookies(), connection(), etc.) that implicitly forces a route
- * dynamic. Routes without explicit `export const dynamic` or
- * `export const revalidate` are classified as "unknown" rather than "static"
- * to avoid false confidence.
+ * Dynamic API imports (headers(), cookies(), connection(), unstable_noStore())
+ * are detected heuristically and classified as "ssr". Routes without explicit
+ * config or detectable dynamic API usage are classified as "unknown" rather
+ * than "static" to avoid false confidence.
  */
 
 import fs from "node:fs";
@@ -40,6 +39,10 @@ export type RouteRow = {
    * Used by `formatBuildReport` to add a note in the legend.
    */
   prerendered?: boolean;
+  /** Pre-render status from the prerender phase, if available. */
+  prerenderStatus?: "rendered" | "skipped" | "error";
+  /** For dynamic routes: the concrete URLs that were pre-rendered. */
+  prerenderPaths?: string[];
 };
 
 // ─── Regex-based export detection ────────────────────────────────────────────
@@ -96,6 +99,47 @@ export function extractExportConstNumber(code: string, name: string): number | n
   const m = re.exec(code);
   if (!m) return null;
   return m[1] === "Infinity" ? Infinity : parseFloat(m[1]);
+}
+
+// ─── Dynamic API detection (module-level compiled regexes) ───────────────────
+
+// Anchored to line start (^) to avoid matching commented-out imports.
+// Uses multiline flag so ^ matches each line in multi-line source.
+// Negative lookbehind (?<!\btype\s) skips inline type modifiers like
+// `import { type cookies }` which are erased at compile time.
+
+/** Detects `import { headers | cookies | draftMode } from "next/headers"` */
+const DYNAMIC_HEADERS_RE =
+  /^\s*import\s*\{[^}]*(?<!\btype\s)\b(?:headers|cookies|draftMode)\b[^}]*\}\s*from\s*['"]next\/headers['"]/m;
+
+/** Detects `import { connection } from "next/server"` (stabilized replacement for unstable_noStore) */
+const DYNAMIC_SERVER_RE =
+  /^\s*import\s*\{[^}]*(?<!\btype\s)\bconnection\b[^}]*\}\s*from\s*['"]next\/server['"]/m;
+
+/** Detects `import { unstable_noStore | noStore } from "next/cache"` */
+const DYNAMIC_CACHE_RE =
+  /^\s*import\s*\{[^}]*(?<!\btype\s)\b(?:unstable_noStore|noStore)\b[^}]*\}\s*from\s*['"]next\/cache['"]/m;
+
+/**
+ * Detects imports of Next.js dynamic APIs that implicitly force a route dynamic.
+ * Checks for:
+ *   - import { headers, cookies, draftMode } from "next/headers"
+ *   - import { connection } from "next/server"
+ *   - import { unstable_noStore, noStore } from "next/cache"
+ *
+ * This is a heuristic — importing a function doesn't guarantee it's called
+ * at render time (it could be conditionally used or in a non-render helper).
+ * But it provides better signal than "unknown" for the build report.
+ *
+ * Limitations:
+ *   - Does not detect `require()` or dynamic `import()` calls
+ *   - Does not detect `type` imports (which are erased at runtime — correct behavior)
+ *   - Anchored to line start to avoid false positives from commented-out imports
+ */
+export function detectsDynamicApiUsage(code: string): boolean {
+  return (
+    DYNAMIC_HEADERS_RE.test(code) || DYNAMIC_SERVER_RE.test(code) || DYNAMIC_CACHE_RE.test(code)
+  );
 }
 
 /**
@@ -701,9 +745,15 @@ export function classifyAppRoute(
   // Fall back to isDynamic flag (dynamic URL segments without explicit config)
   if (isDynamic) return { type: "ssr" };
 
-  // No explicit config and no dynamic URL segments — we can't confirm static
-  // without running the build (dynamic API calls like headers() are invisible
-  // to static analysis). Report as unknown rather than falsely claiming static.
+  // Check for imports of dynamic APIs — these strongly suggest the route is
+  // dynamic even without explicit `export const dynamic` configuration.
+  // This improves on "unknown" but remains a heuristic: the import could be
+  // conditional or unused at render time.
+  if (detectsDynamicApiUsage(code)) return { type: "ssr" };
+
+  // No explicit config, no dynamic URL segments, and no detected dynamic API
+  // imports — we can't confirm static without running the build.
+  // Report as unknown rather than falsely claiming static.
   return { type: "unknown" };
 }
 
@@ -726,17 +776,33 @@ export function buildReportRows(options: {
 }): RouteRow[] {
   const rows: RouteRow[] = [];
 
-  // Build a set of routes that were confirmed rendered by speculative prerender.
-  const renderedRoutes = new Set<string>();
+  // Build maps from prerender results for route enrichment.
+  const prerenderStatusMap = new Map<string, "rendered" | "skipped" | "error">();
+  const prerenderPathsMap = new Map<string, string[]>();
   if (options.prerenderResult) {
     for (const r of options.prerenderResult.routes) {
-      if (r.status === "rendered") renderedRoutes.add(r.route);
+      // For rendered routes with a concrete path (dynamic routes expanded to URLs),
+      // collect all paths under the route pattern.
+      if (r.status === "rendered") {
+        prerenderStatusMap.set(r.route, "rendered");
+        if (r.path) {
+          const paths = prerenderPathsMap.get(r.route) ?? [];
+          paths.push(r.path);
+          prerenderPathsMap.set(r.route, paths);
+        }
+      } else if (!prerenderStatusMap.has(r.route)) {
+        // Only set skipped/error if not already rendered (a dynamic route may
+        // have some rendered paths and some errors).
+        prerenderStatusMap.set(r.route, r.status);
+      }
     }
   }
 
   for (const route of options.pageRoutes ?? []) {
     const { type, revalidate } = classifyPagesRoute(route.filePath);
-    rows.push({ pattern: route.pattern, type, revalidate });
+    const prerenderStatus = prerenderStatusMap.get(route.pattern);
+    const prerenderPaths = prerenderPathsMap.get(route.pattern);
+    rows.push({ pattern: route.pattern, type, revalidate, prerenderStatus, prerenderPaths });
   }
 
   for (const route of options.apiRoutes ?? []) {
@@ -745,11 +811,19 @@ export function buildReportRows(options: {
 
   for (const route of options.appRoutes ?? []) {
     const { type, revalidate } = classifyAppRoute(route.pagePath, route.routePath, route.isDynamic);
-    if (type === "unknown" && renderedRoutes.has(route.pattern)) {
+    const prerenderStatus = prerenderStatusMap.get(route.pattern);
+    const prerenderPaths = prerenderPathsMap.get(route.pattern);
+    if (type === "unknown" && prerenderStatus === "rendered") {
       // Speculative prerender confirmed this route is static.
-      rows.push({ pattern: route.pattern, type: "static", prerendered: true });
+      rows.push({
+        pattern: route.pattern,
+        type: "static",
+        prerendered: true,
+        prerenderStatus,
+        prerenderPaths,
+      });
     } else {
-      rows.push({ pattern: route.pattern, type, revalidate });
+      rows.push({ pattern: route.pattern, type, revalidate, prerenderStatus, prerenderPaths });
     }
   }
 
@@ -761,7 +835,7 @@ export function buildReportRows(options: {
 
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
-const SYMBOLS: Record<RouteType, string> = {
+export const SYMBOLS: Record<RouteType, string> = {
   static: "○",
   isr: "◐",
   ssr: "ƒ",
@@ -804,8 +878,20 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
     const sym = SYMBOLS[row.type];
     const suffix =
       row.type === "isr" && row.revalidate !== undefined ? `  (${row.revalidate}s)` : "";
+    // Prerender annotation
+    let prerenderSuffix = "";
+    if (row.prerenderStatus === "rendered") {
+      const pathCount = row.prerenderPaths?.length;
+      prerenderSuffix = pathCount
+        ? `  [prerendered: ${pathCount} path${pathCount !== 1 ? "s" : ""}]`
+        : "  [prerendered]";
+    } else if (row.prerenderStatus === "skipped") {
+      prerenderSuffix = "  [skipped]";
+    } else if (row.prerenderStatus === "error") {
+      prerenderSuffix = "  [error]";
+    }
     const padding = " ".repeat(maxPatternLen - row.pattern.length);
-    lines.push(`  ${corner} ${sym} ${row.pattern}${padding}${suffix}`);
+    lines.push(`  ${corner} ${sym} ${row.pattern}${padding}${suffix}${prerenderSuffix}`);
   });
 
   lines.push("");
@@ -819,11 +905,9 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   // Explanatory note — only shown when unknown routes are present
   if (usedTypes.includes("unknown")) {
     lines.push("");
-    lines.push("  ? Some routes could not be classified. vinext currently uses static analysis");
-    lines.push(
-      "    and cannot detect dynamic API usage (headers(), cookies(), etc.) at build time.",
-    );
-    lines.push("    Automatic classification will be improved in a future release.");
+    lines.push("  ? Some routes could not be fully classified by static analysis. Routes that");
+    lines.push("    import dynamic APIs (headers(), cookies(), etc.) are detected as dynamic,");
+    lines.push("    but other dynamic patterns may not be caught without running the build.");
   }
 
   // Speculative-render note — shown when any routes were confirmed static by prerender
@@ -834,6 +918,20 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
       "  ○ Routes marked static were confirmed by speculative prerender (attempted render",
     );
     lines.push("    succeeded without dynamic API usage).");
+  }
+
+  // Prerender summary — shown when any routes have prerender status
+  const hasAnyPrerender = rows.some((r) => r.prerenderStatus);
+  if (hasAnyPrerender) {
+    const renderedCount = rows.filter((r) => r.prerenderStatus === "rendered").length;
+    const skippedCount = rows.filter((r) => r.prerenderStatus === "skipped").length;
+    const errorCount = rows.filter((r) => r.prerenderStatus === "error").length;
+    lines.push("");
+    const summaryParts: string[] = [];
+    if (renderedCount > 0) summaryParts.push(`${renderedCount} prerendered`);
+    if (skippedCount > 0) summaryParts.push(`${skippedCount} skipped`);
+    if (errorCount > 0) summaryParts.push(`${errorCount} failed`);
+    lines.push(`  Prerender: ${summaryParts.join(", ")}`);
   }
 
   return lines.join("\n");
