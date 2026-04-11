@@ -244,13 +244,54 @@ export async function validateServerActionPayload(
  * Check if an origin matches any pattern in the allowed origins list.
  * Supports wildcard subdomains (e.g. `*.example.com`).
  */
-function isOriginAllowed(origin: string, allowed: string[]): boolean {
+/**
+ * Segment-by-segment domain matching for wildcard origin patterns.
+ * `*` matches exactly one DNS label; `**` matches one or more labels.
+ *
+ * Ported from Next.js: packages/next/src/server/app-render/csrf-protection.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/csrf-protection.ts
+ */
+function matchWildcardDomain(domain: string, pattern: string): boolean {
+  const normalizedDomain = domain.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const normalizedPattern = pattern.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+  const domainParts = normalizedDomain.split(".");
+  const patternParts = normalizedPattern.split(".");
+
+  if (patternParts.length < 1) return false;
+  if (domainParts.length < patternParts.length) return false;
+
+  // Prevent wildcards from matching entire domains (e.g. '**' or '*.com')
+  if (patternParts.length === 1 && (patternParts[0] === "*" || patternParts[0] === "**")) {
+    return false;
+  }
+
+  while (patternParts.length) {
+    const patternPart = patternParts.pop();
+    const domainPart = domainParts.pop();
+
+    switch (patternPart) {
+      case "":
+        return false;
+      case "*":
+        if (domainPart) continue;
+        else return false;
+      case "**":
+        if (patternParts.length > 0) return false;
+        return domainPart !== undefined;
+      default:
+        if (patternPart !== domainPart) return false;
+    }
+  }
+
+  return domainParts.length === 0;
+}
+
+export function isOriginAllowed(origin: string, allowed: string[]): boolean {
   for (const pattern of allowed) {
-    if (pattern.startsWith("*.")) {
-      // Wildcard: *.example.com matches sub.example.com, a.b.example.com
-      const suffix = pattern.slice(1); // ".example.com"
-      if (origin === pattern.slice(2) || origin.endsWith(suffix)) return true;
-    } else if (origin === pattern) {
+    if (pattern.includes("*")) {
+      if (matchWildcardDomain(origin, pattern)) return true;
+    } else if (origin.toLowerCase() === pattern.toLowerCase()) {
       return true;
     }
   }
