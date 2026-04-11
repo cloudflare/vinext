@@ -250,7 +250,7 @@ describe("app browser entry state helpers", () => {
 
   it("clears stale parallel slots on traverse", () => {
     const state = createState({
-      elements: createResolvedElements("route:/feed", "/", {
+      elements: createResolvedElements("route:/feed", "/", null, {
         "slot:modal:/feed": React.createElement("div", null, "modal"),
       }),
     });
@@ -258,6 +258,7 @@ describe("app browser entry state helpers", () => {
 
     const nextState = routerReducer(state, {
       elements: nextElements,
+      interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
       renderId: 1,
       rootLayoutTreePath: "/",
@@ -270,7 +271,7 @@ describe("app browser entry state helpers", () => {
 
   it("preserves absent parallel slots on navigate", () => {
     const state = createState({
-      elements: createResolvedElements("route:/feed", "/", {
+      elements: createResolvedElements("route:/feed", "/", null, {
         "slot:modal:/feed": React.createElement("div", null, "modal"),
       }),
     });
@@ -278,6 +279,7 @@ describe("app browser entry state helpers", () => {
 
     const nextState = routerReducer(state, {
       elements: nextElements,
+      interceptionContext: null,
       navigationSnapshot: createState().navigationSnapshot,
       renderId: 1,
       rootLayoutTreePath: "/",
