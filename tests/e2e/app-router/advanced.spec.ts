@@ -150,6 +150,24 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  test("back then forward restores intercepted modal view", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.goBack();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.goForward();
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
   test("prefetches keep separate cache entries for feed and gallery interception contexts", async ({
     page,
   }) => {
