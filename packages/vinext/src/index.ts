@@ -77,6 +77,7 @@ import {
   createLocalFontsPlugin,
   _findBalancedObject,
   _findCallEnd,
+  _rewriteCachedFontCssToServedUrls,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
@@ -4205,6 +4206,6 @@ export { hasMdxFiles as _hasMdxFiles };
 export { _mdxScanCache };
 export { scanPublicFileRoutes as _scanPublicFileRoutes };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
-export { _findBalancedObject, _findCallEnd };
+export { _findBalancedObject, _findCallEnd, _rewriteCachedFontCssToServedUrls };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };

@@ -1,9 +1,18 @@
 import { mergeElements } from "../shims/slot.js";
+import { stripBasePath } from "../utils/base-path.js";
 import { readAppElementsMetadata, type AppElements } from "./app-elements.js";
 import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
 
+const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
+
+type HistoryStateRecord = {
+  [key: string]: unknown;
+};
+
 export type AppRouterState = {
   elements: AppElements;
+  interceptionContext: string | null;
+  previousNextUrl: string | null;
   renderId: number;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   rootLayoutTreePath: string | null;
@@ -12,7 +21,9 @@ export type AppRouterState = {
 
 export type AppRouterAction = {
   elements: AppElements;
+  interceptionContext: string | null;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
   routeId: string;
@@ -21,6 +32,8 @@ export type AppRouterAction = {
 
 export type PendingNavigationCommit = {
   action: AppRouterAction;
+  interceptionContext: string | null;
+  previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
 };
@@ -31,13 +44,59 @@ export type ClassifiedPendingNavigationCommit = {
   pending: PendingNavigationCommit;
 };
 
+function cloneHistoryState(state: unknown): HistoryStateRecord {
+  if (!state || typeof state !== "object") {
+    return {};
+  }
+
+  const nextState: HistoryStateRecord = {};
+  for (const [key, value] of Object.entries(state)) {
+    nextState[key] = value;
+  }
+  return nextState;
+}
+
+export function createHistoryStateWithPreviousNextUrl(
+  state: unknown,
+  previousNextUrl: string | null,
+): HistoryStateRecord | null {
+  const nextState = cloneHistoryState(state);
+
+  if (previousNextUrl === null) {
+    delete nextState[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
+  } else {
+    nextState[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY] = previousNextUrl;
+  }
+
+  return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
+  const value = cloneHistoryState(state)[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
+  return typeof value === "string" ? value : null;
+}
+
+export function resolveInterceptionContextFromPreviousNextUrl(
+  previousNextUrl: string | null,
+  basePath: string = "",
+): string | null {
+  if (previousNextUrl === null) {
+    return null;
+  }
+
+  const parsedUrl = new URL(previousNextUrl, "http://localhost");
+  return stripBasePath(parsedUrl.pathname, basePath);
+}
+
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
     case "traverse":
     case "navigate":
       return {
         elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
+        interceptionContext: action.interceptionContext,
         navigationSnapshot: action.navigationSnapshot,
+        previousNextUrl: action.previousNextUrl,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
         routeId: action.routeId,
@@ -45,7 +104,9 @@ export function routerReducer(state: AppRouterState, action: AppRouterAction): A
     case "replace":
       return {
         elements: action.elements,
+        interceptionContext: action.interceptionContext,
         navigationSnapshot: action.navigationSnapshot,
+        previousNextUrl: action.previousNextUrl,
         renderId: action.renderId,
         rootLayoutTreePath: action.rootLayoutTreePath,
         routeId: action.routeId,
@@ -92,21 +153,31 @@ export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  previousNextUrl?: string | null;
   renderId: number;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
   const metadata = readAppElementsMetadata(elements);
+  const previousNextUrl =
+    options.previousNextUrl !== undefined
+      ? options.previousNextUrl
+      : options.currentState.previousNextUrl;
 
   return {
     action: {
       elements,
+      interceptionContext: metadata.interceptionContext,
       navigationSnapshot: options.navigationSnapshot,
+      previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
       routeId: metadata.routeId,
       type: options.type,
     },
+    // Convenience aliases — always equal action.interceptionContext / action.rootLayoutTreePath / action.routeId.
+    interceptionContext: metadata.interceptionContext,
+    previousNextUrl,
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
   };
@@ -117,6 +188,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   currentState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   nextElements: Promise<AppElements>;
+  previousNextUrl?: string | null;
   renderId: number;
   startedNavigationId: number;
   type: "navigate" | "replace" | "traverse";
@@ -125,6 +197,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
     currentState: options.currentState,
     nextElements: options.nextElements,
     navigationSnapshot: options.navigationSnapshot,
+    previousNextUrl: options.previousNextUrl,
     renderId: options.renderId,
     type: options.type,
   });

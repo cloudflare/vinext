@@ -1,8 +1,11 @@
 import { Suspense, type ComponentType, type ReactNode } from "react";
 import {
+  APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
+  createAppPayloadPageId,
+  createAppPayloadRouteId,
   type AppElements,
 } from "./app-elements.js";
 import { ErrorBoundary, NotFoundBoundary } from "../shims/error-boundary.js";
@@ -107,6 +110,7 @@ export type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
   routePath: string;
@@ -301,8 +305,9 @@ export function buildAppPageElements<
   TErrorModule extends AppPageErrorModule,
 >(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
   const elements: Record<string, ReactNode | string | null> = {};
-  const routeId = `route:${options.routePath}`;
-  const pageId = `page:${options.routePath}`;
+  const interceptionContext = options.interceptionContext ?? null;
+  const routeId = createAppPayloadRouteId(options.routePath, interceptionContext);
+  const pageId = createAppPayloadPageId(options.routePath, interceptionContext);
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
@@ -378,6 +383,7 @@ export function buildAppPageElements<
   }
 
   elements[APP_ROUTE_KEY] = routeId;
+  elements[APP_INTERCEPTION_CONTEXT_KEY] = interceptionContext;
   elements[APP_ROOT_LAYOUT_KEY] = rootLayoutTreePath;
   elements[pageId] = renderAfterAppDependencies(options.element, pageDependencies);
 

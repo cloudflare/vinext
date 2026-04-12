@@ -1,17 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate. The browser entry sets
- * window.__VINEXT_RSC_ROOT__ after hydration completes.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("rapid navigation", () => {
   test("A→B→C rapid navigation completes smoothly", async ({ page }) => {
@@ -25,7 +15,7 @@ test.describe("rapid navigation", () => {
     // Start at page A
     await page.goto(`${BASE}/nav-rapid/page-a`);
     await expect(page.locator("h1")).toHaveText("Page A");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click B then immediately click C (before B fully commits)
     // Use a single page.evaluate() to click both links atomically.
@@ -60,7 +50,7 @@ test.describe("rapid navigation", () => {
     // Start at page A
     await page.goto(`${BASE}/nav-rapid/page-a`);
     await expect(page.locator("h1")).toHaveText("Page A");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to B then immediately change query param (same-route nav)
     // Use a single page.evaluate() to click both links atomically.

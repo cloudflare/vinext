@@ -12,6 +12,7 @@
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import { createAppPayloadCacheKey } from "../server/app-elements.js";
 import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
@@ -274,6 +275,22 @@ export function toRscUrl(href: string): string {
   return normalizedPath + ".rsc" + query;
 }
 
+export function getCurrentInterceptionContext(): string | null {
+  if (isServer) {
+    return null;
+  }
+
+  return stripBasePath(window.location.pathname, __basePath);
+}
+
+export function getCurrentNextUrl(): string {
+  if (isServer) {
+    return "/";
+  }
+
+  return window.location.pathname + window.location.search;
+}
+
 /** Get or create the shared in-memory RSC prefetch cache on window. */
 export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
   if (isServer) return new Map();
@@ -285,7 +302,7 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
 
 /**
  * Get or create the shared set of already-prefetched RSC URLs on window.
- * Keyed by rscUrl so that the browser entry can clear entries when consumed.
+ * Keyed by interception-aware cache key so distinct source routes do not alias.
  */
 export function getPrefetchedUrls(): Set<string> {
   if (isServer) return new Set();
@@ -340,7 +357,12 @@ function evictPrefetchCacheIfNeeded(): void {
  * NB: Caller is responsible for managing getPrefetchedUrls() — this
  * function only stores the response in the prefetch cache.
  */
-export function storePrefetchResponse(rscUrl: string, response: Response): void {
+export function storePrefetchResponse(
+  rscUrl: string,
+  response: Response,
+  interceptionContext: string | null = null,
+): void {
+  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
   evictPrefetchCacheIfNeeded();
   const entry: PrefetchCacheEntry = { timestamp: Date.now() };
   entry.pending = snapshotRscResponse(response)
@@ -348,12 +370,12 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
       entry.snapshot = snapshot;
     })
     .catch(() => {
-      getPrefetchCache().delete(rscUrl);
+      getPrefetchCache().delete(cacheKey);
     })
     .finally(() => {
       entry.pending = undefined;
     });
-  getPrefetchCache().set(rscUrl, entry);
+  getPrefetchCache().set(cacheKey, entry);
 }
 
 /**
@@ -411,8 +433,10 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
 export function prefetchRscResponse(
   rscUrl: string,
   fetchPromise: Promise<Response>,
+  interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
 ): void {
+  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
@@ -429,13 +453,13 @@ export function prefetchRscResponse(
           mountedSlotsHeader,
         };
       } else {
-        prefetched.delete(rscUrl);
-        cache.delete(rscUrl);
+        prefetched.delete(cacheKey);
+        cache.delete(cacheKey);
       }
     })
     .catch(() => {
-      prefetched.delete(rscUrl);
-      cache.delete(rscUrl);
+      prefetched.delete(cacheKey);
+      cache.delete(cacheKey);
     })
     .finally(() => {
       entry.pending = undefined;
@@ -444,7 +468,7 @@ export function prefetchRscResponse(
   // Insert the new entry before evicting. FIFO evicts from the front of the
   // Map (oldest insertion order), so the just-appended entry is safe — only
   // entries inserted before it are candidates for removal.
-  cache.set(rscUrl, entry);
+  cache.set(cacheKey, entry);
   evictPrefetchCacheIfNeeded();
 }
 
@@ -455,17 +479,19 @@ export function prefetchRscResponse(
  */
 export function consumePrefetchResponse(
   rscUrl: string,
+  interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
 ): CachedRscResponse | null {
+  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
-  const entry = cache.get(rscUrl);
+  const entry = cache.get(cacheKey);
   if (!entry) return null;
 
   // Don't consume pending entries — let the navigation fetch independently.
   if (entry.pending) return null;
 
-  cache.delete(rscUrl);
-  getPrefetchedUrls().delete(rscUrl);
+  cache.delete(cacheKey);
+  getPrefetchedUrls().delete(cacheKey);
 
   if (entry.snapshot) {
     if ((entry.snapshot.mountedSlotsHeader ?? null) !== mountedSlotsHeader) {
@@ -1210,13 +1236,18 @@ const _appRouter = {
     // prefetchRscResponse only manages the cache Map, not the URL set.
     const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
+    const interceptionContext = getCurrentInterceptionContext();
+    const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
     const prefetched = getPrefetchedUrls();
-    if (prefetched.has(rscUrl)) return;
-    prefetched.add(rscUrl);
+    if (prefetched.has(cacheKey)) return;
+    prefetched.add(cacheKey);
     const mountedSlotsHeader = getMountedSlotsHeader();
-    const headers: Record<string, string> = { Accept: "text/x-component" };
+    const headers = new Headers({ Accept: "text/x-component" });
     if (mountedSlotsHeader) {
-      headers["X-Vinext-Mounted-Slots"] = mountedSlotsHeader;
+      headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+    }
+    if (interceptionContext !== null) {
+      headers.set("X-Vinext-Interception-Context", interceptionContext);
     }
     prefetchRscResponse(
       rscUrl,
@@ -1225,6 +1256,7 @@ const _appRouter = {
         credentials: "include",
         priority: "low" as RequestInit["priority"],
       }),
+      interceptionContext,
       mountedSlotsHeader,
     );
   },

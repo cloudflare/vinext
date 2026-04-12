@@ -121,7 +121,11 @@ declare module "next/navigation" {
   export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
-  export function storePrefetchResponse(rscUrl: string, response: Response): void;
+  export function storePrefetchResponse(
+    rscUrl: string,
+    response: Response,
+    interceptionContext?: string | null,
+  ): void;
 }
 
 declare module "next/image" {
@@ -271,7 +275,6 @@ declare module "next/constants" {
     | typeof PHASE_DEVELOPMENT_SERVER;
 
   export const PAGES_MANIFEST: string;
-  export const WEBPACK_STATS: string;
   export const APP_PATHS_MANIFEST: string;
   export const APP_PATH_ROUTES_MANIFEST: string;
   export const BUILD_MANIFEST: string;
@@ -280,6 +283,7 @@ declare module "next/constants" {
   export const NEXT_FONT_MANIFEST: string;
   export const EXPORT_MARKER: string;
   export const EXPORT_DETAIL: string;
+  export const PREFETCH_HINTS: string;
   export const PRERENDER_MANIFEST: string;
   export const ROUTES_MANIFEST: string;
   export const IMAGES_MANIFEST: string;

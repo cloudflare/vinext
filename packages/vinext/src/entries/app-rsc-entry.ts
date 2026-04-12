@@ -59,6 +59,7 @@ const appPageBoundaryRenderPath = resolveEntryPath(
   "../server/app-page-boundary-render.js",
   import.meta.url,
 );
+const appElementsPath = resolveEntryPath("../server/app-elements.js", import.meta.url);
 const appPageRouteWiringPath = resolveEntryPath(
   "../server/app-page-route-wiring.js",
   import.meta.url,
@@ -390,6 +391,10 @@ import {
   renderAppPageErrorBoundary as __renderAppPageErrorBoundary,
   renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback,
 } from ${JSON.stringify(appPageBoundaryRenderPath)};
+import {
+  APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
+  createAppPayloadRouteId as __createAppPayloadRouteId,
+} from ${JSON.stringify(appElementsPath)};
 import {
   buildAppPageElements as __buildAppPageElements,
   createAppPageTreePath as __createAppPageTreePath,
@@ -933,7 +938,8 @@ function findIntercept(pathname) {
 async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request) {
   const PageComponent = route.page?.default;
   if (!PageComponent) {
-    const _noExportRouteId = "route:" + routePath;
+    const _interceptionContext = opts?.interceptionContext ?? null;
+    const _noExportRouteId = __createAppPayloadRouteId(routePath, _interceptionContext);
     let _noExportRootLayout = null;
     if (route.layouts?.length > 0) {
       // Compute the root layout tree path for this error payload using the
@@ -942,6 +948,7 @@ async function buildPageElements(route, params, routePath, opts, searchParams, i
       _noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);
     }
     return {
+      [__APP_INTERCEPTION_CONTEXT_KEY]: _interceptionContext,
       __route: _noExportRouteId,
       __rootLayout: _noExportRootLayout,
       [_noExportRouteId]: createElement("div", null, "Page has no default export"),
@@ -1061,6 +1068,7 @@ async function buildPageElements(route, params, routePath, opts, searchParams, i
     matchedParams: params,
     resolvedMetadata,
     resolvedViewport,
+    interceptionContext: opts?.interceptionContext ?? null,
     routePath,
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
     route,
@@ -1404,6 +1412,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context")?.replaceAll("\0", "") || null;
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
@@ -1812,8 +1821,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           request,
         );
       } else {
-        const _actionRouteId = "route:" + cleanPathname;
+        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
         element = {
+          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
           __route: _actionRouteId,
           __rootLayout: null,
           [_actionRouteId]: createElement("div", null, "Page not found"),
@@ -2302,6 +2312,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     setNavigationContext,
     toInterceptOpts(intercept) {
       return {
+        interceptionContext: interceptionContextHeader,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,

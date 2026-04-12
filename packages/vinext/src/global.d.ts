@@ -93,6 +93,7 @@ declare global {
           redirectDepth?: number,
           navigationKind?: "navigate" | "traverse" | "refresh",
           historyUpdateMode?: "push" | "replace",
+          previousNextUrlOverride?: string | null,
         ) => Promise<void>)
       | undefined;
 

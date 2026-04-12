@@ -12212,3 +12212,79 @@ describe("checkHasConditions value anchoring", () => {
     expect(result).toBe(true);
   });
 });
+
+// ── CSRF origin wildcard matching ─────────────────────────────────────────
+// Ported from Next.js: packages/next/src/server/app-render/csrf-protection.test.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/csrf-protection.test.ts
+
+describe("isOriginAllowed", () => {
+  let isOriginAllowed: (origin: string, allowed: string[]) => boolean;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/request-pipeline.js");
+    isOriginAllowed = mod.isOriginAllowed;
+  });
+
+  it("exact match", () => {
+    expect(isOriginAllowed("vercel.com", ["vercel.com"])).toBe(true);
+    expect(isOriginAllowed("www.vercel.com", ["www.vercel.com"])).toBe(true);
+  });
+
+  it("single-level wildcard matches one subdomain", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["*.vercel.com"])).toBe(true);
+  });
+
+  it("single-level wildcard does NOT match multiple subdomains", () => {
+    expect(isOriginAllowed("asdf.jkl.vercel.com", ["*.vercel.com"])).toBe(false);
+  });
+
+  it("double wildcard matches one or more subdomains", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["**.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("asdf.jkl.vercel.com", ["**.vercel.com"])).toBe(true);
+  });
+
+  it("does not match different TLD", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["*.vercel.app"])).toBe(false);
+    expect(isOriginAllowed("asdf.jkl.vercel.app", ["**.vercel.com"])).toBe(false);
+  });
+
+  it("does not match unrelated domain", () => {
+    expect(isOriginAllowed("vercel.com", ["nextjs.org"])).toBe(false);
+  });
+
+  it("returns false for undefined/empty allowed list", () => {
+    expect(isOriginAllowed("vercel.com", [])).toBe(false);
+  });
+
+  it("returns false for empty string pattern", () => {
+    expect(isOriginAllowed("vercel.com", [""])).toBe(false);
+  });
+
+  it("wildcards only match below the domain level", () => {
+    expect(isOriginAllowed("vercel.com", ["*"])).toBe(false);
+    expect(isOriginAllowed("vercel.com", ["**"])).toBe(false);
+  });
+
+  it("matches case-insensitively (RFC 1035)", () => {
+    expect(isOriginAllowed("sub.VERCEL.com", ["*.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("SUB.vercel.COM", ["*.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("VERCEL.COM", ["vercel.com"])).toBe(true);
+    expect(isOriginAllowed("vercel.com", ["VERCEL.COM"])).toBe(true);
+  });
+
+  it("localhost patterns", () => {
+    expect(isOriginAllowed("subdomain.localhost", ["*.localhost"])).toBe(true);
+    expect(isOriginAllowed("localhost", ["*.localhost"])).toBe(false);
+    expect(isOriginAllowed("subdomain.localhost", ["**.localhost"])).toBe(true);
+    expect(isOriginAllowed("a.b.localhost", ["**.localhost"])).toBe(true);
+    expect(isOriginAllowed("localhost", ["**.localhost"])).toBe(false);
+    expect(isOriginAllowed("localhost", ["localhost"])).toBe(true);
+  });
+
+  it("does NOT match attacker-controlled suffix domains", () => {
+    // This was the original vulnerability: endsWith(".example.com") matching
+    // evil.example.com.attacker.com
+    expect(isOriginAllowed("evil.example.com.attacker.com", ["*.example.com"])).toBe(false);
+    expect(isOriginAllowed("evil.example.com.attacker.com", ["**.example.com"])).toBe(false);
+  });
+});

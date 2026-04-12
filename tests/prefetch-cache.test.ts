@@ -10,12 +10,14 @@
  * vi.resetModules() + dynamic import().
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { createAppPayloadCacheKey } from "../packages/vinext/src/server/app-elements.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
+let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
@@ -37,6 +39,7 @@ beforeEach(async () => {
   consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
+  getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
@@ -85,7 +88,7 @@ describe("prefetch cache eviction", () => {
     cache.set(rscUrl, { snapshot, timestamp: Date.now() });
     prefetched.add(rscUrl);
 
-    expect(consumePrefetchResponse(rscUrl, "slot:auth:/")).toEqual(snapshot);
+    expect(consumePrefetchResponse(rscUrl, null, "slot:auth:/")).toEqual(snapshot);
     expect(cache.has(rscUrl)).toBe(false);
     expect(prefetched.has(rscUrl)).toBe(false);
   });
@@ -107,9 +110,26 @@ describe("prefetch cache eviction", () => {
     });
     prefetched.add(rscUrl);
 
-    expect(consumePrefetchResponse(rscUrl, "slot:nav:/")).toBeNull();
+    expect(consumePrefetchResponse(rscUrl, null, "slot:nav:/")).toBeNull();
     expect(cache.has(rscUrl)).toBe(false);
     expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("derives the interception context from the current pathname", () => {
+    (globalThis as any).window.location.pathname = "/feed";
+
+    expect(getCurrentInterceptionContext()).toBe("/feed");
+  });
+
+  it("allows separate interception-context entries for the same RSC URL", () => {
+    storePrefetchResponse("/photos/42.rsc", new Response("feed"), "/feed");
+    storePrefetchResponse("/photos/42.rsc", new Response("gallery"), "/gallery");
+
+    const feedKey = createAppPayloadCacheKey("/photos/42.rsc", "/feed");
+    const galleryKey = createAppPayloadCacheKey("/photos/42.rsc", "/gallery");
+    expect(feedKey).not.toBe(galleryKey);
+    expect(getPrefetchCache().has(feedKey)).toBe(true);
+    expect(getPrefetchCache().has(galleryKey)).toBe(true);
   });
 
   it("preserves X-Vinext-Params when replaying cached RSC responses", async () => {

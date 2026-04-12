@@ -1,18 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
-async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
-  // Vite's dev error overlay can appear during tests (even for expected errors)
-  // and intercept pointer events, causing flaky click failures.
-  await page
-    .addStyleTag({
-      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
-    })
-    .catch(() => {
-      // best effort
-    });
-}
-
 const BASE = "http://localhost:4174";
 
 type CounterControls = {
@@ -198,10 +186,6 @@ test.describe("Error recovery across navigation", () => {
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible();
     await waitForAppRouterHydration(page);
 
-    // Hide Vite's dev error overlay before triggering an error — it can appear
-    // over interactive elements and intercept pointer events, causing flaky failures.
-    await disableViteErrorOverlay(page);
-
     // Trigger error
     await page.getByTestId("trigger-error").waitFor({ state: "visible" });
     await page.getByTestId("trigger-error").click();
@@ -303,9 +287,8 @@ test.describe("Parallel slot persistence", () => {
     await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
     await expect(page.locator('[data-testid="analytics-default"]')).toBeVisible();
 
-    // The page-specific slot content should not be in the DOM at all —
-    // the server rendered default.tsx for these slots, not page.tsx.
-    await expect(page.locator('[data-testid="team-slot"]')).not.toBeAttached();
-    await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeAttached();
+    // The page-specific slot content should NOT be visible
+    await expect(page.locator('[data-testid="team-slot"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 });
