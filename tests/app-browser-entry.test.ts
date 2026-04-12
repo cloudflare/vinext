@@ -140,6 +140,30 @@ describe("app browser entry state helpers", () => {
     expect(pending.action.previousNextUrl).toBe("/feed");
   });
 
+  it("clears previousNextUrl when traversing to a non-intercepted entry", async () => {
+    // Traversing back from an intercepted modal (/photos/42 from /feed) to
+    // /feed itself. The traverse branch reads null from /feed's history state
+    // and passes previousNextUrl: null explicitly — meaning "not intercepted".
+    // This must not inherit the current state's stale "/feed" value.
+    const interceptedState = createState({
+      interceptionContext: "/feed",
+      previousNextUrl: "/feed",
+      routeId: "route:/photos/42\0/feed",
+    });
+
+    const pending = await createPendingNavigationCommit({
+      currentState: interceptedState,
+      nextElements: Promise.resolve(createResolvedElements("route:/feed", "/")),
+      navigationSnapshot: createState().navigationSnapshot,
+      previousNextUrl: null,
+      renderId: 2,
+      type: "traverse",
+    });
+
+    expect(pending.previousNextUrl).toBeNull();
+    expect(pending.action.previousNextUrl).toBeNull();
+  });
+
   it("hard navigates instead of merging when the root layout changes", async () => {
     const currentState = createState({
       rootLayoutTreePath: "/(marketing)",

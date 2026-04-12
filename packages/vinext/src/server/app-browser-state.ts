@@ -159,7 +159,10 @@ export async function createPendingNavigationCommit(options: {
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
   const metadata = readAppElementsMetadata(elements);
-  const previousNextUrl = options.previousNextUrl ?? options.currentState.previousNextUrl;
+  const previousNextUrl =
+    options.previousNextUrl !== undefined
+      ? options.previousNextUrl
+      : options.currentState.previousNextUrl;
 
   return {
     action: {
