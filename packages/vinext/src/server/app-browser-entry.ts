@@ -754,8 +754,9 @@ function registerServerActionCallback(): void {
     const temporaryReferences = createTemporaryReferenceSet();
     const body = await encodeReply(args, { temporaryReferences });
 
-    // Intentionally omit interception context for server action re-renders in
-    // this PR. Durable intercepted refresh/action parity belongs to PR 5.
+    // Interception context on server-action re-renders is intentionally
+    // deferred: action POSTs always target the current URL's full page without
+    // propagating the source-route provenance.
     const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
       method: "POST",
       headers: { "x-rsc-action": id },
@@ -1093,8 +1094,9 @@ async function main(): Promise<void> {
           window.location.href,
           latestClientParams,
         );
-        // Intentionally omit interception context for HMR re-renders.
-        // Preserving intercepted modal state across HMR belongs to PR 5.
+        // Interception context on HMR re-renders is intentionally deferred:
+        // preserving intercepted modal state across HMR reloads is out of scope
+        // for the previousNextUrl mechanism.
         const pending = await createPendingNavigationCommit({
           currentState: getBrowserRouterState(),
           nextElements: normalizeAppElementsPromise(
