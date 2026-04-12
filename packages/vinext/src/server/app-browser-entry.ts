@@ -334,14 +334,16 @@ function getRequestState(
         previousNextUrl,
       };
     }
-    case "refresh":
+    case "refresh": {
+      const currentPreviousNextUrl = getBrowserRouterState().previousNextUrl;
       return {
         interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
-          getBrowserRouterState().previousNextUrl,
+          currentPreviousNextUrl,
           __basePath,
         ),
-        previousNextUrl: getBrowserRouterState().previousNextUrl,
+        previousNextUrl: currentPreviousNextUrl,
       };
+    }
     default: {
       const _exhaustive: never = navigationKind;
       throw new Error("[vinext] Unknown navigation kind: " + String(_exhaustive));
