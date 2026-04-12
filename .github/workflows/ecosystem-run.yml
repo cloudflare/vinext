@@ -25,7 +25,7 @@ jobs:
       - name: Checkout vinext
         uses: actions/checkout@v6
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
         with:
           node-version: ${{ inputs.node_version }}
 

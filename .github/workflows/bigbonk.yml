@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 30 # 30 is a balance in providing enough context for the agent vs. pulling down the entire repo history. It is not a scientific number. 27 or 31 or 36 would likely work as well.
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
 
       - name: Run Bonk
         uses: ask-bonk/ask-bonk/github@main
