@@ -115,11 +115,8 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(rscUrl)).toBe(false);
   });
 
-  it("reuses the committed interception context for soft navigations", () => {
-    (globalThis as any).window.location.pathname = "/photos/42";
-    (globalThis as any).window.history.state = {
-      __vinext_interceptionContext: "/feed",
-    };
+  it("derives the interception context from the current pathname", () => {
+    (globalThis as any).window.location.pathname = "/feed";
 
     expect(getCurrentInterceptionContext()).toBe("/feed");
   });
