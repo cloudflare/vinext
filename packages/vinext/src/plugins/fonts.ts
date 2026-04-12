@@ -454,7 +454,7 @@ async function fetchAndCacheFont(
     // dev, or asset for build", which was never true: the CSS is
     // embedded as a JavaScript string literal and Vite's asset pipeline
     // does not scan string literals. Do not resurrect that assumption.
-    css = css.split(fontUrl).join(filePath);
+    css = css.split(fontUrl).join(filePath.replaceAll("\\", "/"));
   }
 
   // Cache the rewritten CSS
