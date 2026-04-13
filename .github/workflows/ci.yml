@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - name: Build plugin (needed for benchmark workspace type resolution)
         run: vp run build
       - run: vp run check
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - run: vp test run --project unit
 
   test-integration:
@@ -43,7 +43,7 @@ jobs:
         shardTotal: [3]
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
         run: vp run build
       - run: vp test run --project integration --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v7
         with:
           path: .vitest-reports
@@ -83,7 +83,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - name: Build plugin
         run: vp run build
 
@@ -142,7 +142,7 @@ jobs:
           - app-with-src
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - name: Build plugin
         run: vp run build
 

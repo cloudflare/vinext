@@ -15,6 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: voidzero-dev/setup-vp@8ecb39174989ce55af90f45cf55b02738599831d # v1
+      - uses: ./.github/actions/setup
       - run: vp run build
       - run: vp dlx pkg-pr-new@0.0.66 publish --pnpm './packages/vinext'
