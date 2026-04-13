@@ -5160,32 +5160,32 @@ describe("NextResponse.redirect() status codes", () => {
 
 describe("matchConfigPattern", () => {
   it("matches exact paths", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/about", "/about")).toEqual({});
     expect(matchConfigPattern("/", "/")).toEqual({});
     expect(matchConfigPattern("/about", "/other")).toBeNull();
   });
 
   it("matches single :param segments", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchConfigPattern("/blog/hello-world", "/blog/:slug");
     expect(result).toEqual({ slug: "hello-world" });
   });
 
   it("matches multiple :param segments", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchConfigPattern("/blog/2024/my-post", "/blog/:year/:slug");
     expect(result).toEqual({ year: "2024", slug: "my-post" });
   });
 
   it("rejects when segment count differs for non-wildcard patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/blog/a/b", "/blog/:slug")).toBeNull();
     expect(matchConfigPattern("/blog", "/blog/:slug")).toBeNull();
   });
 
   it("matches :path* catch-all (zero or more segments)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Zero segments
     expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
     // One segment
@@ -5197,7 +5197,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path+ catch-all (one or more segments)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // One segment
     expect(matchConfigPattern("/api/users", "/api/:path+")).toEqual({ path: "users" });
     // Multiple segments
@@ -5207,7 +5207,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches regex group patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Common Next.js pattern: /:path(\\d+) for numeric paths
     const result = matchConfigPattern("/123", "/:id(\\d+)");
     if (result) {
@@ -5218,14 +5218,14 @@ describe("matchConfigPattern", () => {
   });
 
   it("handles dots in patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/feed.xml", "/feed.xml")).toEqual({});
     // Dot should not match any character
     expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
   });
 
   it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs ending in .md
     expect(matchConfigPattern("/article.md", "/:path*.md")).toEqual({ path: "article" });
     expect(matchConfigPattern("/news/my-article.md", "/:path*.md")).toEqual({
@@ -5242,7 +5242,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path+ with literal suffix (e.g. /:path+.json)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs ending in .json with at least one path segment
     expect(matchConfigPattern("/data.json", "/:path+.json")).toEqual({ path: "data" });
     expect(matchConfigPattern("/api/users.json", "/:path+.json")).toEqual({ path: "api/users" });
@@ -5254,7 +5254,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path* with prefix and suffix (e.g. /docs/:path*.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/docs/intro.md", "/docs/:path*.md")).toEqual({ path: "intro" });
     expect(matchConfigPattern("/docs/guide/getting-started.md", "/docs/:path*.md")).toEqual({
       path: "guide/getting-started",
@@ -5266,7 +5266,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :param with literal suffix (e.g. /:slug.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs with the .md suffix and extract the param
     expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
     expect(matchConfigPattern("/my-post.md", "/:slug.md")).toEqual({ slug: "my-post" });
@@ -5286,7 +5286,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("still matches plain :path* catch-all (no suffix) correctly", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Ensure the fix doesn't regress existing catch-all behavior
     expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
     expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
@@ -5300,7 +5300,7 @@ describe("matchConfigPattern", () => {
   // passed without checking for a segment boundary after the prefix.
   // https://github.com/cloudflare/vinext/pull/368
   it("regression: does not overmatch catch-all when pathname shares a prefix but not a segment boundary", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Core regression case: /foobar must NOT match /foo/:path*
     expect(matchConfigPattern("/foobar", "/foo/:path*")).toBeNull();
     // Similarly for :path+

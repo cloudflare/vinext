@@ -13,11 +13,11 @@ import {
   clientManualChunks,
   clientTreeshakeConfig,
   getClientTreeshakeConfigForVite,
-  computeLazyChunks,
   _augmentSsrManifestFromBundle,
   _stripServerExports,
-  _asyncHooksStubPlugin,
 } from "../packages/vinext/src/index.js";
+import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't

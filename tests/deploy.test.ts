@@ -27,10 +27,8 @@ import {
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
-import {
-  _scanPublicFileRoutes as scanPublicFileRoutes,
-  computeLazyChunks,
-} from "../packages/vinext/src/index.js";
+import { _scanPublicFileRoutes as scanPublicFileRoutes } from "../packages/vinext/src/index.js";
+import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,

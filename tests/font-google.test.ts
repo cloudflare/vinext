@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs";
-import vinext, {
-  _parseStaticObjectLiteral as parseStaticObjectLiteral,
+import vinext from "../packages/vinext/src/index.js";
+import {
+  parseStaticObjectLiteral,
   _findBalancedObject as findBalancedObject,
   _findCallEnd as findCallEnd,
   _rewriteCachedFontCssToServedUrls as rewriteCachedFontCssToServedUrls,
-} from "../packages/vinext/src/index.js";
+} from "../packages/vinext/src/plugins/fonts.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
