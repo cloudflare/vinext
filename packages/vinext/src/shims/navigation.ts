@@ -844,10 +844,6 @@ function subscribeToNavigation(cb: () => void): () => void {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Hooks
-// ---------------------------------------------------------------------------
-
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the current pathname.

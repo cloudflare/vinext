@@ -353,6 +353,24 @@ const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 
+/**
+ * Shims that have a `.react-server.ts` variant for the RSC environment.
+ * Maps every import specifier that should be intercepted → the base shim name
+ * (without extension). In the RSC env the resolveId hook appends
+ * `.react-server`; in other envs it resolves to the base name.
+ *
+ * To add a new react-server shim:
+ *   1. Create `<name>.react-server.ts` in src/shims/
+ *   2. Add an entry here for each import specifier.
+ *   3. Remove the corresponding entry from `nextShimMap` (so the alias
+ *      doesn't shadow the resolveId hook).
+ */
+const _reactServerShims = new Map<string, string>([
+  ["next/navigation", "navigation"],
+  ["next/navigation.js", "navigation"],
+  ["next/dist/client/components/navigation", "navigation"],
+]);
+
 const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientOutputConfig = createClientOutputConfig(clientManualChunks);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
@@ -839,7 +857,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "next/config": path.join(shimsDir, "config"),
             "next/script": path.join(shimsDir, "script"),
             "next/server": path.join(shimsDir, "server"),
-            "next/navigation": path.join(shimsDir, "navigation"),
+            // "next/navigation" is intentionally NOT in this alias map.
+            // It is resolved in the resolveId hook so the RSC environment
+            // gets the react-server variant (navigation.react-server.ts)
+            // which omits client-only hooks. See #834.
             "next/headers": path.join(shimsDir, "headers"),
             "next/font/google": path.join(shimsDir, "font-google"),
             "next/font/local": path.join(shimsDir, "font-local"),
@@ -896,7 +917,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "work-unit-async-storage",
             ),
             // Re-export public modules for internal path imports
-            "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
+            // "next/dist/client/components/navigation" handled in resolveId (see #834).
             "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
             // server-only / client-only marker packages
             "server-only": path.join(shimsDir, "server-only"),
@@ -1527,6 +1548,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               RESOLVED_VIRTUAL_GOOGLE_FONTS +
               cleanId.slice(queryIndex + VIRTUAL_GOOGLE_FONTS.length)
             );
+          }
+
+          // In the RSC environment, resolve shims that contain client-only
+          // hooks to their `.react-server.ts` variant. Those variants
+          // re-export the server-safe subset and provide error-throwing
+          // stubs for hooks, matching Next.js / React's react-server
+          // export condition behavior. Adding a new react-server shim is
+          // just adding an entry to the map below.
+          // See https://github.com/cloudflare/vinext/issues/834
+          const reactServerShim = _reactServerShims.get(cleanId);
+          if (reactServerShim !== undefined) {
+            const shimName =
+              this.environment?.name === "rsc"
+                ? `${reactServerShim}.react-server`
+                : reactServerShim;
+            return resolveShimModulePath(_shimsDir, shimName);
           }
         },
       },
