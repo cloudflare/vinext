@@ -88,6 +88,9 @@ import {
   relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
+import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { hasMdxFiles } from "./utils/mdx-scan.js";
+import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -3383,96 +3386,6 @@ function getNextPublicEnvDefines(): Record<string, string> {
 // divergence that CodeQL flagged as incomplete sanitization).
 
 /**
- * Strip server-only data-fetching exports (getServerSideProps,
- * getStaticProps, getStaticPaths) from page modules for the client
- * bundle. Uses Vite's parseAst (Rollup/acorn) for correct handling
- * of all export patterns including function expressions, arrow
- * functions with TS return types, and re-exports.
- *
- * Modeled after Next.js's SWC `next-ssg-transform`.
- */
-function stripServerExports(code: string): string | null {
-  const SERVER_EXPORTS = new Set(["getServerSideProps", "getStaticProps", "getStaticPaths"]);
-  if (![...SERVER_EXPORTS].some((name) => code.includes(name))) return null;
-
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    ast = parseAst(code);
-  } catch {
-    // If parsing fails (shouldn't happen post-JSX/TS transform), bail out
-    return null;
-  }
-
-  const s = new MagicString(code);
-  let changed = false;
-
-  for (const node of ast.body) {
-    if (node.type !== "ExportNamedDeclaration") continue;
-
-    // Case 1: export function name() {} / export async function name() {}
-    // Case 2: export const/let/var name = ...
-    if (node.declaration) {
-      const decl = node.declaration;
-      if (decl.type === "FunctionDeclaration" && decl.id && SERVER_EXPORTS.has(decl.id.name)) {
-        s.overwrite(
-          node.start,
-          node.end,
-          `export function ${decl.id.name}() { return { props: {} }; }`,
-        );
-        changed = true;
-      } else if (decl.type === "VariableDeclaration") {
-        for (const declarator of decl.declarations) {
-          if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
-            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
-            changed = true;
-          }
-        }
-      }
-      continue;
-    }
-
-    // Case 3: export { getServerSideProps } or export { getServerSideProps as gSSP }
-    if (node.specifiers && node.specifiers.length > 0 && !node.source) {
-      const kept: Extract<ASTNode, { type: "ExportSpecifier" }>[] = [];
-      const stripped: string[] = [];
-      for (const spec of node.specifiers) {
-        // spec.local.name is the binding name, spec.exported.name is the export name
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const exportedName = (spec.exported as any)?.name ?? (spec.exported as any)?.value;
-        if (SERVER_EXPORTS.has(exportedName)) {
-          stripped.push(exportedName);
-        } else {
-          kept.push(spec);
-        }
-      }
-      if (stripped.length > 0) {
-        // Build replacement: keep non-server specifiers, add stubs for stripped ones
-        const parts: string[] = [];
-        if (kept.length > 0) {
-          const keptStr = kept
-            // oxlint-disable-next-line typescript/no-explicit-any
-            .map((sp: any) => {
-              const local = sp.local.name;
-              const exported = sp.exported?.name ?? sp.exported?.value;
-              return local === exported ? local : `${local} as ${exported}`;
-            })
-            .join(", ");
-          parts.push(`export { ${keptStr} };`);
-        }
-        for (const name of stripped) {
-          parts.push(`export const ${name} = undefined;`);
-        }
-        s.overwrite(node.start, node.end, parts.join("\n"));
-        changed = true;
-      }
-    }
-  }
-
-  if (!changed) return null;
-  return s.toString();
-}
-
-/**
  * Apply redirect rules from next.config.js.
  * Returns true if a redirect was applied.
  */
@@ -3641,97 +3554,6 @@ function findFileWithExts(
   return null;
 }
 
-/** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
-const _mdxScanCache = new Map<string, boolean>();
-/**
- * Check if the project has .mdx files in app/ or pages/ directories.
- */
-function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
-  const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
-  if (_mdxScanCache.has(cacheKey)) return _mdxScanCache.get(cacheKey)!;
-  const dirs = [appDir, pagesDir].filter(Boolean) as string[];
-  for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForMdx(dir)) {
-      _mdxScanCache.set(cacheKey, true);
-      return true;
-    }
-  }
-  _mdxScanCache.set(cacheKey, false);
-  return false;
-}
-
-function scanDirForMdx(dir: string): boolean {
-  try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (scanDirForMdx(full)) return true;
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".mdx")) {
-        return true;
-      }
-    }
-  } catch {
-    // ignore unreadable dirs
-  }
-  return false;
-}
-
-function scanPublicFileRoutes(root: string): string[] {
-  const publicDir = path.join(root, "public");
-  const routes: string[] = [];
-  const visitedDirs = new Set<string>();
-
-  function walk(dir: string): void {
-    let realDir: string;
-    try {
-      realDir = fs.realpathSync(dir);
-    } catch {
-      return;
-    }
-    if (visitedDirs.has(realDir)) return;
-    visitedDirs.add(realDir);
-
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-        continue;
-      }
-      if (entry.isSymbolicLink()) {
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(fullPath);
-        } catch {
-          continue;
-        }
-        if (stat.isDirectory()) {
-          walk(fullPath);
-          continue;
-        }
-        if (!stat.isFile()) continue;
-      } else if (!entry.isFile()) {
-        continue;
-      }
-      const relativePath = path.relative(publicDir, fullPath).split(path.sep).join("/");
-      routes.push("/" + relativePath);
-    }
-  }
-
-  if (fs.existsSync(publicDir)) {
-    try {
-      walk(publicDir);
-    } catch {
-      // ignore unreadable dirs
-    }
-  }
-
-  routes.sort();
-  return routes;
-}
-
 // Public exports for static export
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type {
@@ -3743,9 +3565,3 @@ export type {
 // Export NextConfig type so next.config.ts files can import it from "vinext"
 // instead of "next".
 export type { NextConfig } from "./config/next-config.js";
-
-// Exported for CLI and testing
-export { hasMdxFiles as _hasMdxFiles };
-export { _mdxScanCache };
-export { scanPublicFileRoutes as _scanPublicFileRoutes };
-export { stripServerExports as _stripServerExports };

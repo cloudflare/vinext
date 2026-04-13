@@ -14,13 +14,13 @@ import os from "node:os";
 // ---------------------------------------------------------------------------
 
 describe("hasMdxFiles caching", () => {
-  let hasMdxFiles: (typeof import("../packages/vinext/src/index.js"))["_hasMdxFiles"];
-  let mdxScanCache: (typeof import("../packages/vinext/src/index.js"))["_mdxScanCache"];
+  let hasMdxFiles: (typeof import("../packages/vinext/src/utils/mdx-scan.js"))["hasMdxFiles"];
+  let mdxScanCache: (typeof import("../packages/vinext/src/utils/mdx-scan.js"))["mdxScanCache"];
 
   beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/index.js");
-    hasMdxFiles = mod._hasMdxFiles;
-    mdxScanCache = mod._mdxScanCache;
+    const mod = await import("../packages/vinext/src/utils/mdx-scan.js");
+    hasMdxFiles = mod.hasMdxFiles;
+    mdxScanCache = mod.mdxScanCache;
   });
 
   beforeEach(() => {

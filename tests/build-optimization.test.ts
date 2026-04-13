@@ -9,8 +9,8 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
-import { _stripServerExports } from "../packages/vinext/src/index.js";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
+import { stripServerExports as _stripServerExports } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
   createClientManualChunks,
   clientTreeshakeConfig,
