@@ -96,9 +96,7 @@ export function classifyAllRouteLayouts(
 
       // Layer 1: segment config
       if (layout.segmentConfig) {
-        const configResult = classifyLayoutSegmentConfig(
-          layout.segmentConfig.code,
-        );
+        const configResult = classifyLayoutSegmentConfig(layout.segmentConfig.code);
         if (configResult !== null) {
           result.set(layoutId, configResult);
           continue;
@@ -108,11 +106,7 @@ export function classifyAllRouteLayouts(
       // Layer 2: module graph
       result.set(
         layoutId,
-        classifyLayoutByModuleGraph(
-          layout.moduleId,
-          dynamicShimPaths,
-          moduleInfo,
-        ),
+        classifyLayoutByModuleGraph(layout.moduleId, dynamicShimPaths, moduleInfo),
       );
     }
   }

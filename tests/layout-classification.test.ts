@@ -17,10 +17,7 @@ import {
  * and the value lists its static and dynamic imports.
  */
 function createFakeModuleGraph(
-  graph: Record<
-    string,
-    { importedIds?: string[]; dynamicImportedIds?: string[] }
-  >,
+  graph: Record<string, { importedIds?: string[]; dynamicImportedIds?: string[] }>,
 ): ModuleInfoProvider {
   return {
     getModuleInfo(id: string) {
@@ -34,11 +31,7 @@ function createFakeModuleGraph(
   };
 }
 
-const DYNAMIC_SHIMS = new Set([
-  "/shims/headers",
-  "/shims/cache",
-  "/shims/server",
-]);
+const DYNAMIC_SHIMS = new Set(["/shims/headers", "/shims/cache", "/shims/server"]);
 
 // ─── classifyLayoutByModuleGraph ─────────────────────────────────────────────
 
@@ -49,9 +42,7 @@ describe("classifyLayoutByModuleGraph", () => {
       "/components/nav.tsx": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("static");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
   });
 
   it('returns "needs-probe" when headers shim is transitively imported', () => {
@@ -61,9 +52,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("needs-probe");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "needs-probe",
+    );
   });
 
   it('returns "needs-probe" when cache shim (noStore) is transitively imported', () => {
@@ -72,9 +63,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/cache": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("needs-probe");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "needs-probe",
+    );
   });
 
   it('returns "needs-probe" when server shim (connection) is transitively imported', () => {
@@ -84,9 +75,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/server": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("needs-probe");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "needs-probe",
+    );
   });
 
   it("handles circular imports without infinite loop", () => {
@@ -96,9 +87,7 @@ describe("classifyLayoutByModuleGraph", () => {
       "/b.ts": { importedIds: ["/a.ts"] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("static");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
   });
 
   it("detects dynamic shim through deep transitive chains", () => {
@@ -110,9 +99,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("needs-probe");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "needs-probe",
+    );
   });
 
   it("follows dynamicImportedIds (dynamic import())", () => {
@@ -125,17 +114,15 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(
-      classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("needs-probe");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "needs-probe",
+    );
   });
 
   it('returns "static" when module info is null (unknown module)', () => {
     const graph = createFakeModuleGraph({});
 
-    expect(
-      classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph),
-    ).toBe("static");
+    expect(classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
   });
 });
 
