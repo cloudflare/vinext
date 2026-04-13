@@ -22,11 +22,18 @@ export type ModuleInfoProvider = {
   } | null;
 };
 
+type LayoutEntry = {
+  /** Rollup/Vite module ID for the layout file. */
+  moduleId: string;
+  /** Directory depth from the app root, used to build the stable layout ID. */
+  treePosition: number;
+  /** Segment config source code extracted at build time, or null when absent. */
+  segmentConfig?: { code: string } | null;
+};
+
 type RouteForClassification = {
-  layouts: string[];
-  layoutTreePositions: number[];
+  layouts: readonly LayoutEntry[];
   routeSegments: string[];
-  layoutSegmentConfigs?: ReadonlyArray<{ code: string } | null>;
 };
 
 /**
@@ -82,16 +89,14 @@ export function classifyAllRouteLayouts(
   const result = new Map<string, LayoutClassificationResult>();
 
   for (const route of routes) {
-    for (let i = 0; i < route.layouts.length; i++) {
-      const treePosition = route.layoutTreePositions[i] ?? 0;
-      const layoutId = `layout:${createAppPageTreePath(route.routeSegments, treePosition)}`;
+    for (const layout of route.layouts) {
+      const layoutId = `layout:${createAppPageTreePath(route.routeSegments, layout.treePosition)}`;
 
       if (result.has(layoutId)) continue;
 
       // Layer 1: segment config
-      const segmentConfig = route.layoutSegmentConfigs?.[i];
-      if (segmentConfig) {
-        const configResult = classifyLayoutSegmentConfig(segmentConfig.code);
+      if (layout.segmentConfig) {
+        const configResult = classifyLayoutSegmentConfig(layout.segmentConfig.code);
         if (configResult !== null) {
           result.set(layoutId, configResult);
           continue;
@@ -99,12 +104,10 @@ export function classifyAllRouteLayouts(
       }
 
       // Layer 2: module graph
-      const graphResult = classifyLayoutByModuleGraph(
-        route.layouts[i],
-        dynamicShimPaths,
-        moduleInfo,
+      result.set(
+        layoutId,
+        classifyLayoutByModuleGraph(layout.moduleId, dynamicShimPaths, moduleInfo),
       );
-      result.set(layoutId, graphResult);
     }
   }
 

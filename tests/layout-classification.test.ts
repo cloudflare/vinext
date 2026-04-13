@@ -138,10 +138,8 @@ describe("classifyAllRouteLayouts", () => {
 
     const routes = [
       {
-        layouts: ["/app/layout.tsx"],
-        layoutTreePositions: [0],
+        layouts: [{ moduleId: "/app/layout.tsx", treePosition: 0, segmentConfig: { code: 'export const dynamic = "force-static";' } }],
         routeSegments: ["blog"],
-        layoutSegmentConfigs: [{ code: 'export const dynamic = "force-static";' }],
       },
     ];
 
@@ -158,13 +156,14 @@ describe("classifyAllRouteLayouts", () => {
 
     const routes = [
       {
-        layouts: ["/app/layout.tsx", "/app/blog/layout.tsx"],
-        layoutTreePositions: [0, 1],
+        layouts: [
+          { moduleId: "/app/layout.tsx", treePosition: 0 },
+          { moduleId: "/app/blog/layout.tsx", treePosition: 1 },
+        ],
         routeSegments: ["blog"],
       },
       {
-        layouts: ["/app/layout.tsx"],
-        layoutTreePositions: [0],
+        layouts: [{ moduleId: "/app/layout.tsx", treePosition: 0 }],
         routeSegments: ["about"],
       },
     ];
@@ -183,10 +182,8 @@ describe("classifyAllRouteLayouts", () => {
 
     const routes = [
       {
-        layouts: ["/app/layout.tsx"],
-        layoutTreePositions: [0],
+        layouts: [{ moduleId: "/app/layout.tsx", treePosition: 0, segmentConfig: { code: 'export const dynamic = "force-dynamic";' } }],
         routeSegments: [],
-        layoutSegmentConfigs: [{ code: 'export const dynamic = "force-dynamic";' }],
       },
     ];
 
@@ -201,10 +198,8 @@ describe("classifyAllRouteLayouts", () => {
 
     const routes = [
       {
-        layouts: ["/app/layout.tsx"],
-        layoutTreePositions: [0],
+        layouts: [{ moduleId: "/app/layout.tsx", treePosition: 0, segmentConfig: { code: "export default function Layout() {}" } }],
         routeSegments: [],
-        layoutSegmentConfigs: [{ code: "export default function Layout() {}" }],
       },
     ];
 
@@ -220,8 +215,7 @@ describe("classifyAllRouteLayouts", () => {
 
     const routes = [
       {
-        layouts: ["/app/layout.tsx"],
-        layoutTreePositions: [0],
+        layouts: [{ moduleId: "/app/layout.tsx", treePosition: 0 }],
         routeSegments: [],
       },
     ];

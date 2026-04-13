@@ -16,6 +16,7 @@ export type AppWireElementValue = ReactNode | string | null;
 export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
 
+/** Per-layout static/dynamic flags propagated in the RSC payload. `"s"` = static, `"d"` = dynamic. */
 export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 
 export type AppElementsMetadata = {

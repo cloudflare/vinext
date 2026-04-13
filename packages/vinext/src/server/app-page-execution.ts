@@ -29,7 +29,7 @@ export type ProbeAppPageLayoutsResult = {
 };
 
 export type LayoutClassificationOptions = {
-  /** Build-time classifications from segment config or module graph. */
+  /** Build-time classifications from segment config or module graph, keyed by layout index. */
   buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
