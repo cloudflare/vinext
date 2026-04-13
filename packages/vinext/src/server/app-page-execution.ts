@@ -34,12 +34,17 @@ export type LayoutClassificationOptions = {
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
   /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
+  runWithIsolatedDynamicScope: <T>(
+    fn: () => T,
+  ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 export type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
-  onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
+  onLayoutError: (
+    error: unknown,
+    layoutIndex: number,
+  ) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   /** When provided, enables per-layout static/dynamic classification. */
@@ -63,10 +68,16 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 function getAppPageStatusText(statusCode: number): string {
-  return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+  return statusCode === 403
+    ? "Forbidden"
+    : statusCode === 401
+      ? "Unauthorized"
+      : "Not Found";
 }
 
-export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError | null {
+export function resolveAppPageSpecialError(
+  error: unknown,
+): AppPageSpecialError | null {
   if (!(error && typeof error === "object" && "digest" in error)) {
     return null;
   }
@@ -82,10 +93,14 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+  if (
+    digest === "NEXT_NOT_FOUND" ||
+    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")
+  ) {
     return {
       kind: "http-access-fallback",
-      statusCode: digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
+      statusCode:
+        digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
     };
   }
 
@@ -104,7 +119,9 @@ export async function buildAppPageSpecialErrorResponse(
   }
 
   if (options.renderFallbackPage) {
-    const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
+    const fallbackResponse = await options.renderFallbackPage(
+      options.specialError.statusCode,
+    );
     if (fallbackResponse) {
       return fallbackResponse;
     }
@@ -123,13 +140,18 @@ export async function probeAppPageLayouts(
   const cls = options.classification ?? null;
 
   const response = await options.runWithSuppressedHookWarning(async () => {
-    for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
+    for (
+      let layoutIndex = options.layoutCount - 1;
+      layoutIndex >= 0;
+      layoutIndex--
+    ) {
       const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
 
       if (cls && buildTimeResult) {
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
         // but still probe for special errors (redirects, not-found).
-        layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
+        layoutFlags[cls.getLayoutId(layoutIndex)] =
+          buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
         continue;
@@ -139,10 +161,12 @@ export async function probeAppPageLayouts(
         // Layer 3: probe with isolated dynamic scope to detect per-layout
         // dynamic API usage (headers(), cookies(), connection(), etc.)
         try {
-          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(() =>
-            options.probeLayoutAt(layoutIndex),
+          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(
+            () => options.probeLayoutAt(layoutIndex),
           );
-          layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
+          layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected
+            ? "d"
+            : "s";
         } catch (error) {
           // Probe failed — conservatively treat as dynamic.
           layoutFlags[cls.getLayoutId(layoutIndex)] = "d";
@@ -199,7 +223,9 @@ export async function probeAppPageComponent(
   });
 }
 
-export async function readAppPageTextStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+export async function readAppPageTextStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -268,6 +294,9 @@ export function buildAppPageFontLinkHeader(
   }
 
   return preloads
-    .map((preload) => `<${preload.href}>; rel=preload; as=font; type=${preload.type}; crossorigin`)
+    .map(
+      (preload) =>
+        `<${preload.href}>; rel=preload; as=font; type=${preload.type}; crossorigin`,
+    )
     .join(", ");
 }
