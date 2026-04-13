@@ -135,13 +135,13 @@ describe("hasMdxFiles caching", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolvePostcssStringPlugins caching", () => {
-  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/index.js"))["_resolvePostcssStringPlugins"];
-  let postcssCache: (typeof import("../packages/vinext/src/index.js"))["_postcssCache"];
+  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/plugins/postcss.js"))["resolvePostcssStringPlugins"];
+  let postcssCache: (typeof import("../packages/vinext/src/plugins/postcss.js"))["postcssCache"];
 
   beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/index.js");
-    resolvePostcssStringPlugins = mod._resolvePostcssStringPlugins;
-    postcssCache = mod._postcssCache;
+    const mod = await import("../packages/vinext/src/plugins/postcss.js");
+    resolvePostcssStringPlugins = mod.resolvePostcssStringPlugins;
+    postcssCache = mod.postcssCache;
   });
 
   beforeEach(() => {
