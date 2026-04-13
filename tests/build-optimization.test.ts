@@ -10,14 +10,21 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import {
-  clientManualChunks,
-  clientTreeshakeConfig,
-  getClientTreeshakeConfigForVite,
   _augmentSsrManifestFromBundle,
   _stripServerExports,
 } from "../packages/vinext/src/index.js";
+import {
+  createClientManualChunks,
+  clientTreeshakeConfig,
+  getClientTreeshakeConfigForVite,
+} from "../packages/vinext/src/build/client-build-config.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+
+// Create a clientManualChunks instance with a test shims directory.
+// The exact path doesn't matter for the node_modules-focused tests;
+// shims-chunk tests would need a real path.
+const clientManualChunks = createClientManualChunks("/vinext/shims/");
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
