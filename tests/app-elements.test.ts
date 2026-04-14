@@ -8,10 +8,12 @@ import {
   APP_ROUTE_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
   buildOutgoingAppPayload,
+  computeSkipDecision,
   createAppPayloadCacheKey,
   createAppPayloadRouteId,
   isAppElementsRecord,
   normalizeAppElements,
+  parseSkipHeader,
   readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
   withLayoutFlags,
@@ -150,6 +152,73 @@ describe("app elements payload helpers", () => {
     );
 
     expect(metadata.layoutFlags).toEqual({});
+  });
+});
+
+describe("parseSkipHeader", () => {
+  it("returns empty set for null header", () => {
+    expect(parseSkipHeader(null)).toEqual(new Set());
+  });
+
+  it("returns empty set for empty string", () => {
+    expect(parseSkipHeader("")).toEqual(new Set());
+  });
+
+  it("parses a single layout ID", () => {
+    expect(parseSkipHeader("layout:/")).toEqual(new Set(["layout:/"]));
+  });
+
+  it("parses comma-separated layout IDs", () => {
+    const result = parseSkipHeader("layout:/,layout:/blog,layout:/blog/posts");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog", "layout:/blog/posts"]));
+  });
+
+  it("trims whitespace around entries", () => {
+    const result = parseSkipHeader("  layout:/  ,  layout:/blog  ");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog"]));
+  });
+
+  it("filters out non-layout entries", () => {
+    const result = parseSkipHeader("layout:/,page:/blog,template:/,route:/api,slot:modal");
+    expect(result).toEqual(new Set(["layout:/"]));
+  });
+
+  it("handles mixed layout and non-layout entries", () => {
+    const result = parseSkipHeader("layout:/,garbage,layout:/blog,page:/x");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog"]));
+  });
+});
+
+describe("computeSkipDecision", () => {
+  it("returns empty set when requested is undefined", () => {
+    expect(computeSkipDecision({ "layout:/": "s" }, undefined)).toEqual(new Set());
+  });
+
+  it("returns empty set when requested is empty", () => {
+    expect(computeSkipDecision({ "layout:/": "s" }, new Set())).toEqual(new Set());
+  });
+
+  it("includes an id when the server classified it as static", () => {
+    const decision = computeSkipDecision({ "layout:/a": "s" }, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set(["layout:/a"]));
+  });
+
+  it("defense-in-depth: excludes an id the server classified as dynamic", () => {
+    const decision = computeSkipDecision({ "layout:/a": "d" }, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set());
+  });
+
+  it("excludes an id missing from the flags", () => {
+    const decision = computeSkipDecision({}, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set());
+  });
+
+  it("keeps only ids the server agrees are static in a mixed request", () => {
+    const decision = computeSkipDecision(
+      { "layout:/a": "s", "layout:/b": "d" },
+      new Set(["layout:/a", "layout:/b"]),
+    );
+    expect(decision).toEqual(new Set(["layout:/a"]));
   });
 });
 

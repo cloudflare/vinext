@@ -1,10 +1,15 @@
 import type { ReactNode } from "react";
 import type { CachedAppPageValue } from "../shims/cache.js";
-import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
+import {
+  buildOutgoingAppPayload,
+  computeSkipDecision,
+  type AppOutgoingElements,
+} from "./app-elements.js";
 import {
   finalizeAppPageHtmlCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "./app-page-cache.js";
+import { createSkipFilterTransform } from "./app-page-skip-filter.js";
 import {
   buildAppPageFontLinkHeader,
   resolveAppPageSpecialError,
@@ -31,6 +36,8 @@ import {
   shouldRerenderAppPageWithGlobalError,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
+
+const EMPTY_SKIP_SET: ReadonlySet<string> = new Set<string>();
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -68,6 +75,7 @@ export type RenderAppPageLifecycleOptions = {
   isForceStatic: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
+  supportsFilteredRscStream?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
@@ -97,6 +105,7 @@ export type RenderAppPageLifecycleOptions = {
   waitUntil?: (promise: Promise<void>) => void;
   element: ReactNode | Readonly<Record<string, ReactNode>>;
   classification?: LayoutClassificationOptions | null;
+  requestedSkipLayoutIds?: ReadonlySet<string>;
 };
 
 function buildResponseTiming(
@@ -148,9 +157,9 @@ export async function renderAppPageLifecycle(
 
   const layoutFlags = preRenderResult.layoutFlags;
 
-  // Render the CANONICAL element. The outgoing payload carries per-layout
-  // static/dynamic flags under `__layoutFlags` so the client can later tell
-  // which layouts are safe to skip on subsequent navigations.
+  // Always render the CANONICAL element. Skip semantics are applied on the
+  // egress branch only so the cache branch receives full bytes regardless of
+  // the client's skip header. See `app-page-skip-filter.ts`.
   const outgoingElement = buildOutgoingAppPayload({
     element: options.element,
     layoutFlags,
@@ -172,8 +181,16 @@ export async function renderAppPageLifecycle(
       revalidateSeconds !== Infinity &&
       !options.isForceDynamic,
   );
-  const rscForResponse = rscCapture.responseStream;
   const isrRscDataPromise = rscCapture.capturedRscDataPromise;
+
+  const skipIds =
+    options.isRscRequest && (options.supportsFilteredRscStream ?? true)
+      ? computeSkipDecision(layoutFlags, options.requestedSkipLayoutIds)
+      : EMPTY_SKIP_SET;
+  const rscForResponse =
+    skipIds.size > 0
+      ? rscCapture.responseStream.pipeThrough(createSkipFilterTransform(skipIds))
+      : rscCapture.responseStream;
 
   if (options.isRscRequest) {
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();

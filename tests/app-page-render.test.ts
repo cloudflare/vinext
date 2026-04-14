@@ -16,6 +16,25 @@ function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, u
   return value;
 }
 
+/**
+ * Parses row 0 from a fake-RSC stream payload and returns its top-level
+ * object keys. Tests assert on these keys to detect whether a slot survived
+ * the skip filter, without matching fragile substrings inside nested JSON.
+ */
+function parseRow0Keys(body: string): string[] {
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("0:")) continue;
+    const payload = line.slice(2);
+    if (!payload.startsWith("{")) return [];
+    const parsed = JSON.parse(payload);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return [];
+    }
+    return Object.keys(parsed);
+  }
+  return [];
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -531,5 +550,346 @@ describe("layoutFlags injection into RSC payload", () => {
     for (const [_id, flag] of Object.entries(wireFlags as Record<string, unknown>)) {
       expect(flag === "s" || flag === "d").toBe(true);
     }
+  });
+});
+describe("skip header filtering", () => {
+  /**
+   * Fake RSC serializer: emits a wire-format stream whose row 0 carries the
+   * same keys as the incoming element (so the byte filter can reference them
+   * by slot id). Each slot value becomes its own child row and row 0
+   * references it via `$L<hexId>`.
+   */
+  function renderElementToFakeRsc(el: ReactNode | AppOutgoingElements): ReadableStream<Uint8Array> {
+    if (!isAppElementsRecord(el)) {
+      return createStream(["0:null\n"]);
+    }
+    const childRows: string[] = [];
+    const row0Record: Record<string, unknown> = {};
+    let nextId = 1;
+    for (const [key, value] of Object.entries(el)) {
+      if (key.startsWith("__")) {
+        row0Record[key] = value;
+        continue;
+      }
+      const id = nextId++;
+      const label = typeof value === "string" ? value : key;
+      childRows.push(`${id.toString(16)}:["$","div",null,${JSON.stringify({ children: label })}]`);
+      row0Record[key] = `$L${id.toString(16)}`;
+    }
+    const row0 = `0:${JSON.stringify(row0Record)}`;
+    return createStream([childRows.join("\n") + (childRows.length > 0 ? "\n" : ""), row0 + "\n"]);
+  }
+
+  function createRscOptions(overrides: {
+    element?: Record<string, ReactNode>;
+    layoutCount?: number;
+    probeLayoutAt?: (index: number) => unknown;
+    classification?: LayoutClassificationOptions | null;
+    requestedSkipLayoutIds?: ReadonlySet<string>;
+    isRscRequest?: boolean;
+    revalidateSeconds?: number | null;
+    isProduction?: boolean;
+    supportsFilteredRscStream?: boolean;
+  }) {
+    let capturedElement: Record<string, unknown> | null = null;
+    const isrSetCalls: Array<{
+      key: string;
+      hasRscData: boolean;
+      rscText: string | null;
+    }> = [];
+    const waitUntilPromises: Promise<void>[] = [];
+    const isrSet = vi.fn(async (key: string, data: { rscData?: ArrayBuffer }) => {
+      isrSetCalls.push({
+        key,
+        hasRscData: Boolean(data.rscData),
+        rscText: data.rscData ? new TextDecoder().decode(data.rscData) : null,
+      });
+    });
+
+    const options = {
+      cleanPathname: "/test",
+      clearRequestContext: vi.fn(),
+      consumeDynamicUsage: vi.fn(() => false),
+      createRscOnErrorHandler: () => () => {},
+      getDraftModeCookieHeader: () => null,
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      getPageTags: () => [],
+      getRequestCacheLife: () => null,
+      handlerStart: 0,
+      hasLoadingBoundary: false,
+      isDynamicError: false,
+      isForceDynamic: false,
+      isForceStatic: false,
+      isProduction: overrides.isProduction ?? true,
+      isRscRequest: overrides.isRscRequest ?? true,
+      supportsFilteredRscStream: overrides.supportsFilteredRscStream ?? true,
+      isrHtmlKey: (p: string) => `html:${p}`,
+      isrRscKey: (p: string) => `rsc:${p}`,
+      isrSet,
+      layoutCount: overrides.layoutCount ?? 0,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr() {
+          return createStream(["<html>page</html>"]);
+        },
+      })),
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
+      probePage: () => null,
+      revalidateSeconds: overrides.revalidateSeconds ?? null,
+      renderErrorBoundaryResponse: async () => null,
+      renderLayoutSpecialError: async () => new Response("error", { status: 500 }),
+      renderPageSpecialError: async () => new Response("error", { status: 500 }),
+      renderToReadableStream(el: ReactNode | AppOutgoingElements) {
+        capturedElement = captureRecord(el);
+        return renderElementToFakeRsc(el);
+      },
+      routeHasLocalBoundary: false,
+      routePattern: "/test",
+      runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
+      element: overrides.element ?? { "page:/test": "test-page" },
+      classification: overrides.classification,
+      requestedSkipLayoutIds: overrides.requestedSkipLayoutIds,
+      waitUntil(promise: Promise<void>) {
+        waitUntilPromises.push(promise);
+      },
+    };
+
+    return {
+      options,
+      isrSetCalls,
+      waitUntilPromises,
+      getCapturedElement: (): Record<string, unknown> => {
+        if (capturedElement === null) {
+          throw new Error("renderToReadableStream was not called");
+        }
+        return capturedElement;
+      },
+    };
+  }
+
+  function staticClassification(layoutIdMap: Record<number, string>): LayoutClassificationOptions {
+    return {
+      getLayoutId: (index: number) => layoutIdMap[index],
+      buildTimeClassifications: null,
+      async runWithIsolatedDynamicScope(fn) {
+        const result = await fn();
+        return { result, dynamicDetected: false };
+      },
+    };
+  }
+
+  it("renders the canonical element to the RSC serializer regardless of skipIds", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    await renderAppPageLifecycle(options);
+    const captured = getCapturedElement();
+    expect(captured["layout:/"]).toBe("root-layout");
+    expect(captured["layout:/blog"]).toBe("blog-layout");
+    expect(captured["page:/blog/post"]).toBe("post-page");
+  });
+
+  it("omits the skipped slot from the RSC response body on RSC requests", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).not.toContain("layout:/");
+    expect(row0Keys).toContain("layout:/blog");
+    expect(row0Keys).toContain("page:/blog/post");
+    expect(body).not.toContain("root-layout");
+    expect(body).toContain("blog-layout");
+    expect(body).toContain("post-page");
+  });
+
+  it("keeps a dynamic layout in the response body even if the client asked to skip it", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "page:/test": "test-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: () => "layout:/",
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: true };
+        },
+      },
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("layout:/");
+    expect(body).toContain("root-layout");
+  });
+
+  it("preserves metadata keys in the filtered response body", async () => {
+    const { options } = createRscOptions({
+      element: {
+        __route: "route:/blog",
+        __rootLayout: "/",
+        __interceptionContext: null,
+        "layout:/": "root-layout",
+        "page:/blog": "blog-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("__route");
+    expect(row0Keys).toContain("__rootLayout");
+    expect(row0Keys).toContain("__layoutFlags");
+    expect(row0Keys).not.toContain("layout:/");
+    expect(row0Keys).toContain("page:/blog");
+  });
+
+  it("returns byte-identical output when skip set is empty", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
+      requestedSkipLayoutIds: new Set(),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("layout:/");
+    expect(row0Keys).toContain("layout:/blog");
+    expect(row0Keys).toContain("page:/blog/post");
+  });
+
+  it("does not filter layouts on non-RSC requests (SSR/initial load)", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "page:/test": "test-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+      isRscRequest: false,
+    });
+
+    await renderAppPageLifecycle(options);
+    const captured = getCapturedElement();
+    expect(captured["layout:/"]).toBe("root-layout");
+  });
+
+  it("does not filter layouts on development RSC requests", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "page:/test": "test-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: false,
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("layout:/");
+    expect(body).toContain("root-layout");
+  });
+
+  it("writes canonical RSC bytes to the cache even when skipIds are non-empty", async () => {
+    const { options, isrSetCalls, waitUntilPromises } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    await response.text();
+    await Promise.all(waitUntilPromises);
+
+    const rscWrite = isrSetCalls.find((call) => call.key.startsWith("rsc:"));
+    expect(rscWrite?.hasRscData).toBe(true);
+    expect(rscWrite?.rscText).toBeDefined();
+    // Canonical cache bytes must contain ALL slot keys, even the skipped one.
+    const cachedRow0Keys = parseRow0Keys(rscWrite?.rscText ?? "");
+    expect(cachedRow0Keys).toContain("layout:/");
+    expect(cachedRow0Keys).toContain("layout:/blog");
+    expect(cachedRow0Keys).toContain("page:/blog/post");
+  });
+
+  it("does not mutate options.element during render", async () => {
+    const element: Record<string, ReactNode> = {
+      __route: "route:/blog",
+      __rootLayout: "/",
+      __interceptionContext: null,
+      "layout:/": "root-layout",
+      "layout:/blog": "blog-layout",
+      "page:/blog": "blog-page",
+    };
+    const snapshot = structuredClone(element);
+    const snapshotKeys = Object.keys(element);
+
+    const { options } = createRscOptions({
+      element,
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    await response.text();
+
+    expect(element).toEqual(snapshot);
+    expect(Object.keys(element)).toEqual(snapshotKeys);
+    expect("__layoutFlags" in element).toBe(false);
   });
 });

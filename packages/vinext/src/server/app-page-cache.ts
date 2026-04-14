@@ -1,5 +1,8 @@
 import type { CachedAppPageValue } from "../shims/cache.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import { wrapRscBytesForResponse } from "./app-page-skip-filter.js";
+
+const EMPTY_SKIP_SET: ReadonlySet<string> = new Set<string>();
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -22,6 +25,7 @@ export type BuildAppPageCachedResponseOptions = {
   isRscRequest: boolean;
   mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
+  skipIds?: ReadonlySet<string>;
 };
 
 export type ReadAppPageCacheResponseOptions = {
@@ -37,6 +41,7 @@ export type ReadAppPageCacheResponseOptions = {
   revalidateSeconds: number;
   renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
+  skipIds?: ReadonlySet<string>;
 };
 
 export type FinalizeAppPageHtmlCacheResponseOptions = {
@@ -106,7 +111,9 @@ export function buildAppPageCachedResponse(
       rscHeaders["X-Vinext-Mounted-Slots"] = options.mountedSlotsHeader;
     }
 
-    return new Response(cachedValue.rscData, {
+    const body = wrapRscBytesForResponse(cachedValue.rscData, options.skipIds ?? EMPTY_SKIP_SET);
+
+    return new Response(body, {
       status,
       headers: rscHeaders,
     });
@@ -142,6 +149,7 @@ export async function readAppPageCacheResponse(
         isRscRequest: options.isRscRequest,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        skipIds: options.skipIds,
       });
 
       if (hitResponse) {
@@ -198,6 +206,7 @@ export async function readAppPageCacheResponse(
         isRscRequest: options.isRscRequest,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        skipIds: options.skipIds,
       });
 
       if (staleResponse) {

@@ -394,6 +394,8 @@ import {
 import {
   APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
   createAppPayloadRouteId as __createAppPayloadRouteId,
+  parseSkipHeader as __parseSkipHeader,
+  X_VINEXT_ROUTER_SKIP_HEADER as __X_VINEXT_ROUTER_SKIP_HEADER,
 } from ${JSON.stringify(appElementsPath)};
 import {
   buildAppPageElements as __buildAppPageElements,
@@ -1420,6 +1422,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  const __skipLayoutIds = isRscRequest
+    ? __parseSkipHeader(request.headers.get(__X_VINEXT_ROUTER_SKIP_HEADER))
+    : new Set();
   // Read mounted-slots header once at the handler scope and thread it through
   // every buildPageElements call site. Previously both the handler and
   // buildPageElements read and normalized it independently, which invited
@@ -2206,6 +2211,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       isrSet: __isrSet,
       mountedSlotsHeader: __mountedSlotsHeader,
       revalidateSeconds,
+      skipIds: __skipLayoutIds,
       renderFreshPageForCache: async function() {
         // Re-render the page to produce fresh HTML + RSC data for the cache
         // Use an empty headers context for background regeneration — not the original
@@ -2420,6 +2426,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     isForceStatic,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
+    supportsFilteredRscStream: false,
     isrDebug: __isrDebug,
     isrHtmlKey: __isrHtmlKey,
     isrRscKey: __isrRscKey,
@@ -2468,6 +2475,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
     revalidateSeconds,
     mountedSlotsHeader: __mountedSlotsHeader,
+    requestedSkipLayoutIds: __skipLayoutIds,
     renderErrorBoundaryResponse(renderErr) {
       return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params, _scriptNonce);
     },

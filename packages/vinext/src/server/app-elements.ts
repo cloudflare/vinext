@@ -101,6 +101,47 @@ export function resolveVisitedResponseInterceptionContext(
   return payloadInterceptionContext ?? requestInterceptionContext;
 }
 
+export const X_VINEXT_ROUTER_SKIP_HEADER = "X-Vinext-Router-Skip";
+export const X_VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
+
+export function parseSkipHeader(header: string | null): ReadonlySet<string> {
+  if (!header) return new Set();
+  const ids = new Set<string>();
+  for (const part of header.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith("layout:")) {
+      ids.add(trimmed);
+    }
+  }
+  return ids;
+}
+
+const EMPTY_SKIP_DECISION: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Pure: computes the authoritative set of layout ids that should be omitted
+ * from the outgoing payload. Defense-in-depth — an id is only included if the
+ * server independently classified it as `"s"` (static). Empty or missing
+ * `requested` yields a shared empty set so the hot path does not allocate.
+ *
+ * See `LayoutFlags` type docblock in this file for lifecycle.
+ */
+export function computeSkipDecision(
+  layoutFlags: LayoutFlags,
+  requested: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  if (!requested || requested.size === 0) {
+    return EMPTY_SKIP_DECISION;
+  }
+  const decision = new Set<string>();
+  for (const id of requested) {
+    if (layoutFlags[id] === "s") {
+      decision.add(id);
+    }
+  }
+  return decision;
+}
+
 export function normalizeAppElements(elements: AppWireElements): AppElements {
   let needsNormalization = false;
   for (const [key, value] of Object.entries(elements)) {
