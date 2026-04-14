@@ -349,6 +349,140 @@ describe("app page execution helpers", () => {
     expect(result.layoutFlags).toEqual({ "layout:/admin": "s" });
   });
 
+  it("does not read build-time reasons when debugClassification is absent", async () => {
+    const throwingReasons = {
+      get() {
+        throw new Error("build-time reasons should stay dormant when debug is disabled");
+      },
+    } as unknown as ReadonlyMap<number, { layer: "segment-config"; key: "dynamic"; value: string }>;
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        buildTimeReasons: throwingReasons,
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
+      },
+    });
+  });
+
+  it("emits a debug reason per layout when debugClassification is provided with build-time reasons", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    await probeAppPageLayouts({
+      layoutCount: 3,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+          [2, "static"],
+        ]),
+        buildTimeReasons: new Map([
+          [0, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+          [1, { layer: "segment-config", key: "dynamic", value: "force-dynamic" }],
+          [2, { layer: "module-graph", result: "static" }],
+        ]),
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/admin", "layout:/admin/posts"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(3);
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-static",
+    });
+    expect(byId["layout:/admin"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-dynamic",
+    });
+    expect(byId["layout:/admin/posts"]).toEqual({
+      layer: "module-graph",
+      result: "static",
+    });
+  });
+
+  it("emits runtime-probe reason for layouts resolved by the Layer 3 probe", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+    let probeCalls = 0;
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        // No buildTimeClassifications → every layout takes the runtime path.
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          probeCalls++;
+          // probeAppPageLayouts iterates inner-to-outer:
+          // first call → layout 1 (dashboard) → dynamic
+          // second call → layout 0 (root) → static
+          return Promise.resolve({ result: fn(), dynamicDetected: probeCalls === 1 });
+        },
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+    });
+    expect(byId["layout:/"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "static",
+    });
+  });
+
   it("builds Link headers for preloaded app-page fonts", () => {
     expect(
       buildAppPageFontLinkHeader([

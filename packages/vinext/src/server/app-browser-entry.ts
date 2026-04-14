@@ -53,11 +53,13 @@ import {
   getVinextBrowserGlobal,
 } from "./app-browser-stream.js";
 import {
+  buildSkipHeaderValue,
   createAppPayloadCacheKey,
   getMountedSlotIdsHeader,
   normalizeAppElements,
   readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
+  X_VINEXT_ROUTER_SKIP_HEADER,
   type AppElements,
   type AppWireElements,
   type LayoutFlags,
@@ -367,10 +369,17 @@ function getRequestState(
   }
 }
 
-function createRscRequestHeaders(interceptionContext: string | null): Headers {
+function createRscRequestHeaders(
+  interceptionContext: string | null,
+  layoutFlags: LayoutFlags,
+): Headers {
   const headers = new Headers({ Accept: "text/x-component" });
   if (interceptionContext !== null) {
     headers.set("X-Vinext-Interception-Context", interceptionContext);
+  }
+  const skipValue = buildSkipHeaderValue(layoutFlags);
+  if (skipValue !== null) {
+    headers.set(X_VINEXT_ROUTER_SKIP_HEADER, skipValue);
   }
   return headers;
 }
@@ -974,10 +983,10 @@ async function main(): Promise<void> {
       }
 
       if (!navResponse) {
-        const requestHeaders = createRscRequestHeaders(requestInterceptionContext);
-        if (mountedSlotsHeader) {
-          requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
-        }
+        const requestHeaders = createRscRequestHeaders(
+          requestInterceptionContext,
+          getBrowserRouterState().layoutFlags,
+        );
         navResponse = await fetch(rscUrl, {
           headers: requestHeaders,
           credentials: "include",

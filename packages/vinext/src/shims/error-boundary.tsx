@@ -1,8 +1,9 @@
 "use client";
 
 import React from "react";
-// oxlint-disable-next-line @typescript-eslint/no-require-imports -- next/navigation is shimmed
-import { usePathname } from "next/navigation";
+// Import the local shim, not the public next/navigation alias. The built
+// package may execute this file before the plugin's resolveId hook is active.
+import { usePathname } from "./navigation.js";
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: Error; reset: () => void }>;

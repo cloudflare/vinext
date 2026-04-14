@@ -17,6 +17,13 @@ import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "./entries/app-browser-entry.js";
+import {
+  buildGenerateBundleReplacement,
+  buildReasonsReplacement,
+  collectRouteClassificationManifest,
+  type RouteClassificationManifest,
+} from "./build/route-classification-manifest.js";
+import { classifyLayoutByModuleGraph } from "./build/layout-classification.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   findNextConfigPath,
@@ -494,6 +501,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+
+  // Build-time layout classification manifest, captured in the RSC virtual
+  // module's load hook and consumed in generateBundle to patch the generated
+  // `__VINEXT_CLASS` stub with a real dispatch table.
+  let rscClassificationManifest: RouteClassificationManifest | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1593,6 +1605,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
+          // Collect Layer 1 (segment config) classifications for all layouts.
+          // Layer 2 (module graph) runs later in generateBundle once Rollup's
+          // module info is available.
+          rscClassificationManifest = collectRouteClassificationManifest(routes);
           return generateRscEntry(
             appDir,
             routes,
@@ -1624,6 +1640,161 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
           return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
         }
+      },
+
+      // Layer 2 build-time layout classification. The generated RSC entry
+      // emits a `function __VINEXT_CLASS(routeIdx) { return null; }` stub;
+      // this hook patches it with a switch-statement dispatch table so the
+      // runtime probe loop in app-page-execution.ts can skip the Layer 3
+      // per-layout dynamic-isolation probe for layouts we proved static or
+      // dynamic at build time.
+      //
+      // @vitejs/plugin-rsc runs the RSC environment build in two phases:
+      // a scan phase that discovers client references, and a final build
+      // phase that emits the real RSC entry. We only patch when we actually
+      // see the stub in a chunk — the scan phase produces a tiny stub chunk
+      // that does not contain our code.
+      generateBundle(_options, bundle) {
+        // Only run in the RSC environment. SSR/client builds never contain
+        // the __VINEXT_CLASS stub so there is nothing to patch there, and
+        // pulling ModuleInfo from the wrong graph would give nonsense results.
+        if (this.environment?.name !== "rsc") return;
+        if (!rscClassificationManifest) return;
+
+        const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
+        const reasonsStubRe =
+          /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
+
+        // Skip the scan-phase build where the RSC entry code has been
+        // tree-shaken out entirely. In the real RSC build the chunk that
+        // carries our runtime code will reference `__VINEXT_CLASS` via the
+        // per-route literal `__buildTimeClassifications: __VINEXT_CLASS(N)`,
+        // which Rolldown emits verbatim.
+        //
+        // If we see a chunk that mentions __VINEXT_CLASS but none of them
+        // contain the stub body we recognise, something upstream reshaped the
+        // generated source and we would silently degrade back to the Layer 3
+        // runtime probe. Fail loudly instead so regressions surface at build
+        // time rather than as a mysterious perf cliff at request time.
+        const chunksMentioningStub: Array<{
+          chunk: Extract<(typeof bundle)[string], { type: "chunk" }>;
+          fileName: string;
+        }> = [];
+        const chunksWithStubBody: Array<{
+          chunk: Extract<(typeof bundle)[string], { type: "chunk" }>;
+          fileName: string;
+        }> = [];
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type !== "chunk") continue;
+          if (!chunk.code.includes("__VINEXT_CLASS")) continue;
+          chunksMentioningStub.push({ chunk, fileName: chunk.fileName });
+          if (stubRe.test(chunk.code)) {
+            chunksWithStubBody.push({ chunk, fileName: chunk.fileName });
+          }
+        }
+
+        if (chunksMentioningStub.length === 0) return;
+        if (chunksWithStubBody.length === 0) {
+          throw new Error(
+            `vinext: build-time classification — __VINEXT_CLASS is referenced in ${chunksMentioningStub
+              .map((c) => c.fileName)
+              .join(
+                ", ",
+              )} but no chunk contains the stub body. The generator and generateBundle have drifted.`,
+          );
+        }
+        if (chunksWithStubBody.length > 1) {
+          throw new Error(
+            `vinext: build-time classification — expected __VINEXT_CLASS stub in exactly one RSC chunk, found ${chunksWithStubBody.length}`,
+          );
+        }
+        if (!reasonsStubRe.test(chunksWithStubBody[0]!.chunk.code)) {
+          throw new Error(
+            "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
+          );
+        }
+
+        // Rolldown stores module IDs as canonicalized filesystem paths
+        // (fs.realpathSync.native). On macOS, /var/folders/... becomes
+        // /private/var/folders/..., so raw paths collected at routing-scan
+        // time won't match module-graph keys. Canonicalize everything we
+        // hand to the classifier and everything we ask the graph for.
+        const canonicalize = (p: string): string => {
+          try {
+            return fs.realpathSync.native(p);
+          } catch {
+            return p;
+          }
+        };
+
+        const dynamicShimPaths: ReadonlySet<string> = new Set(
+          [
+            resolveShimModulePath(shimsDir, "headers"),
+            resolveShimModulePath(shimsDir, "server"),
+            resolveShimModulePath(shimsDir, "cache"),
+          ].map(canonicalize),
+        );
+
+        // Adapter: the classifier in `build/layout-classification.ts` uses
+        // `dynamicImportedIds` (matches the old-Rollup field name we used when
+        // we wrote it). Rolldown's current ModuleInfo exposes it as
+        // `dynamicallyImportedIds` (the new Rollup field name). Keep the
+        // translation in one place so future call sites don't have to remember.
+        const moduleInfo = {
+          getModuleInfo: (moduleId: string) => {
+            const info = this.getModuleInfo(moduleId);
+            if (!info) return null;
+            return {
+              importedIds: info.importedIds ?? [],
+              dynamicImportedIds: info.dynamicallyImportedIds ?? [],
+            };
+          },
+        };
+
+        const layer2PerRoute = new Map<number, Map<number, "static">>();
+        for (let routeIdx = 0; routeIdx < rscClassificationManifest.routes.length; routeIdx++) {
+          const route = rscClassificationManifest.routes[routeIdx]!;
+          const perRoute = new Map<number, "static">();
+          for (let layoutIdx = 0; layoutIdx < route.layoutPaths.length; layoutIdx++) {
+            // Skip layouts already decided by Layer 1 — segment config is
+            // authoritative, so there is no need to walk the module graph.
+            if (route.layer1.has(layoutIdx)) continue;
+            const layoutModuleId = canonicalize(route.layoutPaths[layoutIdx]!);
+            // If the layout module itself is not in the graph, we have no
+            // evidence either way — do NOT claim it static, or we would skip
+            // the runtime probe for a layout we never actually analysed.
+            // `classifyLayoutByModuleGraph` returns "static" for an empty
+            // traversal, so the seed presence check has to happen here.
+            if (!moduleInfo.getModuleInfo(layoutModuleId)) continue;
+            const graphResult = classifyLayoutByModuleGraph(
+              layoutModuleId,
+              dynamicShimPaths,
+              moduleInfo,
+            );
+            if (graphResult.result === "static") {
+              perRoute.set(layoutIdx, "static");
+            }
+          }
+          if (perRoute.size > 0) {
+            layer2PerRoute.set(routeIdx, perRoute);
+          }
+        }
+
+        const replacement = buildGenerateBundleReplacement(
+          rscClassificationManifest,
+          layer2PerRoute,
+        );
+        const reasonsReplacement = buildReasonsReplacement(
+          rscClassificationManifest,
+          layer2PerRoute,
+        );
+
+        const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
+        const patchedReasonsBody = `function __VINEXT_CLASS_REASONS(routeIdx) { return (${reasonsReplacement})(routeIdx); }`;
+        const target = chunksWithStubBody[0]!.chunk;
+        target.code = target.code
+          .replace(stubRe, patchedBody)
+          .replace(reasonsStubRe, patchedReasonsBody);
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts

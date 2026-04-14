@@ -7,11 +7,17 @@ import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
+  buildOutgoingAppPayload,
+  buildSkipHeaderValue,
+  computeSkipDecision,
   createAppPayloadCacheKey,
   createAppPayloadRouteId,
+  isAppElementsRecord,
   normalizeAppElements,
+  parseSkipHeader,
   readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
+  withLayoutFlags,
 } from "../packages/vinext/src/server/app-elements.js";
 
 describe("app elements payload helpers", () => {
@@ -147,5 +153,239 @@ describe("app elements payload helpers", () => {
     );
 
     expect(metadata.layoutFlags).toEqual({});
+  });
+});
+
+describe("parseSkipHeader", () => {
+  it("returns empty set for null header", () => {
+    expect(parseSkipHeader(null)).toEqual(new Set());
+  });
+
+  it("returns empty set for empty string", () => {
+    expect(parseSkipHeader("")).toEqual(new Set());
+  });
+
+  it("parses a single layout ID", () => {
+    expect(parseSkipHeader("layout:/")).toEqual(new Set(["layout:/"]));
+  });
+
+  it("parses comma-separated layout IDs", () => {
+    const result = parseSkipHeader("layout:/,layout:/blog,layout:/blog/posts");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog", "layout:/blog/posts"]));
+  });
+
+  it("trims whitespace around entries", () => {
+    const result = parseSkipHeader("  layout:/  ,  layout:/blog  ");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog"]));
+  });
+
+  it("filters out non-layout entries", () => {
+    const result = parseSkipHeader("layout:/,page:/blog,template:/,route:/api,slot:modal");
+    expect(result).toEqual(new Set(["layout:/"]));
+  });
+
+  it("handles mixed layout and non-layout entries", () => {
+    const result = parseSkipHeader("layout:/,garbage,layout:/blog,page:/x");
+    expect(result).toEqual(new Set(["layout:/", "layout:/blog"]));
+  });
+});
+
+describe("isAppElementsRecord", () => {
+  it("returns true for a plain record", () => {
+    expect(isAppElementsRecord({ "page:/": "x" })).toBe(true);
+  });
+
+  it("returns false for a React element", () => {
+    expect(isAppElementsRecord(React.createElement("div", null, "x"))).toBe(false);
+  });
+
+  it("returns false for null", () => {
+    expect(isAppElementsRecord(null)).toBe(false);
+  });
+
+  it("returns false for an array", () => {
+    expect(isAppElementsRecord([])).toBe(false);
+  });
+
+  it("returns false for a string", () => {
+    expect(isAppElementsRecord("string")).toBe(false);
+  });
+
+  it("returns false for undefined", () => {
+    expect(isAppElementsRecord(undefined)).toBe(false);
+  });
+});
+
+describe("withLayoutFlags", () => {
+  it("attaches the __layoutFlags key with the supplied value", () => {
+    const input = { "page:/": "page" };
+    const result = withLayoutFlags(input, { "layout:/": "s" });
+    expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
+  });
+
+  it("does not mutate the input", () => {
+    const input: Record<string, unknown> = { "page:/": "page", "layout:/": "layout" };
+    const snapshot = structuredClone(input);
+    const result = withLayoutFlags(input, { "layout:/": "d" });
+    expect(result).not.toBe(input);
+    expect(input).toEqual(snapshot);
+    expect(Object.keys(input)).toEqual(Object.keys(snapshot));
+    expect(APP_LAYOUT_FLAGS_KEY in input).toBe(false);
+  });
+
+  it("preserves other keys on the returned object", () => {
+    const input = { "page:/blog": "page", "layout:/": "layout" };
+    const result = withLayoutFlags(input, { "layout:/": "s" });
+    expect(result["page:/blog"]).toBe("page");
+    expect(result["layout:/"]).toBe("layout");
+  });
+
+  it("returns a new object with a different identity", () => {
+    const input = { "page:/": "page" };
+    const result = withLayoutFlags(input, {});
+    expect(result).not.toBe(input);
+  });
+});
+
+describe("computeSkipDecision", () => {
+  it("returns empty set when requested is undefined", () => {
+    expect(computeSkipDecision({ "layout:/": "s" }, undefined)).toEqual(new Set());
+  });
+
+  it("returns empty set when requested is empty", () => {
+    expect(computeSkipDecision({ "layout:/": "s" }, new Set())).toEqual(new Set());
+  });
+
+  it("includes an id when the server classified it as static", () => {
+    const decision = computeSkipDecision({ "layout:/a": "s" }, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set(["layout:/a"]));
+  });
+
+  it("defense-in-depth: excludes an id the server classified as dynamic", () => {
+    const decision = computeSkipDecision({ "layout:/a": "d" }, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set());
+  });
+
+  it("excludes an id missing from the flags", () => {
+    const decision = computeSkipDecision({}, new Set(["layout:/a"]));
+    expect(decision).toEqual(new Set());
+  });
+
+  it("keeps only ids the server agrees are static in a mixed request", () => {
+    const decision = computeSkipDecision(
+      { "layout:/a": "s", "layout:/b": "d" },
+      new Set(["layout:/a", "layout:/b"]),
+    );
+    expect(decision).toEqual(new Set(["layout:/a"]));
+  });
+});
+
+describe("buildOutgoingAppPayload", () => {
+  it("returns a non-record element unchanged (same identity)", () => {
+    const element = React.createElement("div", null, "page");
+    const result = buildOutgoingAppPayload({
+      element,
+      layoutFlags: { "layout:/": "s" },
+    });
+    expect(result).toBe(element);
+  });
+
+  it("returns a new object for a record element (different identity)", () => {
+    const element = { "page:/": "page" };
+    const result = buildOutgoingAppPayload({
+      element,
+      layoutFlags: {},
+    });
+    expect(result).not.toBe(element);
+  });
+
+  it("does not mutate the input record", () => {
+    const element: Record<string, React.ReactNode> = {
+      "layout:/": "root-layout",
+      "layout:/blog": "blog-layout",
+      "page:/blog": "blog-page",
+    };
+    const snapshot = structuredClone(element);
+    const result = buildOutgoingAppPayload({
+      element,
+      layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
+    });
+    expect(result).not.toBe(element);
+    expect(element).toEqual(snapshot);
+    expect(Object.keys(element)).toEqual(Object.keys(snapshot));
+    expect(APP_LAYOUT_FLAGS_KEY in element).toBe(false);
+  });
+
+  it("attaches __layoutFlags on the returned record", () => {
+    const result = buildOutgoingAppPayload({
+      element: { "page:/": "page" },
+      layoutFlags: { "layout:/": "s" },
+    });
+    expect(isAppElementsRecord(result)).toBe(true);
+    if (isAppElementsRecord(result)) {
+      expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
+    }
+  });
+
+  it("returns canonical record keys regardless of any upstream skip intent", () => {
+    const result = buildOutgoingAppPayload({
+      element: { "layout:/": "root-layout", "page:/": "page" },
+      layoutFlags: { "layout:/": "s" },
+    });
+    expect(isAppElementsRecord(result)).toBe(true);
+    if (isAppElementsRecord(result)) {
+      expect(result["layout:/"]).toBe("root-layout");
+      expect(result["page:/"]).toBe("page");
+    }
+  });
+
+  it("preserves non-layout metadata keys", () => {
+    const result = buildOutgoingAppPayload({
+      element: {
+        [APP_ROUTE_KEY]: "route:/blog",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_INTERCEPTION_CONTEXT_KEY]: null,
+        "layout:/": "root-layout",
+        "page:/blog": "blog-page",
+      },
+      layoutFlags: { "layout:/": "s" },
+    });
+    expect(isAppElementsRecord(result)).toBe(true);
+    if (isAppElementsRecord(result)) {
+      expect(result[APP_ROUTE_KEY]).toBe("route:/blog");
+      expect(result[APP_ROOT_LAYOUT_KEY]).toBe("/");
+      expect(result[APP_INTERCEPTION_CONTEXT_KEY]).toBeNull();
+      expect(result["page:/blog"]).toBe("blog-page");
+      expect(result["layout:/"]).toBe("root-layout");
+    }
+  });
+});
+
+describe("buildSkipHeaderValue", () => {
+  it("returns null for empty flags", () => {
+    expect(buildSkipHeaderValue({})).toBeNull();
+  });
+
+  it("returns null when all layouts are dynamic", () => {
+    expect(buildSkipHeaderValue({ "layout:/": "d", "layout:/blog": "d" })).toBeNull();
+  });
+
+  it("includes only static layout IDs", () => {
+    const value = buildSkipHeaderValue({ "layout:/": "s", "layout:/blog": "d" });
+    expect(value).toBe("layout:/");
+  });
+
+  it("returns comma-separated IDs when multiple are static", () => {
+    const value = buildSkipHeaderValue({
+      "layout:/": "s",
+      "layout:/blog": "s",
+      "layout:/blog/posts": "d",
+    });
+    expect(value).toBe("layout:/,layout:/blog");
+  });
+
+  it("returns all IDs when all are static", () => {
+    const value = buildSkipHeaderValue({ "layout:/": "s", "layout:/blog": "s" });
+    expect(value).toBe("layout:/,layout:/blog");
   });
 });

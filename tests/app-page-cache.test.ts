@@ -332,6 +332,162 @@ describe("app page cache helpers", () => {
     errorSpy.mockRestore();
   });
 
+  it("filters cached canonical RSC bytes when the request carries a skip set", async () => {
+    const canonicalRows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `0:{"slot:layout:/":"$L1","slot:page":"$L2"}`,
+    ];
+    const canonicalText = canonicalRows.join("\n") + "\n";
+    const rscData = new TextEncoder().encode(canonicalText).buffer;
+
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("", rscData), {
+      cacheState: "HIT",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      skipIds: new Set(["slot:layout:/"]),
+    });
+
+    expect(response).not.toBeNull();
+    const bodyText = await response?.text();
+    expect(bodyText).toBeDefined();
+    expect(bodyText).toContain("page");
+    expect(bodyText).not.toContain("layout");
+    expect(bodyText).toContain(`"slot:page":"$L2"`);
+  });
+
+  it("returns canonical RSC bytes when the request carries no skip set", async () => {
+    const canonicalRows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `0:{"slot:layout:/":"$L1","slot:page":"$L2"}`,
+    ];
+    const canonicalText = canonicalRows.join("\n") + "\n";
+    const rscData = new TextEncoder().encode(canonicalText).buffer;
+
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("", rscData), {
+      cacheState: "HIT",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+
+    const bodyText = await response?.text();
+    expect(bodyText).toBe(canonicalText);
+  });
+
+  it("filters identically on HIT and STALE reads for the same canonical bytes", async () => {
+    const canonicalRows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `0:{"slot:layout:/":"$L1","slot:page":"$L2"}`,
+    ];
+    const canonicalText = canonicalRows.join("\n") + "\n";
+    const rscData = new TextEncoder().encode(canonicalText).buffer;
+    const skipIds = new Set(["slot:layout:/"]);
+
+    const hit = buildAppPageCachedResponse(buildCachedAppPageValue("", rscData), {
+      cacheState: "HIT",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      skipIds,
+    });
+    const stale = buildAppPageCachedResponse(buildCachedAppPageValue("", rscData.slice(0)), {
+      cacheState: "STALE",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      skipIds,
+    });
+
+    const hitBody = await hit?.text();
+    const staleBody = await stale?.text();
+    // Both must contain the same row 0 rewrite, independent of cache state.
+    const hitRow0 = hitBody?.split("\n").find((line) => line.startsWith("0:"));
+    const staleRow0 = staleBody?.split("\n").find((line) => line.startsWith("0:"));
+    expect(hitRow0).toBeDefined();
+    expect(hitRow0).toBe(staleRow0);
+  });
+
+  it("cache-read HITs thread skipIds from the request through to the response body", async () => {
+    const canonicalRows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `0:{"slot:layout:/":"$L1","slot:page":"$L2"}`,
+    ];
+    const canonicalText = canonicalRows.join("\n") + "\n";
+    const rscData = new TextEncoder().encode(canonicalText).buffer;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("", rscData));
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      renderFreshPageForCache: async () => {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+      skipIds: new Set(["slot:layout:/"]),
+    });
+
+    const bodyText = await response?.text();
+    expect(bodyText).toBeDefined();
+    expect(bodyText).not.toContain("layout");
+    expect(bodyText).toContain(`"slot:page":"$L2"`);
+  });
+
+  it("cache-read STALE branch applies skipIds to the stale payload", async () => {
+    const canonicalRows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `0:{"slot:layout:/":"$L1","slot:page":"$L2"}`,
+    ];
+    const canonicalText = canonicalRows.join("\n") + "\n";
+    const rscData = new TextEncoder().encode(canonicalText).buffer;
+    const scheduled: Array<() => Promise<void>> = [];
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/stale-skip",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("", rscData), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      renderFreshPageForCache: async () => ({
+        html: "",
+        rscData,
+        tags: [],
+      }),
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduled.push(renderFn);
+      },
+      skipIds: new Set(["slot:layout:/"]),
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    const bodyText = await response?.text();
+    expect(bodyText).not.toContain("layout");
+    expect(bodyText).toContain(`"slot:page":"$L2"`);
+  });
+
   it("finalizes HTML responses by teeing the stream and writing HTML and RSC cache keys", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const isrSetCalls: Array<{

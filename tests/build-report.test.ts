@@ -744,35 +744,52 @@ describe("printBuildReport respects pageExtensions", () => {
 // ─── classifyLayoutSegmentConfig ─────────────────────────────────────────────
 
 describe("classifyLayoutSegmentConfig", () => {
-  it('returns "static" for export const dynamic = "force-static"', () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toBe("static");
+  it("returns kind=static with segment-config reason for force-static", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-static" },
+    });
   });
 
-  it('returns "static" for export const dynamic = "error" (enforces static)', () => {
-    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toBe("static");
+  it('returns kind=static with segment-config reason for dynamic = "error"', () => {
+    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "error" },
+    });
   });
 
-  it('returns "dynamic" for export const dynamic = "force-dynamic"', () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toBe("dynamic");
+  it("returns kind=dynamic with segment-config reason for force-dynamic", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+    });
   });
 
-  it('returns "dynamic" for export const revalidate = 0', () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toBe("dynamic");
+  it("returns kind=dynamic with revalidate reason for revalidate = 0", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "revalidate", value: 0 },
+    });
   });
 
-  it('returns "static" for export const revalidate = Infinity', () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toBe("static");
+  it("returns kind=static with revalidate reason for revalidate = Infinity", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    });
   });
 
-  it("returns null for no config (defers to module graph)", () => {
+  it("returns kind=absent when no config is present (defers to module graph)", () => {
     expect(
       classifyLayoutSegmentConfig(
         "export default function Layout({ children }) { return children; }",
       ),
-    ).toBeNull();
+    ).toEqual({ kind: "absent" });
   });
 
-  it("returns null for positive revalidate (ISR is a page concept)", () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toBeNull();
+  it("returns kind=absent for positive revalidate (ISR is a page concept)", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toEqual({
+      kind: "absent",
+    });
   });
 });

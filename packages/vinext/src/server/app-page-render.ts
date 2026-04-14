@@ -1,15 +1,22 @@
 import type { ReactNode } from "react";
 import type { CachedAppPageValue } from "../shims/cache.js";
 import {
+  buildOutgoingAppPayload,
+  computeSkipDecision,
+  type AppOutgoingElements,
+} from "./app-elements.js";
+import {
   finalizeAppPageHtmlCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "./app-page-cache.js";
+import { createSkipFilterTransform } from "./app-page-skip-filter.js";
 import {
   buildAppPageFontLinkHeader,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
   type AppPageSpecialError,
+  type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import {
@@ -29,6 +36,8 @@ import {
   shouldRerenderAppPageWithGlobalError,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
+
+const EMPTY_SKIP_SET: ReadonlySet<string> = new Set<string>();
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -84,7 +93,7 @@ export type RenderAppPageLifecycleOptions = {
   ) => Promise<Response>;
   renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   renderToReadableStream: (
-    element: ReactNode | Record<string, ReactNode>,
+    element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError },
   ) => ReadableStream<Uint8Array>;
   routeHasLocalBoundary: boolean;
@@ -93,7 +102,9 @@ export type RenderAppPageLifecycleOptions = {
   scriptNonce?: string;
   mountedSlotsHeader?: string | null;
   waitUntil?: (promise: Promise<void>) => void;
-  element: ReactNode | Record<string, ReactNode>;
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  classification?: LayoutClassificationOptions | null;
+  requestedSkipLayoutIds?: ReadonlySet<string>;
 };
 
 function buildResponseTiming(
@@ -137,15 +148,26 @@ export async function renderAppPageLifecycle(
     runWithSuppressedHookWarning(probe) {
       return options.runWithSuppressedHookWarning(probe);
     },
+    classification: options.classification,
   });
   if (preRenderResult.response) {
     return preRenderResult.response;
   }
 
+  const layoutFlags = preRenderResult.layoutFlags;
+
+  // Always render the CANONICAL element. Skip semantics are applied on the
+  // egress branch only so the cache branch receives full bytes regardless of
+  // the client's skip header. See `app-page-skip-filter.ts`.
+  const outgoingElement = buildOutgoingAppPayload({
+    element: options.element,
+    layoutFlags,
+  });
+
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
-  const rscStream = options.renderToReadableStream(options.element, {
+  const rscStream = options.renderToReadableStream(outgoingElement, {
     onError: rscErrorTracker.onRenderError,
   });
 
@@ -158,8 +180,15 @@ export async function renderAppPageLifecycle(
       revalidateSeconds !== Infinity &&
       !options.isForceDynamic,
   );
-  const rscForResponse = rscCapture.responseStream;
   const isrRscDataPromise = rscCapture.capturedRscDataPromise;
+
+  const skipIds = options.isRscRequest
+    ? computeSkipDecision(layoutFlags, options.requestedSkipLayoutIds)
+    : EMPTY_SKIP_SET;
+  const rscForResponse =
+    skipIds.size > 0
+      ? rscCapture.responseStream.pipeThrough(createSkipFilterTransform(skipIds))
+      : rscCapture.responseStream;
 
   if (options.isRscRequest) {
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();

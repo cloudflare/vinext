@@ -183,7 +183,7 @@ export function generateRscEntry(
   }
 
   // Build route table as serialized JS
-  const routeEntries = routes.map((route) => {
+  const routeEntries = routes.map((route, routeIdx) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
@@ -214,6 +214,9 @@ ${interceptEntries.join(",\n")}
       ep ? getImportVar(ep) : "null",
     );
     return `  {
+    routeIdx: ${routeIdx},
+    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}),
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
@@ -394,6 +397,8 @@ import {
 import {
   APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
   createAppPayloadRouteId as __createAppPayloadRouteId,
+  parseSkipHeader as __parseSkipHeader,
+  X_VINEXT_ROUTER_SKIP_HEADER as __X_VINEXT_ROUTER_SKIP_HEADER,
 } from ${JSON.stringify(appElementsPath)};
 import {
   buildAppPageElements as __buildAppPageElements,
@@ -571,6 +576,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -741,6 +756,24 @@ async function __ensureInstrumentation() {
   return __instrumentationInitPromise;
 }`
     : ""
+}
+
+// Build-time layout classification dispatch. Replaced in generateBundle
+// with a switch statement that returns a pre-computed per-layout
+// Map<layoutIndex, "static" | "dynamic"> for each route. Until the
+// plugin patches this stub, every route falls back to the Layer 3
+// runtime probe, which is the current (slow) behaviour.
+function __VINEXT_CLASS(routeIdx) {
+  return null;
+}
+
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
 }
 
 const routes = [
@@ -935,7 +968,7 @@ function findIntercept(pathname) {
   return null;
 }
 
-async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request) {
+async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request, mountedSlotsHeader, skipLayoutIds) {
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     const _interceptionContext = opts?.interceptionContext ?? null;
@@ -1052,11 +1085,13 @@ async function buildPageElements(route, params, routePath, opts, searchParams, i
     // dynamic, and this avoids false positives from React internals.
     if (hasSearchParams) markDynamicUsage();
   }
-  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
-    request?.headers?.get("x-vinext-mounted-slots"),
-  );
-  const mountedSlotIds = __mountedSlotsHeader
-    ? new Set(__mountedSlotsHeader.split(" "))
+  // Both mountedSlotsHeader (already normalized) and skipLayoutIds (already
+  // parsed) are threaded through from the handler scope so every call site
+  // shares one source of truth for these request-derived values. Reading the
+  // same headers in two places invites silent drift when a future refactor
+  // changes only one of them.
+  const mountedSlotIds = mountedSlotsHeader
+    ? new Set(mountedSlotsHeader.split(" "))
     : null;
 
   return __buildAppPageElements({
@@ -1412,6 +1447,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  const __skipLayoutIds = isRscRequest
+    ? __parseSkipHeader(request.headers.get(__X_VINEXT_ROUTER_SKIP_HEADER))
+    : new Set();
+  // Read mounted-slots header once at the handler scope and thread it through
+  // every buildPageElements call site. Previously both the handler and
+  // buildPageElements read and normalized it independently, which invited
+  // silent drift if a future refactor changed only one path.
+  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
+    request.headers.get("x-vinext-mounted-slots"),
+  );
   const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context")?.replaceAll("\0", "") || null;
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
@@ -1819,6 +1864,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           url.searchParams,
           isRscRequest,
           request,
+          __mountedSlotsHeader,
+          __skipLayoutIds,
         );
       } else {
         const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
@@ -2153,9 +2200,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
-    request.headers.get("x-vinext-mounted-slots"),
-  );
 
   // ── ISR cache read (production only) ─────────────────────────────────────
   // Read from cache BEFORE generateStaticParams and all rendering work.
@@ -2191,6 +2235,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       isrSet: __isrSet,
       mountedSlotsHeader: __mountedSlotsHeader,
       revalidateSeconds,
+      skipIds: __skipLayoutIds,
       renderFreshPageForCache: async function() {
         // Re-render the page to produce fresh HTML + RSC data for the cache
         // Use an empty headers context for background regeneration — not the original
@@ -2215,6 +2260,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             new URLSearchParams(),
             isRscRequest,
             request,
+            __mountedSlotsHeader,
+            __skipLayoutIds,
           );
           const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
           const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
@@ -2273,6 +2320,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         interceptSearchParams,
         isRscRequest,
         request,
+        __mountedSlotsHeader,
+        __skipLayoutIds,
       );
     },
     cleanPathname,
@@ -2326,7 +2375,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   const __pageBuildResult = await __buildAppPageElement({
     buildPageElement() {
-      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams, isRscRequest, request);
+      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams, isRscRequest, request, __mountedSlotsHeader, __skipLayoutIds);
     },
     renderErrorBoundaryPage(buildErr) {
       return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params, _scriptNonce);
@@ -2422,8 +2471,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const _asyncSearchParams = makeThenableParams(_probeSearchObj);
       return PageComponent({ params: _asyncLayoutParams, searchParams: _asyncSearchParams });
     },
+    classification: {
+      getLayoutId(index) {
+        const tp = route.layoutTreePositions?.[index] ?? 0;
+        return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
+      },
+      buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
+      async runWithIsolatedDynamicScope(fn) {
+        const priorDynamic = consumeDynamicUsage();
+        try {
+          const result = await fn();
+          const dynamicDetected = consumeDynamicUsage();
+          return { result, dynamicDetected };
+        } finally {
+          if (priorDynamic) markDynamicUsage();
+        }
+      },
+    },
     revalidateSeconds,
     mountedSlotsHeader: __mountedSlotsHeader,
+    requestedSkipLayoutIds: __skipLayoutIds,
     renderErrorBoundaryResponse(renderErr) {
       return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params, _scriptNonce);
     },
