@@ -935,7 +935,14 @@ function findIntercept(pathname) {
   return null;
 }
 
-async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request) {
+async function buildPageElements(route, params, routePath, pageRequest) {
+  const {
+    opts,
+    searchParams,
+    isRscRequest,
+    request,
+    mountedSlotsHeader,
+  } = pageRequest;
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     const _interceptionContext = opts?.interceptionContext ?? null;
@@ -1052,11 +1059,12 @@ async function buildPageElements(route, params, routePath, opts, searchParams, i
     // dynamic, and this avoids false positives from React internals.
     if (hasSearchParams) markDynamicUsage();
   }
-  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
-    request?.headers?.get("x-vinext-mounted-slots"),
-  );
-  const mountedSlotIds = __mountedSlotsHeader
-    ? new Set(__mountedSlotsHeader.split(" "))
+  // mountedSlotsHeader is threaded through from the handler scope so every
+  // call site shares one source of truth for request-derived values. Reading
+  // the same header in two places invites silent drift when a future refactor
+  // changes only one of them.
+  const mountedSlotIds = mountedSlotsHeader
+    ? new Set(mountedSlotsHeader.split(" "))
     : null;
 
   return __buildAppPageElements({
@@ -1412,6 +1420,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  // Read mounted-slots header once at the handler scope and thread it through
+  // every buildPageElements call site. Previously both the handler and
+  // buildPageElements read and normalized it independently, which invited
+  // silent drift if a future refactor changed only one path.
+  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
+    request.headers.get("x-vinext-mounted-slots"),
+  );
   const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context")?.replaceAll("\0", "") || null;
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
@@ -1815,10 +1830,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           actionRoute,
           actionParams,
           cleanPathname,
-          undefined,
-          url.searchParams,
-          isRscRequest,
-          request,
+          {
+            opts: undefined,
+            searchParams: url.searchParams,
+            isRscRequest,
+            request,
+            mountedSlotsHeader: __mountedSlotsHeader,
+          },
         );
       } else {
         const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
@@ -2153,9 +2171,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
-    request.headers.get("x-vinext-mounted-slots"),
-  );
 
   // ── ISR cache read (production only) ─────────────────────────────────────
   // Read from cache BEFORE generateStaticParams and all rendering work.
@@ -2211,10 +2226,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             route,
             params,
             cleanPathname,
-            undefined,
-            new URLSearchParams(),
-            isRscRequest,
-            request,
+            {
+              opts: undefined,
+              searchParams: new URLSearchParams(),
+              isRscRequest,
+              request,
+              mountedSlotsHeader: __mountedSlotsHeader,
+            },
           );
           const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
           const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
@@ -2269,10 +2287,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         interceptRoute,
         interceptParams,
         cleanPathname,
-        interceptOpts,
-        interceptSearchParams,
-        isRscRequest,
-        request,
+        {
+          opts: interceptOpts,
+          searchParams: interceptSearchParams,
+          isRscRequest,
+          request,
+          mountedSlotsHeader: __mountedSlotsHeader,
+        },
       );
     },
     cleanPathname,
@@ -2326,7 +2347,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   const __pageBuildResult = await __buildAppPageElement({
     buildPageElement() {
-      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams, isRscRequest, request);
+      return buildPageElements(route, params, cleanPathname, {
+        opts: interceptOpts,
+        searchParams: url.searchParams,
+        isRscRequest,
+        request,
+        mountedSlotsHeader: __mountedSlotsHeader,
+      });
     },
     renderErrorBoundaryPage(buildErr) {
       return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params, _scriptNonce);
