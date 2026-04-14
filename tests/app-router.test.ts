@@ -3645,6 +3645,27 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       });
     });
   });
+
+  describe("build-time classification dispatch stub", () => {
+    it("declares a __VINEXT_CLASS dispatch function", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      expect(code).toContain("function __VINEXT_CLASS(routeIdx)");
+    });
+
+    it("threads a numeric route index into each route's classification wiring", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      // minimalRoutes has three routes, so the generator should emit calls
+      // __VINEXT_CLASS(0), __VINEXT_CLASS(1), __VINEXT_CLASS(2).
+      for (let i = 0; i < minimalRoutes.length; i++) {
+        expect(code).toContain(`__VINEXT_CLASS(${i})`);
+      }
+    });
+
+    it("no longer hardcodes buildTimeClassifications to null", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      expect(code).not.toContain("buildTimeClassifications: null");
+    });
+  });
 });
 
 describe("App Router middleware with NextRequest", () => {

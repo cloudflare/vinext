@@ -36,48 +36,50 @@ const DYNAMIC_SHIMS = new Set(["/shims/headers", "/shims/cache", "/shims/server"
 // ─── classifyLayoutByModuleGraph ─────────────────────────────────────────────
 
 describe("classifyLayoutByModuleGraph", () => {
-  it('returns "static" when layout has no transitive dynamic shim imports', () => {
+  it('returns result="static" without a shim match when layout has no dynamic imports', () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: ["/components/nav.tsx"] },
       "/components/nav.tsx": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    const result = classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph);
+    expect(result.result).toBe("static");
+    expect(result.firstShimMatch).toBeUndefined();
   });
 
-  it('returns "needs-probe" when headers shim is transitively imported', () => {
+  it('returns result="needs-probe" with the first shim match when headers shim is imported', () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: ["/components/auth.tsx"] },
       "/components/auth.tsx": { importedIds: ["/shims/headers"] },
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
-      "needs-probe",
-    );
+    const result = classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph);
+    expect(result.result).toBe("needs-probe");
+    expect(result.firstShimMatch).toBe("/shims/headers");
   });
 
-  it('returns "needs-probe" when cache shim (noStore) is transitively imported', () => {
+  it('returns result="needs-probe" when cache shim (noStore) is imported', () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: ["/shims/cache"] },
       "/shims/cache": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
-      "needs-probe",
-    );
+    const result = classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph);
+    expect(result.result).toBe("needs-probe");
+    expect(result.firstShimMatch).toBe("/shims/cache");
   });
 
-  it('returns "needs-probe" when server shim (connection) is transitively imported', () => {
+  it('returns result="needs-probe" when server shim (connection) is imported', () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: ["/lib/data.ts"] },
       "/lib/data.ts": { importedIds: ["/shims/server"] },
       "/shims/server": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
-      "needs-probe",
-    );
+    const result = classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph);
+    expect(result.result).toBe("needs-probe");
+    expect(result.firstShimMatch).toBe("/shims/server");
   });
 
   it("handles circular imports without infinite loop", () => {
@@ -87,7 +89,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/b.ts": { importedIds: ["/a.ts"] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph).result).toBe(
+      "static",
+    );
   });
 
   it("detects dynamic shim through deep transitive chains", () => {
@@ -99,9 +103,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
-      "needs-probe",
-    );
+    const result = classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph);
+    expect(result.result).toBe("needs-probe");
+    expect(result.firstShimMatch).toBe("/shims/headers");
   });
 
   it("follows dynamicImportedIds (dynamic import())", () => {
@@ -114,22 +118,24 @@ describe("classifyLayoutByModuleGraph", () => {
       "/shims/headers": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph).result).toBe(
       "needs-probe",
     );
   });
 
-  it('returns "static" when module info is null (unknown module)', () => {
+  it('returns result="static" when module info is null (unknown module)', () => {
     const graph = createFakeModuleGraph({});
 
-    expect(classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    expect(classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph).result).toBe(
+      "static",
+    );
   });
 });
 
 // ─── classifyAllRouteLayouts ─────────────────────────────────────────────────
 
 describe("classifyAllRouteLayouts", () => {
-  it("segment config takes priority over module graph", () => {
+  it("segment config takes priority over module graph and carries a segment-config reason", () => {
     // Layout imports headers shim, but segment config says force-static
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: ["/shims/headers"] },
@@ -150,7 +156,10 @@ describe("classifyAllRouteLayouts", () => {
     ];
 
     const result = classifyAllRouteLayouts(routes, DYNAMIC_SHIMS, graph);
-    expect(result.get("layout:/")).toBe("static");
+    expect(result.get("layout:/")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-static" },
+    });
   });
 
   it("deduplicates shared layout files across routes", () => {
@@ -176,12 +185,22 @@ describe("classifyAllRouteLayouts", () => {
 
     const result = classifyAllRouteLayouts(routes, DYNAMIC_SHIMS, graph);
     // Root layout appears in both routes but should only be classified once
-    expect(result.get("layout:/")).toBe("static");
-    expect(result.get("layout:/blog")).toBe("needs-probe");
+    expect(result.get("layout:/")).toEqual({
+      kind: "static",
+      reason: { layer: "module-graph", result: "static" },
+    });
+    expect(result.get("layout:/blog")).toEqual({
+      kind: "needs-probe",
+      reason: {
+        layer: "module-graph",
+        result: "needs-probe",
+        firstShimMatch: "/shims/headers",
+      },
+    });
     expect(result.size).toBe(2);
   });
 
-  it("returns dynamic for force-dynamic segment config", () => {
+  it("returns dynamic for force-dynamic segment config with a segment-config reason", () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: [] },
     });
@@ -200,10 +219,13 @@ describe("classifyAllRouteLayouts", () => {
     ];
 
     const result = classifyAllRouteLayouts(routes, DYNAMIC_SHIMS, graph);
-    expect(result.get("layout:/")).toBe("dynamic");
+    expect(result.get("layout:/")).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+    });
   });
 
-  it("falls through to module graph when segment config returns null", () => {
+  it("falls through to module graph when segment config is absent", () => {
     const graph = createFakeModuleGraph({
       "/app/layout.tsx": { importedIds: [] },
     });
@@ -222,7 +244,10 @@ describe("classifyAllRouteLayouts", () => {
     ];
 
     const result = classifyAllRouteLayouts(routes, DYNAMIC_SHIMS, graph);
-    expect(result.get("layout:/")).toBe("static");
+    expect(result.get("layout:/")).toEqual({
+      kind: "static",
+      reason: { layer: "module-graph", result: "static" },
+    });
   });
 
   it("classifies layouts without segment configs using module graph only", () => {
@@ -239,6 +264,13 @@ describe("classifyAllRouteLayouts", () => {
     ];
 
     const result = classifyAllRouteLayouts(routes, DYNAMIC_SHIMS, graph);
-    expect(result.get("layout:/")).toBe("needs-probe");
+    expect(result.get("layout:/")).toEqual({
+      kind: "needs-probe",
+      reason: {
+        layer: "module-graph",
+        result: "needs-probe",
+        firstShimMatch: "/shims/cache",
+      },
+    });
   });
 });

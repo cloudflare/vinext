@@ -183,7 +183,7 @@ export function generateRscEntry(
   }
 
   // Build route table as serialized JS
-  const routeEntries = routes.map((route) => {
+  const routeEntries = routes.map((route, routeIdx) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
     const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
@@ -214,6 +214,8 @@ ${interceptEntries.join(",\n")}
       ep ? getImportVar(ep) : "null",
     );
     return `  {
+    routeIdx: ${routeIdx},
+    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}),
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
@@ -741,6 +743,15 @@ async function __ensureInstrumentation() {
   return __instrumentationInitPromise;
 }`
     : ""
+}
+
+// Build-time layout classification dispatch. Replaced in generateBundle
+// with a switch statement that returns a pre-computed per-layout
+// Map<layoutIndex, "static" | "dynamic"> for each route. Until the
+// plugin patches this stub, every route falls back to the Layer 3
+// runtime probe, which is the current (slow) behaviour.
+function __VINEXT_CLASS(routeIdx) {
+  return null;
 }
 
 const routes = [
@@ -2454,6 +2465,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const tp = route.layoutTreePositions?.[index] ?? 0;
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
+      buildTimeClassifications: route.__buildTimeClassifications,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
