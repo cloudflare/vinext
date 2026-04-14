@@ -106,6 +106,39 @@ export const X_VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 const MAX_SKIP_LAYOUT_IDS = 50;
 const EMPTY_SKIP_HEADER_IDS: ReadonlySet<string> = new Set<string>();
 
+/** See `LayoutFlags` type docblock in this file for lifecycle. */
+export function buildSkipHeaderValue(layoutFlags: LayoutFlags): string | null {
+  const staticIds: string[] = [];
+  for (const [id, flag] of Object.entries(layoutFlags)) {
+    if (flag === "s") staticIds.push(id);
+  }
+  return staticIds.length > 0 ? staticIds.join(",") : null;
+}
+
+/**
+ * Pure: builds the request headers for an App Router RSC navigation.
+ * Centralizing this contract keeps the navigation fetch aligned with the
+ * cache-key inputs (`interceptionContext`, mounted slots, layout flags).
+ */
+export function createRscNavigationRequestHeaders(
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  layoutFlags: LayoutFlags,
+): Headers {
+  const headers = new Headers({ Accept: "text/x-component" });
+  if (interceptionContext !== null) {
+    headers.set("X-Vinext-Interception-Context", interceptionContext);
+  }
+  if (mountedSlotsHeader !== null) {
+    headers.set(X_VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+  }
+  const skipValue = buildSkipHeaderValue(layoutFlags);
+  if (skipValue !== null) {
+    headers.set(X_VINEXT_ROUTER_SKIP_HEADER, skipValue);
+  }
+  return headers;
+}
+
 export function parseSkipHeader(header: string | null): ReadonlySet<string> {
   if (!header) return EMPTY_SKIP_HEADER_IDS;
   const ids = new Set<string>();

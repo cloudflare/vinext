@@ -53,6 +53,7 @@ import {
   getVinextBrowserGlobal,
 } from "./app-browser-stream.js";
 import {
+  createRscNavigationRequestHeaders,
   createAppPayloadCacheKey,
   getMountedSlotIdsHeader,
   normalizeAppElements,
@@ -365,14 +366,6 @@ function getRequestState(
       throw new Error("[vinext] Unknown navigation kind: " + String(_exhaustive));
     }
   }
-}
-
-function createRscRequestHeaders(interceptionContext: string | null): Headers {
-  const headers = new Headers({ Accept: "text/x-component" });
-  if (interceptionContext !== null) {
-    headers.set("X-Vinext-Interception-Context", interceptionContext);
-  }
-  return headers;
 }
 
 /**
@@ -974,10 +967,11 @@ async function main(): Promise<void> {
       }
 
       if (!navResponse) {
-        const requestHeaders = createRscRequestHeaders(requestInterceptionContext);
-        if (mountedSlotsHeader) {
-          requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
-        }
+        const requestHeaders = createRscNavigationRequestHeaders(
+          requestInterceptionContext,
+          mountedSlotsHeader,
+          getBrowserRouterState().layoutFlags,
+        );
         navResponse = await fetch(rscUrl, {
           headers: requestHeaders,
           credentials: "include",
