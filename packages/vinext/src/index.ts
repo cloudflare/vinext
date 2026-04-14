@@ -19,6 +19,7 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "./entries/app-browser-entry.js";
 import {
   buildGenerateBundleReplacement,
+  buildReasonsReplacement,
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
@@ -1684,11 +1685,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (this.environment?.name !== "rsc") return;
         if (!rscClassificationManifest) return;
 
+        const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
+
         // The `?` after the semicolon is intentional: Rolldown may or may not
         // emit the trailing semicolon depending on minification settings.
         // This regex relies on `__VINEXT_CLASS` retaining its name, which holds
         // because RSC entry chunk bindings are not subject to scope-hoisting renames.
         const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
+        const reasonsStubRe =
+          /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 
         // Skip the scan-phase build where the RSC entry code has been
         // tree-shaken out entirely. In the real RSC build the chunk that
@@ -1731,6 +1736,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (chunksWithStubBody.length > 1) {
           throw new Error(
             `vinext: build-time classification — expected __VINEXT_CLASS stub in exactly one RSC chunk, found ${chunksWithStubBody.length}`,
+          );
+        }
+        if (enableClassificationDebug && !reasonsStubRe.test(chunksWithStubBody[0]!.chunk.code)) {
+          throw new Error(
+            "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
           );
         }
 
@@ -1797,6 +1807,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
         const target = chunksWithStubBody[0]!.chunk;
         target.code = target.code.replace(stubRe, patchedBody);
+
+        if (enableClassificationDebug) {
+          const reasonsReplacement = buildReasonsReplacement(
+            rscClassificationManifest,
+            layer2PerRoute,
+          );
+          const patchedReasonsBody = `function __VINEXT_CLASS_REASONS(routeIdx) { return (${reasonsReplacement})(routeIdx); }`;
+          target.code = target.code.replace(reasonsStubRe, patchedReasonsBody);
+        }
+
         // The patched body is longer than the stub, so any existing source map
         // would be stale. RSC entry source maps are not served or consumed, so
         // nulling the map is safe and prevents stale-map confusion in tooling.

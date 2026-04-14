@@ -215,6 +215,7 @@ ${interceptEntries.join(",\n")}
     );
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
@@ -573,6 +574,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -751,6 +762,15 @@ async function __ensureInstrumentation() {
 // plugin patches this stub, every route falls back to the Layer 3
 // runtime probe, which is the current (slow) behaviour.
 function __VINEXT_CLASS(routeIdx) {
+  return null;
+}
+
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
   return null;
 }
 
@@ -2496,6 +2516,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {

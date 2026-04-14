@@ -1,6 +1,8 @@
 import type { LayoutFlags } from "./app-elements.js";
+import type { ClassificationReason } from "../build/layout-classification-types.js";
 
 export type { LayoutFlags };
+export type { ClassificationReason };
 
 export type AppPageSpecialError =
   | { kind: "redirect"; location: string; statusCode: number }
@@ -31,6 +33,22 @@ export type ProbeAppPageLayoutsResult = {
 export type LayoutClassificationOptions = {
   /** Build-time classifications from segment config or module graph, keyed by layout index. */
   buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
+  /**
+   * Per-layout classification reasons keyed by layout index. Requires
+   * `VINEXT_DEBUG_CLASSIFICATION` at BOTH lifecycle points: at build time so
+   * the plugin patches the `__VINEXT_CLASS_REASONS` dispatch stub, and at
+   * runtime so the route object actually calls it. Setting the flag only at
+   * runtime leaves the stub returning `null`, and every build-time classified
+   * layout will fall through to `{ layer: "no-classifier" }` in the debug
+   * channel. The hot path never reads this and the wire payload is unchanged.
+   */
+  buildTimeReasons?: ReadonlyMap<number, ClassificationReason> | null;
+  /**
+   * Emits one log line per layout with the classification reason, keyed by
+   * layout ID. Set by the generator when `VINEXT_DEBUG_CLASSIFICATION` is
+   * active. When undefined, the probe loop skips debug emission entirely.
+   */
+  debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
   /** Runs a function with isolated dynamic usage tracking per layout. */
@@ -116,6 +134,7 @@ export async function buildAppPageSpecialErrorResponse(
   });
 }
 
+/** See `LayoutFlags` type docblock in app-elements.ts for lifecycle. */
 export async function probeAppPageLayouts(
   options: ProbeAppPageLayoutsOptions,
 ): Promise<ProbeAppPageLayoutsResult> {
@@ -130,6 +149,17 @@ export async function probeAppPageLayouts(
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
         // but still probe for special errors (redirects, not-found).
         layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
+        if (cls.debugClassification) {
+          // `no-classifier` is the documented fallback for a layout that was
+          // build-time classified but whose reason payload is absent — either
+          // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
+          // because no Layer 1/2 classifier attached a reason. This is the sole
+          // producer of the variant; see `layout-classification-types.ts`.
+          cls.debugClassification(
+            cls.getLayoutId(layoutIndex),
+            cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
+          );
+        }
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
         continue;
@@ -143,9 +173,22 @@ export async function probeAppPageLayouts(
             options.probeLayoutAt(layoutIndex),
           );
           layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
+          if (cls.debugClassification) {
+            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+              layer: "runtime-probe",
+              outcome: dynamicDetected ? "dynamic" : "static",
+            });
+          }
         } catch (error) {
           // Probe failed — conservatively treat as dynamic.
           layoutFlags[cls.getLayoutId(layoutIndex)] = "d";
+          if (cls.debugClassification) {
+            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+              layer: "runtime-probe",
+              outcome: "dynamic",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           const errorResponse = await options.onLayoutError(error, layoutIndex);
           if (errorResponse) return errorResponse;
         }

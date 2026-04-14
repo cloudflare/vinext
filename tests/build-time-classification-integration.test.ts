@@ -77,7 +77,7 @@ function extractDispatch(chunkSource: string): Dispatch {
  */
 function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
   const result = new Map<string, number>();
-  const re = /__buildTimeClassifications:\s*__VINEXT_CLASS\((\d+)\)[^,]*,\s*pattern:\s*"([^"]+)"/g;
+  const re = /__buildTimeClassifications:\s*__VINEXT_CLASS\((\d+)\)[\s\S]*?pattern:\s*"([^"]+)"/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(chunkSource)) !== null) {
     result.set(match[2]!, Number(match[1]!));
@@ -88,7 +88,9 @@ function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
   return result;
 }
 
-async function buildMinimalFixture(): Promise<BuiltFixture> {
+async function buildMinimalFixture({
+  debug = false,
+}: { debug?: boolean } = {}): Promise<BuiltFixture> {
   const workspaceRoot = path.resolve(import.meta.dirname, "..");
   const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
 
@@ -169,7 +171,28 @@ export default function ForceStaticLayout({ children }) {
     plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
     logLevel: "silent",
   });
-  await builder.buildApp();
+
+  // The plugin reads `VINEXT_DEBUG_CLASSIFICATION` directly from `process.env`
+  // in its `generateBundle` hook. Save, override, and restore around the build
+  // so these tests are hermetic: asserting "stub stays null" works even when
+  // a developer has the flag set in their local shell, and the debug-on suite
+  // below can force the patched path without polluting the sibling suite.
+  const envKey = "VINEXT_DEBUG_CLASSIFICATION";
+  const prior = process.env[envKey];
+  if (debug) {
+    process.env[envKey] = "1";
+  } else {
+    delete process.env[envKey];
+  }
+  try {
+    await builder.buildApp();
+  } finally {
+    if (prior === undefined) {
+      delete process.env[envKey];
+    } else {
+      process.env[envKey] = prior;
+    }
+  }
 
   // The RSC entry is emitted as either server/index.js or server/index.mjs
   // depending on whether the fixture has a package.json with "type": "module".
@@ -205,6 +228,21 @@ describe("build-time classification integration", () => {
     // The untouched stub body is `{ return null; }`; the patched body must
     // contain a switch dispatcher.
     expect(built.chunkSource).toMatch(/function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{[^}]*switch/);
+  });
+
+  it("gates the reasons sidecar behind __classDebug in the route table", () => {
+    expect(built.chunkSource).toMatch(
+      /__buildTimeReasons:\s*__classDebug\s*\?\s*__VINEXT_CLASS_REASONS\(\d+\)\s*:\s*null/,
+    );
+  });
+
+  it("leaves __VINEXT_CLASS_REASONS as a null stub when build-time debug is off", () => {
+    expect(built.chunkSource).toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/,
+    );
+    expect(built.chunkSource).not.toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{[^}]*switch/,
+    );
   });
 
   it("classifies the force-dynamic layout at build time", () => {
@@ -245,5 +283,72 @@ describe("build-time classification integration", () => {
     const map = built.dispatch(routeIdx!);
     expect(map).toBeInstanceOf(Map);
     expect(map!.get(0)).toBe("static");
+  });
+});
+
+/**
+ * Extracts and evaluates `__VINEXT_CLASS_REASONS` from a build output that was
+ * produced with `VINEXT_DEBUG_CLASSIFICATION=1`. Mirrors `extractDispatch` but
+ * targets the sibling reasons stub. Kept intentionally permissive about the
+ * emitted codegen shape so this test survives the #863 refactor.
+ */
+function extractReasonsDispatch(
+  chunkSource: string,
+): (routeIdx: number) => Map<number, { layer: string }> | null {
+  const stubRe = /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
+  if (stubRe.test(chunkSource)) {
+    throw new Error("__VINEXT_CLASS_REASONS was not patched despite VINEXT_DEBUG_CLASSIFICATION=1");
+  }
+  const re =
+    /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return\s+(\([\s\S]*?\))\(routeIdx\);\s*\}/;
+  const match = re.exec(chunkSource);
+  if (!match) {
+    throw new Error("Could not locate patched __VINEXT_CLASS_REASONS in chunk source");
+  }
+  const raw: unknown = vm.runInThisContext(match[1]!);
+  if (typeof raw !== "function") {
+    throw new Error("Patched __VINEXT_CLASS_REASONS body did not evaluate to a function");
+  }
+  return (routeIdx: number) => {
+    const result: unknown = Reflect.apply(raw, null, [routeIdx]);
+    if (result === null) return null;
+    if (result instanceof Map) return result as Map<number, { layer: string }>;
+    throw new Error(
+      `Reasons dispatch returned unexpected value for routeIdx ${routeIdx}: ${JSON.stringify(result)}`,
+    );
+  };
+}
+
+describe("build-time classification integration (debug on)", () => {
+  let built: BuiltFixture;
+
+  beforeAll(async () => {
+    built = await buildMinimalFixture({ debug: true });
+  }, 120_000);
+
+  it("patches __VINEXT_CLASS_REASONS with a populated dispatcher", () => {
+    expect(built.chunkSource).toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{[^}]*switch/,
+    );
+    expect(built.chunkSource).not.toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/,
+    );
+  });
+
+  it("emits a segment-config reason for the force-dyn layout", () => {
+    // Coarse behavioural assertion: the Layer 1 pipeline produces a
+    // `segment-config` reason for a layout that declares `dynamic = "force-dynamic"`.
+    // We do not pin the exact reason object shape beyond the discriminator
+    // tag — the #863 refactor may reshape codegen, and this test should keep
+    // catching "build-time debug branch stopped producing reasons" regressions
+    // without having to track every field.
+    const reasonsFor = extractReasonsDispatch(built.chunkSource);
+    const routeIdx = built.routeIndexByPattern.get("/force-dyn");
+    expect(routeIdx).toBeDefined();
+    const reasons = reasonsFor(routeIdx!);
+    expect(reasons).toBeInstanceOf(Map);
+    const layoutReason = reasons!.get(1);
+    expect(layoutReason).toBeDefined();
+    expect(layoutReason!.layer).toBe("segment-config");
   });
 });

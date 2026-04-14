@@ -259,6 +259,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -416,9 +426,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -443,6 +463,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -467,6 +488,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -491,6 +513,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -2176,6 +2199,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -2532,6 +2557,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -2689,9 +2724,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -2716,6 +2761,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -2740,6 +2786,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -2764,6 +2811,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -4455,6 +4503,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -4811,6 +4861,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -4969,9 +5029,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -4996,6 +5066,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -5020,6 +5091,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -5044,6 +5116,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -6729,6 +6802,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -7085,6 +7160,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -7272,9 +7357,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -7299,6 +7394,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -7323,6 +7419,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -7347,6 +7444,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -9035,6 +9133,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -9391,6 +9491,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -9549,9 +9659,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -9576,6 +9696,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -9600,6 +9721,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -9624,6 +9746,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -11315,6 +11438,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -11671,6 +11796,16 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
   : undefined;
 
+// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
+// the env var so the hot path pays no overhead unless an operator is actively
+// tracing why a layout was flagged static or dynamic. The reason payload is
+// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
+const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
+  ? function(layoutId, reason) {
+      console.debug("[vinext] CLS:", layoutId, reason);
+    }
+  : undefined;
+
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
 // objects with synchronous property access (for pre-15 code like params.id).
@@ -11828,9 +11963,19 @@ function __VINEXT_CLASS(routeIdx) {
   return null;
 }
 
+// Build-time layout classification reasons dispatch. Sibling of
+// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
+// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
+// Replaced in generateBundle with a real dispatch table; the stub returns
+// null so the hot path never allocates reason maps when debug is off.
+function __VINEXT_CLASS_REASONS(routeIdx) {
+  return null;
+}
+
 const routes = [
   {
     __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(0) : null,
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -11855,6 +12000,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(1) : null,
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -11879,6 +12025,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(2) : null,
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -11903,6 +12050,7 @@ const routes = [
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
+    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(3) : null,
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -13955,6 +14103,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
       },
       buildTimeClassifications: route.__buildTimeClassifications,
+      buildTimeReasons: route.__buildTimeReasons,
+      debugClassification: __classDebug,
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
