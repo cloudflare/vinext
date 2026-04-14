@@ -197,7 +197,8 @@ export function buildGenerateBundleReplacement(
  * that returns `Map<layoutIndex, ClassificationReason>` per route.
  *
  * The runtime consults this map only when `VINEXT_DEBUG_CLASSIFICATION` is
- * set, so the bundle-size cost is bounded and the hot path pays nothing.
+ * set, and the plugin only patches this dispatcher into the built bundle when
+ * that env var is present at build time.
  *
  * Layer 1 priority applies the same way as in `buildGenerateBundleReplacement`:
  * a segment-config reason must override a module-graph reason for the same

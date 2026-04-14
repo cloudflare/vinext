@@ -8,6 +8,7 @@ import {
   APP_ROUTE_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
   buildOutgoingAppPayload,
+  createRscNavigationRequestHeaders,
   buildSkipHeaderValue,
   computeSkipDecision,
   createAppPayloadCacheKey,
@@ -18,6 +19,8 @@ import {
   readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
   withLayoutFlags,
+  X_VINEXT_MOUNTED_SLOTS_HEADER,
+  X_VINEXT_ROUTER_SKIP_HEADER,
 } from "../packages/vinext/src/server/app-elements.js";
 
 describe("app elements payload helpers", () => {
@@ -387,5 +390,28 @@ describe("buildSkipHeaderValue", () => {
   it("returns all IDs when all are static", () => {
     const value = buildSkipHeaderValue({ "layout:/": "s", "layout:/blog": "s" });
     expect(value).toBe("layout:/,layout:/blog");
+  });
+});
+
+describe("createRscNavigationRequestHeaders", () => {
+  it("includes interception, mounted-slots, and skip headers when available", () => {
+    const headers = createRscNavigationRequestHeaders("/feed", "slot:modal:/ slot:team:/", {
+      "layout:/": "s",
+      "layout:/feed": "d",
+    });
+
+    expect(headers.get("Accept")).toBe("text/x-component");
+    expect(headers.get("X-Vinext-Interception-Context")).toBe("/feed");
+    expect(headers.get(X_VINEXT_MOUNTED_SLOTS_HEADER)).toBe("slot:modal:/ slot:team:/");
+    expect(headers.get(X_VINEXT_ROUTER_SKIP_HEADER)).toBe("layout:/");
+  });
+
+  it("omits optional headers when their inputs are absent", () => {
+    const headers = createRscNavigationRequestHeaders(null, null, { "layout:/": "d" });
+
+    expect(headers.get("Accept")).toBe("text/x-component");
+    expect(headers.has("X-Vinext-Interception-Context")).toBe(false);
+    expect(headers.has(X_VINEXT_MOUNTED_SLOTS_HEADER)).toBe(false);
+    expect(headers.has(X_VINEXT_ROUTER_SKIP_HEADER)).toBe(false);
   });
 });

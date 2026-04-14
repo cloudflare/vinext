@@ -1661,6 +1661,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (this.environment?.name !== "rsc") return;
         if (!rscClassificationManifest) return;
 
+        const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
         const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
         const reasonsStubRe =
           /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
@@ -1708,7 +1709,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `vinext: build-time classification — expected __VINEXT_CLASS stub in exactly one RSC chunk, found ${chunksWithStubBody.length}`,
           );
         }
-        if (!reasonsStubRe.test(chunksWithStubBody[0]!.chunk.code)) {
+        if (enableClassificationDebug && !reasonsStubRe.test(chunksWithStubBody[0]!.chunk.code)) {
           throw new Error(
             "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
           );
@@ -1784,17 +1785,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           rscClassificationManifest,
           layer2PerRoute,
         );
-        const reasonsReplacement = buildReasonsReplacement(
-          rscClassificationManifest,
-          layer2PerRoute,
-        );
-
         const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
-        const patchedReasonsBody = `function __VINEXT_CLASS_REASONS(routeIdx) { return (${reasonsReplacement})(routeIdx); }`;
         const target = chunksWithStubBody[0]!.chunk;
-        target.code = target.code
-          .replace(stubRe, patchedBody)
-          .replace(reasonsStubRe, patchedReasonsBody);
+        target.code = target.code.replace(stubRe, patchedBody);
+
+        if (enableClassificationDebug) {
+          const reasonsReplacement = buildReasonsReplacement(
+            rscClassificationManifest,
+            layer2PerRoute,
+          );
+          const patchedReasonsBody = `function __VINEXT_CLASS_REASONS(routeIdx) { return (${reasonsReplacement})(routeIdx); }`;
+          target.code = target.code.replace(reasonsStubRe, patchedReasonsBody);
+        }
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts

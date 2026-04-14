@@ -968,7 +968,15 @@ function findIntercept(pathname) {
   return null;
 }
 
-async function buildPageElements(route, params, routePath, opts, searchParams, isRscRequest, request, mountedSlotsHeader, skipLayoutIds) {
+async function buildPageElements(route, params, routePath, pageRequest) {
+  const {
+    opts,
+    searchParams,
+    isRscRequest,
+    request,
+    mountedSlotsHeader,
+    skipLayoutIds,
+  } = pageRequest;
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     const _interceptionContext = opts?.interceptionContext ?? null;
@@ -1860,12 +1868,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           actionRoute,
           actionParams,
           cleanPathname,
-          undefined,
-          url.searchParams,
-          isRscRequest,
-          request,
-          __mountedSlotsHeader,
-          __skipLayoutIds,
+          {
+            opts: undefined,
+            searchParams: url.searchParams,
+            isRscRequest,
+            request,
+            mountedSlotsHeader: __mountedSlotsHeader,
+            skipLayoutIds: __skipLayoutIds,
+          },
         );
       } else {
         const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
@@ -2256,12 +2266,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             route,
             params,
             cleanPathname,
-            undefined,
-            new URLSearchParams(),
-            isRscRequest,
-            request,
-            __mountedSlotsHeader,
-            __skipLayoutIds,
+            {
+              opts: undefined,
+              searchParams: new URLSearchParams(),
+              isRscRequest,
+              request,
+              mountedSlotsHeader: __mountedSlotsHeader,
+              skipLayoutIds: __skipLayoutIds,
+            },
           );
           const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
           const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
@@ -2316,12 +2328,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         interceptRoute,
         interceptParams,
         cleanPathname,
-        interceptOpts,
-        interceptSearchParams,
-        isRscRequest,
-        request,
-        __mountedSlotsHeader,
-        __skipLayoutIds,
+        {
+          opts: interceptOpts,
+          searchParams: interceptSearchParams,
+          isRscRequest,
+          request,
+          mountedSlotsHeader: __mountedSlotsHeader,
+          skipLayoutIds: __skipLayoutIds,
+        },
       );
     },
     cleanPathname,
@@ -2375,7 +2389,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   const __pageBuildResult = await __buildAppPageElement({
     buildPageElement() {
-      return buildPageElements(route, params, cleanPathname, interceptOpts, url.searchParams, isRscRequest, request, __mountedSlotsHeader, __skipLayoutIds);
+      return buildPageElements(route, params, cleanPathname, {
+        opts: interceptOpts,
+        searchParams: url.searchParams,
+        isRscRequest,
+        request,
+        mountedSlotsHeader: __mountedSlotsHeader,
+        skipLayoutIds: __skipLayoutIds,
+      });
     },
     renderErrorBoundaryPage(buildErr) {
       return renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params, _scriptNonce);

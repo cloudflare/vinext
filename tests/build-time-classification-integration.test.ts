@@ -211,6 +211,15 @@ describe("build-time classification integration", () => {
     );
   });
 
+  it("leaves __VINEXT_CLASS_REASONS as a null stub when build-time debug is off", () => {
+    expect(built.chunkSource).toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/,
+    );
+    expect(built.chunkSource).not.toMatch(
+      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{[^}]*switch/,
+    );
+  });
+
   it("classifies the force-dynamic layout at build time", () => {
     const routeIdx = built.routeIndexByPattern.get("/force-dyn");
     expect(routeIdx).toBeDefined();
