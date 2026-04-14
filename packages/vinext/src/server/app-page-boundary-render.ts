@@ -1,4 +1,5 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
+import { buildClientHookErrorMessage } from "../shims/client-hook-error.js";
 import { ErrorBoundary } from "../shims/error-boundary.js";
 import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
 import {
@@ -403,14 +404,11 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
 // "useState is not a function". Rewrite into an actionable message matching
 // the format used by the next/navigation shims (see client-hook-error.ts).
 const _clientHookPattern =
-  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue)\b.*is not a function/;
+  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue|useActionState|useOptimistic|useEffectEvent)\b.*is not a function/;
 
 function rewriteClientHookError(error: Error): void {
   const match = error.message.match(_clientHookPattern);
   if (match) {
-    error.message =
-      `${match[1]}() only works in Client Components. Add the "use client" directive ` +
-      `at the top of the file to use it. Read more: ` +
-      `https://nextjs.org/docs/messages/react-client-hook-in-server-component`;
+    error.message = buildClientHookErrorMessage(match[1]);
   }
 }

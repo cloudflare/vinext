@@ -6,10 +6,14 @@
  *
  * @see https://github.com/cloudflare/vinext/issues/834
  */
-export function throwClientHookError(hookName: string): never {
-  throw new Error(
+export function buildClientHookErrorMessage(hookName: string): string {
+  return (
     `${hookName} only works in Client Components. Add the "use client" directive ` +
-      `at the top of the file to use it. Read more: ` +
-      `https://nextjs.org/docs/messages/react-client-hook-in-server-component`,
+    `at the top of the file to use it. Read more: ` +
+    `https://nextjs.org/docs/messages/react-client-hook-in-server-component`
   );
+}
+
+export function throwClientHookError(hookName: string): never {
+  throw new Error(buildClientHookErrorMessage(hookName));
 }
