@@ -1,6 +1,20 @@
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
+import {
+  APP_LAYOUT_FLAGS_KEY,
+  isAppElementsRecord,
+  type AppOutgoingElements,
+} from "../packages/vinext/src/server/app-elements.js";
+import type { LayoutClassificationOptions } from "../packages/vinext/src/server/app-page-execution.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+
+function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
+  if (!isAppElementsRecord(value)) {
+    throw new Error("Expected captured element to be a plain record");
+  }
+  return value;
+}
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -314,5 +328,211 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
     expect(common.waitUntilPromises).toHaveLength(0);
     expect(common.isrSet).not.toHaveBeenCalled();
+  });
+});
+
+describe("layoutFlags injection into RSC payload", () => {
+  function createRscOptions(overrides: {
+    element?: Record<string, ReactNode>;
+    layoutCount?: number;
+    probeLayoutAt?: (index: number) => unknown;
+    classification?: LayoutClassificationOptions | null;
+    requestedSkipLayoutIds?: ReadonlySet<string>;
+  }) {
+    let capturedElement: Record<string, unknown> | null = null;
+
+    const options = {
+      cleanPathname: "/test",
+      clearRequestContext: vi.fn(),
+      consumeDynamicUsage: vi.fn(() => false),
+      createRscOnErrorHandler: () => () => {},
+      getDraftModeCookieHeader: () => null,
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      getPageTags: () => [],
+      getRequestCacheLife: () => null,
+      handlerStart: 0,
+      hasLoadingBoundary: false,
+      isDynamicError: false,
+      isForceDynamic: false,
+      isForceStatic: false,
+      isProduction: true,
+      isRscRequest: true,
+      isrHtmlKey: (p: string) => `html:${p}`,
+      isrRscKey: (p: string) => `rsc:${p}`,
+      isrSet: vi.fn().mockResolvedValue(undefined),
+      layoutCount: overrides.layoutCount ?? 0,
+      loadSsrHandler: vi.fn(),
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
+      probePage: () => null,
+      revalidateSeconds: null,
+      renderErrorBoundaryResponse: async () => null,
+      renderLayoutSpecialError: async () => new Response("error", { status: 500 }),
+      renderPageSpecialError: async () => new Response("error", { status: 500 }),
+      renderToReadableStream(el: ReactNode | AppOutgoingElements) {
+        capturedElement = captureRecord(el);
+        return createStream(["flight-data"]);
+      },
+      routeHasLocalBoundary: false,
+      routePattern: "/test",
+      runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
+      element: overrides.element ?? { "page:/test": "test-page" },
+      classification: overrides.classification,
+      requestedSkipLayoutIds: overrides.requestedSkipLayoutIds,
+    };
+
+    return {
+      options,
+      getCapturedElement: (): Record<string, unknown> => {
+        if (capturedElement === null) {
+          throw new Error("renderToReadableStream was not called");
+        }
+        return capturedElement;
+      },
+    };
+  }
+
+  it("injects __layoutFlags with 's' when classification detects a static layout", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: { "layout:/": "root-layout", "page:/test": "test-page" },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: () => "layout:/",
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
+  });
+
+  it("injects __layoutFlags with 'd' for dynamic layouts", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: { "layout:/": "root-layout", "page:/test": "test-page" },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: () => "layout:/",
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: true };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "d" });
+  });
+
+  it("injects empty __layoutFlags when classification is not provided (backward compat)", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: { "layout:/": "root-layout", "page:/test": "test-page" },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({});
+  });
+
+  it("injects __layoutFlags for multiple independently classified layouts", async () => {
+    let callCount = 0;
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          callCount++;
+          const result = await fn();
+          // probeAppPageLayouts iterates from layoutCount-1 down to 0:
+          // call 1 → layout index 1 (blog) → dynamic
+          // call 2 → layout index 0 (root) → static
+          return { result, dynamicDetected: callCount === 1 };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "d",
+    });
+  });
+
+  it("__layoutFlags includes flags for ALL layouts even when some are skipped", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    await renderAppPageLifecycle(options);
+    // layoutFlags must include ALL layout flags, even for skipped layouts
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "s",
+    });
+  });
+
+  it("wire payload layoutFlags uses only the shorthand 's'/'d' values, never tagged reasons", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/admin": "admin-layout",
+        "page:/admin/users": "users-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/admin"),
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+
+    const wireFlags = getCapturedElement()[APP_LAYOUT_FLAGS_KEY];
+    expect(wireFlags).toEqual({ "layout:/": "s", "layout:/admin": "d" });
+
+    for (const [_id, flag] of Object.entries(wireFlags as Record<string, unknown>)) {
+      expect(flag === "s" || flag === "d").toBe(true);
+    }
   });
 });

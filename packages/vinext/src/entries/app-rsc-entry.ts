@@ -2449,6 +2449,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const _asyncSearchParams = makeThenableParams(_probeSearchObj);
       return PageComponent({ params: _asyncLayoutParams, searchParams: _asyncSearchParams });
     },
+    classification: {
+      getLayoutId(index) {
+        const tp = route.layoutTreePositions?.[index] ?? 0;
+        return "layout:" + __createAppPageTreePath(route.routeSegments, tp);
+      },
+      async runWithIsolatedDynamicScope(fn) {
+        const priorDynamic = consumeDynamicUsage();
+        try {
+          const result = await fn();
+          const dynamicDetected = consumeDynamicUsage();
+          return { result, dynamicDetected };
+        } finally {
+          if (priorDynamic) markDynamicUsage();
+        }
+      },
+    },
     revalidateSeconds,
     mountedSlotsHeader: __mountedSlotsHeader,
     renderErrorBoundaryResponse(renderErr) {
