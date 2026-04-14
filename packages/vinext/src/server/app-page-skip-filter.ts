@@ -122,6 +122,15 @@ function addRefsFromRaw(raw: string, into: Set<number>): void {
     return;
   }
   const payload = raw.slice(colonIndex + 1);
+
+  // React dev/progressive rows can carry references outside plain JSON
+  // object/array payloads, for example `1:D"$3a"`. Track those too so
+  // later rows are not dropped as orphans when a kept row introduces a
+  // new live id through a deferred chunk.
+  for (const match of payload.matchAll(/(?<!\$)\$(?:[LBFQWK@])?([0-9a-fA-F]+)\b/g)) {
+    into.add(Number.parseInt(match[1], 16));
+  }
+
   const jsonStart = payload.search(JSON_START_PATTERN);
   if (jsonStart < 0) {
     return;

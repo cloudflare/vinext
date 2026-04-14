@@ -597,6 +597,7 @@ describe("skip header filtering", () => {
     isRscRequest?: boolean;
     revalidateSeconds?: number | null;
     isProduction?: boolean;
+    supportsFilteredRscStream?: boolean;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
     const isrSetCalls: Array<{
@@ -632,6 +633,7 @@ describe("skip header filtering", () => {
       isForceStatic: false,
       isProduction: overrides.isProduction ?? true,
       isRscRequest: overrides.isRscRequest ?? true,
+      supportsFilteredRscStream: overrides.supportsFilteredRscStream ?? true,
       isrHtmlKey: (p: string) => `html:${p}`,
       isrRscKey: (p: string) => `rsc:${p}`,
       isrSet,
@@ -820,6 +822,26 @@ describe("skip header filtering", () => {
     await renderAppPageLifecycle(options);
     const captured = getCapturedElement();
     expect(captured["layout:/"]).toBe("root-layout");
+  });
+
+  it("does not filter layouts on development RSC requests", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "page:/test": "test-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: false,
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("layout:/");
+    expect(body).toContain("root-layout");
   });
 
   it("writes canonical RSC bytes to the cache even when skipIds are non-empty", async () => {

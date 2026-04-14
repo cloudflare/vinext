@@ -75,6 +75,7 @@ export type RenderAppPageLifecycleOptions = {
   isForceStatic: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
+  supportsFilteredRscStream?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
@@ -182,9 +183,10 @@ export async function renderAppPageLifecycle(
   );
   const isrRscDataPromise = rscCapture.capturedRscDataPromise;
 
-  const skipIds = options.isRscRequest
-    ? computeSkipDecision(layoutFlags, options.requestedSkipLayoutIds)
-    : EMPTY_SKIP_SET;
+  const skipIds =
+    options.isRscRequest && (options.supportsFilteredRscStream ?? true)
+      ? computeSkipDecision(layoutFlags, options.requestedSkipLayoutIds)
+      : EMPTY_SKIP_SET;
   const rscForResponse =
     skipIds.size > 0
       ? rscCapture.responseStream.pipeThrough(createSkipFilterTransform(skipIds))

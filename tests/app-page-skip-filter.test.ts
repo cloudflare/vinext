@@ -392,6 +392,27 @@ describe("createSkipFilterTransform", () => {
     expect(output).toContain(`1:["$","section",null,{"children":"after-root"}]`);
   });
 
+  test("keeps rows introduced by deferred reference chunks", async () => {
+    const rows = [
+      `0:{"page:/search":"$L1","layout:/":"$L5"}`,
+      `1:D"$2"`,
+      `2:{"name":"SearchPage"}`,
+      `1:["$","div",null,{"children":"search"},"$2","$3",1]`,
+      `3:[["SearchPage","/app/search/page.tsx",1,1,1,false]]`,
+      `5:["$","html",null,{"children":"layout"}]`,
+    ];
+
+    const input = createRscStream(rows);
+    const transform = createSkipFilterTransform(new Set(["layout:/"]));
+    const output = await collectStreamText(input.pipeThrough(transform));
+
+    expect(output).toContain(`1:D"$2"`);
+    expect(output).toContain(`2:{"name":"SearchPage"}`);
+    expect(output).toContain(`1:["$","div",null,{"children":"search"},"$2","$3",1]`);
+    expect(output).toContain(`3:[["SearchPage","/app/search/page.tsx",1,1,1,false]]`);
+    expect(output).not.toContain(`5:["$","html",null,{"children":"layout"}]`);
+  });
+
   test("passes through unrecognized rows that arrive before row 0", async () => {
     // Streaming phase passes unrecognized rows through verbatim. The initial
     // phase must do the same so a malformed line buffered before row 0 still

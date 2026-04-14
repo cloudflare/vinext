@@ -2442,6 +2442,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     isForceStatic,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
+    supportsFilteredRscStream: false,
     isrDebug: __isrDebug,
     isrHtmlKey: __isrHtmlKey,
     isrRscKey: __isrRscKey,
