@@ -742,6 +742,17 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Missing use client test");
   });
 
+  it("errors when React client hook is used in a Server Component without 'use client' (#834)", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/missing-use-client-react-hook");
+    expect(res.status).toBe(200); // error boundary renders, not a 500
+    // The error message should be clear and actionable
+    expect(html).toContain("useState()");
+    expect(html).toContain("Client Components");
+    expect(html).toContain("use client");
+    // Should NOT contain the actual page content (it errored before rendering)
+    expect(html).not.toContain("Missing use client react hook test");
+  });
+
   it("redirect() from Server Component returns redirect response", async () => {
     const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);

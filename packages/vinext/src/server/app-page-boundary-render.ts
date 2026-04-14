@@ -367,6 +367,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
 
   const rawError =
     options.error instanceof Error ? options.error : new Error(String(options.error));
+  rewriteClientHookError(rawError);
   const errorObject = options.sanitizeErrorForClient(rawError);
   const matchedParams = options.matchedParams ?? options.route?.params ?? {};
   const layoutModules = options.route?.layouts ?? options.rootLayouts;
@@ -395,4 +396,21 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     routePattern: options.route?.pattern,
     status: 200,
   });
+}
+
+// React client-only hooks that are absent from the `react-server` export
+// condition. When called in a Server Component they produce a TypeError like
+// "useState is not a function". Rewrite into an actionable message matching
+// the format used by the next/navigation shims (see client-hook-error.ts).
+const _clientHookPattern =
+  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue)\b.*is not a function/;
+
+function rewriteClientHookError(error: Error): void {
+  const match = error.message.match(_clientHookPattern);
+  if (match) {
+    error.message =
+      `${match[1]}() only works in Client Components. Add the "use client" directive ` +
+      `at the top of the file to use it. Read more: ` +
+      `https://nextjs.org/docs/messages/react-client-hook-in-server-component`;
+  }
 }
