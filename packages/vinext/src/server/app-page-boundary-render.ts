@@ -409,6 +409,6 @@ const _clientHookPattern =
 function rewriteClientHookError(error: Error): void {
   const match = error.message.match(_clientHookPattern);
   if (match) {
-    error.message = buildClientHookErrorMessage(match[1]);
+    error.message = buildClientHookErrorMessage(`${match[1]}()`);
   }
 }
