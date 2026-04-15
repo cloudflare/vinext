@@ -109,6 +109,15 @@ type AstBodyNode = {
 // so that when Vite adds proper typing it can be removed in one place.
 type PluginCtx = { environment?: { name?: string } };
 
+function parseAstWithFileLang(code: string, filePath: string): ReturnType<typeof parseAst> {
+  const cleanPath = filePath.split("?")[0];
+  const ext = path.extname(cleanPath).toLowerCase();
+  if (ext === ".tsx" || ext === ".jsx") {
+    return parseAst(code, { lang: "tsx" });
+  }
+  return parseAst(code);
+}
+
 function localModuleCandidates(modulePath: string): string[] {
   return [
     modulePath,
@@ -209,7 +218,7 @@ async function buildSafeWildcardExportMap(
 
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(content);
+    ast = parseAstWithFileLang(content, filePath);
   } catch {
     const fallbackMap = buildFallbackExportMap(filePath, content);
     return fallbackMap.size > 0 ? fallbackMap : null;
@@ -219,6 +228,8 @@ async function buildSafeWildcardExportMap(
   for (const node of ast.body as AstBodyNode[]) {
     if (node.type !== "ExportAllDeclaration" || node.exported) continue;
     const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+    // Only flatten local wildcard re-exports. External package wildcard re-exports
+    // require full package resolution and are intentionally left untouched.
     if (!rawSource || !rawSource.startsWith(".")) return null;
 
     const resolved = await resolveLocalModuleFile(
@@ -481,7 +492,7 @@ async function buildExportMapFromFile(
 
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(content);
+    ast = parseAstWithFileLang(content, filePath);
   } catch {
     const fallbackMap = buildFallbackExportMap(filePath, content);
     cache.set(filePath, fallbackMap);
@@ -629,27 +640,7 @@ async function buildExportMapFromFile(
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may
             // not compile to .js. Also includes .cjs for CommonJS-style re-export files.
-            const candidates = [
-              subPath,
-              `${subPath}.js`,
-              `${subPath}.mjs`,
-              `${subPath}.cjs`,
-              `${subPath}.ts`,
-              `${subPath}.tsx`,
-              `${subPath}.jsx`,
-              `${subPath}.mts`,
-              `${subPath}.cts`,
-              // Directory-style sub-modules: `export * from "./components"` where
-              // `components/` is a directory with an index file.
-              `${subPath}/index.js`,
-              `${subPath}/index.mjs`,
-              `${subPath}/index.cjs`,
-              `${subPath}/index.ts`,
-              `${subPath}/index.tsx`,
-              `${subPath}/index.jsx`,
-              `${subPath}/index.mts`,
-              `${subPath}/index.cts`,
-            ];
+            const candidates = localModuleCandidates(subPath);
             for (const candidate of candidates) {
               const candidateContent = await readFile(candidate);
               if (candidateContent !== null) {
@@ -920,7 +911,7 @@ export function createOptimizeImportsPlugin(
 
         let ast: ReturnType<typeof parseAst>;
         try {
-          ast = parseAst(code);
+          ast = parseAstWithFileLang(code, id);
         } catch {
           return null;
         }
