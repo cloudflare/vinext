@@ -992,6 +992,58 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).toContain(JSON.stringify(concreteModule));
   });
 
+  it("keeps optimizing issue-845 imports from JSX-bearing TSX user files", async () => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(path.join(pkgDir, "es", "button"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `export { Button } from "./es/button/index.js";`,
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "es", "button", "index.js"),
+      [`export * from "./style.js";`, `export { Button } from "./button.js";`].join("\n"),
+    );
+    fs.writeFileSync(path.join(pkgDir, "es", "button", "style.js"), `export const wave = true;`);
+    fs.writeFileSync(
+      path.join(pkgDir, "es", "button", "button.js"),
+      `export function Button() { return null; }`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "rsc" } },
+      `import { Button } from "antd";\nexport default function Demo() { return <Button />; }`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+
+    const intermediateBarrel = path.join(pkgDir, "es", "button", "index");
+    const concreteModule = path.join(pkgDir, "es", "button", "button.js");
+
+    expect(result!.code).not.toContain(`from "antd"`);
+    expect(result!.code).not.toContain(JSON.stringify(intermediateBarrel));
+    expect(result!.code).toContain(JSON.stringify(concreteModule));
+    expect(result!.code).toContain("return <Button />");
+  });
+
   it("populates subpkgOrigin independently for RSC and SSR when they share the same barrel entry", async () => {
     // Regression test: registeredBarrels used to be keyed only by barrelEntry (not envKey:barrelEntry).
     // When RSC and SSR share the same barrel entry path (common — most packages have no react-server
