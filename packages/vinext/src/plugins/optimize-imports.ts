@@ -64,6 +64,8 @@ type DeclarationNode = {
   declarations?: Array<{ id: { name: string } }>;
 };
 
+type ReadFileFn = (filepath: string) => Promise<string | null>;
+
 /** Caches used by the optimize-imports plugin, scoped to a plugin instance. */
 type BarrelCaches = {
   /** Barrel export maps keyed by resolved entry file path. */
@@ -106,6 +108,131 @@ type AstBodyNode = {
 // This cast type is used consistently across resolveId and transform handlers
 // so that when Vite adds proper typing it can be removed in one place.
 type PluginCtx = { environment?: { name?: string } };
+
+function localModuleCandidates(modulePath: string): string[] {
+  return [
+    modulePath,
+    `${modulePath}.js`,
+    `${modulePath}.mjs`,
+    `${modulePath}.cjs`,
+    `${modulePath}.ts`,
+    `${modulePath}.tsx`,
+    `${modulePath}.jsx`,
+    `${modulePath}.mts`,
+    `${modulePath}.cts`,
+    `${modulePath}/index.js`,
+    `${modulePath}/index.mjs`,
+    `${modulePath}/index.cjs`,
+    `${modulePath}/index.ts`,
+    `${modulePath}/index.tsx`,
+    `${modulePath}/index.jsx`,
+    `${modulePath}/index.mts`,
+    `${modulePath}/index.cts`,
+  ];
+}
+
+function toRelativeModuleSpecifier(fromFile: string, toFile: string): string {
+  const relativePath = path.relative(path.dirname(fromFile), toFile).split(path.sep).join("/");
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
+}
+
+function findOptimizedPackageForFile(id: string, packages: Set<string>): string | null {
+  const normalizedId = id.split("?")[0].split(path.sep).join("/");
+  let match: string | null = null;
+  for (const pkg of packages) {
+    if (
+      normalizedId.includes(`/node_modules/${pkg}/`) &&
+      (match === null || pkg.length > match.length)
+    ) {
+      match = pkg;
+    }
+  }
+  return match;
+}
+
+async function resolveLocalModuleFile(
+  modulePath: string,
+  readFile: ReadFileFn,
+): Promise<{ filePath: string; content: string } | null> {
+  for (const candidate of localModuleCandidates(modulePath)) {
+    const content = await readFile(candidate);
+    if (content !== null) {
+      return { filePath: candidate, content };
+    }
+  }
+  return null;
+}
+
+function buildFallbackExportMap(filePath: string, content: string): BarrelExportMap {
+  const exportMap: BarrelExportMap = new Map();
+
+  const recordDirectExport = (exportName: string, originalName = exportName) => {
+    exportMap.set(exportName, {
+      source: filePath,
+      isNamespace: false,
+      originalName,
+    });
+  };
+
+  const declarationPatterns = [
+    /^\s*export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+class\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
+  ];
+  for (const pattern of declarationPatterns) {
+    for (const match of content.matchAll(pattern)) {
+      recordDirectExport(match[1]);
+    }
+  }
+
+  for (const match of content.matchAll(/^\s*export\s+default\s+([A-Za-z_$][\w$]*)\s*;?/gm)) {
+    recordDirectExport("default", "default");
+    if (!exportMap.has(match[1])) {
+      recordDirectExport(match[1]);
+    }
+  }
+
+  return exportMap;
+}
+
+async function buildSafeWildcardExportMap(
+  filePath: string,
+  readFile: ReadFileFn,
+  cache: Map<string, BarrelExportMap>,
+  visited = new Set<string>(),
+): Promise<BarrelExportMap | null> {
+  if (visited.has(filePath)) return null;
+  visited.add(filePath);
+
+  const content = await readFile(filePath);
+  if (!content) return null;
+
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(content);
+  } catch {
+    const fallbackMap = buildFallbackExportMap(filePath, content);
+    return fallbackMap.size > 0 ? fallbackMap : null;
+  }
+
+  const fileDir = path.dirname(filePath);
+  for (const node of ast.body as AstBodyNode[]) {
+    if (node.type !== "ExportAllDeclaration" || node.exported) continue;
+    const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+    if (!rawSource || !rawSource.startsWith(".")) return null;
+
+    const resolved = await resolveLocalModuleFile(
+      path.resolve(fileDir, rawSource).split(path.sep).join("/"),
+      readFile,
+    );
+    if (!resolved) return null;
+
+    const nestedMap = await buildSafeWildcardExportMap(resolved.filePath, readFile, cache, visited);
+    if (!nestedMap) return null;
+  }
+
+  return buildExportMapFromFile(filePath, readFile, cache, new Set<string>(), content);
+}
 
 /**
  * Packages whose barrel imports are automatically optimized.
@@ -327,8 +454,9 @@ async function resolvePackageEntry(
  *   - `import * as X; export { X }` — indirect namespace re-export
  *   - `export * from "./sub"` — wildcard: recursively parse sub-module and merge exports
  *
- * Returns an empty map when the file cannot be read or has a parse error, so that
- * recursive wildcard calls degrade gracefully without aborting the whole barrel walk.
+ * Returns an empty map when the file cannot be read. On parse errors it falls back to
+ * a small regex-based export scan so simple JSX-in-.js leaf modules can still contribute
+ * direct named/default exports without aborting the whole barrel walk.
  *
  * @param initialContent - Pre-read file content for `filePath`. If provided, skips the
  *   `readFile` call for the entry file — avoids a redundant read when the caller
@@ -336,7 +464,7 @@ async function resolvePackageEntry(
  */
 async function buildExportMapFromFile(
   filePath: string,
-  readFile: (filepath: string) => Promise<string | null>,
+  readFile: ReadFileFn,
   cache: Map<string, BarrelExportMap>,
   visited: Set<string>,
   initialContent?: string,
@@ -355,7 +483,9 @@ async function buildExportMapFromFile(
   try {
     ast = parseAst(content);
   } catch {
-    return new Map();
+    const fallbackMap = buildFallbackExportMap(filePath, content);
+    cache.set(filePath, fallbackMap);
+    return fallbackMap;
   }
 
   const exportMap: BarrelExportMap = new Map();
@@ -368,6 +498,45 @@ async function buildExportMapFromFile(
   const localDeclarations = new Set<string>();
 
   const fileDir = path.dirname(filePath);
+
+  async function resolveConcreteLocalEntry(
+    entry: BarrelExportEntry,
+    exportName: string,
+    seen = new Set<string>(),
+  ): Promise<BarrelExportEntry> {
+    if (!entry.source.startsWith("/")) return entry;
+
+    const visitKey = `${entry.source}:${exportName}`;
+    if (seen.has(visitKey)) return entry;
+    seen.add(visitKey);
+
+    for (const candidate of localModuleCandidates(entry.source)) {
+      const candidateContent = await readFile(candidate);
+      if (candidateContent === null) continue;
+
+      const subMap = await buildExportMapFromFile(
+        candidate,
+        readFile,
+        cache,
+        new Set<string>(),
+        candidateContent,
+      );
+      const nextEntry = subMap.get(exportName);
+      if (!nextEntry) return entry;
+
+      if (
+        nextEntry.source === entry.source &&
+        nextEntry.isNamespace === entry.isNamespace &&
+        nextEntry.originalName === entry.originalName
+      ) {
+        return entry;
+      }
+
+      return resolveConcreteLocalEntry(nextEntry, exportName, seen);
+    }
+
+    return entry;
+  }
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -517,11 +686,17 @@ async function buildExportMapFromFile(
               const exported = astName(spec.exported);
               const local = astName(spec.local);
               if (exported !== null) {
-                exportMap.set(exported, {
+                const entry: BarrelExportEntry = {
                   source,
                   isNamespace: false,
                   originalName: local ?? undefined,
-                });
+                };
+                exportMap.set(
+                  exported,
+                  source.startsWith("/")
+                    ? await resolveConcreteLocalEntry(entry, local ?? exported)
+                    : entry,
+                );
               }
             }
           }
@@ -596,7 +771,7 @@ async function buildExportMapFromFile(
 export async function buildBarrelExportMap(
   packageName: string,
   resolveEntry: (pkg: string) => string | null,
-  readFile: (filepath: string) => Promise<string | null>,
+  readFile: ReadFileFn,
   cache?: Map<string, BarrelExportMap>,
 ): Promise<BarrelExportMap | null> {
   const entryPath = resolveEntry(packageName);
@@ -667,8 +842,9 @@ export function createOptimizeImportsPlugin(
   // or shape mismatches that the return-type check alone would accept silently.
   return {
     name: "vinext:optimize-imports",
-    // No enforce — runs after JSX transform so parseAst gets plain JS.
-    // The transform hook still rewrites imports before Vite resolves them.
+    enforce: "pre",
+    // Run before downstream graph analyzers like plugin-rsc so rewritten imports
+    // and flattened local client barrels are visible before they are inspected.
 
     buildStart() {
       // Initialize eagerly (rather than lazily) so that nextConfig is fully
@@ -718,10 +894,8 @@ export function createOptimizeImportsPlugin(
         },
       },
       async handler(code, id) {
-        // Only apply on server environments (RSC/SSR). The client uses Vite's
-        // dep optimizer which handles barrel imports correctly.
         const env = (this as PluginCtx).environment;
-        if (env?.name === "client") return null;
+        const isClient = env?.name === "client";
         // "react-server" export condition should only be preferred in the RSC environment.
         // SSR renders with the full React runtime and must NOT resolve react-server entries.
         const preferReactServer = env?.name === "rsc";
@@ -732,6 +906,7 @@ export function createOptimizeImportsPlugin(
         // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
         // quotedPackages is pre-built in buildStart to avoid per-file allocations.
         const packages = optimizedPackages;
+        const optimizedPackageForFile = findOptimizedPackageForFile(id, packages);
         let hasBarrelImport = false;
         for (const quoted of quotedPackages) {
           if (code.includes(quoted)) {
@@ -739,7 +914,9 @@ export function createOptimizeImportsPlugin(
             break;
           }
         }
-        if (!hasBarrelImport) return null;
+        const hasFlattenableWildcardExport =
+          optimizedPackageForFile !== null && code.includes("export * from");
+        if (!hasBarrelImport && !hasFlattenableWildcardExport) return null;
 
         let ast: ReturnType<typeof parseAst>;
         try {
@@ -751,6 +928,86 @@ export function createOptimizeImportsPlugin(
         const s = new MagicString(code);
         let hasChanges = false;
         const root = getRoot();
+        const normalizedId = id.split("?")[0].split(path.sep).join("/");
+
+        if (optimizedPackageForFile !== null) {
+          for (const node of ast.body as AstBodyNode[]) {
+            if (node.type !== "ExportAllDeclaration" || node.exported) continue;
+
+            const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+            if (!rawSource || !rawSource.startsWith(".")) continue;
+
+            const resolved = await resolveLocalModuleFile(
+              path.resolve(path.dirname(normalizedId), rawSource).split(path.sep).join("/"),
+              readFileSafe,
+            );
+            if (!resolved) continue;
+
+            const exportMap = await buildSafeWildcardExportMap(
+              resolved.filePath,
+              readFileSafe,
+              barrelCaches.exportMapCache,
+            );
+            if (!exportMap) continue;
+
+            const bySource = new Map<
+              string,
+              {
+                source: string;
+                exports: Array<{ exported: string; originalName: string | undefined }>;
+                isNamespace: boolean;
+              }
+            >();
+
+            let canRewrite = true;
+            for (const [exported, entry] of exportMap) {
+              if (exported === "default") continue;
+              const source = entry.source.startsWith("/")
+                ? toRelativeModuleSpecifier(normalizedId, entry.source)
+                : entry.source;
+              if (!source) {
+                canRewrite = false;
+                break;
+              }
+              const key = `${source}::${entry.isNamespace}`;
+              let group = bySource.get(key);
+              if (!group) {
+                group = { source, exports: [], isNamespace: entry.isNamespace };
+                bySource.set(key, group);
+              }
+              group.exports.push({ exported, originalName: entry.originalName });
+            }
+
+            if (!canRewrite || bySource.size === 0) continue;
+
+            const replacements: string[] = [];
+            for (const { source, exports, isNamespace } of bySource.values()) {
+              if (isNamespace) {
+                for (const { exported } of exports) {
+                  replacements.push(`export * as ${exported} from ${JSON.stringify(source)}`);
+                }
+                continue;
+              }
+
+              const specs = exports
+                .filter(({ originalName }) => originalName !== "default")
+                .map(({ exported, originalName }) => {
+                  if (originalName && originalName !== exported) {
+                    return `${originalName} as ${exported}`;
+                  }
+                  return exported;
+                });
+              if (specs.length > 0) {
+                replacements.push(`export { ${specs.join(", ")} } from ${JSON.stringify(source)}`);
+              }
+            }
+
+            if (replacements.length === 0) continue;
+
+            s.overwrite(node.start, node.end, replacements.join(";\n") + ";");
+            hasChanges = true;
+          }
+        }
 
         for (const node of ast.body as AstBodyNode[]) {
           if (node.type !== "ImportDeclaration") continue;
@@ -914,6 +1171,20 @@ export function createOptimizeImportsPlugin(
               local,
               originalName: entry.isNamespace ? undefined : entry.originalName,
             });
+          }
+
+          // The client environment only opts into rewrites that stay on fully
+          // resolved local files. Bare sub-package rewrites can require the
+          // barrel package's resolution context under strict pnpm layouts, which
+          // is handled on the server side via resolveId + subpkgOrigin but is
+          // intentionally left unchanged for the client graph.
+          if (
+            isClient &&
+            [...bySource.values()].some(
+              ({ source }) => !source.startsWith("/") && !source.startsWith("."),
+            )
+          ) {
+            continue;
           }
 
           // Build replacement import statements

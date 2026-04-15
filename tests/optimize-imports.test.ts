@@ -39,8 +39,7 @@ describe("vinext:optimize-imports plugin", () => {
       () => "/fake/root",
     ) as Plugin;
     expect(plugin.name).toBe("vinext:optimize-imports");
-    // No enforce — runs after JSX transform so parseAst gets plain JS
-    expect(plugin.enforce).toBeUndefined();
+    expect(plugin.enforce).toBe("pre");
   });
 
   // ── Guard clauses ────────────────────────────────────────────
@@ -937,6 +936,60 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).toContain("import");
     // Must use an absolute path, not a relative one
     expect(result!.code).not.toContain(`from "./`);
+  });
+
+  it("issue-845 multi-hop antd barrel rewrites past intermediate barrel index", async () => {
+    // Ported from issue-845 parity notes: `.sisyphus/evidence/task-1-parity-matrix.md`
+    // Repro shape matches the documented `antd` optimization path, where the root barrel
+    // points at `es/button/index.js` but the concrete implementation lives deeper.
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(path.join(pkgDir, "es", "button"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `export { Button } from "./es/button/index.js";`,
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "es", "button", "index.js"),
+      [`export * from "./style.js";`, `export { Button } from "./button.js";`].join("\n"),
+    );
+    fs.writeFileSync(path.join(pkgDir, "es", "button", "style.js"), `export const wave = true;`);
+    fs.writeFileSync(
+      path.join(pkgDir, "es", "button", "button.js"),
+      `export function Button() { return null; }`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "rsc" } },
+      `import { Button } from "antd";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+
+    const intermediateBarrel = path.join(pkgDir, "es", "button", "index");
+    const concreteModule = path.join(pkgDir, "es", "button", "button.js");
+
+    expect(result!.code).not.toContain(`from "antd"`);
+    expect(result!.code).not.toContain(JSON.stringify(intermediateBarrel));
+    expect(result!.code).toContain(JSON.stringify(concreteModule));
   });
 
   it("populates subpkgOrigin independently for RSC and SSR when they share the same barrel entry", async () => {
