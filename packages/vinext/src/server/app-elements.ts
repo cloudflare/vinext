@@ -137,12 +137,15 @@ function parseLayoutFlags(value: unknown): LayoutFlags {
 }
 
 /**
- * Type predicate for a plain (non-null, non-array) record of app elements.
- * Used to distinguish the App Router elements object from bare React elements
- * at the render boundary. Delegates to React's canonical `isValidElement` so
- * we don't depend on React's internal `$$typeof` marker scheme.
+ * Type predicate for a plain (non-null, non-array) record of app payload values.
+ * Used to distinguish the App Router payload object from bare React elements at
+ * the render boundary. Narrows to `Readonly<Record<string, unknown>>` because
+ * the outgoing payload carries heterogeneous values (ReactNodes for the rendered
+ * tree, plus metadata like `__layoutFlags` which is a plain object). Delegates
+ * to React's canonical `isValidElement` so we don't depend on React's internal
+ * `$$typeof` marker scheme.
  */
-export function isAppElementsRecord(value: unknown): value is Record<string, ReactNode> {
+export function isAppElementsRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null) return false;
   if (Array.isArray(value)) return false;
   if (isValidElement(value)) return false;
@@ -183,7 +186,7 @@ export function buildOutgoingAppPayload(input: {
   if (!isAppElementsRecord(input.element)) {
     return input.element;
   }
-  return withLayoutFlags({ ...input.element }, input.layoutFlags);
+  return withLayoutFlags(input.element, input.layoutFlags);
 }
 
 /**
