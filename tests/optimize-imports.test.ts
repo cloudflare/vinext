@@ -323,6 +323,33 @@ export { Mo as Listbox };`;
     expect(map!.size).toBe(0);
   });
 
+  it("does not record phantom function/class exports in fallback default-export parsing", async () => {
+    const entryPath = uniquePath("fallback-default-function");
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      () =>
+        Promise.resolve(
+          `export default function Button() { return <div />; }\nexport class Card {}`,
+        ),
+    );
+
+    expect(map).not.toBeNull();
+    expect(map!.get("default")).toEqual({
+      source: entryPath,
+      isNamespace: false,
+      originalName: "default",
+    });
+    expect(map!.has("function")).toBe(false);
+    expect(map!.has("class")).toBe(false);
+    expect(map!.has("Button")).toBe(false);
+    expect(map!.get("Card")).toEqual({
+      source: entryPath,
+      isNamespace: false,
+      originalName: "Card",
+    });
+  });
+
   it("resolves wildcard export * from './sub' by merging sub-module exports", async () => {
     // Barrel: export * from "./utils" + export { Button } from "./button"
     // Sub-module ./utils exports: { format, parse }

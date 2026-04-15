@@ -196,8 +196,9 @@ function buildFallbackExportMap(filePath: string, content: string): BarrelExport
 
   for (const match of content.matchAll(/^\s*export\s+default\s+([A-Za-z_$][\w$]*)\s*;?/gm)) {
     recordDirectExport("default", "default");
-    if (!exportMap.has(match[1])) {
-      recordDirectExport(match[1]);
+    const ident = match[1];
+    if (ident !== "function" && ident !== "class" && !exportMap.has(ident)) {
+      recordDirectExport(ident);
     }
   }
 
@@ -230,6 +231,8 @@ async function buildSafeWildcardExportMap(
     const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
     // Only flatten local wildcard re-exports. External package wildcard re-exports
     // require full package resolution and are intentionally left untouched.
+    // Bail on the entire file — if any wildcard target is external, flattening is
+    // unsafe and we fall back to leaving all `export *` statements as-is.
     if (!rawSource || !rawSource.startsWith(".")) return null;
 
     const resolved = await resolveLocalModuleFile(
