@@ -1207,7 +1207,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           },
         };
         viteConfig.optimizeDeps = {
-          exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+          // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
+          exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og", "@tailwindcss/oxide"])],
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           rolldownOptions: { plugins: [depOptimizeAliasPlugin] },
         };
