@@ -23,6 +23,20 @@ function writeFixtureFile(root: string, filePath: string, content: string) {
   fs.writeFileSync(absPath, content);
 }
 
+function readTextFilesRecursive(root: string): string {
+  let output = "";
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      output += readTextFilesRecursive(entryPath);
+      continue;
+    }
+    if (!entry.name.endsWith(".js")) continue;
+    output += fs.readFileSync(entryPath, "utf-8");
+  }
+  return output;
+}
+
 async function buildApp(root: string) {
   const rscOutDir = path.join(root, "dist", "server");
   const ssrOutDir = path.join(root, "dist", "server", "ssr");
@@ -155,6 +169,11 @@ export default Button;
       expect(fs.existsSync(path.join(root, "dist", "server", "index.js"))).toBe(true);
       expect(fs.existsSync(path.join(root, "dist", "server", "ssr", "index.js"))).toBe(true);
       expect(fs.existsSync(path.join(root, "dist", "client"))).toBe(true);
+
+      const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+      expect(buildOutput).not.toContain(`from "antd"`);
+      expect(buildOutput).not.toContain("/es/button/index.js");
+      expect(buildOutput).toContain("function Button");
     });
   }, 60_000);
 });
