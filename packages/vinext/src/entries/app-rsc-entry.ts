@@ -2461,6 +2461,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           const dynamicDetected = consumeDynamicUsage();
           return { result, dynamicDetected };
         } finally {
+          consumeDynamicUsage();
           if (priorDynamic) markDynamicUsage();
         }
       },

@@ -277,6 +277,51 @@ describe("app page execution helpers", () => {
     expect(result.layoutFlags["layout:/"]).toBe("s");
   });
 
+  it("isolates dynamic usage across throwing layout probes", async () => {
+    let dynamicUsageDetected = false;
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) {
+          dynamicUsageDetected = true;
+          throw new Error("layout failed after headers()");
+        }
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          const priorDynamic = dynamicUsageDetected;
+          dynamicUsageDetected = false;
+          try {
+            const result = await fn();
+            const detectedInScope = dynamicUsageDetected;
+            dynamicUsageDetected = false;
+            return { result, dynamicDetected: detectedInScope };
+          } finally {
+            dynamicUsageDetected = false;
+            if (priorDynamic) dynamicUsageDetected = true;
+          }
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "d",
+    });
+  });
+
   it("skips probe for build-time classified layouts", async () => {
     let probeCalls = 0;
     const result = await probeAppPageLayouts({

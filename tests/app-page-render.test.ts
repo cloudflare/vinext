@@ -337,7 +337,6 @@ describe("layoutFlags injection into RSC payload", () => {
     layoutCount?: number;
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
-    requestedSkipLayoutIds?: ReadonlySet<string>;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
 
@@ -382,7 +381,6 @@ describe("layoutFlags injection into RSC payload", () => {
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
-      requestedSkipLayoutIds: overrides.requestedSkipLayoutIds,
     };
 
     return {
@@ -493,7 +491,6 @@ describe("layoutFlags injection into RSC payload", () => {
           return { result, dynamicDetected: false };
         },
       },
-      requestedSkipLayoutIds: new Set(["layout:/"]),
     });
 
     await renderAppPageLifecycle(options);
