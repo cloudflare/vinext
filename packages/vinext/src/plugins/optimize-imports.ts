@@ -482,6 +482,7 @@ async function buildExportMapFromFile(
   cache: Map<string, BarrelExportMap>,
   visited: Set<string>,
   initialContent?: string,
+  inProgress = new Set<string>(),
 ): Promise<BarrelExportMap> {
   // Guard against circular re-exports
   if (visited.has(filePath)) return new Map();
@@ -490,8 +491,16 @@ async function buildExportMapFromFile(
   const cached = cache.get(filePath);
   if (cached) return cached;
 
+  if (inProgress.has(filePath)) {
+    return cache.get(filePath) ?? new Map();
+  }
+  inProgress.add(filePath);
+
   const content = initialContent ?? (await readFile(filePath));
-  if (!content) return new Map();
+  if (!content) {
+    inProgress.delete(filePath);
+    return new Map();
+  }
 
   let ast: ReturnType<typeof parseAst>;
   try {
@@ -499,6 +508,7 @@ async function buildExportMapFromFile(
   } catch {
     const fallbackMap = buildFallbackExportMap(filePath, content);
     cache.set(filePath, fallbackMap);
+    inProgress.delete(filePath);
     return fallbackMap;
   }
 
@@ -534,6 +544,7 @@ async function buildExportMapFromFile(
         cache,
         new Set<string>(),
         candidateContent,
+        inProgress,
       );
       const nextEntry = subMap.get(exportName);
       if (!nextEntry) return entry;
@@ -653,6 +664,7 @@ async function buildExportMapFromFile(
                   cache,
                   visited,
                   candidateContent,
+                  inProgress,
                 );
                 for (const [name, entry] of subMap) {
                   if (!exportMap.has(name)) {
@@ -748,6 +760,7 @@ async function buildExportMapFromFile(
   }
 
   cache.set(filePath, exportMap);
+  inProgress.delete(filePath);
   return exportMap;
 }
 
@@ -786,6 +799,7 @@ export async function buildBarrelExportMap(
   if (!content) return null;
 
   const visited = new Set<string>();
+  const inProgress = new Set<string>();
   // Pass the already-read content so buildExportMapFromFile skips the redundant
   // readFile call for the entry file (it would otherwise read it a second time).
   // buildExportMapFromFile also stores the result in exportMapCache (keyed by
@@ -796,6 +810,7 @@ export async function buildBarrelExportMap(
     exportMapCache,
     visited,
     content,
+    inProgress,
   );
 
   return exportMap;
@@ -1225,7 +1240,7 @@ export function createOptimizeImportsPlugin(
 
         return {
           code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
+          map: null,
         };
       },
     },
