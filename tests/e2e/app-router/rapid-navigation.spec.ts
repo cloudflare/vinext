@@ -16,6 +16,9 @@ test.describe("rapid navigation", () => {
     await page.goto(`${BASE}/nav-rapid/page-a`);
     await expect(page.locator("h1")).toHaveText("Page A");
     await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = "started-at-a";
+    });
 
     // Click B then immediately click C (before B fully commits)
     // Use a single page.evaluate() to click both links atomically.
@@ -32,6 +35,8 @@ test.describe("rapid navigation", () => {
     // causing waitForURL to fail with ERR_ABORTED.
     await expect(page).toHaveURL(`${BASE}/nav-rapid/page-c`, { timeout: 10_000 });
     await expect(page.locator("h1")).toHaveText("Page C");
+    const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
+    expect(marker).toBe("started-at-a");
 
     const navigationErrors = errors.filter(
       (e) => e.includes("navigation") || e.includes("vinext") || e.includes("router"),
@@ -51,6 +56,9 @@ test.describe("rapid navigation", () => {
     await page.goto(`${BASE}/nav-rapid/page-a`);
     await expect(page.locator("h1")).toHaveText("Page A");
     await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = "started-at-a";
+    });
 
     // Navigate to B then immediately change query param (same-route nav)
     // Use a single page.evaluate() to click both links atomically.
@@ -74,6 +82,8 @@ test.describe("rapid navigation", () => {
     // Should settle on B with query param
     await expect(page.locator("h1")).toHaveText("Page B");
     await expect(page).toHaveURL(`${BASE}/nav-rapid/page-b?filter=test`);
+    const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
+    expect(marker).toBe("started-at-a");
 
     // Verify no navigation-related errors
     const navigationErrors = errors.filter(
