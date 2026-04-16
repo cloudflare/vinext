@@ -241,8 +241,17 @@ describe("App Router entry templates", () => {
       "// After the action, re-render the current page so the client",
     );
     expect(actionRerenderIdx).toBeGreaterThan(-1);
-    const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 700);
+    const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 2500);
     expect(rerenderSlice).toContain("element = buildPageElements(");
+  });
+
+  it("generateRscEntry delegates action rerender target selection to the shared helper", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain(
+      "resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget",
+    );
+    expect(code).toContain("const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({");
   });
 
   it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   buildAppPageElement,
+  resolveAppPageActionRerenderTarget,
   resolveAppPageIntercept,
+  resolveAppPageInterceptMatch,
   validateAppPageDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
 
@@ -201,5 +203,193 @@ describe("app page request helpers", () => {
 
     expect(result.element).toBeNull();
     expect(result.response).toBe(boundaryResponse);
+  });
+});
+
+describe("resolveAppPageInterceptMatch", () => {
+  const sourceRoute = { params: [], pattern: "/feed" };
+  const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
+
+  const toInterceptOpts = (intercept: {
+    matchedParams: Record<string, string | string[]>;
+    page: unknown;
+    slotKey: string;
+  }) => ({
+    interceptPage: intercept.page,
+    interceptParams: intercept.matchedParams,
+    interceptSlotKey: intercept.slotKey,
+  });
+
+  it("returns null on non-RSC requests", () => {
+    const result = resolveAppPageInterceptMatch({
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept() {
+        throw new Error("should not look up intercepts on non-RSC requests");
+      },
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: false,
+      toInterceptOpts,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when findIntercept returns nothing", () => {
+    const result = resolveAppPageInterceptMatch({
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => null,
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the source route is the current route", () => {
+    const result = resolveAppPageInterceptMatch({
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/photos/@modal",
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns sourceRoute, sourceParams, matchedParams, and interceptOpts when an intercept applies", () => {
+    const matchedParams = { id: "123" };
+    const intercept = {
+      matchedParams,
+      page: { default: "modal-page" },
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    };
+
+    const result = resolveAppPageInterceptMatch({
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => intercept,
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.sourceRoute).toBe(sourceRoute);
+    expect(result?.matchedParams).toBe(matchedParams);
+    // sourceParams keeps only the params declared by the source route.
+    // /feed has no dynamic params, so the slice is empty.
+    expect(result?.sourceParams).toEqual({});
+    expect(result?.interceptOpts).toEqual(toInterceptOpts(intercept));
+  });
+
+  it("slices source params down to the source route's declared params", () => {
+    const categorySourceRoute = { params: ["category"], pattern: "/feed/[category]" };
+    const matchedParams = { category: "nature", id: "123" };
+
+    const result = resolveAppPageInterceptMatch({
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams,
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/[category]/@modal",
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => categorySourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result?.sourceParams).toEqual({ category: "nature" });
+    expect(result?.matchedParams).toEqual({ category: "nature", id: "123" });
+  });
+});
+
+describe("resolveAppPageActionRerenderTarget", () => {
+  const sourceRoute = { params: [], pattern: "/feed" };
+  const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
+
+  const toInterceptOpts = (intercept: {
+    matchedParams: Record<string, string | string[]>;
+    page: unknown;
+    slotKey: string;
+  }) => ({
+    interceptPage: intercept.page,
+    interceptParams: intercept.matchedParams,
+    interceptSlotKey: intercept.slotKey,
+  });
+
+  it("preserves current-route intercept opts when action rerender stays on the direct route", () => {
+    const result = resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/123",
+      currentParams: { id: "123" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "123" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "123" },
+      params: { id: "123" },
+      route: currentRoute,
+    });
+  });
+
+  it("rerenders the intercepted source route when an intercept match applies", () => {
+    const result = resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/123",
+      currentParams: { id: "123" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "123" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "123" },
+      params: {},
+      route: sourceRoute,
+    });
   });
 });

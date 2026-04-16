@@ -408,6 +408,7 @@ import {
 } from ${JSON.stringify(appPageResponsePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(cspPath)};
 import {
+  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -1817,27 +1818,57 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
+      //
+      // When the original request came from inside an intercepted modal
+      // (X-Vinext-Interception-Context present + source route still
+      // matches), rebuild the intercepted tree — otherwise the modal would
+      // unmount and the direct route would render in its place. Mirrors
+      // the interception resolution used by the GET path.
       const match = matchRoute(cleanPathname);
       let element;
+      let errorPattern = match ? match.route.pattern : cleanPathname;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
+        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
+          cleanPathname,
+          currentParams: actionParams,
+          currentRoute: actionRoute,
+          findIntercept,
+          getRouteParamNames(sourceRoute) {
+            return sourceRoute.params;
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return routes[sourceRouteIndex];
+          },
+          isRscRequest,
+          toInterceptOpts(intercept) {
+            return {
+              interceptionContext: interceptionContextHeader,
+              interceptSlotKey: intercept.slotKey,
+              interceptPage: intercept.page,
+              interceptParams: intercept.matchedParams,
+            };
+          },
+        });
+
         setNavigationContext({
           pathname: cleanPathname,
           searchParams: url.searchParams,
-          params: actionParams,
+          params: __actionRerenderTarget.navigationParams,
         });
         element = buildPageElements(
-          actionRoute,
-          actionParams,
+          __actionRerenderTarget.route,
+          __actionRerenderTarget.params,
           cleanPathname,
           {
-            opts: undefined,
+            opts: __actionRerenderTarget.interceptOpts,
             searchParams: url.searchParams,
             isRscRequest,
             request,
             mountedSlotsHeader: __mountedSlotsHeader,
           },
         );
+        errorPattern = __actionRerenderTarget.route.pattern;
       } else {
         const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
         element = {
@@ -1851,7 +1882,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const onRenderError = createRscOnErrorHandler(
         request,
         cleanPathname,
-        match ? match.route.pattern : cleanPathname,
+        errorPattern,
       );
       const rscStream = renderToReadableStream(
         { root: element, returnValue },
