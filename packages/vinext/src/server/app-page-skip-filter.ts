@@ -25,8 +25,10 @@
  */
 
 // React Flight row-reference tags come from react-server-dom-webpack's client
-// parser. Audit this character class when upgrading React so new reference-like
-// tags do not become silent drop cases in the filter.
+// parser (`resolveModel` in ReactFlightClient.js). Audit this character class
+// when upgrading React so new reference-like tags do not become silent drop
+// cases in the filter:
+// https://github.com/facebook/react/blob/main/packages/react-client/src/ReactFlightClient.js
 const REFERENCE_PATTERN = /^\$(?:[LBFQWK@])?([0-9a-fA-F]+)$/;
 
 /**
@@ -199,7 +201,7 @@ export function createSkipFilterTransform(
     // App Router row 0 is always the plain JSON elements record. If that
     // invariant changes, this filter must stop rewriting row 0 and fall back
     // to canonical passthrough instead of serializing the wrong wire format.
-    const newRow0Raw = `0:${JSON.stringify(rewritten)}`;
+    const newRow0Raw = `${row0Raw.slice(0, colonIndex + 1)}${JSON.stringify(rewritten)}`;
 
     for (const row of pending) {
       if (row.kind === "passthrough") {

@@ -251,6 +251,22 @@ describe("createSkipFilterTransform", () => {
     expect(output).toContain(expectedRow0);
   });
 
+  test("preserves the original row-0 prefix when rewriting", async () => {
+    const rows = [
+      `1:["$","header",null,{"children":"layout"}]`,
+      `2:["$","p",null,{"children":"page"}]`,
+      `00:{"slot:layout:/":"$L1","slot:page":"$L2","__route":"route:/"}`,
+    ];
+    const input = createRscStream(rows);
+    const transform = createSkipFilterTransform(new Set(["slot:layout:/"]));
+    const output = await collectStreamText(input.pipeThrough(transform));
+
+    expect(output).toContain(`00:${JSON.stringify({ "slot:page": "$L2", __route: "route:/" })}`);
+    expect(output.split("\n")).not.toContain(
+      `0:${JSON.stringify({ "slot:page": "$L2", __route: "route:/" })}`,
+    );
+  });
+
   test("keeps a row referenced from both kept and killed slots", async () => {
     const rows = [
       `1:["$","header",null,{"children":"layout-only"}]`,

@@ -103,17 +103,22 @@ export function resolveVisitedResponseInterceptionContext(
 
 export const X_VINEXT_ROUTER_SKIP_HEADER = "X-Vinext-Router-Skip";
 export const X_VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
+const MAX_SKIP_LAYOUT_IDS = 50;
+const EMPTY_SKIP_HEADER_IDS: ReadonlySet<string> = new Set<string>();
 
 export function parseSkipHeader(header: string | null): ReadonlySet<string> {
-  if (!header) return new Set();
+  if (!header) return EMPTY_SKIP_HEADER_IDS;
   const ids = new Set<string>();
   for (const part of header.split(",")) {
     const trimmed = part.trim();
     if (trimmed.startsWith("layout:")) {
       ids.add(trimmed);
+      if (ids.size >= MAX_SKIP_LAYOUT_IDS) {
+        break;
+      }
     }
   }
-  return ids;
+  return ids.size > 0 ? ids : EMPTY_SKIP_HEADER_IDS;
 }
 
 const EMPTY_SKIP_DECISION: ReadonlySet<string> = new Set<string>();

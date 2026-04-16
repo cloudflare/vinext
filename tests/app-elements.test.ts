@@ -187,6 +187,16 @@ describe("parseSkipHeader", () => {
     const result = parseSkipHeader("layout:/,garbage,layout:/blog,page:/x");
     expect(result).toEqual(new Set(["layout:/", "layout:/blog"]));
   });
+
+  it("caps parsed layout ids to a bounded set", () => {
+    const header = Array.from({ length: 60 }, (_, index) => `layout:/segment-${index}`).join(",");
+    const result = parseSkipHeader(header);
+
+    expect(result.size).toBe(50);
+    expect(result.has("layout:/segment-0")).toBe(true);
+    expect(result.has("layout:/segment-49")).toBe(true);
+    expect(result.has("layout:/segment-50")).toBe(false);
+  });
 });
 
 describe("computeSkipDecision", () => {

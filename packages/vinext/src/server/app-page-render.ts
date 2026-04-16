@@ -258,6 +258,9 @@ export async function renderAppPageLifecycle(
       return renderAppPageHtmlStream({
         fontData,
         navigationContext: options.getNavigationContext(),
+        // HTML SSR always consumes the canonical stream: skipIds is only
+        // non-empty for RSC requests, so the HTML path never sees filtered
+        // bytes even though it reuses the same `rscForResponse` handle.
         rscStream: rscForResponse,
         scriptNonce: options.scriptNonce,
         ssrHandler,

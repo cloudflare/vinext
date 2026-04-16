@@ -1422,9 +1422,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  const __EMPTY_SKIP_LAYOUT_IDS = new Set();
   const __skipLayoutIds = isRscRequest
     ? __parseSkipHeader(request.headers.get(__X_VINEXT_ROUTER_SKIP_HEADER))
-    : new Set();
+    : __EMPTY_SKIP_LAYOUT_IDS;
   // Read mounted-slots header once at the handler scope and thread it through
   // every buildPageElements call site. Previously both the handler and
   // buildPageElements read and normalized it independently, which invited
