@@ -4,8 +4,8 @@
   "type": "module",
   "dependencies": {
     "@vitejs/plugin-rsc": "catalog:",
-    "react": "catalog:",
-    "react-dom": "catalog:",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "react-server-dom-webpack": "catalog:",
     "vinext": "workspace:*",
     "vite": "catalog:"
