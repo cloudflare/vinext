@@ -74,6 +74,75 @@ function getDynamicErrorBoundary() {
 // Detect server vs client
 const isServer = typeof window === "undefined";
 
+/**
+ * Wraps non-function components (React.memo / React.forwardRef objects) into
+ * a plain function component so React.lazy() can consume them.
+ *
+ * React.lazy() requires `{ default: Function }`, but memo/forwardRef produce
+ * objects with a `$$typeof` Symbol. Without this wrapper, lazy() throws:
+ *   "React.lazy() only accepts functions returning a module with a default export"
+ */
+function wrapNonFunctionComponent<P>(comp: unknown): ComponentType<P> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const c = comp as any;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const Wrapper = (props: P) => React.createElement(c, props as any);
+  Wrapper.displayName = `DynamicWrapper(${c.displayName || c.name || "Unknown"})`;
+  return Wrapper;
+}
+
+/**
+ * Resolve a dynamically imported module to `{ default: ComponentType }`.
+ *
+ * Handles 4 cases in priority order:
+ * 1. `mod.default` is a function → use directly
+ * 2. `mod.default` is a React element type (memo/forwardRef with $$typeof) → wrap
+ * 3. First named export that is a function → use as default
+ * 4. First named export with $$typeof → wrap
+ *
+ * This covers edge cases where libraries export memo-wrapped or forwardRef-wrapped
+ * components as default, which React.lazy cannot consume directly.
+ */
+function resolveModule<P>(mod: Record<string, unknown>): { default: ComponentType<P> } {
+  // Case 1: default export is a function (most common)
+  if (mod?.default && typeof mod.default === "function") {
+    return { default: mod.default as ComponentType<P> };
+  }
+
+  // Case 2: default export is a React element type object (memo/forwardRef)
+  // oxlint-disable-next-line typescript/no-explicit-any
+  if (
+    mod?.default &&
+    typeof mod.default === "object" &&
+    (mod.default as Record<string, unknown>)?.$$typeof
+  ) {
+    return { default: wrapNonFunctionComponent<P>(mod.default) };
+  }
+
+  // Case 3: no usable default — try first named function export
+  if (mod) {
+    const namedFns = Object.values(mod).filter(
+      (v): v is ComponentType<P> => typeof v === "function",
+    );
+    if (namedFns.length > 0) {
+      return { default: namedFns[0] };
+    }
+
+    // Case 4: first named $$typeof export
+    const namedObjects = Object.values(mod).filter(
+      (v): v is unknown =>
+        v != null && typeof v === "object" && !!(v as Record<string, unknown>)?.$$typeof,
+    );
+    if (namedObjects.length > 0) {
+      return { default: wrapNonFunctionComponent<P>(namedObjects[0]) };
+    }
+  }
+
+  // Fallback: preserve original behavior
+  if ("default" in mod) return mod as { default: ComponentType<P> };
+  return { default: mod as unknown as ComponentType<P> };
+}
+
 // Legacy preload queue — kept for backward compatibility with Pages Router
 // which calls flushPreloads() before rendering. The App Router uses React.lazy
 // + Suspense instead, so this queue is no longer populated.
@@ -110,8 +179,7 @@ function dynamic<P extends object = object>(
     // Client: use lazy with Suspense
     const LazyComponent = React.lazy(async () => {
       const mod = await loader();
-      if ("default" in mod) return mod as { default: ComponentType<P> };
-      return { default: mod as ComponentType<P> };
+      return resolveModule<P>(mod as Record<string, unknown>);
     });
 
     const ClientSSRFalse = (props: P) => {
@@ -151,11 +219,8 @@ function dynamic<P extends object = object>(
         // provide loading states. Error handling also defers to the nearest
         // error boundary in the component tree.
         const mod = await loader();
-        const Component =
-          "default" in mod
-            ? (mod as { default: ComponentType<P> }).default
-            : (mod as ComponentType<P>);
-        return React.createElement(Component, props);
+        const resolved = resolveModule<P>(mod as Record<string, unknown>);
+        return React.createElement(resolved.default, props);
       };
       AsyncServerDynamic.displayName = "DynamicAsyncServer";
       // Cast is safe: async components are natively supported by the RSC renderer,
@@ -167,8 +232,7 @@ function dynamic<P extends object = object>(
     // until the dynamically-imported component is available.
     const LazyServer = React.lazy(async () => {
       const mod = await loader();
-      if ("default" in mod) return mod as { default: ComponentType<P> };
-      return { default: mod as ComponentType<P> };
+      return resolveModule<P>(mod as Record<string, unknown>);
     });
 
     const ServerDynamic = (props: P) => {
@@ -192,8 +256,7 @@ function dynamic<P extends object = object>(
   // Client path: standard React.lazy with Suspense
   const LazyComponent = React.lazy(async () => {
     const mod = await loader();
-    if ("default" in mod) return mod as { default: ComponentType<P> };
-    return { default: mod as ComponentType<P> };
+    return resolveModule<P>(mod as Record<string, unknown>);
   });
 
   const ClientDynamic = (props: P) => {
