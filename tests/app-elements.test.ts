@@ -218,6 +218,16 @@ describe("computeSkipDecision", () => {
     expect(decision).toEqual(new Set());
   });
 
+  it("reuses the shared empty-set sentinel when all requested ids are rejected", () => {
+    const emptyDecision = computeSkipDecision({ "layout:/": "s" }, undefined);
+    const rejectedDecision = computeSkipDecision(
+      { "layout:/a": "d", "layout:/b": "d" },
+      new Set(["layout:/a", "layout:/b"]),
+    );
+
+    expect(rejectedDecision).toBe(emptyDecision);
+  });
+
   it("excludes an id missing from the flags", () => {
     const decision = computeSkipDecision({}, new Set(["layout:/a"]));
     expect(decision).toEqual(new Set());

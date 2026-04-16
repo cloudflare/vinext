@@ -184,7 +184,7 @@ export async function renderAppPageLifecycle(
   const isrRscDataPromise = rscCapture.capturedRscDataPromise;
 
   const skipIds =
-    options.isRscRequest && (options.supportsFilteredRscStream ?? true)
+    options.isRscRequest && (options.supportsFilteredRscStream ?? false)
       ? computeSkipDecision(layoutFlags, options.requestedSkipLayoutIds)
       : EMPTY_SKIP_SET;
   const rscForResponse =

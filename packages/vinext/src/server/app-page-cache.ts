@@ -111,6 +111,8 @@ export function buildAppPageCachedResponse(
       rscHeaders["X-Vinext-Mounted-Slots"] = options.mountedSlotsHeader;
     }
 
+    // Cached bytes stay canonical. The current request's skipIds decide
+    // whether this client gets the full payload or a filtered egress view.
     const body = wrapRscBytesForResponse(cachedValue.rscData, options.skipIds ?? EMPTY_SKIP_SET);
 
     return new Response(body, {

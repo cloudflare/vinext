@@ -29,7 +29,12 @@
 // when upgrading React so new reference-like tags do not become silent drop
 // cases in the filter:
 // https://github.com/facebook/react/blob/main/packages/react-client/src/ReactFlightClient.js
-const REFERENCE_PATTERN = /^\$(?:[LBFQWK@])?([0-9a-fA-F]+)$/;
+const FLIGHT_REF_TAGS = "LBFQWK@";
+const REFERENCE_PATTERN = new RegExp(`^\\$(?:[${FLIGHT_REF_TAGS}])?([0-9a-fA-F]+)$`);
+const RAW_REFERENCE_PATTERN = new RegExp(
+  `(?<!\\$)\\$(?:[${FLIGHT_REF_TAGS}])?([0-9a-fA-F]+)\\b`,
+  "g",
+);
 
 /**
  * Pure: parses a single RSC reference string like `$L5` or `$ff` and returns
@@ -132,7 +137,7 @@ function addRefsFromRaw(raw: string, into: Set<number>): void {
   // object/array payloads, for example `1:D"$3a"`. Track those too so
   // later rows are not dropped as orphans when a kept row introduces a
   // new live id through a deferred chunk.
-  for (const match of payload.matchAll(/(?<!\$)\$(?:[LBFQWK@])?([0-9a-fA-F]+)\b/g)) {
+  for (const match of payload.matchAll(RAW_REFERENCE_PATTERN)) {
     into.add(Number.parseInt(match[1], 16));
   }
 

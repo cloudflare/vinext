@@ -625,7 +625,7 @@ describe("skip header filtering", () => {
       isForceStatic: false,
       isProduction: overrides.isProduction ?? true,
       isRscRequest: overrides.isRscRequest ?? true,
-      supportsFilteredRscStream: overrides.supportsFilteredRscStream ?? true,
+      supportsFilteredRscStream: overrides.supportsFilteredRscStream,
       isrHtmlKey: (p: string) => `html:${p}`,
       isrRscKey: (p: string) => `rsc:${p}`,
       isrSet,
@@ -693,6 +693,7 @@ describe("skip header filtering", () => {
       probeLayoutAt: () => null,
       classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
       requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: true,
     });
 
     await renderAppPageLifecycle(options);
@@ -713,6 +714,7 @@ describe("skip header filtering", () => {
       probeLayoutAt: () => null,
       classification: staticClassification({ 0: "layout:/", 1: "layout:/blog" }),
       requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: true,
     });
 
     const response = await renderAppPageLifecycle(options);
@@ -743,6 +745,7 @@ describe("skip header filtering", () => {
         },
       },
       requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: true,
     });
 
     const response = await renderAppPageLifecycle(options);
@@ -765,6 +768,7 @@ describe("skip header filtering", () => {
       probeLayoutAt: () => null,
       classification: staticClassification({ 0: "layout:/" }),
       requestedSkipLayoutIds: new Set(["layout:/"]),
+      supportsFilteredRscStream: true,
     });
 
     const response = await renderAppPageLifecycle(options);
@@ -816,6 +820,25 @@ describe("skip header filtering", () => {
     expect(captured["layout:/"]).toBe("root-layout");
   });
 
+  it("keeps filtering dormant by default when the support flag is omitted", async () => {
+    const { options } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "page:/test": "test-page",
+      },
+      layoutCount: 1,
+      probeLayoutAt: () => null,
+      classification: staticClassification({ 0: "layout:/" }),
+      requestedSkipLayoutIds: new Set(["layout:/"]),
+    });
+
+    const response = await renderAppPageLifecycle(options);
+    const body = await response.text();
+    const row0Keys = parseRow0Keys(body);
+    expect(row0Keys).toContain("layout:/");
+    expect(body).toContain("root-layout");
+  });
+
   it("does not filter layouts on development RSC requests", async () => {
     const { options } = createRscOptions({
       element: {
@@ -849,6 +872,7 @@ describe("skip header filtering", () => {
       requestedSkipLayoutIds: new Set(["layout:/"]),
       isProduction: true,
       revalidateSeconds: 60,
+      supportsFilteredRscStream: true,
     });
 
     const response = await renderAppPageLifecycle(options);

@@ -494,6 +494,7 @@ function __pageCacheTags(pathname, extraTags) {
   }
   return tags;
 }
+const __EMPTY_SKIP_LAYOUT_IDS = new Set();
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -1422,7 +1423,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  const __EMPTY_SKIP_LAYOUT_IDS = new Set();
   const __skipLayoutIds = isRscRequest
     ? __parseSkipHeader(request.headers.get(__X_VINEXT_ROUTER_SKIP_HEADER))
     : __EMPTY_SKIP_LAYOUT_IDS;

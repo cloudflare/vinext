@@ -144,7 +144,7 @@ export function computeSkipDecision(
       decision.add(id);
     }
   }
-  return decision;
+  return decision.size > 0 ? decision : EMPTY_SKIP_DECISION;
 }
 
 export function normalizeAppElements(elements: AppWireElements): AppElements {
