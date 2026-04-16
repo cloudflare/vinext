@@ -1,6 +1,11 @@
 import { mergeElements } from "../shims/slot.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { readAppElementsMetadata, type AppElements, type LayoutFlags } from "./app-elements.js";
+import {
+  getMountedSlotIdsHeader,
+  readAppElementsMetadata,
+  type AppElements,
+  type LayoutFlags,
+} from "./app-elements.js";
 import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -88,6 +93,52 @@ export function resolveInterceptionContextFromPreviousNextUrl(
 
   const parsedUrl = new URL(previousNextUrl, "http://localhost");
   return stripBasePath(parsedUrl.pathname, basePath);
+}
+
+export type ResolveServerActionRequestStateOptions = {
+  actionId: string;
+  basePath: string;
+  elements: AppElements;
+  previousNextUrl: string | null;
+};
+
+export type ResolveServerActionRequestStateResult = {
+  headers: Headers;
+};
+
+/**
+ * Pure: builds the fetch Headers for a server-action POST. Carries the same
+ * interception-context and mounted-slots headers the refresh path already
+ * sends, so the server-action re-render can rebuild the intercepted tree
+ * instead of replacing it with the direct route.
+ *
+ * Next.js sends `Next-URL: state.previousNextUrl || state.nextUrl` on action
+ * POSTs when `hasInterceptionRouteInCurrentTree(state.tree)`. Vinext's
+ * X-Vinext-Interception-Context is the equivalent signal for the server-side
+ * `findIntercept` lookup.
+ */
+export function resolveServerActionRequestState(
+  options: ResolveServerActionRequestStateOptions,
+): ResolveServerActionRequestStateResult {
+  const headers = new Headers({
+    Accept: "text/x-component",
+    "x-rsc-action": options.actionId,
+  });
+
+  const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
+    options.previousNextUrl,
+    options.basePath,
+  );
+  if (interceptionContext !== null) {
+    headers.set("X-Vinext-Interception-Context", interceptionContext);
+  }
+
+  const mountedSlotsHeader = getMountedSlotIdsHeader(options.elements);
+  if (mountedSlotsHeader !== null) {
+    headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+  }
+
+  return { headers };
 }
 
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {

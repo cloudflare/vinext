@@ -69,6 +69,7 @@ import {
   resolveAndClassifyNavigationCommit,
   resolveInterceptionContextFromPreviousNextUrl,
   resolvePendingNavigationCommitDisposition,
+  resolveServerActionRequestState,
   routerReducer,
   type AppRouterAction,
   type AppRouterState,
@@ -781,12 +782,22 @@ function registerServerActionCallback(): void {
     const temporaryReferences = createTemporaryReferenceSet();
     const body = await encodeReply(args, { temporaryReferences });
 
-    // Interception context on server-action re-renders is intentionally
-    // deferred: action POSTs always target the current URL's full page without
-    // propagating the source-route provenance.
+    // Carry the interception context + mounted slots from the current router
+    // state so the server-action re-render rebuilds the intercepted tree
+    // instead of replacing it with the direct page. Parity with Next.js,
+    // which sends `Next-URL` on action POSTs when the current tree contains
+    // an interception route.
+    const currentState = getBrowserRouterState();
+    const { headers } = resolveServerActionRequestState({
+      actionId: id,
+      basePath: __basePath,
+      elements: currentState.elements,
+      previousNextUrl: currentState.previousNextUrl,
+    });
+
     const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
       method: "POST",
-      headers: { "x-rsc-action": id },
+      headers,
       body,
     });
 

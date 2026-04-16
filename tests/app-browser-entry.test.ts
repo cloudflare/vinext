@@ -17,6 +17,7 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveAndClassifyNavigationCommit,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveServerActionRequestState,
   routerReducer,
   resolvePendingNavigationCommitDisposition,
   shouldHardNavigate,
@@ -472,5 +473,87 @@ describe("mounted slot helpers", () => {
     });
 
     expect(getMountedSlotIdsHeader(elements)).toBeNull();
+  });
+});
+
+describe("resolveServerActionRequestState", () => {
+  it("includes only Accept and x-rsc-action when previousNextUrl is null and no slots are mounted", () => {
+    const elements = createResolvedElements("route:/settings", "/");
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "action-abc",
+      basePath: "",
+      elements,
+      previousNextUrl: null,
+    });
+
+    expect(Array.from(headers.keys()).sort()).toEqual(["accept", "x-rsc-action"]);
+    expect(headers.get("accept")).toBe("text/x-component");
+    expect(headers.get("x-rsc-action")).toBe("action-abc");
+  });
+
+  it("derives X-Vinext-Interception-Context from previousNextUrl", () => {
+    const elements = createResolvedElements("route:/photos/42", "/");
+    const previousNextUrl = "/feed?tab=latest";
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "bump-likes",
+      basePath: "",
+      elements,
+      previousNextUrl,
+    });
+
+    expect(headers.get("X-Vinext-Interception-Context")).toBe(
+      resolveInterceptionContextFromPreviousNextUrl(previousNextUrl, ""),
+    );
+  });
+
+  it("strips the base path when deriving the interception context", () => {
+    const elements = createResolvedElements("route:/photos/42", "/");
+    const previousNextUrl = "/app/feed";
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "bump-likes",
+      basePath: "/app",
+      elements,
+      previousNextUrl,
+    });
+
+    expect(headers.get("X-Vinext-Interception-Context")).toBe(
+      resolveInterceptionContextFromPreviousNextUrl(previousNextUrl, "/app"),
+    );
+  });
+
+  it("derives X-Vinext-Mounted-Slots from mounted slot keys", () => {
+    const elements: AppElements = createResolvedElements("route:/feed", "/", null, {
+      "slot:@modal:/feed": React.createElement("div", null, "modal"),
+      "slot:@sidebar:/feed": React.createElement("div", null, "sidebar"),
+    });
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "action-x",
+      basePath: "",
+      elements,
+      previousNextUrl: null,
+    });
+
+    expect(headers.get("X-Vinext-Mounted-Slots")).toBe(getMountedSlotIdsHeader(elements));
+  });
+
+  it("omits headers whose derived values are null", () => {
+    const elements: AppElements = createResolvedElements("route:/settings", "/", null, {
+      "slot:ghost:/": null,
+      "slot:missing:/": UNMATCHED_SLOT,
+    });
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "action-y",
+      basePath: "",
+      elements,
+      previousNextUrl: null,
+    });
+
+    expect(headers.has("X-Vinext-Interception-Context")).toBe(false);
+    expect(headers.has("X-Vinext-Mounted-Slots")).toBe(false);
   });
 });

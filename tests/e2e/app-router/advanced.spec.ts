@@ -150,6 +150,45 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  test("server action from intercepted modal preserves modal tree", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    const likesLocator = page.locator('[data-testid="photo-likes"]');
+    const baselineText = (await likesLocator.textContent()) ?? "";
+    const baseline = Number.parseInt(baselineText, 10);
+    expect(Number.isFinite(baseline)).toBe(true);
+
+    await page.click('[data-testid="photo-like-btn"]');
+
+    // Wait for the count to change before asserting — avoids a timing race
+    // between action fetch and client state update.
+    await expect.poll(async () => (await likesLocator.textContent()) ?? "").not.toBe(baselineText);
+
+    const afterText = (await likesLocator.textContent()) ?? "";
+    const after = Number.parseInt(afterText, 10);
+    expect(after).toBe(baseline + 1);
+
+    // Critical parity assertion: the server-action rerender must keep the
+    // intercepted tree mounted — modal visible, source feed layout intact,
+    // direct /photos/[id] page NOT rendered, URL unchanged.
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/photos/42");
+
+    // Sanity: a hard refresh still routes to the direct page, mirroring the
+    // final assertion in the Next.js reference test.
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
   test("back then forward restores intercepted modal view", async ({ page }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);
