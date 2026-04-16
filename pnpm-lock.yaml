@@ -137,7 +137,7 @@ catalogs:
       version: 0.3.5
     nitro:
       specifier: npm:nitro-nightly@latest
-      version: 3.0.1-20260410-164248-8ab58a4b
+      version: 3.0.1-20260415-080922-45e20aaa
     nuqs:
       specifier: ^2.8.8
       version: 2.8.8
@@ -157,8 +157,8 @@ catalogs:
       specifier: ^19.2.5
       version: 19.2.5
     sanitize-html:
-      specifier: ^2.17.2
-      version: 2.17.2
+      specifier: ^2.17.3
+      version: 2.17.3
     server-only:
       specifier: ^0.0.1
       version: 0.0.1
@@ -334,7 +334,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.0.1-20260410-164248-8ab58a4b(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0)
+        version: nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -590,7 +590,7 @@ importers:
         version: 19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       sanitize-html:
         specifier: 'catalog:'
-        version: 2.17.2
+        version: 2.17.3
       server-only:
         specifier: 'catalog:'
         version: 0.0.1
@@ -3647,8 +3647,8 @@ packages:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
 
-  crossws@0.4.4:
-    resolution: {integrity: sha512-w6c4OdpRNnudVmcgr7brb/+/HmYjMQvYToO/oTrprTwxRUiom3LYWU1PMWuD006okbUWpII1Ea9/+kwpUfmyRg==}
+  crossws@0.4.5:
+    resolution: {integrity: sha512-wUR89x/Rw7/8t+vn0CmGDYM9TD6VtARGb0LD5jq2wjtMy1vCP4M+sm6N6TigWeTYvnA8MoW29NqqXD0ep0rfBA==}
     peerDependencies:
       srvx: '>=0.11.13'
     peerDependenciesMeta:
@@ -4112,8 +4112,8 @@ packages:
     resolution: {integrity: sha512-Ox1pJVrDCyGHMG9CFg1tmrRUMRPRsAWYc/PinY0XzJU4K7y7vjNoLKIQ7BR5UJMCxNN8EM1MNDmHWA/B3aZUuw==}
     engines: {node: '>=6'}
 
-  hookable@6.1.0:
-    resolution: {integrity: sha512-ZoKZSJgu8voGK2geJS+6YtYjvIzu9AOM/KZXsBxr83uhLL++e9pEv/dlgwgy3dvHg06kTz6JOh1hk3C8Ceiymw==}
+  hookable@6.1.1:
+    resolution: {integrity: sha512-U9LYDy1CwhMCnprUfeAZWZGByVbhd54hwepegYTK7Pi5NvqEj63ifz5z+xukznehT7i6NIZRu89Ay1AZmRsLEQ==}
 
   html-void-elements@3.0.0:
     resolution: {integrity: sha512-bEqo66MRXsUGxWHV5IP0PUiAWwoEjba4VCzg0LjFJBpchPaTfyfCKTG6bc5F8ucKec3q5y6qOdGyYTSBEvhCrg==}
@@ -4661,11 +4661,12 @@ packages:
   nf3@0.3.16:
     resolution: {integrity: sha512-Gs0xRPpUm2nDkqbi40NJ9g7qDIcjcJzgExiydnq6LAyqhI2jfno8wG3NKTL+IiJsx799UHOb1CnSd4Wg4SG4Pw==}
 
-  nitro-nightly@3.0.1-20260410-164248-8ab58a4b:
-    resolution: {integrity: sha512-daEsMDKukI/kYgnzDo8xX5aAt0QXjfgJmjEgjRz7mU2ggHQxPFTI5uayacX0bMWOi+ni+6JkdKbYgH3vAsGPOA==}
+  nitro-nightly@3.0.1-20260415-080922-45e20aaa:
+    resolution: {integrity: sha512-vsJ1gh15OfW48KArEye63r+NBrG6nIF0Br9qd6OAxf8RODA+fFnyZnsIxPj1p0ecwPLVDQXSETdnbDWWty0pMw==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
+      '@vercel/queue': ^0.1.4
       dotenv: '*'
       giget: '*'
       jiti: ^2.6.1
@@ -4674,6 +4675,8 @@ packages:
       xml2js: ^0.6.2
       zephyr-agent: ^0.2.0
     peerDependenciesMeta:
+      '@vercel/queue':
+        optional: true
       dotenv:
         optional: true
       giget:
@@ -4997,8 +5000,8 @@ packages:
   safe-buffer@5.2.1:
     resolution: {integrity: sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==}
 
-  sanitize-html@2.17.2:
-    resolution: {integrity: sha512-EnffJUl46VE9uvZ0XeWzObHLurClLlT12gsOk1cHyP2Ol1P0BnBnsXmShlBmWVJM+dKieQI68R0tsPY5m/B+Jg==}
+  sanitize-html@2.17.3:
+    resolution: {integrity: sha512-Kn4srCAo2+wZyvCNKCSyB2g8RQ8IkX/gQs2uqoSRNu5t9I2qvUyAVvRDiFUVAiX3N3PNuwStY0eNr+ooBHVWEg==}
 
   satori@0.16.0:
     resolution: {integrity: sha512-ZvHN3ygzZ8FuxjSNB+mKBiF/NIoqHzlBGbD0MJiT+MvSsFOvotnWOhdTjxKzhHRT2wPC1QbhLzx2q/Y83VhfYQ==}
@@ -7348,7 +7351,7 @@ snapshots:
       shebang-command: 2.0.0
       which: 2.0.2
 
-  crossws@0.4.4(srvx@0.11.13):
+  crossws@0.4.5(srvx@0.11.13):
     optionalDependencies:
       srvx: 0.11.13
 
@@ -7447,7 +7450,7 @@ snapshots:
 
   env-runner@0.1.7(miniflare@4.20260401.0):
     dependencies:
-      crossws: 0.4.4(srvx@0.11.13)
+      crossws: 0.4.5(srvx@0.11.13)
       exsolve: 1.0.8
       httpxy: 0.5.0
       srvx: 0.11.13
@@ -7721,12 +7724,12 @@ snapshots:
 
   graceful-fs@4.2.11: {}
 
-  h3@2.0.1-rc.20(crossws@0.4.4(srvx@0.11.13)):
+  h3@2.0.1-rc.20(crossws@0.4.5(srvx@0.11.13)):
     dependencies:
       rou3: 0.8.1
       srvx: 0.11.13
     optionalDependencies:
-      crossws: 0.4.4(srvx@0.11.13)
+      crossws: 0.4.5(srvx@0.11.13)
 
   hast-util-from-parse5@8.0.3:
     dependencies:
@@ -7842,7 +7845,7 @@ snapshots:
 
   hex-rgb@4.3.0: {}
 
-  hookable@6.1.0: {}
+  hookable@6.1.1: {}
 
   html-void-elements@3.0.0: {}
 
@@ -8580,14 +8583,14 @@ snapshots:
 
   nf3@0.3.16: {}
 
-  nitro-nightly@3.0.1-20260410-164248-8ab58a4b(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0):
+  nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0):
     dependencies:
       consola: 3.4.2
-      crossws: 0.4.4(srvx@0.11.13)
+      crossws: 0.4.5(srvx@0.11.13)
       db0: 0.3.4(better-sqlite3@12.6.2)
       env-runner: 0.1.7(miniflare@4.20260401.0)
-      h3: 2.0.1-rc.20(crossws@0.4.4(srvx@0.11.13))
-      hookable: 6.1.0
+      h3: 2.0.1-rc.20(crossws@0.4.5(srvx@0.11.13))
+      hookable: 6.1.1
       nf3: 0.3.16
       ocache: 0.1.4
       ofetch: 2.0.0-alpha.3
@@ -9035,7 +9038,7 @@ snapshots:
 
   safe-buffer@5.2.1: {}
 
-  sanitize-html@2.17.2:
+  sanitize-html@2.17.3:
     dependencies:
       deepmerge: 4.3.1
       escape-string-regexp: 4.0.0

@@ -46,7 +46,7 @@ catalog:
   clsx: ^2.1.1
   codehike: 1.0.7
   date-fns: 4.1.0
-  sanitize-html: ^2.17.2
+  sanitize-html: ^2.17.3
   fumadocs-core: 16.7.9
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.7.9
