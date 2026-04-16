@@ -1,7 +1,23 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
+
+async function clickRapidlyByTestIds(page: Page, testIds: readonly string[]): Promise<void> {
+  const targets = await Promise.all(
+    testIds.map(async (testId) => {
+      const box = await page.locator(`[data-testid="${testId}"]`).boundingBox();
+      if (!box) {
+        throw new Error(`Missing clickable target: ${testId}`);
+      }
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }),
+  );
+
+  for (const target of targets) {
+    await page.mouse.click(target.x, target.y);
+  }
+}
 
 test.describe("rapid navigation", () => {
   test("A→B→C rapid navigation completes smoothly", async ({ page }) => {
@@ -20,15 +36,8 @@ test.describe("rapid navigation", () => {
       (window as any).__NAV_MARKER__ = "started-at-a";
     });
 
-    // Click B then immediately click C (before B fully commits)
-    // Use a single page.evaluate() to click both links atomically.
-    // This avoids React re-render issues and prevents "execution context destroyed" errors in CI.
-    await page.evaluate(() => {
-      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
-      const linkC = document.querySelector('[data-testid="page-a-link-to-c"]') as HTMLElement;
-      if (linkB) linkB.click();
-      if (linkC) linkC.click();
-    });
+    // Trigger B then C with trusted clicks dispatched back-to-back.
+    await clickRapidlyByTestIds(page, ["page-a-link-to-b", "page-a-link-to-c"]);
 
     // Use toHaveURL (polling) instead of waitForURL (navigation event) because
     // rapid back-to-back client-side navigations abort the first navigation,
@@ -60,24 +69,8 @@ test.describe("rapid navigation", () => {
       (window as any).__NAV_MARKER__ = "started-at-a";
     });
 
-    // Navigate to B then immediately change query param (same-route nav)
-    // Use a single page.evaluate() to click both links atomically.
-    //
-    // Why isSameRoute === true for the second navigation:
-    // Both clicks run synchronously in the same microtask. The first click calls
-    // setPendingPathname('/nav-rapid/page-b', navId=1), storing the pending target.
-    // The second click then reads pendingPathname (which is '/nav-rapid/page-b'),
-    // compares it to its own target pathname (also '/nav-rapid/page-b'), and sees
-    // they match — so isSameRoute is true. This is correct behavior: the second
-    // navigation is a same-route query-param change, not a cross-route navigation.
-    await page.evaluate(() => {
-      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
-      const linkFilter = document.querySelector(
-        '[data-testid="page-a-link-to-b-filter"]',
-      ) as HTMLElement;
-      if (linkB) linkB.click();
-      if (linkFilter) linkFilter.click();
-    });
+    // Trigger B then B?filter=test with trusted back-to-back clicks.
+    await clickRapidlyByTestIds(page, ["page-a-link-to-b", "page-a-link-to-b-filter"]);
 
     // Should settle on B with query param
     await expect(page.locator("h1")).toHaveText("Page B");
