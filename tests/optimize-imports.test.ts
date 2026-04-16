@@ -25,7 +25,13 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
-  ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
+  ): Promise<
+    (
+      code: string,
+      id: string,
+      envName?: "rsc" | "ssr" | "client",
+    ) => Promise<ReturnType<(...args: any[]) => any>>
+  > {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
@@ -49,8 +55,8 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
 
     const transform = unwrapHook(plugin.transform)!;
-    return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+    return async (code: string, id: string, envName = "rsc") =>
+      await (transform as any).call({ ...plugin, environment: { name: envName } }, code, id);
   }
 
   afterEach(() => {
@@ -128,25 +134,20 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("rewrites direct barrel imports on client environment when they resolve to concrete files", async () => {
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
-    fs.writeFileSync(
-      path.join(tmpDir, "package.json"),
-      JSON.stringify({ name: "test-app", type: "module" }),
+    const call = await setupTransform(
+      "lucide-react",
+      `export { Sun } from "./dist/esm/icons/sun.js";`,
     );
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
-    const buildStartHook = unwrapHook((plugin as any).buildStart);
-    if (buildStartHook) await buildStartHook.call(plugin);
-    const transform = unwrapHook(plugin.transform)!;
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "lucide-react", "dist", "esm", "icons"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "lucide-react", "dist", "esm", "icons", "sun.js"),
+      `export function Sun() { return null; }`,
+    );
     const code = `import { Sun } from "lucide-react";`;
 
-    const result = await (transform as any).call(
-      { ...plugin, environment: { name: "client" } },
-      code,
-      "/app/page.tsx",
-    );
+    const result = await call(code, "/app/page.tsx", "client");
     expect(result).not.toBeNull();
     expect(result!.code).not.toContain(`from "lucide-react"`);
     expect(result!.code).toContain(`/lucide-react/dist/esm/icons/sun.js`);
