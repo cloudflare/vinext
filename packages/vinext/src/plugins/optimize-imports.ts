@@ -492,7 +492,7 @@ async function buildExportMapFromFile(
   if (cached) return cached;
 
   if (inProgress.has(filePath)) {
-    return cache.get(filePath) ?? new Map();
+    return new Map();
   }
   inProgress.add(filePath);
 
@@ -974,10 +974,6 @@ export function createOptimizeImportsPlugin(
               const source = entry.source.startsWith("/")
                 ? toRelativeModuleSpecifier(normalizedId, entry.source)
                 : entry.source;
-              if (!source) {
-                canRewrite = false;
-                break;
-              }
               const key = `${source}::${entry.isNamespace}`;
               let group = bySource.get(key);
               if (!group) {
@@ -1240,7 +1236,7 @@ export function createOptimizeImportsPlugin(
 
         return {
           code: s.toString(),
-          map: null,
+          map: s.generateMap({ hires: "boundary" }),
         };
       },
     },

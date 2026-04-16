@@ -1,15 +1,18 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
 async function withTempDir<T>(prefix: string, run: (tmpDir: string) => Promise<T>): Promise<T> {
-  const tempParent = path.resolve(import.meta.dirname, "../.sisyphus/tmp");
-  fs.mkdirSync(tempParent, { recursive: true });
-
-  const tmpDir = await mkdtemp(path.join(tempParent, prefix));
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(tmpDir, "node_modules"),
+    "junction",
+  );
   try {
     return await run(tmpDir);
   } finally {
