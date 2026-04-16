@@ -968,7 +968,6 @@ export function createOptimizeImportsPlugin(
               }
             >();
 
-            let canRewrite = true;
             for (const [exported, entry] of exportMap) {
               if (exported === "default") continue;
               const source = entry.source.startsWith("/")
@@ -983,7 +982,7 @@ export function createOptimizeImportsPlugin(
               group.exports.push({ exported, originalName: entry.originalName });
             }
 
-            if (!canRewrite || bySource.size === 0) continue;
+            if (bySource.size === 0) continue;
 
             const replacements: string[] = [];
             for (const { source, exports, isNamespace } of bySource.values()) {

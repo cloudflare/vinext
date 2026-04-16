@@ -6,13 +6,19 @@ import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
+function symlinkWorkspacePackage(root: string, packageName: string) {
+  const source = path.resolve(import.meta.dirname, "../node_modules", packageName);
+  const target = path.join(root, "node_modules", packageName);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.symlinkSync(source, target, "junction");
+}
+
 async function withTempDir<T>(prefix: string, run: (tmpDir: string) => Promise<T>): Promise<T> {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
-  fs.symlinkSync(
-    path.resolve(import.meta.dirname, "../node_modules"),
-    path.join(tmpDir, "node_modules"),
-    "junction",
-  );
+  fs.mkdirSync(path.join(tmpDir, "node_modules"), { recursive: true });
+  symlinkWorkspacePackage(tmpDir, "react");
+  symlinkWorkspacePackage(tmpDir, "react-dom");
+  symlinkWorkspacePackage(tmpDir, "react-server-dom-webpack");
   try {
     return await run(tmpDir);
   } finally {
