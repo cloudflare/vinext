@@ -1661,6 +1661,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (this.environment?.name !== "rsc") return;
         if (!rscClassificationManifest) return;
 
+        // The `?` after the semicolon is intentional: Rolldown may or may not
+        // emit the trailing semicolon depending on minification settings.
         const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 
         // Skip the scan-phase build where the RSC entry code has been

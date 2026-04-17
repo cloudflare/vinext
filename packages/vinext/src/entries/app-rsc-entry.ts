@@ -215,7 +215,7 @@ ${interceptEntries.join(",\n")}
     );
     return `  {
     routeIdx: ${routeIdx},
-    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}),
+    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},

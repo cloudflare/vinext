@@ -43,6 +43,9 @@ function extractDispatch(chunkSource: string): Dispatch {
     throw new Error("__VINEXT_CLASS was not patched — still returns null unconditionally");
   }
 
+  // Non-greedy match: assumes the inner dispatch body does not contain
+  // ')(routeIdx)' as a substring. Coupled to the codegen shape in
+  // route-classification-manifest.ts buildGenerateBundleReplacement.
   const re =
     /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return\s+(\([\s\S]*?\))\(routeIdx\);\s*\}/;
   const match = re.exec(chunkSource);

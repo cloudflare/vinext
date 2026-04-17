@@ -111,7 +111,7 @@ function mergeLayersForRoute(
   const merged = new Map<number, MergedLayoutClassification>();
 
   if (layer2) {
-    for (const [layoutIdx, _value] of layer2) {
+    for (const layoutIdx of layer2.keys()) {
       merged.set(layoutIdx, {
         kind: "static",
         reason: { layer: "module-graph", result: "static" },
