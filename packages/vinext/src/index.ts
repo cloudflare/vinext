@@ -1712,13 +1712,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // /private/var/folders/..., so raw paths collected at routing-scan
         // time won't match module-graph keys. Canonicalize everything we
         // hand to the classifier and everything we ask the graph for.
-        const canonicalize = (p: string): string => {
-          try {
-            return fs.realpathSync.native(p);
-          } catch {
-            return p;
-          }
-        };
+        const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
 
         const dynamicShimPaths: ReadonlySet<string> = new Set(
           [
@@ -1745,6 +1739,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
 
         const layer2PerRoute = new Map<number, Map<number, "static">>();
+        const graphCache = new Map<string, ReturnType<typeof classifyLayoutByModuleGraph>>();
         for (let routeIdx = 0; routeIdx < rscClassificationManifest.routes.length; routeIdx++) {
           const route = rscClassificationManifest.routes[routeIdx]!;
           const perRoute = new Map<number, "static">();
@@ -1759,11 +1754,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // `classifyLayoutByModuleGraph` returns "static" for an empty
             // traversal, so the seed presence check has to happen here.
             if (!moduleInfo.getModuleInfo(layoutModuleId)) continue;
-            const graphResult = classifyLayoutByModuleGraph(
-              layoutModuleId,
-              dynamicShimPaths,
-              moduleInfo,
-            );
+            let graphResult = graphCache.get(layoutModuleId);
+            if (graphResult === undefined) {
+              graphResult = classifyLayoutByModuleGraph(
+                layoutModuleId,
+                dynamicShimPaths,
+                moduleInfo,
+              );
+              graphCache.set(layoutModuleId, graphResult);
+            }
             if (graphResult.result === "static") {
               perRoute.set(layoutIdx, "static");
             }

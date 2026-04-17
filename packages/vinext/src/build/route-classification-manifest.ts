@@ -50,6 +50,7 @@ export function collectRouteClassificationManifest(
   routes: readonly AppRoute[],
 ): RouteClassificationManifest {
   const manifestRoutes: RouteManifestEntry[] = [];
+  const sourceCache = new Map<string, string>();
 
   for (const route of routes) {
     const layer1 = new Map<number, Layer1Class>();
@@ -57,14 +58,17 @@ export function collectRouteClassificationManifest(
 
     for (let layoutIndex = 0; layoutIndex < route.layouts.length; layoutIndex++) {
       const layoutPath = route.layouts[layoutIndex]!;
-      let source: string;
-      try {
-        source = fs.readFileSync(layoutPath, "utf8");
-      } catch (cause) {
-        throw new Error(
-          `vinext: failed to read layout for route ${route.pattern} at ${layoutPath}`,
-          { cause },
-        );
+      let source = sourceCache.get(layoutPath);
+      if (source === undefined) {
+        try {
+          source = fs.readFileSync(layoutPath, "utf8");
+          sourceCache.set(layoutPath, source);
+        } catch (cause) {
+          throw new Error(
+            `vinext: failed to read layout for route ${route.pattern} at ${layoutPath}`,
+            { cause },
+          );
+        }
       }
       const result = classifyLayoutSegmentConfig(source);
       if (result.kind === "static" || result.kind === "dynamic") {
