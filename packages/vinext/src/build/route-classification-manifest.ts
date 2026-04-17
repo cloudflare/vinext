@@ -146,6 +146,13 @@ function serializeReasonExpression(reason: ClassificationReason): string {
       }
       return `{ ${props.join(", ")} }`;
     }
+    // The two arms below are not reachable from the current build-time pipeline
+    // (only segment-config and module-graph reasons flow into this function).
+    // They are present for type exhaustiveness and so that #843's debug sidecar
+    // can extend this function to cover all ClassificationReason variants without
+    // a separate serializer. Narrowing the parameter type to only the build-time
+    // variants requires propagating through LayoutBuildClassification in report.ts;
+    // deferred to a follow-up.
     case "runtime-probe": {
       const props = [`layer: "runtime-probe"`, `outcome: ${JSON.stringify(reason.outcome)}`];
       if (reason.error !== undefined) {

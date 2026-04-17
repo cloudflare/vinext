@@ -1608,6 +1608,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Collect Layer 1 (segment config) classifications for all layouts.
           // Layer 2 (module graph) runs later in generateBundle once Rollup's
           // module info is available.
+          // Invariant: rscClassificationManifest must be built from the same
+          // `routes` value passed to generateRscEntry below so that layout
+          // indices in the manifest correspond 1:1 to the route.layouts arrays
+          // used during codegen. generateBundle clears this after patching.
           rscClassificationManifest = collectRouteClassificationManifest(routes);
           return generateRscEntry(
             appDir,

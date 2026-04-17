@@ -243,6 +243,27 @@ describe("buildGenerateBundleReplacement", () => {
     expect(dispatch(0)).toBeInstanceOf(Map);
     expect(dispatch(1)).toBeNull();
   });
+
+  it("throws when layer1 and layer1Reasons are out of sync", () => {
+    // This invariant is enforced in mergeLayersForRoute: every entry in layer1
+    // must have a corresponding entry in layer1Reasons. collectRouteClassificationManifest
+    // always populates them in lockstep, but callers constructing RouteManifestEntry
+    // manually could violate this.
+    const brokenManifest: Parameters<typeof buildGenerateBundleReplacement>[0] = {
+      routes: [
+        {
+          pattern: "/broken",
+          layoutPaths: [],
+          layer1: new Map([[0, "dynamic"]]),
+          layer1Reasons: new Map(), // missing reason for layoutIdx 0
+        },
+      ],
+    };
+
+    expect(() => buildGenerateBundleReplacement(brokenManifest, new Map())).toThrow(
+      /Layer 1 decision without a reason/,
+    );
+  });
 });
 
 describe("buildReasonsReplacement", () => {
