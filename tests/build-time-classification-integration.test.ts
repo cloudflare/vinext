@@ -38,7 +38,7 @@ async function writeFile(file: string, source: string): Promise<void> {
  * it via the plugin's generateBundle hook.
  */
 function extractDispatch(chunkSource: string): Dispatch {
-  const stubRe = /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return null;\s*\}/;
+  const stubRe = /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
   if (stubRe.test(chunkSource)) {
     throw new Error("__VINEXT_CLASS was not patched — still returns null unconditionally");
   }
@@ -71,19 +71,19 @@ function extractDispatch(chunkSource: string): Dispatch {
 }
 
 /**
- * Extracts the per-route routeIdx assignments emitted in the `routes = [...]`
- * table so the tests can map back from pattern strings (stable across test
- * edits) to numeric indices (stable across plugin code).
+ * Extracts the per-route route indices emitted in the `routes = [...]` table
+ * by matching `__VINEXT_CLASS(N)` call expressions alongside each pattern.
+ * Maps pattern strings (stable across test edits) to numeric indices.
  */
 function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
   const result = new Map<string, number>();
-  const re = /routeIdx:\s*(\d+),\s*__buildTimeClassifications:[^,]+,\s*pattern:\s*"([^"]+)"/g;
+  const re = /__buildTimeClassifications:\s*__VINEXT_CLASS\((\d+)\)[^,]*,\s*pattern:\s*"([^"]+)"/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(chunkSource)) !== null) {
     result.set(match[2]!, Number(match[1]!));
   }
   if (result.size === 0) {
-    throw new Error("No route entries with routeIdx + pattern found in chunk source");
+    throw new Error("No route entries with __VINEXT_CLASS + pattern found in chunk source");
   }
   return result;
 }

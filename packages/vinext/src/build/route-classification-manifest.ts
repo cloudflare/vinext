@@ -135,6 +135,7 @@ function mergeLayersForRoute(
 function serializeReasonExpression(reason: ClassificationReason): string {
   switch (reason.layer) {
     case "segment-config": {
+      // Infinity must be checked first: JSON.stringify(Infinity) produces "null".
       const value = reason.value === Infinity ? "Infinity" : JSON.stringify(reason.value);
       return `{ layer: "segment-config", key: ${JSON.stringify(reason.key)}, value: ${value} }`;
     }

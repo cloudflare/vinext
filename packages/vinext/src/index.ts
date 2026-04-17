@@ -1783,6 +1783,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
         const target = chunksWithStubBody[0]!.chunk;
         target.code = target.code.replace(stubRe, patchedBody);
+        // The patched body is longer than the stub, so any existing source map
+        // would be stale. RSC entry source maps are not served or consumed, so
+        // nulling the map is safe and prevents stale-map confusion in tooling.
+        target.map = null;
         // Consume the manifest exactly once per RSC entry load. Clearing here
         // prevents a stale manifest from leaking into a subsequent generateBundle
         // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).

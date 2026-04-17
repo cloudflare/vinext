@@ -214,7 +214,6 @@ ${interceptEntries.join(",\n")}
       ep ? getImportVar(ep) : "null",
     );
     return `  {
-    routeIdx: ${routeIdx},
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
