@@ -74,7 +74,7 @@ catalog:
   validator: ^13.15.26
   vite: npm:@voidzero-dev/vite-plus-core@0.1.12
   vite-plugin-commonjs: ^0.10.4
-  vite-plus: 0.1.12
+  vite-plus: 0.1.17
   vite-tsconfig-paths: ^6.1.1
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.12
   wrangler: ^4.80.0
