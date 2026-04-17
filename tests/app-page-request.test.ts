@@ -335,6 +335,80 @@ describe("resolveAppPageActionRerenderTarget", () => {
     interceptSlotKey: intercept.slotKey,
   });
 
+  it("falls through to the current route on non-RSC requests", () => {
+    const result = resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/123",
+      currentParams: { id: "123" },
+      currentRoute,
+      findIntercept() {
+        throw new Error("should not look up intercepts on non-RSC requests");
+      },
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: false,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: undefined,
+      navigationParams: { id: "123" },
+      params: { id: "123" },
+      route: currentRoute,
+    });
+  });
+
+  it("falls through to the current route when no intercept matches", () => {
+    const result = resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/123",
+      currentParams: { id: "123" },
+      currentRoute,
+      findIntercept: () => null,
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: undefined,
+      navigationParams: { id: "123" },
+      params: { id: "123" },
+      route: currentRoute,
+    });
+  });
+
+  it("looks up the intercept once when the source route is the current route", () => {
+    const findIntercept = vi.fn(() => ({
+      matchedParams: { id: "123" },
+      page: { default: "modal-page" },
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    }));
+
+    const result = resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/123",
+      currentParams: { id: "123" },
+      currentRoute,
+      findIntercept,
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "123" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "123" },
+      params: { id: "123" },
+      route: currentRoute,
+    });
+    expect(findIntercept).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves current-route intercept opts when action rerender stays on the direct route", () => {
     const result = resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
