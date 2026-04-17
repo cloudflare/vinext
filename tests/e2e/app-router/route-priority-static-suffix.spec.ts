@@ -39,9 +39,13 @@ test.describe("Route priority: static-infix catch-all over bare catch-all (regre
   // scored 1101 and /:locale/blog/:path+ scored 1102, so the bare catch-all
   // sorts first and swallows all /en/blog/* URLs.
 
-  test("/en/blog/intro hits the blog catch-all, not the bare catch-all", async ({ page }) => {
+  test("/en/blog/intro hits the blog catch-all, not the bare catch-all", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/en/blog/intro`);
-    await expect(page.getByTestId("locale-blog-catchall-heading")).toHaveText("Locale Blog Post");
+    await expect(page.getByTestId("locale-blog-catchall-heading")).toHaveText(
+      "Locale Blog Post",
+    );
     await expect(page.getByTestId("locale")).toHaveText("Locale: en");
     await expect(page.getByTestId("path")).toHaveText("Path: intro");
     // The bare catch-all must NOT have rendered
@@ -50,7 +54,9 @@ test.describe("Route priority: static-infix catch-all over bare catch-all (regre
 
   test("/en/blog/a/b/c hits the blog catch-all with full path", async ({ page }) => {
     await page.goto(`${BASE}/en/blog/a/b/c`);
-    await expect(page.getByTestId("locale-blog-catchall-heading")).toHaveText("Locale Blog Post");
+    await expect(page.getByTestId("locale-blog-catchall-heading")).toHaveText(
+      "Locale Blog Post",
+    );
     await expect(page.getByTestId("path")).toHaveText("Path: a/b/c");
     await expect(page.getByTestId("segments")).toHaveText("Segments: 3");
     await expect(page.getByTestId("locale-catchall-heading")).not.toBeVisible();
@@ -66,7 +72,9 @@ test.describe("Route priority: static-infix catch-all over bare catch-all (regre
   // Ensure the matching doesn't break routes that should fall through to the bare
   // catch-all (non-blog sub-paths) or the exact-match routes.
 
-  test("/:locale/blog (exact) renders the blog index, not the catch-all", async ({ page }) => {
+  test("/:locale/blog (exact) renders the blog index, not the catch-all", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/en/blog`);
     await expect(page.getByTestId("locale-blog-heading")).toHaveText("Locale Blog Index");
     await expect(page.getByTestId("locale")).toHaveText("Locale: en");
@@ -76,7 +84,9 @@ test.describe("Route priority: static-infix catch-all over bare catch-all (regre
 
   test("/:locale/learn/intro falls through to the bare catch-all", async ({ page }) => {
     await page.goto(`${BASE}/en/learn/intro`);
-    await expect(page.getByTestId("locale-catchall-heading")).toHaveText("Locale Catch-All");
+    await expect(page.getByTestId("locale-catchall-heading")).toHaveText(
+      "Locale Catch-All",
+    );
     await expect(page.getByTestId("locale")).toHaveText("Locale: en");
     await expect(page.getByTestId("path")).toHaveText("Path: learn/intro");
     await expect(page.getByTestId("locale-blog-catchall-heading")).not.toBeVisible();

@@ -3,7 +3,9 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4179";
 
 test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
-  test("home page is server-rendered inside the Cloudflare Worker", async ({ request }) => {
+  test("home page is server-rendered inside the Cloudflare Worker", async ({
+    request,
+  }) => {
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
 

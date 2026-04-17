@@ -56,14 +56,18 @@ describe("sitemapToXml", () => {
   });
 
   it("generates lastModified from string", () => {
-    const entries: SitemapEntry[] = [{ url: "https://example.com", lastModified: "2024-01-15" }];
+    const entries: SitemapEntry[] = [
+      { url: "https://example.com", lastModified: "2024-01-15" },
+    ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
     expect(xml).toContain("<lastmod>2024-01-15</lastmod>");
   });
 
   it("generates changeFrequency", () => {
-    const entries: SitemapEntry[] = [{ url: "https://example.com", changeFrequency: "weekly" }];
+    const entries: SitemapEntry[] = [
+      { url: "https://example.com", changeFrequency: "weekly" },
+    ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
     expect(xml).toContain("<changefreq>weekly</changefreq>");
@@ -104,7 +108,9 @@ describe("sitemapToXml", () => {
     ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
-    expect(xml).toContain('xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"');
+    expect(xml).toContain(
+      'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"',
+    );
   });
 
   it("does not add optional namespaces when entries do not use them", () => {
@@ -170,14 +176,18 @@ describe("sitemapToXml", () => {
     ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
-    expect(xml).toContain('xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"');
+    expect(xml).toContain(
+      'xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"',
+    );
     expect(xml).toContain("<video:video>");
     expect(xml).toContain("<video:title>Launch Video</video:title>");
     expect(xml).toContain(
       "<video:thumbnail_loc>https://example.com/thumb.jpg</video:thumbnail_loc>",
     );
     expect(xml).toContain("<video:description>Product launch video</video:description>");
-    expect(xml).toContain("<video:content_loc>https://example.com/video.mp4</video:content_loc>");
+    expect(xml).toContain(
+      "<video:content_loc>https://example.com/video.mp4</video:content_loc>",
+    );
     expect(xml).toContain("</video:video>");
   });
 
@@ -209,7 +219,9 @@ describe("sitemapToXml", () => {
     ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
-    expect(xml).toContain("<video:player_loc>https://example.com/player</video:player_loc>");
+    expect(xml).toContain(
+      "<video:player_loc>https://example.com/player</video:player_loc>",
+    );
     expect(xml).toContain("<video:duration>120</video:duration>");
     expect(xml).toContain(
       "<video:expiration_date>2024-08-01T12:00:00.000Z</video:expiration_date>",
@@ -220,9 +232,13 @@ describe("sitemapToXml", () => {
       "<video:publication_date>2024-07-01T12:00:00.000Z</video:publication_date>",
     );
     expect(xml).toContain("<video:family_friendly>yes</video:family_friendly>");
-    expect(xml).toContain('<video:restriction relationship="allow">US GB</video:restriction>');
+    expect(xml).toContain(
+      '<video:restriction relationship="allow">US GB</video:restriction>',
+    );
     expect(xml).toContain('<video:platform relationship="deny">tv</video:platform>');
-    expect(xml).toContain("<video:requires_subscription>no</video:requires_subscription>");
+    expect(xml).toContain(
+      "<video:requires_subscription>no</video:requires_subscription>",
+    );
     expect(xml).toContain(
       '<video:uploader info="https://example.com/authors/jane">Jane Doe</video:uploader>',
     );
@@ -259,7 +275,9 @@ describe("sitemapToXml", () => {
     expect(xml).toContain("<loc>https://example.com?a=1&amp;b=2</loc>");
     expect(xml).toContain('href="https://example.com/fr?a=1&amp;b=2"');
     expect(xml).toContain("<video:title>Fish &amp; &quot;Chips&quot;</video:title>");
-    expect(xml).toContain("<video:description>Tasty &lt;b&gt;meal&lt;/b&gt;</video:description>");
+    expect(xml).toContain(
+      "<video:description>Tasty &lt;b&gt;meal&lt;/b&gt;</video:description>",
+    );
     expect(xml).toContain(
       '<video:uploader info="https://example.com/authors/jane?bio=&quot;yes&quot;&amp;x=1">Jane &amp; Co</video:uploader>',
     );
@@ -282,8 +300,12 @@ describe("sitemapToXml", () => {
     ];
     const xml = sitemapToXml(entries);
     expectSitemapToMatchNext(entries);
-    expect(xml).toContain('xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"');
-    expect(xml).toContain('xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"');
+    expect(xml).toContain(
+      'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"',
+    );
+    expect(xml).toContain(
+      'xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"',
+    );
     expect(xml).toContain('xmlns:xhtml="http://www.w3.org/1999/xhtml"');
   });
 
@@ -410,7 +432,9 @@ describe("sitemapToXml", () => {
     const xml = sitemapToXml(entries);
     // Bare & must be escaped as &amp; in XML
     expect(xml).toContain("<loc>https://example.com/search?q=a&amp;b=2</loc>");
-    expect(xml).toContain("<image:loc>https://example.com/img?w=100&amp;h=200</image:loc>");
+    expect(xml).toContain(
+      "<image:loc>https://example.com/img?w=100&amp;h=200</image:loc>",
+    );
     expect(xml).toContain('href="https://example.com/de/search?q=a&amp;b=2"');
     // Must NOT contain bare & followed by a non-amp; entity
     expect(xml).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
@@ -699,11 +723,15 @@ describe("scanMetadataFiles", () => {
     createFile("blog/sitemap.xml");
     createFile("blog/icon.png");
     const routes = scanMetadataFiles(tmpDir);
-    const blogSitemap = routes.find((r) => r.type === "sitemap" && r.servedUrl.includes("blog"));
+    const blogSitemap = routes.find(
+      (r) => r.type === "sitemap" && r.servedUrl.includes("blog"),
+    );
     expect(blogSitemap).toBeDefined();
     expect(blogSitemap!.servedUrl).toBe("/blog/sitemap.xml");
 
-    const blogIcon = routes.find((r) => r.type === "icon" && r.servedUrl.includes("blog"));
+    const blogIcon = routes.find(
+      (r) => r.type === "icon" && r.servedUrl.includes("blog"),
+    );
     expect(blogIcon).toBeDefined();
     expect(blogIcon!.servedUrl).toBe("/blog/icon");
   });

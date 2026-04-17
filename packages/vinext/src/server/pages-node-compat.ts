@@ -1,6 +1,10 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  getMediaType,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 
 export const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
 
@@ -29,7 +33,10 @@ export type PagesReqResResponse = {
   statusCode: number;
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
-  setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
+  setHeader: (
+    name: string,
+    value: string | number | boolean | string[],
+  ) => PagesReqResResponse;
   getHeader: (name: string) => string | number | boolean | string[] | undefined;
   end: (data?: BodyInit | null) => void;
   status: (code: number) => PagesReqResResponse;
@@ -52,7 +59,10 @@ export type CreatePagesReqResResult = {
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<string> {
   if (!request.body) {
     return "";
   }
@@ -124,7 +134,9 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {
+export function createPagesReqRes(
+  options: CreatePagesReqResOptions,
+): CreatePagesReqResResult {
   const headersObj: Record<string, string> = {};
   for (const [key, value] of options.request.headers) {
     headersObj[key.toLowerCase()] = value;
@@ -170,7 +182,9 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
               setCookieHeaders.push(String(value));
             }
           } else {
-            resHeaders[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+            resHeaders[key.toLowerCase()] = Array.isArray(value)
+              ? value.join(", ")
+              : value;
           }
         }
       }

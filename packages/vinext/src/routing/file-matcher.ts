@@ -6,7 +6,9 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
+export function normalizePageExtensions(
+  pageExtensions?: readonly string[] | null,
+): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
     return [...DEFAULT_PAGE_EXTENSIONS];
   }

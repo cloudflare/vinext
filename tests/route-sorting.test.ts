@@ -23,7 +23,10 @@ import {
   patternToNextFormat,
   invalidateRouteCache,
 } from "../packages/vinext/src/routing/pages-router.js";
-import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import {
+  appRouter,
+  invalidateAppRouteCache,
+} from "../packages/vinext/src/routing/app-router.js";
 import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
@@ -143,7 +146,9 @@ describe("patternToNextFormat", () => {
   });
 
   it("handles mixed static and dynamic", () => {
-    expect(patternToNextFormat("/blog/:year/:month/:slug")).toBe("/blog/[year]/[month]/[slug]");
+    expect(patternToNextFormat("/blog/:year/:month/:slug")).toBe(
+      "/blog/[year]/[month]/[slug]",
+    );
   });
 
   it("converts hyphenated dynamic :auth-method to [auth-method]", () => {
@@ -191,7 +196,13 @@ describe("validateRoutePatterns", () => {
 
   it("rejects mismatched param names at the same segment level", () => {
     expect(() =>
-      validateRoutePatterns(["/", "/blog", "/blog/:id", "/blog/:id/comments/:cid", "/blog/:cid"]),
+      validateRoutePatterns([
+        "/",
+        "/blog",
+        "/blog/:id",
+        "/blog/:id/comments/:cid",
+        "/blog/:cid",
+      ]),
     ).toThrow(/different slug names/);
   });
 
@@ -466,9 +477,9 @@ describe("App Router route sorting (additional)", () => {
       const membersRoute = routes.find((route) => route.pattern === "/dashboard/members");
 
       expect(membersRoute).toBeDefined();
-      expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
-        path.join("@team", "(a)", "members"),
-      );
+      expect(
+        membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath,
+      ).toContain(path.join("@team", "(a)", "members"));
       expect(
         membersRoute!.parallelSlots.find((slot) => slot.name === "analytics")!.pagePath,
       ).toContain(path.join("@analytics", "(b)", "members"));
@@ -483,7 +494,9 @@ describe("App Router route sorting (additional)", () => {
     const appDir = path.join(tmpRoot, "app");
 
     try {
-      await fs.mkdir(path.join(appDir, "dashboard", "@team", "members"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "members"), {
+        recursive: true,
+      });
       await fs.mkdir(path.join(appDir, "dashboard", "members"), { recursive: true });
       await fs.writeFile(
         path.join(appDir, "layout.tsx"),
@@ -523,8 +536,12 @@ describe("App Router route sorting (additional)", () => {
     const appDir = path.join(tmpRoot, "app");
 
     try {
-      await fs.mkdir(path.join(appDir, "dashboard", "@team", "settings"), { recursive: true });
-      await fs.mkdir(path.join(appDir, "dashboard", "settings", "@team"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "settings"), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(appDir, "dashboard", "settings", "@team"), {
+        recursive: true,
+      });
       await fs.writeFile(
         path.join(appDir, "layout.tsx"),
         "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
@@ -556,12 +573,19 @@ describe("App Router route sorting (additional)", () => {
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
-      const settingsRoute = routes.find((route) => route.pattern === "/dashboard/settings");
+      const settingsRoute = routes.find(
+        (route) => route.pattern === "/dashboard/settings",
+      );
 
       expect(settingsRoute).toBeDefined();
-      const teamSlots = settingsRoute!.parallelSlots.filter((slot) => slot.name === "team");
+      const teamSlots = settingsRoute!.parallelSlots.filter(
+        (slot) => slot.name === "team",
+      );
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [
+          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
+          slot,
+        ]),
       );
 
       expect(teamSlots).toHaveLength(2);
@@ -621,13 +645,18 @@ describe("App Router route sorting (additional)", () => {
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
-      const memberRoute = routes.find((route) => route.pattern === "/dashboard/settings/member");
+      const memberRoute = routes.find(
+        (route) => route.pattern === "/dashboard/settings/member",
+      );
 
       expect(memberRoute).toBeDefined();
 
       const teamSlots = memberRoute!.parallelSlots.filter((slot) => slot.name === "team");
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [
+          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
+          slot,
+        ]),
       );
 
       expect(teamSlots).toHaveLength(2);

@@ -29,14 +29,26 @@ import { isProxyFile } from "../server/middleware.js";
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
-const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
-const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
+const configMatchersPath = resolveEntryPath(
+  "../config/config-matchers.js",
+  import.meta.url,
+);
+const requestPipelinePath = resolveEntryPath(
+  "../server/request-pipeline.js",
+  import.meta.url,
+);
 const middlewareRequestHeadersPath = resolveEntryPath(
   "../server/middleware-request-headers.js",
   import.meta.url,
 );
-const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
-const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
+const requestContextShimPath = resolveEntryPath(
+  "../shims/request-context.js",
+  import.meta.url,
+);
+const normalizePathModulePath = resolveEntryPath(
+  "../server/normalize-path.js",
+  import.meta.url,
+);
 const appRouteHandlerRuntimePath = resolveEntryPath(
   "../server/app-route-handler-runtime.js",
   import.meta.url,
@@ -54,7 +66,10 @@ const appRouteHandlerCachePath = resolveEntryPath(
   import.meta.url,
 );
 const appPageCachePath = resolveEntryPath("../server/app-page-cache.js", import.meta.url);
-const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
+const appPageExecutionPath = resolveEntryPath(
+  "../server/app-page-execution.js",
+  import.meta.url,
+);
 const appPageBoundaryRenderPath = resolveEntryPath(
   "../server/app-page-boundary-render.js",
   import.meta.url,
@@ -64,16 +79,28 @@ const appPageRouteWiringPath = resolveEntryPath(
   "../server/app-page-route-wiring.js",
   import.meta.url,
 );
-const appPageRenderPath = resolveEntryPath("../server/app-page-render.js", import.meta.url);
-const appPageResponsePath = resolveEntryPath("../server/app-page-response.js", import.meta.url);
+const appPageRenderPath = resolveEntryPath(
+  "../server/app-page-render.js",
+  import.meta.url,
+);
+const appPageResponsePath = resolveEntryPath(
+  "../server/app-page-response.js",
+  import.meta.url,
+);
 const cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
-const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
+const appPageRequestPath = resolveEntryPath(
+  "../server/app-page-request.js",
+  import.meta.url,
+);
 const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
 );
 const routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
-const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
+const metadataRoutesPath = resolveEntryPath(
+  "../server/metadata-routes.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -186,7 +213,9 @@ export function generateRscEntry(
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
-    const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
+    const notFoundVars = (route.notFoundPaths || []).map((nf) =>
+      nf ? getImportVar(nf) : "null",
+    );
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map(
         (ir) => `        {
@@ -240,8 +269,12 @@ ${slotEntries.join(",\n")}
 
   // Find root not-found/forbidden/unauthorized pages and root layouts for global error handling
   const rootRoute = routes.find((r) => r.pattern === "/");
-  const rootNotFoundVar = rootRoute?.notFoundPath ? getImportVar(rootRoute.notFoundPath) : null;
-  const rootForbiddenVar = rootRoute?.forbiddenPath ? getImportVar(rootRoute.forbiddenPath) : null;
+  const rootNotFoundVar = rootRoute?.notFoundPath
+    ? getImportVar(rootRoute.notFoundPath)
+    : null;
+  const rootForbiddenVar = rootRoute?.forbiddenPath
+    ? getImportVar(rootRoute.forbiddenPath)
+    : null;
   const rootUnauthorizedVar = rootRoute?.unauthorizedPath
     ? getImportVar(rootRoute.unauthorizedPath)
     : null;
@@ -284,7 +317,8 @@ ${slotEntries.join(",\n")}
                   return ":" + seg.slice(5, -2) + "*";
                 if (seg.startsWith("[...") && seg.endsWith("]"))
                   return ":" + seg.slice(4, -1) + "+";
-                if (seg.startsWith("[") && seg.endsWith("]")) return ":" + seg.slice(1, -1);
+                if (seg.startsWith("[") && seg.endsWith("]"))
+                  return ":" + seg.slice(1, -1);
                 return seg;
               }),
           )

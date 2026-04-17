@@ -31,15 +31,15 @@ const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
 
 describe("hasNamedExport", () => {
   it("detects async function declaration", () => {
-    expect(hasNamedExport("export async function getStaticProps() {}", "getStaticProps")).toBe(
-      true,
-    );
+    expect(
+      hasNamedExport("export async function getStaticProps() {}", "getStaticProps"),
+    ).toBe(true);
   });
 
   it("detects sync function declaration", () => {
-    expect(hasNamedExport("export function getServerSideProps() {}", "getServerSideProps")).toBe(
-      true,
-    );
+    expect(
+      hasNamedExport("export function getServerSideProps() {}", "getServerSideProps"),
+    ).toBe(true);
   });
 
   it("detects const variable declaration", () => {
@@ -51,22 +51,28 @@ describe("hasNamedExport", () => {
   });
 
   it("detects re-export specifier", () => {
-    expect(hasNamedExport("export { getStaticProps, foo };", "getStaticProps")).toBe(true);
+    expect(hasNamedExport("export { getStaticProps, foo };", "getStaticProps")).toBe(
+      true,
+    );
   });
 
   it("detects re-export with alias", () => {
-    expect(hasNamedExport("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
+    expect(hasNamedExport("export { getStaticProps as gsp };", "getStaticProps")).toBe(
+      true,
+    );
   });
 
   it("returns false when export is absent", () => {
-    expect(hasNamedExport("export default function Page() {}", "getStaticProps")).toBe(false);
+    expect(hasNamedExport("export default function Page() {}", "getStaticProps")).toBe(
+      false,
+    );
   });
 
   it("does not match partial names (false positive guard)", () => {
     // 'getStaticPropsExtra' should not match 'getStaticProps'
-    expect(hasNamedExport("export function getStaticPropsExtra() {}", "getStaticProps")).toBe(
-      false,
-    );
+    expect(
+      hasNamedExport("export function getStaticPropsExtra() {}", "getStaticProps"),
+    ).toBe(false);
   });
 
   it("detects export on a line following other code", () => {
@@ -75,7 +81,9 @@ describe("hasNamedExport", () => {
   });
 
   it("detects TypeScript-annotated const", () => {
-    expect(hasNamedExport("export const dynamic: string = 'force-dynamic';", "dynamic")).toBe(true);
+    expect(
+      hasNamedExport("export const dynamic: string = 'force-dynamic';", "dynamic"),
+    ).toBe(true);
   });
 });
 
@@ -83,29 +91,33 @@ describe("hasNamedExport", () => {
 
 describe("extractExportConstString", () => {
   it("extracts plain string value", () => {
-    expect(extractExportConstString("export const dynamic = 'force-dynamic';", "dynamic")).toBe(
-      "force-dynamic",
-    );
+    expect(
+      extractExportConstString("export const dynamic = 'force-dynamic';", "dynamic"),
+    ).toBe("force-dynamic");
   });
 
   it("extracts double-quoted string value", () => {
-    expect(extractExportConstString('export const dynamic = "force-static";', "dynamic")).toBe(
-      "force-static",
-    );
+    expect(
+      extractExportConstString('export const dynamic = "force-static";', "dynamic"),
+    ).toBe("force-static");
   });
 
   it("extracts value with TypeScript type annotation", () => {
-    expect(extractExportConstString("export const dynamic: string = 'error';", "dynamic")).toBe(
-      "error",
-    );
+    expect(
+      extractExportConstString("export const dynamic: string = 'error';", "dynamic"),
+    ).toBe("error");
   });
 
   it("returns null when export is absent", () => {
-    expect(extractExportConstString("export const revalidate = 60;", "dynamic")).toBeNull();
+    expect(
+      extractExportConstString("export const revalidate = 60;", "dynamic"),
+    ).toBeNull();
   });
 
   it("returns null for non-string value", () => {
-    expect(extractExportConstString("export const revalidate = 60;", "revalidate")).toBeNull();
+    expect(
+      extractExportConstString("export const revalidate = 60;", "revalidate"),
+    ).toBeNull();
   });
 });
 
@@ -113,31 +125,39 @@ describe("extractExportConstString", () => {
 
 describe("extractExportConstNumber", () => {
   it("extracts integer", () => {
-    expect(extractExportConstNumber("export const revalidate = 60;", "revalidate")).toBe(60);
+    expect(extractExportConstNumber("export const revalidate = 60;", "revalidate")).toBe(
+      60,
+    );
   });
 
   it("extracts zero", () => {
-    expect(extractExportConstNumber("export const revalidate = 0;", "revalidate")).toBe(0);
+    expect(extractExportConstNumber("export const revalidate = 0;", "revalidate")).toBe(
+      0,
+    );
   });
 
   it("extracts Infinity", () => {
-    expect(extractExportConstNumber("export const revalidate = Infinity;", "revalidate")).toBe(
-      Infinity,
-    );
+    expect(
+      extractExportConstNumber("export const revalidate = Infinity;", "revalidate"),
+    ).toBe(Infinity);
   });
 
   it("extracts negative value", () => {
-    expect(extractExportConstNumber("export const revalidate = -1;", "revalidate")).toBe(-1);
-  });
-
-  it("extracts with TypeScript type annotation", () => {
-    expect(extractExportConstNumber("export const revalidate: number = 120;", "revalidate")).toBe(
-      120,
+    expect(extractExportConstNumber("export const revalidate = -1;", "revalidate")).toBe(
+      -1,
     );
   });
 
+  it("extracts with TypeScript type annotation", () => {
+    expect(
+      extractExportConstNumber("export const revalidate: number = 120;", "revalidate"),
+    ).toBe(120);
+  });
+
   it("returns null when export is absent", () => {
-    expect(extractExportConstNumber("export const dynamic = 'auto';", "revalidate")).toBeNull();
+    expect(
+      extractExportConstNumber("export const dynamic = 'auto';", "revalidate"),
+    ).toBeNull();
   });
 });
 
@@ -351,7 +371,9 @@ describe("classifyPagesRoute", () => {
   });
 
   it("returns unknown on file read failure (consistent with classifyAppRoute)", () => {
-    expect(classifyPagesRoute("/nonexistent/pages/page.tsx")).toEqual({ type: "unknown" });
+    expect(classifyPagesRoute("/nonexistent/pages/page.tsx")).toEqual({
+      type: "unknown",
+    });
   });
 });
 
@@ -562,7 +584,8 @@ describe("formatBuildReport", () => {
       { pattern: "/api/x", type: "api" as const },
     ];
     const out = formatBuildReport(rows);
-    const legendLine = out.split("\n").find((l) => l.includes("○") && l.includes("λ")) ?? "";
+    const legendLine =
+      out.split("\n").find((l) => l.includes("○") && l.includes("λ")) ?? "";
     // Alphabetical: API, Dynamic, ISR, Static
     expect(legendLine.indexOf("API")).toBeLessThan(legendLine.indexOf("Dynamic"));
     expect(legendLine.indexOf("Dynamic")).toBeLessThan(legendLine.indexOf("ISR"));
@@ -645,7 +668,10 @@ describe("printBuildReport respects pageExtensions", () => {
     console.log = (msg: string) => lines.push(msg);
     try {
       invalidateAppRouteCache();
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+      await printBuildReport({
+        root: tmpRoot,
+        pageExtensions: ["tsx", "ts", "jsx", "js"],
+      });
     } finally {
       console.log = origLog;
     }
@@ -676,7 +702,10 @@ describe("printBuildReport respects pageExtensions", () => {
     console.log = (msg: string) => lines.push(msg);
     try {
       invalidateAppRouteCache();
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] });
+      await printBuildReport({
+        root: tmpRoot,
+        pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"],
+      });
     } finally {
       console.log = origLog;
     }
@@ -701,7 +730,10 @@ describe("printBuildReport respects pageExtensions", () => {
     console.log = (msg: string) => lines.push(msg);
     try {
       invalidateRouteCache(pagesDir);
-      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+      await printBuildReport({
+        root: tmpRoot,
+        pageExtensions: ["tsx", "ts", "jsx", "js"],
+      });
     } finally {
       console.log = origLog;
       invalidateRouteCache(pagesDir);
@@ -745,7 +777,9 @@ describe("printBuildReport respects pageExtensions", () => {
 
 describe("classifyLayoutSegmentConfig", () => {
   it('returns "static" for export const dynamic = "force-static"', () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toBe("static");
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toBe(
+      "static",
+    );
   });
 
   it('returns "static" for export const dynamic = "error" (enforces static)', () => {
@@ -753,7 +787,9 @@ describe("classifyLayoutSegmentConfig", () => {
   });
 
   it('returns "dynamic" for export const dynamic = "force-dynamic"', () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toBe("dynamic");
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toBe(
+      "dynamic",
+    );
   });
 
   it('returns "dynamic" for export const revalidate = 0', () => {
@@ -761,7 +797,9 @@ describe("classifyLayoutSegmentConfig", () => {
   });
 
   it('returns "static" for export const revalidate = Infinity', () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toBe("static");
+    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toBe(
+      "static",
+    );
   });
 
   it("returns null for no config (defers to module graph)", () => {

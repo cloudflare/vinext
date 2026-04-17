@@ -47,7 +47,10 @@ declare global {
      * client-side navigation.
      */
     __VINEXT_APP__:
-      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | React.ComponentType<{
+          Component: React.ComponentType<unknown>;
+          pageProps: unknown;
+        }>
       | undefined;
 
     /**
@@ -170,7 +173,9 @@ declare global {
    * preserve duplicate keys (e.g. `?tag=a&tag=b`).
    */
   // oxlint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
+  var __VINEXT_RSC_NAV__:
+    | { pathname: string; searchParams: [string, string][] }
+    | undefined;
 
   /**
    * Legacy RSC embed format (pre-progressive-streaming).
@@ -183,7 +188,9 @@ declare global {
    *   `__VINEXT_RSC_PARAMS__` instead.
    */
   // oxlint-disable-next-line no-var
-  var __VINEXT_RSC__: { rsc: string[]; params: Record<string, string | string[]> } | undefined;
+  var __VINEXT_RSC__:
+    | { rsc: string[]; params: Record<string, string | string[]> }
+    | undefined;
 
   // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
   //

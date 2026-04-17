@@ -8,7 +8,9 @@ const DelayedChunk = lazy(
       setTimeout(() => {
         resolve({
           default: function DelayedChunkImpl() {
-            return <div data-testid="streamed-content">Delayed stream content loaded</div>;
+            return (
+              <div data-testid="streamed-content">Delayed stream content loaded</div>
+            );
           },
         });
       }, 600);
@@ -19,7 +21,9 @@ export default function StreamingSsrPage() {
   return (
     <main>
       <h1>Streaming SSR Test</h1>
-      <Suspense fallback={<div data-testid="streaming-fallback">Loading delayed chunk...</div>}>
+      <Suspense
+        fallback={<div data-testid="streaming-fallback">Loading delayed chunk...</div>}
+      >
         <DelayedChunk />
       </Suspense>
     </main>

@@ -57,7 +57,11 @@ describe("Link rendering", () => {
 
   it("renders with object href", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: { pathname: "/search", query: { q: "test" } } }, "Search"),
+      React.createElement(
+        Link,
+        { href: { pathname: "/search", query: { q: "test" } } },
+        "Search",
+      ),
     );
     // resolveHref({ pathname: "/search", query: { q: "test" } }) -> "/search?q=test"
     expect(html).toContain('href="/search?q=test"');
@@ -97,7 +101,12 @@ describe("Link rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(
         Link,
-        { href: "/test", className: "nav-link", id: "my-link", "aria-label": "Test link" },
+        {
+          href: "/test",
+          className: "nav-link",
+          id: "my-link",
+          "aria-label": "Test link",
+        },
         "Test",
       ),
     );
@@ -137,7 +146,9 @@ describe("useLinkStatus", () => {
 
 describe("Link resolveHref", () => {
   it("string href passes through unchanged", () => {
-    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about" }, "x"),
+    );
     expect(html).toContain('href="/about"');
   });
 
@@ -171,7 +182,13 @@ describe("Link resolveHref", () => {
         {
           href: {
             pathname: "/search",
-            query: { page: 2, draft: false, empty: null, missing: undefined, tag: ["a", "b"] },
+            query: {
+              page: 2,
+              draft: false,
+              empty: null,
+              missing: undefined,
+              tag: ["a", "b"],
+            },
           },
         },
         "x",
@@ -291,7 +308,9 @@ describe("Link locale handling", () => {
   });
 
   it("locale=undefined keeps href as-is", () => {
-    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about" }, "x"),
+    );
     expect(html).toContain('href="/about"');
   });
 
@@ -316,7 +335,11 @@ describe("Link locale handling", () => {
     // An absolute URL like https://example.com/about should not become
     // /fr/https://example.com/about — locale prefix only applies to paths
     const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "https://example.com/about", locale: "fr" } as any, "x"),
+      React.createElement(
+        Link,
+        { href: "https://example.com/about", locale: "fr" } as any,
+        "x",
+      ),
     );
     expect(html).toContain('href="https://example.com/about"');
   });
@@ -324,14 +347,22 @@ describe("Link locale handling", () => {
   it("locale does not mangle protocol-relative URLs", () => {
     // //example.com/about should not become /fr///example.com/about
     const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "//example.com/about", locale: "fr" } as any, "x"),
+      React.createElement(
+        Link,
+        { href: "//example.com/about", locale: "fr" } as any,
+        "x",
+      ),
     );
     expect(html).toContain('href="//example.com/about"');
   });
 
   it("locale does not mangle http:// URLs", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "http://example.com/path", locale: "de" } as any, "x"),
+      React.createElement(
+        Link,
+        { href: "http://example.com/path", locale: "de" } as any,
+        "x",
+      ),
     );
     expect(html).toContain('href="http://example.com/path"');
   });
@@ -389,7 +420,8 @@ describe("Link locale handling", () => {
     vi.resetModules();
 
     try {
-      const { default: LinkWithBasePath } = await import("../packages/vinext/src/shims/link.js");
+      const { default: LinkWithBasePath } =
+        await import("../packages/vinext/src/shims/link.js");
       (globalThis as any).window = {
         __VINEXT_DEFAULT_LOCALE__: "en",
         __NEXT_DATA__: {
@@ -404,7 +436,11 @@ describe("Link locale handling", () => {
       };
 
       const html = ReactDOMServer.renderToString(
-        React.createElement(LinkWithBasePath, { href: "/about", locale: "fr" } as any, "x"),
+        React.createElement(
+          LinkWithBasePath,
+          { href: "/about", locale: "fr" } as any,
+          "x",
+        ),
       );
 
       expect(html).toContain('href="http://example.fr/app/about"');
@@ -582,7 +618,9 @@ describe("toSameOriginPath", () => {
 
 describe("resolveRelativeHref", () => {
   it("resolves relative search params against the current page", () => {
-    expect(resolveRelativeHref("?page=2", "http://localhost:3000/posts/1")).toBe("/posts/1?page=2");
+    expect(resolveRelativeHref("?page=2", "http://localhost:3000/posts/1")).toBe(
+      "/posts/1?page=2",
+    );
   });
 
   it("preserves the current pathname and search when resolving hash-only hrefs", () => {
@@ -592,9 +630,9 @@ describe("resolveRelativeHref", () => {
   });
 
   it("resolves dot-segment relative paths against the current page", () => {
-    expect(resolveRelativeHref("../archive?year=2026", "http://localhost:3000/blog/post-1")).toBe(
-      "/archive?year=2026",
-    );
+    expect(
+      resolveRelativeHref("../archive?year=2026", "http://localhost:3000/blog/post-1"),
+    ).toBe("/archive?year=2026");
   });
 
   it("leaves absolute paths unchanged", () => {
@@ -602,26 +640,30 @@ describe("resolveRelativeHref", () => {
   });
 
   it("strips the current basePath before returning the app-relative href", () => {
-    expect(resolveRelativeHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base")).toBe(
-      "/fr/posts/1?page=2",
-    );
+    expect(
+      resolveRelativeHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base"),
+    ).toBe("/fr/posts/1?page=2");
   });
 });
 
 describe("toBrowserNavigationHref", () => {
   it("keeps relative hrefs aligned with basePath and locale-prefixed browser URLs", () => {
     expect(
-      toBrowserNavigationHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base"),
+      toBrowserNavigationHref(
+        "?page=2",
+        "http://localhost:3000/base/fr/posts/1",
+        "/base",
+      ),
     ).toBe("/base/fr/posts/1?page=2");
   });
 
   it("does not add a trailing slash for query/hash-only navigations from the bare basePath root", () => {
-    expect(toBrowserNavigationHref("?page=2", "http://localhost:3000/base", "/base")).toBe(
-      "/base?page=2",
-    );
-    expect(toBrowserNavigationHref("#comments", "http://localhost:3000/base", "/base")).toBe(
-      "/base#comments",
-    );
+    expect(
+      toBrowserNavigationHref("?page=2", "http://localhost:3000/base", "/base"),
+    ).toBe("/base?page=2");
+    expect(
+      toBrowserNavigationHref("#comments", "http://localhost:3000/base", "/base"),
+    ).toBe("/base#comments");
   });
 
   it("does not double-prefix same-origin absolute URLs that already include the basePath", () => {
@@ -637,7 +679,11 @@ describe("toBrowserNavigationHref", () => {
       const normalized = toSameOriginAppPath("http://localhost:3000/base/about", "/base");
       expect(normalized).toBe("/about");
       expect(
-        toBrowserNavigationHref(normalized!, "http://localhost:3000/base/posts/1", "/base"),
+        toBrowserNavigationHref(
+          normalized!,
+          "http://localhost:3000/base/posts/1",
+          "/base",
+        ),
       ).toBe("/base/about");
     } finally {
       if (originalWindow === undefined) {
@@ -650,7 +696,11 @@ describe("toBrowserNavigationHref", () => {
 
   it("still prefixes app-relative paths that happen to start with the basePath segment", () => {
     expect(
-      toBrowserNavigationHref("/docs/getting-started", "http://localhost:3000/docs", "/docs"),
+      toBrowserNavigationHref(
+        "/docs/getting-started",
+        "http://localhost:3000/docs",
+        "/docs",
+      ),
     ).toBe("/docs/docs/getting-started");
   });
 });
@@ -681,7 +731,8 @@ describe("Link with absolute URL", () => {
     vi.resetModules();
 
     try {
-      const { default: BasePathLink } = await import("../packages/vinext/src/shims/link.js");
+      const { default: BasePathLink } =
+        await import("../packages/vinext/src/shims/link.js");
 
       const relativeHtml = ReactDOMServer.renderToString(
         React.createElement(BasePathLink, { href: "?page=2" }, "Relative Query"),
@@ -694,7 +745,11 @@ describe("Link with absolute URL", () => {
       expect(absoluteHtml).toContain('href="/base/about"');
 
       const sharedPrefixHtml = ReactDOMServer.renderToString(
-        React.createElement(BasePathLink, { href: "/base/getting-started" }, "Shared Prefix"),
+        React.createElement(
+          BasePathLink,
+          { href: "/base/getting-started" },
+          "Shared Prefix",
+        ),
       );
       expect(sharedPrefixHtml).toContain('href="/base/base/getting-started"');
     } finally {
@@ -719,7 +774,9 @@ describe("toSameOriginAppPath", () => {
     };
 
     try {
-      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe(
+        "/about",
+      );
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

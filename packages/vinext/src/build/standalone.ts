@@ -71,7 +71,10 @@ function readServerExternalsManifest(serverDir: string): string[] {
   }
 }
 
-function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): string | null {
+function resolvePackageJsonPath(
+  packageName: string,
+  resolver: NodeRequire,
+): string | null {
   try {
     return resolver.resolve(`${packageName}/package.json`);
   } catch {
@@ -244,7 +247,9 @@ function writeStandalonePackageJson(filePath: string): void {
  * (i.e. those left external by the bundler), so no client-only deps are
  * included.
  */
-export function emitStandaloneOutput(options: StandaloneBuildOptions): StandaloneBuildResult {
+export function emitStandaloneOutput(
+  options: StandaloneBuildOptions,
+): StandaloneBuildResult {
   const root = path.resolve(options.root);
   const outDir = path.resolve(options.outDir);
   const clientDir = path.join(outDir, "client");
@@ -266,12 +271,14 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     dereference: true,
     // Build output shouldn't contain node_modules, but filter defensively for
     // consistency with the other cpSync calls in this function.
-    filter: (src) => !path.relative(clientDir, src).split(path.sep).includes("node_modules"),
+    filter: (src) =>
+      !path.relative(clientDir, src).split(path.sep).includes("node_modules"),
   });
   fs.cpSync(serverDir, path.join(standaloneDistDir, "server"), {
     recursive: true,
     dereference: true,
-    filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
+    filter: (src) =>
+      !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
 
   const publicDir = path.join(root, "public");
@@ -281,7 +288,8 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
       dereference: true,
       // Defensive: public/ containing node_modules is extremely unlikely but
       // filter for consistency with the other cpSync calls in this function.
-      filter: (src) => !path.relative(publicDir, src).split(path.sep).includes("node_modules"),
+      filter: (src) =>
+        !path.relative(publicDir, src).split(path.sep).includes("node_modules"),
     });
   }
 

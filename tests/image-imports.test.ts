@@ -14,7 +14,9 @@ function unwrapHook(hook: any): Function {
 }
 
 /** Extract the vinext:image-imports plugin from the plugin array */
-function getImagePlugin(): Plugin & { _dimCache: Map<string, { width: number; height: number }> } {
+function getImagePlugin(): Plugin & {
+  _dimCache: Map<string, { width: number; height: number }>;
+} {
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:image-imports");
   if (!plugin) throw new Error("vinext:image-imports plugin not found");
@@ -26,7 +28,11 @@ describe("vinext:image-imports — resolveId", () => {
   it("resolves ?vinext-meta suffix to virtual module ID", () => {
     const plugin = getImagePlugin();
     const resolve = unwrapHook(plugin.resolveId);
-    const result = resolve.call(plugin, "/abs/path/hero.jpg?vinext-meta", "/some/file.tsx");
+    const result = resolve.call(
+      plugin,
+      "/abs/path/hero.jpg?vinext-meta",
+      "/some/file.tsx",
+    );
     expect(result).toBe("\0vinext-image-meta:/abs/path/hero.jpg");
   });
 
@@ -159,7 +165,11 @@ describe("vinext:image-imports — transform", () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import hero from './hero.png';`;
-    const result = await transform.call(plugin, code, path.join("node_modules", "pkg", "index.ts"));
+    const result = await transform.call(
+      plugin,
+      code,
+      path.join("node_modules", "pkg", "index.ts"),
+    );
     expect(result).toBeNull();
   });
 

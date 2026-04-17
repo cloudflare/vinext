@@ -1,4 +1,8 @@
-export default async function LocaleBlogPage({ params }: { params: Promise<{ locale: string }> }) {
+export default async function LocaleBlogPage({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
   const { locale } = await params;
   return (
     <div>

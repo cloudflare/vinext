@@ -47,7 +47,9 @@ describe("Next.js compat: navigation", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts#L168-L174
 
   it("redirect() in server component produces 307", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/nav-redirect-server`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/nextjs-compat/nav-redirect-server`, {
+      redirect: "manual",
+    });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/nextjs-compat/nav-redirect-result");
   });

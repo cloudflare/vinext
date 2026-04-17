@@ -20,7 +20,11 @@
 import React, { type ComponentType } from "react";
 
 type DynamicOptions = {
-  loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+  loading?: ComponentType<{
+    error?: Error | null;
+    isLoading?: boolean;
+    pastDelay?: boolean;
+  }>;
   ssr?: boolean;
 };
 
@@ -43,7 +47,11 @@ function getDynamicErrorBoundary() {
   DynamicErrorBoundary = class extends (
     React.Component<
       {
-        fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+        fallback: ComponentType<{
+          error?: Error | null;
+          isLoading?: boolean;
+          pastDelay?: boolean;
+        }>;
         children: React.ReactNode;
       },
       { error: Error | null }
@@ -101,7 +109,11 @@ function dynamic<P extends object = object>(
       // On the server (SSR or RSC), just render the loading state or nothing
       const SSRFalse = (_props: P) =>
         LoadingComponent
-          ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+          ? React.createElement(LoadingComponent, {
+              isLoading: true,
+              pastDelay: true,
+              error: null,
+            })
           : null;
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
@@ -120,12 +132,20 @@ function dynamic<P extends object = object>(
 
       if (!mounted) {
         return LoadingComponent
-          ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+          ? React.createElement(LoadingComponent, {
+              isLoading: true,
+              pastDelay: true,
+              error: null,
+            })
           : null;
       }
 
       const fallback = LoadingComponent
-        ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+        ? React.createElement(LoadingComponent, {
+            isLoading: true,
+            pastDelay: true,
+            error: null,
+          })
         : null;
       return React.createElement(
         React.Suspense,
@@ -173,7 +193,11 @@ function dynamic<P extends object = object>(
 
     const ServerDynamic = (props: P) => {
       const fallback = LoadingComponent
-        ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+        ? React.createElement(LoadingComponent, {
+            isLoading: true,
+            pastDelay: true,
+            error: null,
+          })
         : null;
       const lazyElement = React.createElement(LazyServer, props);
       // Wrap with error boundary so loader rejections render the loading
@@ -198,7 +222,11 @@ function dynamic<P extends object = object>(
 
   const ClientDynamic = (props: P) => {
     const fallback = LoadingComponent
-      ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+      ? React.createElement(LoadingComponent, {
+          isLoading: true,
+          pastDelay: true,
+          error: null,
+        })
       : null;
     return React.createElement(
       React.Suspense,

@@ -44,7 +44,11 @@ export function packageNameFromSpecifier(specifier: string): string | null {
   }
 
   const packageName = specifier.split("/")[0] || null;
-  if (!packageName || BUILTIN_MODULES.has(specifier) || BUILTIN_MODULES.has(packageName)) {
+  if (
+    !packageName ||
+    BUILTIN_MODULES.has(specifier) ||
+    BUILTIN_MODULES.has(packageName)
+  ) {
     return null;
   }
   return packageName;
@@ -136,7 +140,11 @@ export function createServerExternalsManifestPlugin(): Plugin {
         // environments will fire — overwriting with the accumulated set is safe.
         if (outDir && fs.existsSync(outDir)) {
           const manifestPath = path.join(outDir, "vinext-externals.json");
-          fs.writeFileSync(manifestPath, JSON.stringify([...externals], null, 2) + "\n", "utf-8");
+          fs.writeFileSync(
+            manifestPath,
+            JSON.stringify([...externals], null, 2) + "\n",
+            "utf-8",
+          );
         }
       },
     },

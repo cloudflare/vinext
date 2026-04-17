@@ -215,7 +215,9 @@ describe("app page stream helpers", () => {
 
   it("turns special SSR failures into the provided response", async () => {
     const ssrError = new Error("redirect");
-    const renderSpecialErrorResponse = vi.fn(async () => new Response("special", { status: 307 }));
+    const renderSpecialErrorResponse = vi.fn(
+      async () => new Response("special", { status: 307 }),
+    );
 
     const result = await renderAppPageHtmlStreamWithRecovery({
       async renderErrorBoundaryResponse() {
@@ -275,9 +277,9 @@ describe("app page stream helpers", () => {
     const baseOnError = vi.fn(() => "base-result");
     const tracker = createAppPageRscErrorTracker(baseOnError);
 
-    expect(tracker.onRenderError(new Error("boom"), { path: "/test" }, { chunk: 1 })).toBe(
-      "base-result",
-    );
+    expect(
+      tracker.onRenderError(new Error("boom"), { path: "/test" }, { chunk: 1 }),
+    ).toBe("base-result");
     expect(tracker.getCapturedError()).toBeInstanceOf(Error);
 
     tracker.onRenderError({ digest: "NEXT_NOT_FOUND" }, { path: "/test" }, { chunk: 2 });

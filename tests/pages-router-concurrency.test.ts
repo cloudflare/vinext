@@ -3,7 +3,11 @@ import { build, type ViteDevServer } from "vite";
 import path from "node:path";
 import http from "node:http";
 import vinext from "../packages/vinext/src/index.js";
-import { createIsolatedFixture, PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import {
+  createIsolatedFixture,
+  PAGES_FIXTURE_DIR,
+  startFixtureServer,
+} from "./helpers.js";
 
 const CONCURRENCY = 15;
 
@@ -52,7 +56,11 @@ describe("Pages Router dev concurrency isolation", () => {
   });
 
   it("<Head> elements do not leak between concurrent requests", async () => {
-    const htmlResults = await fetchConcurrentPages(baseUrl, "/concurrent-head", CONCURRENCY);
+    const htmlResults = await fetchConcurrentPages(
+      baseUrl,
+      "/concurrent-head",
+      CONCURRENCY,
+    );
 
     for (let i = 0; i < CONCURRENCY; i++) {
       const title = extractTitle(htmlResults[i]);
@@ -66,7 +74,11 @@ describe("Pages Router dev concurrency isolation", () => {
   });
 
   it("router SSR context does not leak between concurrent requests", async () => {
-    const htmlResults = await fetchConcurrentPages(baseUrl, "/concurrent-router", CONCURRENCY);
+    const htmlResults = await fetchConcurrentPages(
+      baseUrl,
+      "/concurrent-router",
+      CONCURRENCY,
+    );
 
     for (let i = 0; i < CONCURRENCY; i++) {
       const ssrPathname = extractTestId(htmlResults[i], "ssr-pathname");
@@ -78,7 +90,9 @@ describe("Pages Router dev concurrency isolation", () => {
       const nextData = htmlResults[i].match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
       if (!nextData) throw new Error(`no __NEXT_DATA__ found in response ${i}`);
       const data = JSON.parse(nextData[1]);
-      expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(String(i));
+      expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(
+        String(i),
+      );
     }
   });
 });
@@ -122,7 +136,8 @@ describe("Pages Router prod concurrency isolation", () => {
       },
     });
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { startProdServer } =
+      await import("../packages/vinext/src/server/prod-server.js");
     ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
@@ -165,7 +180,11 @@ describe("Pages Router prod concurrency isolation", () => {
 
   it("SSR props do not leak between concurrent requests", async () => {
     const base = `http://127.0.0.1:${prodPort}`;
-    const htmlResults = await fetchConcurrentPages(base, "/concurrent-router", CONCURRENCY);
+    const htmlResults = await fetchConcurrentPages(
+      base,
+      "/concurrent-router",
+      CONCURRENCY,
+    );
 
     for (let i = 0; i < CONCURRENCY; i++) {
       const ssrPathname = extractTestId(htmlResults[i], "ssr-pathname");
@@ -174,7 +193,9 @@ describe("Pages Router prod concurrency isolation", () => {
       const nextData = htmlResults[i].match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
       if (!nextData) throw new Error(`no __NEXT_DATA__ found in response ${i}`);
       const data = JSON.parse(nextData[1]);
-      expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(String(i));
+      expect(data.props.pageProps.ssrQuery.id, `response ${i} ssrQuery.id`).toBe(
+        String(i),
+      );
     }
   });
 });

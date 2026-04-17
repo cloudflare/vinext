@@ -71,7 +71,10 @@ type ExtendedRequestInit = RequestInit & {
  * Merges headers from both the Request object and the init object,
  * with init taking precedence (matching fetch() spec behavior).
  */
-function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
+function collectHeaders(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Record<string, string> {
   const merged: Record<string, string> = {};
 
   // Start with headers from Request object (if any)
@@ -84,7 +87,9 @@ function collectHeaders(input: string | URL | Request, init?: RequestInit): Reco
   // Override with headers from init (init takes precedence per fetch spec)
   if (init?.headers) {
     const headers =
-      init.headers instanceof Headers ? init.headers : new Headers(init.headers as HeadersInit);
+      init.headers instanceof Headers
+        ? init.headers
+        : new Headers(init.headers as HeadersInit);
     headers.forEach((v, k) => {
       merged[k] = v;
     });
@@ -146,7 +151,10 @@ function getParsedFormContentType(
   contentType: string | undefined,
 ): ParsedFormContentType | undefined {
   const mediaType = contentType?.split(";")[0]?.trim().toLowerCase();
-  if (mediaType === "multipart/form-data" || mediaType === "application/x-www-form-urlencoded") {
+  if (
+    mediaType === "multipart/form-data" ||
+    mediaType === "application/x-www-form-urlencoded"
+  ) {
     return mediaType;
   }
   return undefined;
@@ -159,7 +167,9 @@ function stripMultipartBoundary(contentType: string): string {
     .filter(Boolean)
     .filter((param) => !/^boundary\s*=/i.test(param));
   const normalizedType = type.trim().toLowerCase();
-  return keptParams.length > 0 ? `${normalizedType}; ${keptParams.join("; ")}` : normalizedType;
+  return keptParams.length > 0
+    ? `${normalizedType}; ${keptParams.join("; ")}`
+    : normalizedType;
 }
 
 type SerializedBodyResult = {
@@ -245,7 +255,10 @@ async function serializeBody(
     }
     pushBodyChunk(decoder.decode(init.body));
     (init as ExtendedRequestInit)._ogBody = init.body;
-  } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
+  } else if (
+    init?.body &&
+    typeof (init.body as { getReader?: unknown }).getReader === "function"
+  ) {
     // ReadableStream
     const readableBody = init.body as ReadableStream<Uint8Array | string>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
@@ -435,10 +448,10 @@ declare global {
 
 const _PENDING_KEY = Symbol.for("vinext.fetchCache.pendingRefetches");
 const _gPending = globalThis as unknown as Record<PropertyKey, unknown>;
-const pendingRefetches = (_gPending[_PENDING_KEY] ??= new Map<string, Promise<void>>()) as Map<
+const pendingRefetches = (_gPending[_PENDING_KEY] ??= new Map<
   string,
   Promise<void>
->;
+>()) as Map<string, Promise<void>>;
 
 // Maximum time a dedup entry can live before being force-cleaned.
 // Guards against hung upstream fetches that never settle, which would
@@ -614,7 +627,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // Try cache first
     try {
       const cached = await handler.get(cacheKey, { kind: "FETCH", tags });
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+      if (
+        cached?.value &&
+        cached.value.kind === "FETCH" &&
+        cached.cacheState !== "stale"
+      ) {
         const cachedData = cached.value.data;
         // Reconstruct a Response from the cached data
         return new Response(cachedData.body, {
@@ -626,7 +643,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+      if (
+        cached?.value &&
+        cached.value.kind === "FETCH" &&
+        cached.cacheState === "stale"
+      ) {
         const staleData = cached.value.data;
 
         // Background refetch — deduped so only one in-flight refetch runs
@@ -737,7 +758,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
           headers,
           body,
           url:
-            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.toString()
+                : input.url,
           status: cloned.status,
         },
         tags,

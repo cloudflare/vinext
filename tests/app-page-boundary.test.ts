@@ -58,7 +58,10 @@ describe("app page boundary helpers", () => {
         getDefaultExport(errorModule) {
           return errorModule?.default ?? null;
         },
-        layoutErrorModules: [{ default: "RootLayoutError" }, { default: "LeafLayoutError" }],
+        layoutErrorModules: [
+          { default: "RootLayoutError" },
+          { default: "LeafLayoutError" },
+        ],
         pageErrorModule: { default: "PageError" },
       }),
     ).toEqual({
@@ -72,7 +75,10 @@ describe("app page boundary helpers", () => {
           return errorModule?.default ?? null;
         },
         globalErrorModule: { default: "GlobalError" },
-        layoutErrorModules: [{ default: "RootLayoutError" }, { default: "LeafLayoutError" }],
+        layoutErrorModules: [
+          { default: "RootLayoutError" },
+          { default: "LeafLayoutError" },
+        ],
         pageErrorModule: null,
       }),
     ).toEqual({

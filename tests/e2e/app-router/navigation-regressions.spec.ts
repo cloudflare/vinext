@@ -19,7 +19,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Navigate to a different route (cross-route)
     await page.click("#link-list");
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
 
     // Verify URL changed
     expect(page.url()).toBe(`${BASE}/nav-flash/list`);
@@ -40,7 +42,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Navigate within the same route (search param change)
     await page.click("#link-active");
-    await expect(page.locator("#page-title")).toHaveText("Filtered: active", { timeout: 10_000 });
+    await expect(page.locator("#page-title")).toHaveText("Filtered: active", {
+      timeout: 10_000,
+    });
     expect(page.url()).toContain("filter=active");
 
     // Hook values should be in sync
@@ -58,16 +62,22 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Navigate to list page
     await page.click("#link-list");
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
 
     // Go back
     await page.goBack();
-    await expect(page.locator("#page-title")).toHaveText("All Items", { timeout: 10_000 });
+    await expect(page.locator("#page-title")).toHaveText("All Items", {
+      timeout: 10_000,
+    });
     expect(page.url()).toBe(`${BASE}/nav-flash/link-sync`);
 
     // Go forward
     await page.goForward();
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
     expect(page.url()).toBe(`${BASE}/nav-flash/list`);
   });
 
@@ -99,26 +109,37 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Same-route: change query param
     await page.click("#link-react");
-    await expect(page.locator("#query-title")).toHaveText("Search: react", { timeout: 10_000 });
+    await expect(page.locator("#query-title")).toHaveText("Search: react", {
+      timeout: 10_000,
+    });
     await expect(page.locator("#hook-query")).toHaveText("q: react");
     expect(page.url()).toContain("q=react");
   });
 
-  test("usePathname reflects correct value during cross-route navigation", async ({ page }) => {
+  test("usePathname reflects correct value during cross-route navigation", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
     await waitForAppRouterHydration(page);
 
-    await expect(page.locator("#hook-pathname")).toHaveText("pathname: /nav-flash/link-sync");
+    await expect(page.locator("#hook-pathname")).toHaveText(
+      "pathname: /nav-flash/link-sync",
+    );
 
     // Navigate to query-sync page via list
     await page.click("#link-list");
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
 
     // Navigate to query-sync
     await page.click("#to-query-sync");
-    await expect(page.locator("#hook-pathname")).toHaveText("pathname: /nav-flash/query-sync", {
-      timeout: 10_000,
-    });
+    await expect(page.locator("#hook-pathname")).toHaveText(
+      "pathname: /nav-flash/query-sync",
+      {
+        timeout: 10_000,
+      },
+    );
   });
 
   test("useParams reflects correct value after param change", async ({ page }) => {
@@ -130,7 +151,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Navigate to different param value
     await page.click("#link-completed");
-    await expect(page.locator("#param-title")).toHaveText("Filter: completed", { timeout: 10_000 });
+    await expect(page.locator("#param-title")).toHaveText("Filter: completed", {
+      timeout: 10_000,
+    });
     await expect(page.locator("#hook-params")).toHaveText("params.filter: completed");
   });
 
@@ -141,7 +164,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Navigate to nav-flash test
     await page.click('[data-testid="nav-flash-link"]');
-    await expect(page.locator("#page-title")).toHaveText("All Items", { timeout: 10_000 });
+    await expect(page.locator("#page-title")).toHaveText("All Items", {
+      timeout: 10_000,
+    });
 
     // Verify the page rendered fully
     await expect(page.locator("#filter-links")).toBeVisible();
@@ -157,33 +182,45 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
 
     // Go to list
     await page.click("#link-list");
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
 
     // Come back
     await page.click("#back-to-sync");
-    await expect(page.locator("#page-title")).toHaveText("All Items", { timeout: 10_000 });
+    await expect(page.locator("#page-title")).toHaveText("All Items", {
+      timeout: 10_000,
+    });
 
     // Marker should survive (no full reload)
     const marker = await page.evaluate(() => (window as any).__ROUND_TRIP_MARKER__);
     expect(marker).toBe("alive");
   });
 
-  test("provider page cross-route navigation between dynamic params", async ({ page }) => {
+  test("provider page cross-route navigation between dynamic params", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nav-flash/provider/1`);
     await waitForAppRouterHydration(page);
     await expect(page.locator("#provider-title")).toHaveText("Provider 1");
 
     // Navigate to provider 2 (cross-route: different dynamic param)
     await page.click("#link-p2");
-    await expect(page.locator("#provider-title")).toHaveText("Provider 2", { timeout: 10_000 });
+    await expect(page.locator("#provider-title")).toHaveText("Provider 2", {
+      timeout: 10_000,
+    });
     expect(page.url()).toBe(`${BASE}/nav-flash/provider/2`);
 
     // Navigate to list (different route entirely)
     await page.click("#link-list");
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
   });
 
-  test("cancelled slow navigation does not leak params to committed route", async ({ page }) => {
+  test("cancelled slow navigation does not leak params to committed route", async ({
+    page,
+  }) => {
     // This test verifies the fix for: stale navigation bailout leaving staged params
     // that could be committed by the next navigation.
     await page.goto(`${BASE}/nav-flash/slow-route/slow-value`);
@@ -213,7 +250,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     await page.click("#link-list");
 
     // Wait for list to render
-    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List", {
+      timeout: 10_000,
+    });
 
     // Verify we're on the list page
     expect(page.url()).toBe(`${BASE}/nav-flash/list`);
@@ -221,7 +260,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     // The list page doesn't use params, so there should be no leaked params
     // Go back to a param-sync page to verify params state is clean
     await page.click("#to-param-sync");
-    await expect(page.locator("#param-title")).toHaveText("Filter: active", { timeout: 10_000 });
+    await expect(page.locator("#param-title")).toHaveText("Filter: active", {
+      timeout: 10_000,
+    });
 
     // Verify the param reflects the route we navigated to, not the cancelled one
     await expect(page.locator("#hook-params")).toHaveText("params.filter: active");

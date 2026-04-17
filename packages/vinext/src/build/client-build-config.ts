@@ -85,7 +85,9 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
-export function createClientOutputConfig(clientManualChunks: (id: string) => string | undefined) {
+export function createClientOutputConfig(
+  clientManualChunks: (id: string) => string | undefined,
+) {
   return {
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,

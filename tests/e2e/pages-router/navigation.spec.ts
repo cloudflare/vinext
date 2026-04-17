@@ -75,7 +75,9 @@ test.describe("Client-side navigation", () => {
     await expect(page.locator('[data-testid="as-path"]')).toHaveText(
       "As Path: /posts/42?from=hook",
     );
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("Pathname: /posts/[id]");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "Pathname: /posts/[id]",
+    );
     expect(page.url()).toBe(`${BASE}/posts/42?from=hook`);
   });
 
@@ -98,7 +100,9 @@ test.describe("Client-side navigation", () => {
     await expect(page.locator("h1")).not.toHaveText("Navigation Test");
   });
 
-  test("Router.replace(url, as) uses the masked URL for singleton navigation", async ({ page }) => {
+  test("Router.replace(url, as) uses the masked URL for singleton navigation", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 

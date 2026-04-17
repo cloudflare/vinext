@@ -135,7 +135,9 @@ function __normalizePath(pathname) {
  *
  * @param style - "modern" emits const/let, "es5" emits var
  */
-export function generateRouteMatchNormalizationCode(style: "modern" | "es5" = "modern"): string {
+export function generateRouteMatchNormalizationCode(
+  style: "modern" | "es5" = "modern",
+): string {
   const v = style === "modern" ? "const" : "var";
   const l = style === "modern" ? "let" : "var";
   return `
@@ -178,7 +180,9 @@ function __normalizePathnameForRouteMatchStrict(pathname) {
  *
  * @param style - "modern" emits const/let/arrow functions, "es5" emits var/function
  */
-export function generateMiddlewareMatcherCode(style: "modern" | "es5" = "modern"): string {
+export function generateMiddlewareMatcherCode(
+  style: "modern" | "es5" = "modern",
+): string {
   const v = style === "modern" ? "const" : "var";
   const l = style === "modern" ? "let" : "var";
 

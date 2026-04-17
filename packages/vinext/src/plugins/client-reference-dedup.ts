@@ -49,7 +49,9 @@ export function clientReferenceDedupPlugin(): Plugin {
       // Capture client environment's optimizeDeps.exclude so we don't
       // redirect packages the user explicitly opted out of pre-bundling.
       const clientExclude =
-        config.environments?.client?.optimizeDeps?.exclude ?? config.optimizeDeps?.exclude ?? [];
+        config.environments?.client?.optimizeDeps?.exclude ??
+        config.optimizeDeps?.exclude ??
+        [];
       excludeSet = new Set(clientExclude);
     },
 

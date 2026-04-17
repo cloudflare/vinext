@@ -14,7 +14,9 @@ test.describe('"use cache" file-level directive', () => {
   // In dev mode, shared cache is bypassed so HMR changes are immediately
   // reflected (cache key is module path + export name, not file content).
   // Each request executes fresh, so timestamps differ between requests.
-  test("use-cache page returns fresh data on each request in dev mode", async ({ request }) => {
+  test("use-cache page returns fresh data on each request in dev mode", async ({
+    request,
+  }) => {
     // First request
     const res1 = await request.get(`${BASE}/use-cache-test`);
     expect(res1.status()).toBe(200);

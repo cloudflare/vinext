@@ -5,7 +5,10 @@ import os from "node:os";
 import { createBuilder } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 
-const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/font-google-multiple");
+const APP_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/font-google-multiple",
+);
 
 async function buildFontGoogleMultipleFixture(): Promise<string> {
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-font-google-multiple-"));
@@ -18,15 +21,21 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   globalThis.fetch = async (input: any) => {
     const url = String(input);
     if (url.includes("Geist") && !url.includes("Mono")) {
-      return new Response("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
+      return new Response(
+        "@font-face { font-family: 'Geist'; src: url(/geist.woff2); }",
+        {
+          status: 200,
+          headers: { "content-type": "text/css" },
+        },
+      );
+    }
+    return new Response(
+      "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
+      {
         status: 200,
         headers: { "content-type": "text/css" },
-      });
-    }
-    return new Response("@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }", {
-      status: 200,
-      headers: { "content-type": "text/css" },
-    });
+      },
+    );
   };
 
   const nodeModulesLink = path.join(APP_FIXTURE_DIR, "node_modules");

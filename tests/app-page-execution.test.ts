@@ -58,7 +58,9 @@ describe("app page execution helpers", () => {
     });
 
     expect(redirectResponse.status).toBe(307);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/redirected");
+    expect(redirectResponse.headers.get("location")).toBe(
+      "https://example.com/redirected",
+    );
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
 
     clearRequestContext.mockClear();
@@ -66,7 +68,9 @@ describe("app page execution helpers", () => {
     const fallbackResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
       renderFallbackPage(statusCode) {
-        return Promise.resolve(new Response(`fallback:${statusCode}`, { status: statusCode }));
+        return Promise.resolve(
+          new Response(`fallback:${statusCode}`, { status: statusCode }),
+        );
       },
       requestUrl: "https://example.com/start",
       specialError: {
@@ -107,7 +111,9 @@ describe("app page execution helpers", () => {
       layoutCount: 3,
       async onLayoutError(error, layoutIndex) {
         expect(error).toBeInstanceOf(Error);
-        return layoutIndex === 1 ? new Response("layout-fallback", { status: 404 }) : null;
+        return layoutIndex === 1
+          ? new Response("layout-fallback", { status: 404 })
+          : null;
       },
       probeLayoutAt(layoutIndex) {
         probedLayouts.push(layoutIndex);
@@ -145,13 +151,18 @@ describe("app page execution helpers", () => {
   });
 
   it("reads streamed text and captures RSC bytes when teeing the response stream", async () => {
-    const capture = teeAppPageRscStreamForCapture(createStream(["flight-", "chunk"]), true);
+    const capture = teeAppPageRscStreamForCapture(
+      createStream(["flight-", "chunk"]),
+      true,
+    );
 
-    await expect(readAppPageTextStream(capture.responseStream)).resolves.toBe("flight-chunk");
-    const captured = await capture.capturedRscDataPromise;
-    expect(new TextDecoder().decode(captured ? new Uint8Array(captured) : undefined)).toBe(
+    await expect(readAppPageTextStream(capture.responseStream)).resolves.toBe(
       "flight-chunk",
     );
+    const captured = await capture.capturedRscDataPromise;
+    expect(
+      new TextDecoder().decode(captured ? new Uint8Array(captured) : undefined),
+    ).toBe("flight-chunk");
   });
 
   it("tracks per-layout dynamic usage when classification options are provided", async () => {
@@ -265,7 +276,10 @@ describe("app page execution helpers", () => {
         },
         runWithIsolatedDynamicScope(fn) {
           // Re-throw so the catch path in probeAppPageLayouts fires
-          return Promise.resolve(fn()).then((result) => ({ result, dynamicDetected: false }));
+          return Promise.resolve(fn()).then((result) => ({
+            result,
+            dynamicDetected: false,
+          }));
         },
       },
     });
@@ -382,7 +396,9 @@ describe("app page execution helpers", () => {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
         runWithIsolatedDynamicScope() {
-          throw new Error("isolated scope must not run for build-time classified layouts");
+          throw new Error(
+            "isolated scope must not run for build-time classified layouts",
+          );
         },
       },
     });

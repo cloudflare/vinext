@@ -53,8 +53,12 @@ describe("app page cache helpers", () => {
       isRscRequest: true,
       revalidateSeconds: 60,
     });
-    expect(rscResponse?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
+    expect(rscResponse?.headers.get("content-type")).toBe(
+      "text/x-component; charset=utf-8",
+    );
+    expect(rscResponse?.headers.get("cache-control")).toBe(
+      "s-maxage=0, stale-while-revalidate",
+    );
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
   });
 
@@ -73,7 +77,10 @@ describe("app page cache helpers", () => {
 
   it("returns null when a cached entry lacks the requested HTML or RSC payload", () => {
     const htmlOnly = buildCachedAppPageValue("<h1>cached</h1>");
-    const rscOnly = buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer);
+    const rscOnly = buildCachedAppPageValue(
+      "",
+      new TextEncoder().encode("flight").buffer,
+    );
 
     expect(
       buildAppPageCachedResponse(htmlOnly, {
@@ -298,7 +305,10 @@ describe("app page cache helpers", () => {
 
     expect(response).toBeNull();
     expect(scheduledRegenerations).toHaveLength(1);
-    expect(debugCalls).toContainEqual(["STALE MISS (empty stale entry)", "/stale-html-miss"]);
+    expect(debugCalls).toContainEqual([
+      "STALE MISS (empty stale entry)",
+      "/stale-html-miss",
+    ]);
 
     await expect(scheduledRegenerations[0]()).resolves.toBeUndefined();
   });

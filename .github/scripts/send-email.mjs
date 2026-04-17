@@ -9,13 +9,16 @@ async function getFailedJobs() {
 
   if (!token || !repository || !runId) return [];
 
-  const res = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
+  const res = await fetch(
+    `https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+      signal: AbortSignal.timeout(15_000),
     },
-    signal: AbortSignal.timeout(15_000),
-  });
+  );
 
   if (!res.ok) return [];
 

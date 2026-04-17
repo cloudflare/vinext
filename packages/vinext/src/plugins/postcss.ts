@@ -31,7 +31,10 @@ const POSTCSS_CONFIG_FILES = [
  * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
  * parallel) all await the same in-flight scan rather than each starting their own.
  */
-export const postcssCache = new Map<string, Promise<{ plugins: unknown[] } | undefined>>();
+export const postcssCache = new Map<
+  string,
+  Promise<{ plugins: unknown[] } | undefined>
+>();
 
 /**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
@@ -104,7 +107,8 @@ async function resolvePostcssStringPluginsUncached(
     return undefined;
   }
   const hasStringPlugins = config.plugins.some(
-    (p: unknown) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
+    (p: unknown) =>
+      typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
   if (!hasStringPlugins) {
     return undefined;

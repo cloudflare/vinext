@@ -7,7 +7,11 @@ export default function PrefetchPage() {
       <Link href="/nextjs-compat/prefetch-test/target" id="prefetch-link">
         Go to target
       </Link>
-      <Link href="/nextjs-compat/prefetch-test/no-prefetch" id="no-prefetch-link" prefetch={false}>
+      <Link
+        href="/nextjs-compat/prefetch-test/no-prefetch"
+        id="no-prefetch-link"
+        prefetch={false}
+      >
         Go to no-prefetch target
       </Link>
     </div>

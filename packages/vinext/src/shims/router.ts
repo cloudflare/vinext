@@ -5,13 +5,24 @@
  * Backed by the browser History API. Supports client-side navigation
  * by fetching new page data and re-rendering the React root.
  */
-import { useState, useEffect, useCallback, useMemo, createElement, type ReactElement } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  createElement,
+  type ReactElement,
+} from "react";
 import { RouterContext } from "./internal/router-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
 import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
+import {
+  addLocalePrefix,
+  getDomainLocaleUrl,
+  type DomainLocale,
+} from "../utils/domain-locale.js";
 import {
   addQueryParam,
   appendSearchParamsToUrl,
@@ -55,9 +66,17 @@ export type NextRouter = {
   isFallback: boolean;
 
   /** Navigate to a new URL */
-  push(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean>;
+  push(
+    url: string | UrlObject,
+    as?: string,
+    options?: TransitionOptions,
+  ): Promise<boolean>;
   /** Replace current URL */
-  replace(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean>;
+  replace(
+    url: string | UrlObject,
+    as?: string,
+    options?: TransitionOptions,
+  ): Promise<boolean>;
   /** Go back */
   back(): void;
   /** Reload the page */
@@ -175,7 +194,9 @@ export function isExternalUrl(url: string): boolean {
 function resolveHashUrl(url: string): string {
   if (typeof window === "undefined") return url;
   if (url.startsWith("#"))
-    return stripBasePath(window.location.pathname, __basePath) + window.location.search + url;
+    return (
+      stripBasePath(window.location.pathname, __basePath) + window.location.search + url
+    );
   // Full-path hash URL — strip basePath for consistency with other events
   try {
     const parsed = new URL(url, window.location.href);
@@ -192,7 +213,11 @@ export function isHashOnlyChange(href: string): boolean {
   try {
     const current = new URL(window.location.href);
     const next = new URL(href, window.location.href);
-    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
+    return (
+      current.pathname === next.pathname &&
+      current.search === next.search &&
+      next.hash !== ""
+    );
   } catch {
     return false;
   }
@@ -447,7 +472,10 @@ async function navigateClient(url: string): Promise<void> {
       // must NOT schedule a second hard navigation — this assignment already queues
       // the browser fallback, and the helper-level HardNavigationScheduledError
       // makes that contract explicit to callers.
-      scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
+      scheduleHardNavigationAndThrow(
+        url,
+        `Navigation failed: ${res.status} ${res.statusText}`,
+      );
     }
 
     const html = await res.text();
@@ -456,7 +484,10 @@ async function navigateClient(url: string): Promise<void> {
     // Extract __NEXT_DATA__ from the HTML
     const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
     if (!match) {
-      scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
+      scheduleHardNavigationAndThrow(
+        url,
+        "Navigation failed: missing __NEXT_DATA__ in response",
+      );
     }
 
     const nextData = JSON.parse(match[1]);
@@ -483,7 +514,10 @@ async function navigateClient(url: string): Promise<void> {
     // Validate the module URL before importing — defense-in-depth against
     // unexpected __NEXT_DATA__ or malformed HTML responses
     if (!isValidModulePath(pageModuleUrl)) {
-      console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+      console.error(
+        "[vinext] Blocked import of invalid page module path:",
+        pageModuleUrl,
+      );
       scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
     }
 
@@ -494,7 +528,10 @@ async function navigateClient(url: string): Promise<void> {
     const PageComponent = pageModule.default;
 
     if (!PageComponent) {
-      scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
+      scheduleHardNavigationAndThrow(
+        url,
+        "Navigation failed: page module has no default export",
+      );
     }
 
     // Import React for createElement
@@ -507,7 +544,10 @@ async function navigateClient(url: string): Promise<void> {
 
     if (!AppComponent && appModuleUrl) {
       if (!isValidModulePath(appModuleUrl)) {
-        console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
+        console.error(
+          "[vinext] Blocked import of invalid app module path:",
+          appModuleUrl,
+        );
       } else {
         try {
           const appModule = await import(/* @vite-ignore */ appModuleUrl);
@@ -608,10 +648,14 @@ function buildRouterValue(
     typeof window !== "undefined"
       ? (window.__NEXT_DATA__ as VinextNextData | undefined)
       : undefined;
-  const locale = typeof window === "undefined" ? _ssrState?.locale : window.__VINEXT_LOCALE__;
-  const locales = typeof window === "undefined" ? _ssrState?.locales : window.__VINEXT_LOCALES__;
+  const locale =
+    typeof window === "undefined" ? _ssrState?.locale : window.__VINEXT_LOCALE__;
+  const locales =
+    typeof window === "undefined" ? _ssrState?.locales : window.__VINEXT_LOCALES__;
   const defaultLocale =
-    typeof window === "undefined" ? _ssrState?.defaultLocale : window.__VINEXT_DEFAULT_LOCALE__;
+    typeof window === "undefined"
+      ? _ssrState?.defaultLocale
+      : window.__VINEXT_DEFAULT_LOCALE__;
   const domainLocales =
     typeof window === "undefined" ? _ssrState?.domainLocales : nextData?.domainLocales;
 
@@ -652,7 +696,11 @@ export function useRouter(): NextRouter {
   }, []);
 
   const push = useCallback(
-    async (url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> => {
+    async (
+      url: string | UrlObject,
+      as?: string,
+      options?: TransitionOptions,
+    ): Promise<boolean> => {
       let resolved = resolveNavigationTarget(url, as, options?.locale);
 
       // External URLs — delegate to browser (unless same-origin)
@@ -686,8 +734,12 @@ export function useRouter(): NextRouter {
       }
 
       saveScrollPosition();
-      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("routeChangeStart", resolved, {
+        shallow: options?.shallow ?? false,
+      });
+      routerEvents.emit("beforeHistoryChange", resolved, {
+        shallow: options?.shallow ?? false,
+      });
       window.history.pushState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
@@ -696,7 +748,9 @@ export function useRouter(): NextRouter {
         if (result === "failed") return false;
       }
       setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("routeChangeComplete", resolved, {
+        shallow: options?.shallow ?? false,
+      });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -712,7 +766,11 @@ export function useRouter(): NextRouter {
   );
 
   const replace = useCallback(
-    async (url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> => {
+    async (
+      url: string | UrlObject,
+      as?: string,
+      options?: TransitionOptions,
+    ): Promise<boolean> => {
       let resolved = resolveNavigationTarget(url, as, options?.locale);
 
       // External URLs — delegate to browser (unless same-origin)
@@ -745,8 +803,12 @@ export function useRouter(): NextRouter {
         return true;
       }
 
-      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("routeChangeStart", resolved, {
+        shallow: options?.shallow ?? false,
+      });
+      routerEvents.emit("beforeHistoryChange", resolved, {
+        shallow: options?.shallow ?? false,
+      });
       window.history.replaceState({}, "", full);
       _lastPathnameAndSearch = window.location.pathname + window.location.search;
       if (!options?.shallow) {
@@ -755,7 +817,9 @@ export function useRouter(): NextRouter {
         if (result === "failed") return false;
       }
       setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
+      routerEvents.emit("routeChangeComplete", resolved, {
+        shallow: options?.shallow ?? false,
+      });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -823,7 +887,8 @@ let _lastPathnameAndSearch =
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", (e: PopStateEvent) => {
     const browserUrl = window.location.pathname + window.location.search;
-    const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+    const appUrl =
+      stripBasePath(window.location.pathname, __basePath) + window.location.search;
 
     // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
     const isHashOnly = browserUrl === _lastPathnameAndSearch;
@@ -895,7 +960,11 @@ export function wrapWithRouterContext(element: ReactElement): ReactElement {
     beforePopState: Router.beforePopState,
   });
 
-  return createElement(RouterContext.Provider, { value: routerValue }, element) as ReactElement;
+  return createElement(
+    RouterContext.Provider,
+    { value: routerValue },
+    element,
+  ) as ReactElement;
 }
 
 // Also export a default Router singleton for `import Router from 'next/router'`
@@ -933,8 +1002,12 @@ const Router = {
     }
 
     saveScrollPosition();
-    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("routeChangeStart", resolved, {
+      shallow: options?.shallow ?? false,
+    });
+    routerEvents.emit("beforeHistoryChange", resolved, {
+      shallow: options?.shallow ?? false,
+    });
     window.history.pushState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
@@ -942,7 +1015,9 @@ const Router = {
       if (result === "cancelled") return true;
       if (result === "failed") return false;
     }
-    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("routeChangeComplete", resolved, {
+      shallow: options?.shallow ?? false,
+    });
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {
@@ -985,8 +1060,12 @@ const Router = {
       return true;
     }
 
-    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("routeChangeStart", resolved, {
+      shallow: options?.shallow ?? false,
+    });
+    routerEvents.emit("beforeHistoryChange", resolved, {
+      shallow: options?.shallow ?? false,
+    });
     window.history.replaceState({}, "", full);
     _lastPathnameAndSearch = window.location.pathname + window.location.search;
     if (!options?.shallow) {
@@ -994,7 +1073,9 @@ const Router = {
       if (result === "cancelled") return true;
       if (result === "failed") return false;
     }
-    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
+    routerEvents.emit("routeChangeComplete", resolved, {
+      shallow: options?.shallow ?? false,
+    });
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {

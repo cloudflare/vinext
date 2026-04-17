@@ -61,9 +61,11 @@ describe("App browser stream helpers", () => {
     const listeners = new Map<string, () => void>();
     setGlobalDocument({
       readyState: "loading",
-      addEventListener: vi.fn((event: string, callback: EventListenerOrEventListenerObject) => {
-        listeners.set(event, callback as () => void);
-      }),
+      addEventListener: vi.fn(
+        (event: string, callback: EventListenerOrEventListenerObject) => {
+          listeners.set(event, callback as () => void);
+        },
+      ),
     } as unknown as Document);
 
     vinext.__VINEXT_RSC_CHUNKS__ = ["shell"];
@@ -109,11 +111,13 @@ describe("App browser stream helpers", () => {
     let onDomContentLoaded: (() => void) | undefined;
     setGlobalDocument({
       readyState: "loading",
-      addEventListener: vi.fn((event: string, callback: EventListenerOrEventListenerObject) => {
-        if (event === "DOMContentLoaded") {
-          onDomContentLoaded = callback as () => void;
-        }
-      }),
+      addEventListener: vi.fn(
+        (event: string, callback: EventListenerOrEventListenerObject) => {
+          if (event === "DOMContentLoaded") {
+            onDomContentLoaded = callback as () => void;
+          }
+        },
+      ),
     } as unknown as Document);
 
     vinext.__VINEXT_RSC_CHUNKS__ = [];

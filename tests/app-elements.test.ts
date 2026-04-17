@@ -69,15 +69,21 @@ describe("app elements payload helpers", () => {
 
   it("encodes intercepted route ids and cache keys with a NUL separator", () => {
     expect(createAppPayloadRouteId("/photos/42", null)).toBe("route:/photos/42");
-    expect(createAppPayloadRouteId("/photos/42", "/feed")).toBe("route:/photos/42\0/feed");
+    expect(createAppPayloadRouteId("/photos/42", "/feed")).toBe(
+      "route:/photos/42\0/feed",
+    );
     expect(createAppPayloadCacheKey("/photos/42.rsc", null)).toBe("/photos/42.rsc");
-    expect(createAppPayloadCacheKey("/photos/42.rsc", "/feed")).toBe("/photos/42.rsc\0/feed");
+    expect(createAppPayloadCacheKey("/photos/42.rsc", "/feed")).toBe(
+      "/photos/42.rsc\0/feed",
+    );
   });
 
   it("preserves the request cache context when a direct-route payload omits it", () => {
     expect(resolveVisitedResponseInterceptionContext("/feed", null)).toBe("/feed");
     expect(resolveVisitedResponseInterceptionContext("/feed", "/feed")).toBe("/feed");
-    expect(resolveVisitedResponseInterceptionContext("/feed", "/gallery")).toBe("/gallery");
+    expect(resolveVisitedResponseInterceptionContext("/feed", "/gallery")).toBe(
+      "/gallery",
+    );
     expect(resolveVisitedResponseInterceptionContext(null, null)).toBeNull();
   });
 
@@ -99,7 +105,9 @@ describe("app elements payload helpers", () => {
           [APP_ROUTE_KEY]: "route:/dashboard",
         }),
       ),
-    ).toThrow("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
+    ).toThrow(
+      "[vinext] Invalid __rootLayout in App Router payload: expected string or null",
+    );
   });
 
   it("rejects payloads with a missing __rootLayout key", () => {

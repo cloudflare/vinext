@@ -15,7 +15,9 @@ export async function GET() {
   const stream = new ReadableStream({
     async start(controller) {
       // Initial open message
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ message: "open" })}\n\n`));
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ message: "open" })}\n\n`),
+      );
 
       // Send 3 messages with 1-second delays
       for (let i = 1; i <= 3; i++) {
@@ -27,7 +29,9 @@ export async function GET() {
 
       // Close message
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ message: "close" })}\n\n`));
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ message: "close" })}\n\n`),
+      );
 
       controller.close();
     },

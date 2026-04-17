@@ -68,7 +68,9 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
 
   const handlerStart = Math.round(timing.handlerStart);
   const compileMs =
-    timing.compileEnd !== undefined ? Math.round(timing.compileEnd - timing.handlerStart) : -1;
+    timing.compileEnd !== undefined
+      ? Math.round(timing.compileEnd - timing.handlerStart)
+      : -1;
   const renderMs =
     timing.responseKind === "html" &&
     timing.renderEnd !== undefined &&
@@ -146,7 +148,10 @@ export function resolveAppPageHtmlResponsePolicy(
     };
   }
 
-  if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
+  if (
+    (options.isForceStatic || options.isDynamicError) &&
+    options.revalidateSeconds === null
+  ) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: "STATIC",

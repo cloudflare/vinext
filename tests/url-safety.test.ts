@@ -181,7 +181,9 @@ describe("isDangerousScheme", () => {
     });
 
     it("does not flag dangerous scheme in query string parameters", () => {
-      expect(isDangerousScheme("https://example.com?redirect=javascript:alert(1)")).toBe(false);
+      expect(isDangerousScheme("https://example.com?redirect=javascript:alert(1)")).toBe(
+        false,
+      );
       expect(isDangerousScheme("/login?next=data:text/html,foo")).toBe(false);
     });
 

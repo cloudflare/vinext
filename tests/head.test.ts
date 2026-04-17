@@ -54,7 +54,11 @@ describe("Head SSR collection", () => {
 
   it("collects title element", () => {
     ReactDOMServer.renderToString(
-      React.createElement(Head, null, React.createElement("title", null, "My Page Title")),
+      React.createElement(
+        Head,
+        null,
+        React.createElement("title", null, "My Page Title"),
+      ),
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).toContain("<title");
@@ -92,7 +96,11 @@ describe("Head SSR collection", () => {
 
   it("collects style elements", () => {
     ReactDOMServer.renderToString(
-      React.createElement(Head, null, React.createElement("style", null, "body { color: red; }")),
+      React.createElement(
+        Head,
+        null,
+        React.createElement("style", null, "body { color: red; }"),
+      ),
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).toContain("<style");
@@ -266,7 +274,9 @@ describe("Head reduction", () => {
     ]);
 
     expect(reduced).toHaveLength(1);
-    const dedupedMeta = reduced[0] as React.ReactElement<{ content?: string }> | undefined;
+    const dedupedMeta = reduced[0] as
+      | React.ReactElement<{ content?: string }>
+      | undefined;
     expect(dedupedMeta?.props.content).toBe("Updated Title");
   });
 
@@ -285,7 +295,9 @@ describe("Head reduction", () => {
     ]);
 
     expect(reduced).toHaveLength(1);
-    const dedupedMeta = reduced[0] as React.ReactElement<{ content?: string }> | undefined;
+    const dedupedMeta = reduced[0] as
+      | React.ReactElement<{ content?: string }>
+      | undefined;
     expect(dedupedMeta?.props.content).toBe("Description B");
   });
 });
@@ -311,7 +323,11 @@ describe("Head disallowed tags", () => {
   it("ignores <iframe> tag (security concern)", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     ReactDOMServer.renderToString(
-      React.createElement(Head, null, React.createElement("iframe", { src: "https://evil.com" })),
+      React.createElement(
+        Head,
+        null,
+        React.createElement("iframe", { src: "https://evil.com" }),
+      ),
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).not.toContain("<iframe");

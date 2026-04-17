@@ -4,7 +4,13 @@
  * Global error boundary for testing server-only violation errors.
  * The E2E test checks for the "global-error-message" test ID.
  */
-export default function GlobalError({ error, reset }: { error: Error; reset: () => void }) {
+export default function GlobalError({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
   return (
     <html>
       <body>

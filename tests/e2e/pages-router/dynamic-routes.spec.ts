@@ -7,7 +7,9 @@ test.describe("Dynamic routes with getServerSideProps", () => {
     await page.goto(`${BASE}/posts/123`);
     await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 123");
     // router.pathname returns the route pattern, not the resolved path
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("Pathname: /posts/[id]");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "Pathname: /posts/[id]",
+    );
     await expect(page.locator('[data-testid="query"]')).toHaveText("Query ID: 123");
   });
 
@@ -48,7 +50,9 @@ test.describe("Catch-all routes with getServerSideProps", () => {
   test("renders with multiple segments", async ({ page }) => {
     await page.goto(`${BASE}/docs/api/v2/users`);
     await expect(page.locator('[data-testid="docs-title"]')).toHaveText("Docs");
-    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText("Path: api/v2/users");
+    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText(
+      "Path: api/v2/users",
+    );
   });
 
   test("renders with two segments", async ({ page }) => {

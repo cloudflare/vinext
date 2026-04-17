@@ -3,9 +3,13 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 async function waitForAppRouterHydration(page: import("@playwright/test").Page) {
-  await page.waitForFunction(() => typeof window.__VINEXT_RSC_NAVIGATE__ === "function", null, {
-    timeout: 10_000,
-  });
+  await page.waitForFunction(
+    () => typeof window.__VINEXT_RSC_NAVIGATE__ === "function",
+    null,
+    {
+      timeout: 10_000,
+    },
+  );
 }
 
 test.describe("Parallel Routes", () => {
@@ -14,7 +18,9 @@ test.describe("Parallel Routes", () => {
 
     // Dashboard layout
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
+      "Dashboard Nav",
+    );
 
     // Main children
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -28,7 +34,9 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).toBeVisible();
   });
 
-  test("child route renders default.tsx fallbacks for inherited slots", async ({ page }) => {
+  test("child route renders default.tsx fallbacks for inherited slots", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/dashboard/settings`);
 
     // Dashboard layout should still be present
@@ -56,12 +64,16 @@ test.describe("Intercepting Routes", () => {
 
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
     await expect(page.locator("h1")).toContainText("Photo");
-    await expect(page.locator('[data-testid="photo-page"]')).toContainText("Full photo view");
+    await expect(page.locator('[data-testid="photo-page"]')).toContainText(
+      "Full photo view",
+    );
     // Should NOT contain modal
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
-  test("direct payload cache does not override intercepted navigation", async ({ page }) => {
+  test("direct payload cache does not override intercepted navigation", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/photos/42`);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
 
@@ -93,23 +105,31 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
-  test("chained intercepted navigations keep the original source context", async ({ page }) => {
+  test("chained intercepted navigations keep the original source context", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);
 
     await page.click("#feed-photo-42-link");
     await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
-    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 42");
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText(
+      "Viewing photo 42",
+    );
 
     await page.click("#modal-photo-43-link");
 
     await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
-    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 43");
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText(
+      "Viewing photo 43",
+    );
     await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
-  test("refresh on direct photo load preserves the full-page render", async ({ page }) => {
+  test("refresh on direct photo load preserves the full-page render", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/photos/42`);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
 
@@ -120,7 +140,9 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
-  test("hard reload after intercepted navigation renders the full page", async ({ page }) => {
+  test("hard reload after intercepted navigation renders the full page", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);
 
@@ -261,9 +283,12 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
 
     // useSearchParams should react to the URL change
-    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
-      timeout: 10_000,
-    });
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      {
+        timeout: 10_000,
+      },
+    );
 
     // URL should be updated
     await expect
@@ -271,7 +296,9 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
       .toContain("/shallow-test?filter=active");
   });
 
-  test("replaceState updates useSearchParams without adding history entry", async ({ page }) => {
+  test("replaceState updates useSearchParams without adding history entry", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/shallow-test`);
 
     await page.waitForFunction(
@@ -289,7 +316,9 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
 
     // Going back should go to the page before /shallow-test (not to /shallow-test without params)
     // because replaceState replaces the current entry
-    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/shallow-test?sort=name");
+    await expect
+      .poll(() => page.url(), { timeout: 10_000 })
+      .toContain("/shallow-test?sort=name");
   });
 
   test("pushState updates usePathname", async ({ page }) => {
@@ -302,7 +331,9 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
 
     // Initial pathname
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test",
+    );
 
     // Push new path
     await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
@@ -314,7 +345,9 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
-  test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {
+  test.fixme("multiple pushState calls update search params correctly", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/shallow-test`);
 
     await page.waitForFunction(
@@ -325,9 +358,12 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
 
     // Push filter, then combined
     await page.locator('[data-testid="push-filter"]').click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
-      timeout: 10_000,
-    });
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      {
+        timeout: 10_000,
+      },
+    );
 
     await page.locator('[data-testid="push-combined"]').click({ noWaitAfter: true });
     await expect(page.locator('[data-testid="search"]')).toHaveText("search: a=1&b=2", {
@@ -336,8 +372,11 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
 
     // Go back should restore previous state
     await page.goBack();
-    await expect(page.locator('[data-testid="search"]')).toHaveText("search: filter=active", {
-      timeout: 10_000,
-    });
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      {
+        timeout: 10_000,
+      },
+    );
   });
 });

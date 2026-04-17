@@ -17,7 +17,13 @@ function Hello() {
   return React.createElement("div", null, "Hello from dynamic");
 }
 
-function LoadingSpinner({ isLoading, error }: { isLoading?: boolean; error?: Error | null }) {
+function LoadingSpinner({
+  isLoading,
+  error,
+}: {
+  isLoading?: boolean;
+  error?: Error | null;
+}) {
   if (error) return React.createElement("div", null, `Error: ${error.message}`);
   if (isLoading) return React.createElement("div", null, "Loading...");
   return null;
@@ -63,14 +69,18 @@ describe("next/dynamic ssr: false", () => {
   });
 
   it("renders nothing on server when ssr: false and no loading", () => {
-    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), { ssr: false });
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), {
+      ssr: false,
+    });
 
     const html = ReactDOMServer.renderToString(React.createElement(DynamicNoSSR));
     expect(html).toBe("");
   });
 
   it("sets DynamicSSRFalse displayName on server", () => {
-    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), { ssr: false });
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), {
+      ssr: false,
+    });
     expect(DynamicNoSSR.displayName).toBe("DynamicSSRFalse");
   });
 });
@@ -162,7 +172,9 @@ describe("next/dynamic RSC async component path (React.lazy unavailable)", () =>
 
       const DynamicRsc = dynamic(() => Promise.resolve({ default: Hello }));
       // The returned component is an async function — call it directly as RSC would
-      const element = await (DynamicRsc as unknown as (props: object) => Promise<unknown>)({});
+      const element = await (
+        DynamicRsc as unknown as (props: object) => Promise<unknown>
+      )({});
       // Should return a React element rendered from Hello
       expect(element).toBeTruthy();
       expect((element as React.ReactElement).type).toBe(Hello);
@@ -178,7 +190,9 @@ describe("next/dynamic RSC async component path (React.lazy unavailable)", () =>
       React.lazy = undefined;
 
       const DynamicRsc = dynamic(() => Promise.resolve(Hello as any));
-      const element = await (DynamicRsc as unknown as (props: object) => Promise<unknown>)({});
+      const element = await (
+        DynamicRsc as unknown as (props: object) => Promise<unknown>
+      )({});
       expect((element as React.ReactElement).type).toBe(Hello);
     } finally {
       React.lazy = originalLazy;

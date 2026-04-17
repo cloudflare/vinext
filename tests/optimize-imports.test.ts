@@ -95,7 +95,10 @@ describe("vinext:optimize-imports plugin", () => {
       fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inline-optimize-")),
     );
 
-    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-app" }));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app" }),
+    );
     fs.mkdirSync(path.join(tmpDir, "node_modules", "custom-icons"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, "node_modules", "custom-icons", "package.json"),
@@ -130,7 +133,9 @@ describe("vinext:optimize-imports plugin", () => {
       const configPlugin = plugins.find((p) => p.name === "vinext:config") as Plugin & {
         config?: (...args: any[]) => Promise<any>;
       };
-      const optimizePlugin = plugins.find((p) => p.name === "vinext:optimize-imports") as Plugin;
+      const optimizePlugin = plugins.find(
+        (p) => p.name === "vinext:optimize-imports",
+      ) as Plugin;
 
       expect(configPlugin).toBeDefined();
       expect(optimizePlugin).toBeDefined();
@@ -616,7 +621,9 @@ describe("vinext:optimize-imports transform", () => {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -642,7 +649,11 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
     return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "rsc" } },
+        code,
+        id,
+      );
   }
 
   afterEach(() => {
@@ -715,7 +726,10 @@ describe("vinext:optimize-imports transform", () => {
 
   it("leaves import unchanged when a specifier is not in the barrel map", async () => {
     // rxjs is in DEFAULT_OPTIMIZE_PACKAGES
-    const call = await setupTransform("rxjs", `export * as Slot from "@radix-ui/react-slot";`);
+    const call = await setupTransform(
+      "rxjs",
+      `export * as Slot from "@radix-ui/react-slot";`,
+    );
     // "Unknown" is not exported from the barrel
     const code = `import { Slot, Unknown } from "rxjs";`;
     const result = await call(code, "/app/page.tsx");
@@ -736,7 +750,9 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("skips transform on client environment", async () => {
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -769,7 +785,9 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Both should be in a single import from the resolved absolute path
-    const importLines = result!.code.split("\n").filter((l: string) => l.includes("from"));
+    const importLines = result!.code
+      .split("\n")
+      .filter((l: string) => l.includes("from"));
     expect(importLines).toHaveLength(1);
     expect(importLines[0]).toContain("Button");
     expect(importLines[0]).toContain("buttonVariants");
@@ -811,7 +829,10 @@ describe("vinext:optimize-imports transform", () => {
 
     // Both must resolve relative path to absolute — no bare ./chunk
     expect(result!.code).not.toContain(`from "./chunk"`);
-    const absChunk = path.resolve(path.join(tmpDir, "node_modules", "lodash-es"), "chunk");
+    const absChunk = path.resolve(
+      path.join(tmpDir, "node_modules", "lodash-es"),
+      "chunk",
+    );
     // Namespace import must use `import * as` syntax
     expect(nsLine).toContain("import * as Chunk from");
     expect(nsLine).toContain(absChunk);
@@ -824,12 +845,18 @@ describe("vinext:optimize-imports transform", () => {
     // rxjs is in DEFAULT_OPTIMIZE_PACKAGES.
     // `export { default as Calendar } from "./calendar"` in the barrel should produce
     // `import Calendar from "./calendar"` (a default import), not `import { default as Calendar }`.
-    const call = await setupTransform("rxjs", `export { default as Calendar } from "./calendar";`);
+    const call = await setupTransform(
+      "rxjs",
+      `export { default as Calendar } from "./calendar";`,
+    );
     const code = `import { Calendar } from "rxjs";`;
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
-    const absCalendar = path.resolve(path.join(tmpDir, "node_modules", "rxjs"), "calendar");
+    const absCalendar = path.resolve(
+      path.join(tmpDir, "node_modules", "rxjs"),
+      "calendar",
+    );
     // Must emit a default import, not a named `{ default as ... }` import
     expect(result!.code).toContain(`import Calendar from ${JSON.stringify(absCalendar)}`);
     expect(result!.code).not.toContain("{ default as Calendar }");
@@ -858,7 +885,9 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("rewrites same-file alias exports from wildcard re-exports", async () => {
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -869,7 +898,10 @@ describe("vinext:optimize-imports transform", () => {
       path.join(pkgDir, "package.json"),
       JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
     );
-    fs.writeFileSync(path.join(pkgDir, "index.js"), `export * from "./components/listbox.js";`);
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `export * from "./components/listbox.js";`,
+    );
     fs.writeFileSync(
       path.join(pkgDir, "components", "listbox.js"),
       `const Mo = {};\nexport { Mo as Listbox };`,
@@ -883,7 +915,11 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "rsc" } },
+        code,
+        id,
+      );
 
     const code = `import { Listbox as HeadlessListbox } from "antd";`;
     const result = await call(code, "/app/page.tsx");
@@ -900,7 +936,9 @@ describe("vinext:optimize-imports transform", () => {
     // antd is in DEFAULT_OPTIMIZE_PACKAGES.
     // Barrel uses `export * from "./button"` — the plugin should recurse and resolve
     // `Button` via the sub-module.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -927,7 +965,11 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "rsc" } },
+        code,
+        id,
+      );
 
     const code = `import { Button } from "antd";`;
     const result = await call(code, "/app/page.tsx");
@@ -947,7 +989,9 @@ describe("vinext:optimize-imports transform", () => {
     // fall through to the cross-env fallback instead of hitting SSR's own map.
     // After the fix, each environment maintains its own registeredBarrels key so both RSC and SSR
     // independently populate their own subpkgOrigin maps.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -964,7 +1008,10 @@ describe("vinext:optimize-imports transform", () => {
       }),
     );
     // Barrel exports a named re-export from a scoped sub-package.
-    fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Slot } from "@radix-ui/react-slot";`);
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `export { Slot } from "@radix-ui/react-slot";`,
+    );
 
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
@@ -975,19 +1022,33 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
 
     const rscCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "rsc" } },
+        code,
+        id,
+      );
     const ssrCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "ssr" } },
+        code,
+        id,
+      );
 
     // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
-    const rscResult = await rscCall(`import { Slot } from "lucide-react";`, "/app/page.tsx");
+    const rscResult = await rscCall(
+      `import { Slot } from "lucide-react";`,
+      "/app/page.tsx",
+    );
     expect(rscResult).not.toBeNull();
     expect(rscResult!.code).toContain(`from "@radix-ui/react-slot"`);
 
     // SSR processes the same barrel next — with the bug it would skip the inner loop
     // (barrelEntry already in registeredBarrels) and leave its subpkgOrigin map empty.
     // With the fix it registers `ssr:<barrelEntry>` and populates its own map.
-    const ssrResult = await ssrCall(`import { Slot } from "lucide-react";`, "/app/layout.tsx");
+    const ssrResult = await ssrCall(
+      `import { Slot } from "lucide-react";`,
+      "/app/layout.tsx",
+    );
     expect(ssrResult).not.toBeNull();
     expect(ssrResult!.code).toContain(`from "@radix-ui/react-slot"`);
   });
@@ -997,7 +1058,9 @@ describe("vinext:optimize-imports transform", () => {
     // under "react-server" vs "import" export conditions.
     // In the RSC environment the plugin should pick the react-server entry;
     // in SSR it must use the standard import entry (SSR uses the full React runtime).
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -1022,7 +1085,10 @@ describe("vinext:optimize-imports transform", () => {
       }),
     );
     // RSC barrel: exports RscButton
-    fs.writeFileSync(path.join(pkgDir, "rsc-index.js"), `export { RscButton } from "./rsc-btn";`);
+    fs.writeFileSync(
+      path.join(pkgDir, "rsc-index.js"),
+      `export { RscButton } from "./rsc-btn";`,
+    );
     // Standard barrel: exports Button
     fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Button } from "./btn";`);
 
@@ -1036,10 +1102,18 @@ describe("vinext:optimize-imports transform", () => {
 
     // RSC environment: should use react-server entry → knows about RscButton
     const rscCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "rsc" } },
+        code,
+        id,
+      );
     // SSR environment: should use import entry → knows about Button, not RscButton
     const ssrCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, environment: { name: "ssr" } },
+        code,
+        id,
+      );
 
     // RSC: RscButton is exported from the react-server barrel → rewrite succeeds
     const rscResult = await rscCall(`import { RscButton } from "antd";`, "/app/page.tsx");
@@ -1048,11 +1122,17 @@ describe("vinext:optimize-imports transform", () => {
     expect(rscResult!.code).toContain("rsc-btn");
 
     // SSR: RscButton is NOT in the standard barrel → rewrite must be skipped
-    const ssrResultUnknown = await ssrCall(`import { RscButton } from "antd";`, "/app/page.tsx");
+    const ssrResultUnknown = await ssrCall(
+      `import { RscButton } from "antd";`,
+      "/app/page.tsx",
+    );
     expect(ssrResultUnknown).toBeNull();
 
     // SSR: Button IS in the standard barrel → rewrite succeeds
-    const ssrResultKnown = await ssrCall(`import { Button } from "antd";`, "/app/page.tsx");
+    const ssrResultKnown = await ssrCall(
+      `import { Button } from "antd";`,
+      "/app/page.tsx",
+    );
     expect(ssrResultKnown).not.toBeNull();
     expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
     expect(ssrResultKnown!.code).toContain("btn");

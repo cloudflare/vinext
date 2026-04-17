@@ -54,7 +54,9 @@ test.describe.serial("instrumentation-client (App Router)", () => {
     ).toBe(true);
   });
 
-  test("onRouterTransitionStart fires at the start of push navigations", async ({ page }) => {
+  test("onRouterTransitionStart fires at the start of push navigations", async ({
+    page,
+  }) => {
     const logs: string[] = [];
     page.on("console", (message) => logs.push(message.text()));
 

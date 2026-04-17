@@ -13,7 +13,10 @@ test.describe("Static Metadata", () => {
     await page.goto(`${BASE}/metadata-test`);
 
     const description = page.locator('meta[name="description"]');
-    await expect(description).toHaveAttribute("content", "A page to test the metadata API");
+    await expect(description).toHaveAttribute(
+      "content",
+      "A page to test the metadata API",
+    );
   });
 
   test("metadata export renders <meta name='keywords'>", async ({ page }) => {

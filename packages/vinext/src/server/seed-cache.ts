@@ -70,7 +70,10 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   } catch (err) {
-    console.warn("[vinext] Failed to parse vinext-prerender.json, skipping cache seeding:", err);
+    console.warn(
+      "[vinext] Failed to parse vinext-prerender.json, skipping cache seeding:",
+      err,
+    );
     return 0;
   }
 
@@ -88,10 +91,18 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
 
     const pathname = route.path ?? route.route;
     const baseKey = isrCacheKey("app", pathname, buildId);
-    const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const revalidateSeconds =
+      typeof route.revalidate === "number" ? route.revalidate : undefined;
 
     if (
-      await seedHtml(handler, prerenderDir, baseKey, pathname, trailingSlash, revalidateSeconds)
+      await seedHtml(
+        handler,
+        prerenderDir,
+        baseKey,
+        pathname,
+        trailingSlash,
+        revalidateSeconds,
+      )
     ) {
       await seedRsc(handler, prerenderDir, baseKey, pathname, revalidateSeconds);
       seeded++;

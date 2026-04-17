@@ -12,15 +12,15 @@ describe("extractPackageName", () => {
   });
 
   it("extracts a scoped package name", () => {
-    expect(extractPackageName("/project/node_modules/@mantine/core/esm/MantineProvider.mjs")).toBe(
-      "@mantine/core",
-    );
+    expect(
+      extractPackageName("/project/node_modules/@mantine/core/esm/MantineProvider.mjs"),
+    ).toBe("@mantine/core");
   });
 
   it("handles nested node_modules (uses last segment)", () => {
-    expect(extractPackageName("/project/node_modules/foo/node_modules/@bar/baz/lib/index.js")).toBe(
-      "@bar/baz",
-    );
+    expect(
+      extractPackageName("/project/node_modules/foo/node_modules/@bar/baz/lib/index.js"),
+    ).toBe("@bar/baz");
   });
 
   it("handles package name with no subpath", () => {
@@ -106,7 +106,11 @@ describe("clientReferenceDedupPlugin", () => {
 
     it("skips when importer is undefined", () => {
       const ctx = createContext("client");
-      const result = resolveId.call(ctx, "/project/node_modules/react/index.js", undefined);
+      const result = resolveId.call(
+        ctx,
+        "/project/node_modules/react/index.js",
+        undefined,
+      );
       expect(result).toBeUndefined();
     });
 

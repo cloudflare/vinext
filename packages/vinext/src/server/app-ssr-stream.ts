@@ -104,7 +104,9 @@ export function createTickBufferedTransform(
   let buffered: string[] = [];
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  const flushBuffered = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+  const flushBuffered = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+  ): void => {
     for (const chunk of buffered) {
       if (!injected) {
         const headEnd = chunk.indexOf("</head>");

@@ -24,9 +24,12 @@ test.describe("Server Actions", () => {
     const currentText = await page.locator('[data-testid="likes"]').textContent();
     const currentCount = parseInt(currentText!.replace("Likes: ", ""), 10);
     await page.click('[data-testid="like-btn"]');
-    await expect(page.locator('[data-testid="likes"]')).toHaveText(`Likes: ${currentCount + 1}`, {
-      timeout: 10_000,
-    });
+    await expect(page.locator('[data-testid="likes"]')).toHaveText(
+      `Likes: ${currentCount + 1}`,
+      {
+        timeout: 10_000,
+      },
+    );
   });
 
   test("message form calls server action with FormData", async ({ page }) => {
@@ -70,7 +73,9 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
-  test("server action cookie writes do not make the rerender path mutable", async ({ page }) => {
+  test("server action cookie writes do not make the rerender path mutable", async ({
+    page,
+  }) => {
     test.slow();
     await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);
     await expect(page.locator("h1")).toHaveText("Action Cookie Phase");
@@ -82,8 +87,8 @@ test.describe("Server Actions", () => {
 
     await page.click("#submit-action");
     const readActionCookie = async () =>
-      (await page.context().cookies()).find((cookie) => cookie.name === "action-cookie")?.value ??
-      null;
+      (await page.context().cookies()).find((cookie) => cookie.name === "action-cookie")
+        ?.value ?? null;
 
     let cookieSet = false;
     try {
@@ -162,7 +167,9 @@ test.describe("useActionState", () => {
     }).toPass({ timeout: 15_000 });
   });
 
-  test("useActionState: redirect does not cause undefined state (issue #589)", async ({ page }) => {
+  test("useActionState: redirect does not cause undefined state (issue #589)", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/action-state-redirect`);
     await expect(page.locator("h1")).toHaveText("useActionState Redirect Test");
     await waitForAppRouterHydration(page);

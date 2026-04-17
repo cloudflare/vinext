@@ -13,5 +13,7 @@ export async function generateMetadata({
 }
 
 export default function Page() {
-  return <div id="metadata-generate-searchparams">metadata-generate-searchparams page</div>;
+  return (
+    <div id="metadata-generate-searchparams">metadata-generate-searchparams page</div>
+  );
 }

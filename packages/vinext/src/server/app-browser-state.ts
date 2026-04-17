@@ -1,6 +1,10 @@
 import { mergeElements } from "../shims/slot.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { readAppElementsMetadata, type AppElements, type LayoutFlags } from "./app-elements.js";
+import {
+  readAppElementsMetadata,
+  type AppElements,
+  type LayoutFlags,
+} from "./app-elements.js";
 import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -90,12 +94,19 @@ export function resolveInterceptionContextFromPreviousNextUrl(
   return stripBasePath(parsedUrl.pathname, basePath);
 }
 
-export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
+export function routerReducer(
+  state: AppRouterState,
+  action: AppRouterAction,
+): AppRouterState {
   switch (action.type) {
     case "traverse":
     case "navigate":
       return {
-        elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
+        elements: mergeElements(
+          state.elements,
+          action.elements,
+          action.type === "traverse",
+        ),
         interceptionContext: action.interceptionContext,
         layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
         navigationSnapshot: action.navigationSnapshot,
@@ -146,7 +157,9 @@ export function resolvePendingNavigationCommitDisposition(options: {
     return "skip";
   }
 
-  if (shouldHardNavigate(options.currentRootLayoutTreePath, options.nextRootLayoutTreePath)) {
+  if (
+    shouldHardNavigate(options.currentRootLayoutTreePath, options.nextRootLayoutTreePath)
+  ) {
     return "hard-navigate";
   }
 

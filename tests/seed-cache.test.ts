@@ -14,7 +14,10 @@ import {
   setCacheHandler,
   getCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
-import { isrCacheKey, getRevalidateDuration } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  isrCacheKey,
+  getRevalidateDuration,
+} from "../packages/vinext/src/server/isr-cache.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,7 +222,9 @@ describe("seedMemoryCacheFromPrerender", () => {
       serverDir,
       {
         buildId,
-        routes: [{ route: "/static", status: "rendered", revalidate: false, router: "app" }],
+        routes: [
+          { route: "/static", status: "rendered", revalidate: false, router: "app" },
+        ],
       },
       {
         "static.html": "<html>Static</html>",
@@ -242,7 +247,9 @@ describe("seedMemoryCacheFromPrerender", () => {
       serverDir,
       {
         buildId,
-        routes: [{ route: "/static", status: "rendered", revalidate: false, router: "app" }],
+        routes: [
+          { route: "/static", status: "rendered", revalidate: false, router: "app" },
+        ],
       },
       {
         "static.html": "<html><body>Static page</body></html>",
@@ -356,7 +363,9 @@ describe("seedMemoryCacheFromPrerender", () => {
       serverDir,
       {
         buildId,
-        routes: [{ route: "/missing", status: "rendered", revalidate: 60, router: "app" }],
+        routes: [
+          { route: "/missing", status: "rendered", revalidate: 60, router: "app" },
+        ],
       },
       {},
     );
@@ -402,7 +411,9 @@ describe("seedMemoryCacheFromPrerender", () => {
     const htmlEntry = await getCacheHandler().get(htmlKey);
     expect(htmlEntry).not.toBeNull();
     if (htmlEntry?.value?.kind === "APP_PAGE") {
-      expect(htmlEntry.value.html).toBe("<html><body>About (trailing slash)</body></html>");
+      expect(htmlEntry.value.html).toBe(
+        "<html><body>About (trailing slash)</body></html>",
+      );
     }
   });
 
@@ -414,7 +425,9 @@ describe("seedMemoryCacheFromPrerender", () => {
       serverDir,
       {
         buildId,
-        routes: [{ route: "/html-only", status: "rendered", revalidate: 60, router: "app" }],
+        routes: [
+          { route: "/html-only", status: "rendered", revalidate: 60, router: "app" },
+        ],
       },
       {
         "html-only.html": "<html><body>HTML only</body></html>",

@@ -27,11 +27,15 @@ function setupProject(vitePackageJson: Record<string, unknown>): string {
 }
 
 function isPlugin(plugin: PluginOption): plugin is Plugin {
-  return !!plugin && !Array.isArray(plugin) && typeof plugin === "object" && "name" in plugin;
+  return (
+    !!plugin && !Array.isArray(plugin) && typeof plugin === "object" && "name" in plugin
+  );
 }
 
 function findNamedPlugin(plugins: ReturnType<typeof vinext>, name: string) {
-  return plugins.find((plugin): plugin is Plugin => isPlugin(plugin) && plugin.name === name);
+  return plugins.find(
+    (plugin): plugin is Plugin => isPlugin(plugin) && plugin.name === name,
+  );
 }
 
 afterEach(() => {

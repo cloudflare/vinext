@@ -123,14 +123,20 @@ export function validateCsrfOrigin(
     console.warn(
       `[vinext] CSRF origin "null" blocked for server action. To allow requests from sandboxed contexts, add "null" to experimental.serverActions.allowedOrigins.`,
     );
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "Content-Type": "text/plain" },
+    });
   }
 
   let originHost: string;
   try {
     originHost = new URL(originHeader).host.toLowerCase();
   } catch {
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "Content-Type": "text/plain" },
+    });
   }
 
   // Only use the Host header for origin comparison — never trust
@@ -147,12 +153,16 @@ export function validateCsrfOrigin(
   if (originHost === hostHeader) return null;
 
   // Check allowedOrigins from next.config.js
-  if (allowedOrigins.length > 0 && isOriginAllowed(originHost, allowedOrigins)) return null;
+  if (allowedOrigins.length > 0 && isOriginAllowed(originHost, allowedOrigins))
+    return null;
 
   console.warn(
     `[vinext] CSRF origin mismatch: origin "${originHost}" does not match host "${hostHeader}". Blocking server action request.`,
   );
-  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+  return new Response("Forbidden", {
+    status: 403,
+    headers: { "Content-Type": "text/plain" },
+  });
 }
 
 /**
@@ -262,7 +272,10 @@ function matchWildcardDomain(domain: string, pattern: string): boolean {
   if (domainParts.length < patternParts.length) return false;
 
   // Prevent wildcards from matching entire domains (e.g. '**' or '*.com')
-  if (patternParts.length === 1 && (patternParts[0] === "*" || patternParts[0] === "**")) {
+  if (
+    patternParts.length === 1 &&
+    (patternParts[0] === "*" || patternParts[0] === "**")
+  ) {
     return false;
   }
 
@@ -310,16 +323,22 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  * @param requestUrl - The full request URL for origin comparison
  * @returns An error Response if validation fails, or the normalized image URL
  */
-export function validateImageUrl(rawUrl: string | null, requestUrl: string): Response | string {
+export function validateImageUrl(
+  rawUrl: string | null,
+  requestUrl: string,
+): Response | string {
   // Normalize backslashes: browsers and the URL constructor treat
   // /\evil.com as protocol-relative (//evil.com), bypassing the // check.
   const imgUrl = rawUrl?.replaceAll("\\", "/") ?? null;
   // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
   // protocol-relative, backslash variants, and exotic schemes.
   if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
-    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", {
-      status: 400,
-    });
+    return new Response(
+      !rawUrl ? "Missing url parameter" : "Only relative URLs allowed",
+      {
+        status: 400,
+      },
+    );
   }
   // Defense-in-depth origin check. Resolving a root-relative path against
   // the request's own origin is tautologically same-origin today, but this

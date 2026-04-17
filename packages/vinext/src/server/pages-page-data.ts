@@ -122,10 +122,13 @@ export type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult;
 
 function buildPagesNotFoundResponse(): Response {
-  return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>", {
-    status: 404,
-    headers: { "Content-Type": "text/html" },
-  });
+  return new Response(
+    "<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+    {
+      status: 404,
+      headers: { "Content-Type": "text/html" },
+    },
+  );
 }
 
 function buildPagesDataNotFoundResponse(): Response {
@@ -133,7 +136,11 @@ function buildPagesDataNotFoundResponse(): Response {
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
-  return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
+  return redirect.statusCode != null
+    ? redirect.statusCode
+    : redirect.permanent
+      ? 308
+      : 307;
 }
 
 function matchesPagesStaticPath(
@@ -195,7 +202,14 @@ function rewritePagesCachedHtml(
     const nextDataEnd = cachedHtml.indexOf("</script>", nextDataStart) + 9;
     const tail = cachedHtml.slice(nextDataEnd);
 
-    return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;
+    return (
+      cachedHtml.slice(0, contentStart) +
+      freshBody +
+      "</div>" +
+      gap +
+      nextDataScript +
+      tail
+    );
   }
 
   return (
@@ -207,7 +221,9 @@ function rewritePagesCachedHtml(
   );
 }
 
-export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
+export async function renderPagesIsrHtml(
+  options: RenderPagesIsrHtmlOptions,
+): Promise<string> {
   const freshBody = await options.renderIsrPassToStringAsync(
     options.createPageElement(options.pageProps),
   );
@@ -226,7 +242,10 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
 export async function resolvePagesPageData(
   options: ResolvePagesPageDataOptions,
 ): Promise<ResolvePagesPageDataResult> {
-  if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
+  if (
+    typeof options.pageModule.getStaticPaths === "function" &&
+    options.route.isDynamic
+  ) {
     const pathsResult = await options.pageModule.getStaticPaths({
       locales: options.i18n.locales ?? [],
       defaultLocale: options.i18n.defaultLocale ?? "",
@@ -303,7 +322,12 @@ export async function resolvePagesPageData(
     const cached = await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
 
-    if (cachedValue?.kind === "PAGES" && cached && !cached.isStale && !options.scriptNonce) {
+    if (
+      cachedValue?.kind === "PAGES" &&
+      cached &&
+      !cached.isStale &&
+      !options.scriptNonce
+    ) {
       return {
         kind: "response",
         response: buildPagesCacheResponse(
@@ -315,7 +339,12 @@ export async function resolvePagesPageData(
       };
     }
 
-    if (cachedValue?.kind === "PAGES" && cached && cached.isStale && !options.scriptNonce) {
+    if (
+      cachedValue?.kind === "PAGES" &&
+      cached &&
+      cached.isStale &&
+      !options.scriptNonce
+    ) {
       options.triggerBackgroundRegeneration(cacheKey, async function () {
         return options.runInFreshUnifiedContext(async () => {
           const freshResult = await options.pageModule.getStaticProps?.({
@@ -354,7 +383,11 @@ export async function resolvePagesPageData(
 
       return {
         kind: "response",
-        response: buildPagesCacheResponse(cachedValue.html, "STALE", options.fontLinkHeader),
+        response: buildPagesCacheResponse(
+          cachedValue.html,
+          "STALE",
+          options.fontLinkHeader,
+        ),
       };
     }
 

@@ -14,7 +14,11 @@ export default function SearchForm() {
 
       <Form action="/search" id="search-form-with-hidden-lang">
         <input type="hidden" name="lang" value="en" />
-        <input name="q" placeholder="Search with locale..." id="search-input-with-query" />
+        <input
+          name="q"
+          placeholder="Search with locale..."
+          id="search-input-with-query"
+        />
         <button type="submit" id="search-button-with-query">
           Search With Hidden Lang
         </button>

@@ -24,7 +24,10 @@ export type I18nContext = {
 
 let _getI18nContext = (): I18nContext | null => {
   // Return null when no i18n globals have been set
-  if (globalThis.__VINEXT_DEFAULT_LOCALE__ == null && globalThis.__VINEXT_LOCALE__ == null) {
+  if (
+    globalThis.__VINEXT_DEFAULT_LOCALE__ == null &&
+    globalThis.__VINEXT_LOCALE__ == null
+  ) {
     return null;
   }
   return {

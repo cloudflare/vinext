@@ -5,7 +5,12 @@
  * (prod-server.ts) so both apply next.config.js rules identically.
  */
 
-import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
+import type {
+  NextRedirect,
+  NextRewrite,
+  NextHeader,
+  HasCondition,
+} from "./next-config.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 
 /**
@@ -21,7 +26,10 @@ import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-
  * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
  * skip it on subsequent requests too without re-running the scanner.
  */
-const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
+const _compiledPatternCache = new Map<
+  string,
+  { re: RegExp; paramNames: string[] } | null
+>();
 
 /**
  * Cache for compiled header source regexes in matchHeaders.
@@ -457,7 +465,10 @@ export function requestContextFromRequest(request: Request): RequestContext {
   };
 }
 
-export function normalizeHost(hostHeader: string | null, fallbackHostname: string): string {
+export function normalizeHost(
+  hostHeader: string | null,
+  fallbackHostname: string,
+): string {
   const host = hostHeader ?? fallbackHostname;
   return host.split(":", 1)[0].toLowerCase();
 }
@@ -483,7 +494,10 @@ export function applyMiddlewareRequestHeaders(
   middlewareHeaders: Record<string, string | string[]>,
   request: Request,
 ): { request: Request; postMwReqCtx: RequestContext } {
-  const nextHeaders = buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders);
+  const nextHeaders = buildRequestHeadersFromMiddlewareResponse(
+    request.headers,
+    middlewareHeaders,
+  );
 
   for (const key of Object.keys(middlewareHeaders)) {
     if (key.startsWith("x-middleware-")) {
@@ -557,7 +571,8 @@ function matchSingleCondition(
       return _matchConditionValue(queryValue, condition.value);
     }
     case "host": {
-      if (condition.value !== undefined) return _matchConditionValue(ctx.host, condition.value);
+      if (condition.value !== undefined)
+        return _matchConditionValue(ctx.host, condition.value);
       return ctx.host === condition.key ? _emptyParams() : null;
     }
     default:
@@ -955,7 +970,10 @@ export function matchRewrite(
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
  * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
  */
-function substituteDestinationParams(destination: string, params: Record<string, string>): string {
+function substituteDestinationParams(
+  destination: string,
+  params: Record<string, string>,
+): string {
   const keys = Object.keys(params);
   if (keys.length === 0) return destination;
 
@@ -1083,7 +1101,10 @@ export async function proxyExternalRequest(
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
+    upstreamResponse = await fetch(targetUrl.href, {
+      ...init,
+      signal: controller.signal,
+    });
   } catch (e) {
     if (e instanceof Error && e.name === "AbortError") {
       console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
@@ -1108,7 +1129,8 @@ export async function proxyExternalRequest(
   upstreamResponse.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lower)) return;
-    if (isNodeRuntime && (lower === "content-encoding" || lower === "content-length")) return;
+    if (isNodeRuntime && (lower === "content-encoding" || lower === "content-length"))
+      return;
     responseHeaders.append(key, value);
   });
 

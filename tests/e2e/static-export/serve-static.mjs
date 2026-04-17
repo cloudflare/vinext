@@ -64,7 +64,11 @@ async function tryFile(filePath) {
     if (!s.isFile()) return null;
     return await readFile(filePath);
   } catch (err) {
-    if (err.code === "ENOENT" || err.code === "ENOTDIR" || err.code === "ERR_INVALID_ARG_VALUE")
+    if (
+      err.code === "ENOENT" ||
+      err.code === "ENOTDIR" ||
+      err.code === "ERR_INVALID_ARG_VALUE"
+    )
       return null;
     throw err;
   }

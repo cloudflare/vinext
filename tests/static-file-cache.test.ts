@@ -92,7 +92,9 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/assets/bundle-abc123.js");
 
-    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+    expect(entry!.original.headers["Cache-Control"]).toBe(
+      "public, max-age=31536000, immutable",
+    );
   });
 
   it("sets short cache-control for non-hashed files", async () => {
@@ -216,7 +218,11 @@ describe("StaticFileCache", () => {
       "assets/app-abc123.js.br",
       zlib.brotliCompressSync(Buffer.from(content)),
     );
-    await writeFile(clientDir, "assets/app-abc123.js.gz", zlib.gzipSync(Buffer.from(content)));
+    await writeFile(
+      clientDir,
+      "assets/app-abc123.js.gz",
+      zlib.gzipSync(Buffer.from(content)),
+    );
     await writeFile(
       clientDir,
       "assets/app-abc123.js.zst",
@@ -289,8 +295,12 @@ describe("StaticFileCache", () => {
     expect(cache.lookup("/assets/data-bbb.json")!.original.headers["Content-Type"]).toBe(
       "application/json",
     );
-    expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe("image/svg+xml");
-    expect(cache.lookup("/photo.webp")!.original.headers["Content-Type"]).toBe("image/webp");
+    expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe(
+      "image/svg+xml",
+    );
+    expect(cache.lookup("/photo.webp")!.original.headers["Content-Type"]).toBe(
+      "image/webp",
+    );
   });
 
   it("falls back to application/octet-stream for unknown extensions", async () => {

@@ -14,7 +14,9 @@ const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: search-params-react-key (browser)", () => {
   // Next.js: 'should keep the React router instance the same when changing the search params'
-  test("component state persists across search param changes via router.push", async ({ page }) => {
+  test("component state persists across search param changes via router.push", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nextjs-compat/search-params-key`);
     await waitForAppRouterHydration(page);
 

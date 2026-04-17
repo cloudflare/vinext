@@ -96,7 +96,10 @@ export class StaticFileCache {
     const entries = new Map<string, StaticFileEntry>();
 
     // First pass: collect all regular files with their metadata
-    const allFiles = new Map<string, { fullPath: string; size: number; mtimeMs: number }>();
+    const allFiles = new Map<
+      string,
+      { fullPath: string; size: number; mtimeMs: number }
+    >();
 
     for await (const { relativePath, fullPath, stat } of walkFilesWithStats(clientDir)) {
       allFiles.set(relativePath, { fullPath, size: stat.size, mtimeMs: stat.mtimeMs });

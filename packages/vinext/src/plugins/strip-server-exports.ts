@@ -13,7 +13,11 @@ type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
  * Modeled after Next.js's SWC `next-ssg-transform`.
  */
 export function stripServerExports(code: string): string | null {
-  const SERVER_EXPORTS = new Set(["getServerSideProps", "getStaticProps", "getStaticPaths"]);
+  const SERVER_EXPORTS = new Set([
+    "getServerSideProps",
+    "getStaticProps",
+    "getStaticPaths",
+  ]);
   if (![...SERVER_EXPORTS].some((name) => code.includes(name))) return null;
 
   let ast: ReturnType<typeof parseAst>;
@@ -34,7 +38,11 @@ export function stripServerExports(code: string): string | null {
     // Case 2: export const/let/var name = ...
     if (node.declaration) {
       const decl = node.declaration;
-      if (decl.type === "FunctionDeclaration" && decl.id && SERVER_EXPORTS.has(decl.id.name)) {
+      if (
+        decl.type === "FunctionDeclaration" &&
+        decl.id &&
+        SERVER_EXPORTS.has(decl.id.name)
+      ) {
         s.overwrite(
           node.start,
           node.end,
@@ -43,8 +51,15 @@ export function stripServerExports(code: string): string | null {
         changed = true;
       } else if (decl.type === "VariableDeclaration") {
         for (const declarator of decl.declarations) {
-          if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
-            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
+          if (
+            declarator.id?.type === "Identifier" &&
+            SERVER_EXPORTS.has(declarator.id.name)
+          ) {
+            s.overwrite(
+              node.start,
+              node.end,
+              `export const ${declarator.id.name} = undefined;`,
+            );
             changed = true;
           }
         }
@@ -58,8 +73,10 @@ export function stripServerExports(code: string): string | null {
       const stripped: string[] = [];
       for (const spec of node.specifiers) {
         // spec.local.name is the binding name, spec.exported.name is the export name
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const exportedName = (spec.exported as any)?.name ?? (spec.exported as any)?.value;
+        /* oxlint-disable typescript/no-explicit-any */
+        const exportedName =
+          (spec.exported as any)?.name ?? (spec.exported as any)?.value;
+        /* oxlint-enable typescript/no-explicit-any */
         if (SERVER_EXPORTS.has(exportedName)) {
           stripped.push(exportedName);
         } else {

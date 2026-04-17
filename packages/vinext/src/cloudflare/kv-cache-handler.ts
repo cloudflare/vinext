@@ -38,7 +38,10 @@ import type {
   CachedImageValue,
   IncrementalCacheValue,
 } from "../shims/cache.js";
-import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+import {
+  getRequestExecutionContext,
+  type ExecutionContextLike,
+} from "../shims/request-context.js";
 
 // ---------------------------------------------------------------------------
 // Serialized cache value types — ArrayBuffer fields replaced with base64 strings
@@ -57,7 +60,10 @@ type SerializedCachedImageValue = Omit<CachedImageValue, "buffer"> & { buffer?: 
  * as base64 strings and restored to `ArrayBuffer` after `JSON.parse`.
  */
 type SerializedIncrementalCacheValue =
-  | Exclude<IncrementalCacheValue, CachedAppPageValue | CachedRouteValue | CachedImageValue>
+  | Exclude<
+      IncrementalCacheValue,
+      CachedAppPageValue | CachedRouteValue | CachedImageValue
+    >
   | SerializedCachedAppPageValue
   | SerializedCachedRouteValue
   | SerializedCachedImageValue;
@@ -109,7 +115,8 @@ const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
  * separator — allowing `:` in user tags could cause ambiguous key lookups.
  */
 function validateTag(tag: string): string | null {
-  if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
+  if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH)
+    return null;
   // Block control characters and reserved separators used in our own key format.
   // Slash is allowed because revalidatePath() relies on pathname tags like
   // "/posts/hello" and "_N_T_/posts/hello".
@@ -158,7 +165,10 @@ export class KVCacheHandler implements CacheHandler {
     this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
   }
 
-  async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(
+    key: string,
+    _ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
     const kvKey = this.prefix + ENTRY_PREFIX + key;
     const raw = await this.kv.get(kvKey);
     if (!raw) return null;
@@ -231,14 +241,20 @@ export class KVCacheHandler implements CacheHandler {
         for (let i = 0; i < uncachedTags.length; i++) {
           const tagTime = tagResults[i];
           const tagTimestamp = tagTime ? Number(tagTime) : 0;
-          this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
+          this._tagCache.set(uncachedTags[i], {
+            timestamp: tagTimestamp,
+            fetchedAt: now,
+          });
         }
 
         // Then check for invalidation using the now-cached timestamps
         for (const tag of uncachedTags) {
           const cached = this._tagCache.get(tag)!;
           if (cached.timestamp !== 0) {
-            if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
+            if (
+              Number.isNaN(cached.timestamp) ||
+              cached.timestamp >= entry.lastModified
+            ) {
               this._deleteInBackground(kvKey);
               return null;
             }
@@ -327,7 +343,8 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
+    const expirationTtl: number | undefined =
+      revalidateAt !== null ? this.ttlSeconds : undefined;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits
@@ -342,7 +359,10 @@ export class KVCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(
+    tags: string | string[],
+    _durations?: { expire?: number },
+  ): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
@@ -392,7 +412,9 @@ export class KVCacheHandler implements CacheHandler {
 
         for (const tag of tags) {
           if (typeof tag !== "string") continue;
-          const rawPath = tag.startsWith(PATH_TAG_PREFIX) ? tag.slice(PATH_TAG_PREFIX.length) : tag;
+          const rawPath = tag.startsWith(PATH_TAG_PREFIX)
+            ? tag.slice(PATH_TAG_PREFIX.length)
+            : tag;
           if (rawPath.startsWith("/") && isPathChildOf(rawPath, pathPrefix)) {
             tagsToInvalidate.add(tag);
           }
@@ -465,7 +487,14 @@ export class KVCacheHandler implements CacheHandler {
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set(["FETCH", "APP_PAGE", "PAGES", "APP_ROUTE", "REDIRECT", "IMAGE"]);
+const VALID_KINDS = new Set([
+  "FETCH",
+  "APP_PAGE",
+  "PAGES",
+  "APP_ROUTE",
+  "REDIRECT",
+  "IMAGE",
+]);
 
 /**
  * Validate that a parsed JSON value has the expected KVCacheEntry shape.
@@ -526,7 +555,9 @@ function serializeForJSON(value: IncrementalCacheValue): SerializedIncrementalCa
  * Returns the restored `IncrementalCacheValue`, or `null` if any base64
  * decode fails (corrupted entry).
  */
-function restoreArrayBuffers(value: SerializedIncrementalCacheValue): IncrementalCacheValue | null {
+function restoreArrayBuffers(
+  value: SerializedIncrementalCacheValue,
+): IncrementalCacheValue | null {
   if (value.kind === "APP_PAGE") {
     if (typeof value.rscData === "string") {
       const decoded = safeBase64ToArrayBuffer(value.rscData);

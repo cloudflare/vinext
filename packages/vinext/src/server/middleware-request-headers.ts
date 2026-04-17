@@ -4,7 +4,10 @@ export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
 type MiddlewareHeaderValue = string | string[];
 type MiddlewareHeaderSource = Headers | Record<string, MiddlewareHeaderValue>;
 
-function getMiddlewareHeaderValue(source: MiddlewareHeaderSource, key: string): string | null {
+function getMiddlewareHeaderValue(
+  source: MiddlewareHeaderSource,
+  key: string,
+): string | null {
   if (source instanceof Headers) {
     return source.get(key);
   }
@@ -38,7 +41,10 @@ function getForwardedRequestHeaders(source: MiddlewareHeaderSource): Map<string,
   for (const [key, value] of Object.entries(source)) {
     if (!key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX)) continue;
     const normalizedValue = Array.isArray(value) ? (value[0] ?? "") : value;
-    forwardedHeaders.set(key.slice(MIDDLEWARE_REQUEST_HEADER_PREFIX.length), normalizedValue);
+    forwardedHeaders.set(
+      key.slice(MIDDLEWARE_REQUEST_HEADER_PREFIX.length),
+      normalizedValue,
+    );
   }
 
   return forwardedHeaders;
@@ -75,7 +81,8 @@ export function buildRequestHeadersFromMiddlewareResponse(
     return null;
   }
 
-  const nextHeaders = overrideHeaderNames === null ? cloneHeaders(baseHeaders) : new Headers();
+  const nextHeaders =
+    overrideHeaderNames === null ? cloneHeaders(baseHeaders) : new Headers();
 
   if (overrideHeaderNames === null) {
     for (const [key, value] of forwardedHeaders) {
@@ -95,5 +102,8 @@ export function buildRequestHeadersFromMiddlewareResponse(
 }
 
 export function shouldKeepMiddlewareHeader(key: string): boolean {
-  return key === MIDDLEWARE_OVERRIDE_HEADERS || key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX);
+  return (
+    key === MIDDLEWARE_OVERRIDE_HEADERS ||
+    key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX)
+  );
 }

@@ -5,7 +5,12 @@
  * and some third-party libraries.
  */
 
-export const MODERN_BROWSERSLIST_TARGET = ["chrome 111", "edge 111", "firefox 111", "safari 16.4"];
+export const MODERN_BROWSERSLIST_TARGET = [
+  "chrome 111",
+  "edge 111",
+  "firefox 111",
+  "safari 16.4",
+];
 
 export type ValueOf<T> = Required<T>[keyof T];
 

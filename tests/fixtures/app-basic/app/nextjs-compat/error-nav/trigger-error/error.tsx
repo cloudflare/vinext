@@ -1,6 +1,12 @@
 "use client";
 import Link from "next/link";
-export default function ErrorBoundary({ error, reset }: { error: Error; reset: () => void }) {
+export default function ErrorBoundary({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
   return (
     <div id="error-boundary">
       <h2 id="error-message">{error.message}</h2>

@@ -84,9 +84,9 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
 function renderClientForm(props: Record<string, unknown>) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
-  const rendered = (Form as unknown as { render: (props: Record<string, unknown>) => any }).render(
-    props,
-  );
+  const rendered = (
+    Form as unknown as { render: (props: Record<string, unknown>) => any }
+  ).render(props);
   expect(rendered.type).toBe("form");
   return rendered.props as {
     onSubmit: (event: any) => Promise<void>;
@@ -231,7 +231,11 @@ describe("Form SSR rendering", () => {
 
   it("renders without method (defaults to GET in behavior)", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(Form, { action: "/search" }, React.createElement("input", { name: "q" })),
+      React.createElement(
+        Form,
+        { action: "/search" },
+        React.createElement("input", { name: "q" }),
+      ),
     );
     // No explicit method attribute in HTML — browser defaults to GET
     expect(html).toContain('action="/search"');

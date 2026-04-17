@@ -47,7 +47,8 @@ async function startProdFixture(
     },
   });
 
-  const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+  const { startProdServer } =
+    await import("../packages/vinext/src/server/prod-server.js");
   const { server } = await startProdServer({
     port: 0,
     host: "127.0.0.1",
@@ -71,7 +72,10 @@ describe("Pages i18n domain routing (production)", () => {
       server: prodServer,
       tmpDir,
       port: prodPort,
-    } = await startProdFixture(PAGES_I18N_DOMAINS_FIXTURE_DIR, "vinext-pages-i18n-prod-"));
+    } = await startProdFixture(
+      PAGES_I18N_DOMAINS_FIXTURE_DIR,
+      "vinext-pages-i18n-prod-",
+    ));
   }, 30000);
 
   afterAll(async () => {
@@ -172,9 +176,14 @@ describe("Pages i18n domain routing with basePath (production)", () => {
   }, 15000);
 
   it("preserves basePath and trailingSlash in root locale redirects", async () => {
-    const res = await requestNodeServerWithHost(prodPort, "/app/?utm=campaign", "example.com", {
-      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    });
+    const res = await requestNodeServerWithHost(
+      prodPort,
+      "/app/?utm=campaign",
+      "example.com",
+      {
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      },
+    );
 
     expect(res.status).toBe(307);
     expect(res.headers.location).toBe("http://example.fr/app/?utm=campaign");

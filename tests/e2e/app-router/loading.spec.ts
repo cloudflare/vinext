@@ -9,7 +9,9 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     await expect(page.locator("h1")).toHaveText("Slow Page", {
       timeout: 10_000,
     });
-    await expect(page.locator("main > p")).toHaveText("This page has a loading boundary.");
+    await expect(page.locator("main > p")).toHaveText(
+      "This page has a loading boundary.",
+    );
   });
 
   test("slow page serves HTML response", async ({ page }) => {

@@ -56,7 +56,10 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useParams returns correct nested dynamic params in SSR", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-params/parent-id/child-id");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-params/parent-id/child-id",
+    );
     expect(html).toContain("parent-id");
     expect(html).toContain("child-id");
   });
@@ -65,7 +68,10 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useParams returns correct catch-all params in SSR", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-params/catchall/a/b/c");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-params/catchall/a/b/c",
+    );
     // React HTML-encodes quotes in SSR output: &quot; instead of "
     expect(html).toContain("[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;]");
   });
@@ -75,7 +81,10 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useSearchParams reads query string in SSR", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search?q=hello&page=3");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-search?q=hello&page=3",
+    );
     expect(html).toContain("hello");
     expect(html).toContain("3");
   });
@@ -110,7 +119,10 @@ describe("Next.js compat: hooks", () => {
   // with ReadonlyURLSearchParams, so verify the thrown error text is surfaced in SSR too.
 
   it("useSearchParams blocks mutation methods during SSR", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search-readonly?foo=bar");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-search-readonly?foo=bar",
+    );
 
     expect(html).toContain("PASS mutation blocked");
     expect(html).toContain("Method unavailable on `ReadonlyURLSearchParams`.");

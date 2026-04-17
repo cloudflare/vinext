@@ -24,7 +24,9 @@ function assertValidExports(names) {
     seen.add(name);
   }
   if (dupes.size > 0) {
-    throw new Error(`Duplicate export identifiers: ${Array.from(dupes).slice(0, 10).join(", ")}`);
+    throw new Error(
+      `Duplicate export identifiers: ${Array.from(dupes).slice(0, 10).join(", ")}`,
+    );
   }
 }
 

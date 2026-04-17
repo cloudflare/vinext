@@ -90,7 +90,9 @@ function toStaticExportResult(routes: PrerenderRouteResult[]): StaticExportResul
  *
  * Delegates to `prerenderPages()` in export mode.
  */
-export async function staticExportPages(options: StaticExportOptions): Promise<StaticExportResult> {
+export async function staticExportPages(
+  options: StaticExportOptions,
+): Promise<StaticExportResult> {
   const result = await prerenderPages({
     mode: "export",
     pagesBundlePath: options.pagesBundlePath,

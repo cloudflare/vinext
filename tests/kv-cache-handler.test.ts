@@ -35,28 +35,30 @@ function createMockKV(store: Map<string, string> = new Map()) {
       store.delete(key);
       metadataStore.delete(key);
     }),
-    list: vi.fn(async (options?: { prefix?: string; limit?: number; cursor?: string }) => {
-      const prefix = options?.prefix ?? "";
-      const limit = options?.limit ?? 1000;
-      const cursor = options?.cursor;
+    list: vi.fn(
+      async (options?: { prefix?: string; limit?: number; cursor?: string }) => {
+        const prefix = options?.prefix ?? "";
+        const limit = options?.limit ?? 1000;
+        const cursor = options?.cursor;
 
-      const allKeys = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
+        const allKeys = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
 
-      let startIdx = 0;
-      if (cursor) {
-        const idx = allKeys.indexOf(cursor);
-        startIdx = idx >= 0 ? idx + 1 : 0;
-      }
+        let startIdx = 0;
+        if (cursor) {
+          const idx = allKeys.indexOf(cursor);
+          startIdx = idx >= 0 ? idx + 1 : 0;
+        }
 
-      const pageKeys = allKeys.slice(startIdx, startIdx + limit);
-      const hasMore = startIdx + limit < allKeys.length;
+        const pageKeys = allKeys.slice(startIdx, startIdx + limit);
+        const hasMore = startIdx + limit < allKeys.length;
 
-      return {
-        keys: pageKeys.map((name) => ({ name, metadata: metadataStore.get(name) })),
-        list_complete: !hasMore,
-        cursor: hasMore ? pageKeys[pageKeys.length - 1] : undefined,
-      };
-    }),
+        return {
+          keys: pageKeys.map((name) => ({ name, metadata: metadataStore.get(name) })),
+          list_complete: !hasMore,
+          cursor: hasMore ? pageKeys[pageKeys.length - 1] : undefined,
+        };
+      },
+    ),
   };
 }
 
@@ -79,7 +81,10 @@ function createMockCtx() {
 // ---------------------------------------------------------------------------
 
 /** Build a valid KV cache entry JSON string. */
-function validEntry(value: object | null, overrides: Record<string, unknown> = {}): string {
+function validEntry(
+  value: object | null,
+  overrides: Record<string, unknown> = {},
+): string {
   return JSON.stringify({
     value,
     tags: [],
@@ -1010,7 +1015,12 @@ describe("KVCacheHandler", () => {
     it("skips KV write when data.revalidate is 0", async () => {
       await handler.set(
         "no-cache-data",
-        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 },
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "test", url: "" },
+          tags: [],
+          revalidate: 0,
+        },
         { tags: [] },
       );
 
@@ -1022,7 +1032,12 @@ describe("KVCacheHandler", () => {
     it("stores entry when ctx.revalidate is 0 but data.revalidate is positive", async () => {
       await handler.set(
         "override-positive",
-        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 60 },
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "test", url: "" },
+          tags: [],
+          revalidate: 60,
+        },
         { revalidate: 0 },
       );
 
@@ -1037,7 +1052,11 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("revalidateByPathPrefix", () => {
-    async function setPageEntry(h: KVCacheHandler, pathname: string, extraTags: string[] = []) {
+    async function setPageEntry(
+      h: KVCacheHandler,
+      pathname: string,
+      extraTags: string[] = [],
+    ) {
       const tags = [pathname, `_N_T_${pathname}`, ...extraTags];
       await h.set(
         pathname,
@@ -1134,7 +1153,10 @@ describe("KVCacheHandler", () => {
 
     it("omits metadata when tags exceed 1024-byte KV limit, entry still cached", async () => {
       // Generate tags that exceed 1024 bytes when JSON-serialized
-      const longTags = Array.from({ length: 50 }, (_, i) => `/very/deep/nested/path/segment-${i}`);
+      const longTags = Array.from(
+        { length: 50 },
+        (_, i) => `/very/deep/nested/path/segment-${i}`,
+      );
       const allTags = longTags.flatMap((t) => [t, `_N_T_${t}`]);
 
       await handler.set(

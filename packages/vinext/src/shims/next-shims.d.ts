@@ -210,7 +210,9 @@ declare module "next/legacy/image" {
     id?: string;
   };
 
-  const LegacyImage: ForwardRefExoticComponent<LegacyImageProps & RefAttributes<HTMLImageElement>>;
+  const LegacyImage: ForwardRefExoticComponent<
+    LegacyImageProps & RefAttributes<HTMLImageElement>
+  >;
   export default LegacyImage;
 }
 
@@ -355,7 +357,13 @@ declare module "next/server" {
     get cookies(): any;
     get ip(): string | undefined;
     get geo():
-      | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
+      | {
+          city?: string;
+          country?: string;
+          region?: string;
+          latitude?: string;
+          longitude?: string;
+        }
       | undefined;
   }
   export class NextResponse<Body = unknown> extends Response {
@@ -434,7 +442,10 @@ declare module "next/cache" {
       data: IncrementalCacheValue | null,
       ctx?: Record<string, unknown>,
     ): Promise<void>;
-    revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
+    revalidateTag(
+      tags: string | string[],
+      durations?: { expire?: number },
+    ): Promise<void>;
     resetRequestCache?(): void;
   };
 
@@ -448,7 +459,12 @@ declare module "next/cache" {
   export type IncrementalCacheValue =
     | {
         kind: "FETCH";
-        data: { headers: Record<string, string>; body: string; url: string; status?: number };
+        data: {
+          headers: Record<string, string>;
+          body: string;
+          url: string;
+          status?: number;
+        };
         tags?: string[];
         revalidate: number | false;
       }
@@ -474,7 +490,13 @@ declare module "next/cache" {
         headers: Record<string, string | string[]>;
       }
     | { kind: "REDIRECT"; props: object }
-    | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
+    | {
+        kind: "IMAGE";
+        etag: string;
+        buffer: ArrayBuffer;
+        extension: string;
+        revalidate?: number;
+      };
 
   export class MemoryCacheHandler implements CacheHandler {
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
@@ -483,13 +505,19 @@ declare module "next/cache" {
       data: IncrementalCacheValue | null,
       ctx?: Record<string, unknown>,
     ): Promise<void>;
-    revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
+    revalidateTag(
+      tags: string | string[],
+      durations?: { expire?: number },
+    ): Promise<void>;
     resetRequestCache(): void;
   }
 
   export function setCacheHandler(handler: CacheHandler): void;
   export function getCacheHandler(): CacheHandler;
-  export function revalidateTag(tag: string, profile?: string | { expire?: number }): Promise<void>;
+  export function revalidateTag(
+    tag: string,
+    profile?: string | { expire?: number },
+  ): Promise<void>;
   export function revalidatePath(path: string, type?: "page" | "layout"): Promise<void>;
   export function updateTag(tag: string): Promise<void>;
   export function refresh(): void;

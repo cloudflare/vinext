@@ -103,7 +103,9 @@ function _isInsideUseCache(): boolean {
 }
 
 function _isInsideUnstableCache(): boolean {
-  const als = _gHeaders[_UNSTABLE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
+  const als = _gHeaders[_UNSTABLE_CACHE_ALS_KEY] as
+    | AsyncLocalStorage<unknown>
+    | undefined;
   return als?.getStore() === true;
 }
 
@@ -325,7 +327,9 @@ function _decorateRequestApiPromise<T extends object>(
       return prop in promiseTarget || prop in target;
     },
     ownKeys(promiseTarget) {
-      return Array.from(new Set([...Reflect.ownKeys(promiseTarget), ...Reflect.ownKeys(target)]));
+      return Array.from(
+        new Set([...Reflect.ownKeys(promiseTarget), ...Reflect.ownKeys(target)]),
+      );
     },
     getOwnPropertyDescriptor(promiseTarget, prop) {
       return (
@@ -336,7 +340,9 @@ function _decorateRequestApiPromise<T extends object>(
   });
 }
 
-function _decorateRejectedRequestApiPromise<T extends object>(error: unknown): Promise<T> & T {
+function _decorateRejectedRequestApiPromise<T extends object>(
+  error: unknown,
+): Promise<T> & T {
   const normalizedError = error instanceof Error ? error : new Error(String(error));
   const promise = Promise.reject(normalizedError) as Promise<T>;
   // Mark the rejection as handled so legacy sync access does not trigger
@@ -377,10 +383,9 @@ function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
             throw new ReadonlyRequestCookiesError();
           }
 
-          return (Reflect.get(target, prop, target) as (...callArgs: unknown[]) => unknown).apply(
-            target,
-            args,
-          );
+          return (
+            Reflect.get(target, prop, target) as (...callArgs: unknown[]) => unknown
+          ).apply(target, args);
         };
       }
 
@@ -468,9 +473,9 @@ export function headersContextFromRequest(request: Request): HeadersContext {
           if (!_mutable) {
             _mutable = new Headers(target);
           }
-          return (_mutable[prop as "set" | "delete" | "append"] as (...a: unknown[]) => unknown)(
-            ...args,
-          );
+          return (
+            _mutable[prop as "set" | "delete" | "append"] as (...a: unknown[]) => unknown
+          )(...args);
         };
       }
 
@@ -562,7 +567,9 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
   }
 
   if (state.headersContext.accessError) {
-    return _decorateRejectedRequestApiPromise<RequestCookies>(state.headersContext.accessError);
+    return _decorateRejectedRequestApiPromise<RequestCookies>(
+      state.headersContext.accessError,
+    );
   }
 
   markDynamicUsage();
@@ -658,7 +665,9 @@ export async function draftMode(): Promise<DraftModeResult> {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       }
       const secure =
-        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
+        typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+          ? "; Secure"
+          : "";
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
     },
     disable(): void {
@@ -669,7 +678,9 @@ export async function draftMode(): Promise<DraftModeResult> {
         state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
       const secure =
-        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
+        typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+          ? "; Secure"
+          : "";
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
     },
   };
@@ -722,7 +733,9 @@ class RequestCookies {
     return { name, value };
   }
 
-  getAll(nameOrOptions?: string | { name: string }): Array<{ name: string; value: string }> {
+  getAll(
+    nameOrOptions?: string | { name: string },
+  ): Array<{ name: string; value: string }> {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions?.name;
     const result: Array<{ name: string; value: string }> = [];
     for (const [cookieName, value] of this._cookies) {

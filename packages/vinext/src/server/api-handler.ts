@@ -10,9 +10,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
+import {
+  reportRequestError,
+  importModule,
+  type ModuleImporter,
+} from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  getMediaType,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -191,7 +199,9 @@ export async function handleApiRoute(
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
-      console.error(`[vinext] API route ${route.filePath} does not export a default function`);
+      console.error(
+        `[vinext] API route ${route.filePath} does not export a default function`,
+      );
       res.statusCode = 500;
       res.end("API route does not export a default function");
       return true;

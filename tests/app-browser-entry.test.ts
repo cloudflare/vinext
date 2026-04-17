@@ -41,7 +41,10 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
   return {
     elements: createResolvedElements("route:/initial", "/"),
     layoutFlags: {},
-    navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+    navigationSnapshot: createClientNavigationRenderSnapshot(
+      "https://example.com/initial",
+      {},
+    ),
     renderId: 0,
     interceptionContext: null,
     previousNextUrl: null,
@@ -173,7 +176,9 @@ describe("app browser entry state helpers", () => {
     });
     const pending = await createPendingNavigationCommit({
       currentState,
-      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/dashboard", "/(dashboard)"),
+      ),
       navigationSnapshot: currentState.navigationSnapshot,
       renderId: 1,
       type: "navigate",
@@ -362,7 +367,9 @@ describe("app browser entry previousNextUrl helpers", () => {
   });
 
   it("derives interception context from previousNextUrl pathname", () => {
-    expect(resolveInterceptionContextFromPreviousNextUrl("/feed?tab=latest")).toBe("/feed");
+    expect(resolveInterceptionContextFromPreviousNextUrl("/feed?tab=latest")).toBe(
+      "/feed",
+    );
   });
 
   it("returns null when previousNextUrl is missing", () => {
@@ -379,7 +386,9 @@ describe("app browser entry previousNextUrl helpers", () => {
       activeNavigationId: 7,
       currentState,
       navigationSnapshot: currentState.navigationSnapshot,
-      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/dashboard", "/(dashboard)"),
+      ),
       renderId: 3,
       startedNavigationId: 7,
       type: "navigate",

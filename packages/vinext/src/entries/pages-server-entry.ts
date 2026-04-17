@@ -20,16 +20,28 @@ import {
 } from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
-const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const _requestContextShimPath = resolveEntryPath(
+  "../shims/request-context.js",
+  import.meta.url,
+);
 const _routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
 const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.url);
 const _pagesPageResponsePath = resolveEntryPath(
   "../server/pages-page-response.js",
   import.meta.url,
 );
-const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
-const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
-const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _pagesPageDataPath = resolveEntryPath(
+  "../server/pages-page-data.js",
+  import.meta.url,
+);
+const _pagesNodeCompatPath = resolveEntryPath(
+  "../server/pages-node-compat.js",
+  import.meta.url,
+);
+const _pagesApiRoutePath = resolveEntryPath(
+  "../server/pages-api-route.js",
+  import.meta.url,
+);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 

@@ -56,7 +56,11 @@
  * ```
  */
 
-import { ModuleRunner, ESModulesEvaluator, createNodeImportMeta } from "vite/module-runner";
+import {
+  ModuleRunner,
+  ESModulesEvaluator,
+  createNodeImportMeta,
+} from "vite/module-runner";
 import type { DevEnvironment } from "vite";
 
 /**
@@ -84,7 +88,9 @@ export type DevEnvironmentLike = {
  * @param environment - Any Vite DevEnvironment (or duck-typed equivalent).
  *   Typically `server.environments["ssr"]`.
  */
-export function createDirectRunner(environment: DevEnvironmentLike | DevEnvironment): ModuleRunner {
+export function createDirectRunner(
+  environment: DevEnvironmentLike | DevEnvironment,
+): ModuleRunner {
   return new ModuleRunner(
     {
       transport: {

@@ -2,7 +2,10 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import { describe, expect, it } from "vite-plus/test";
-import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import {
+  appRouter,
+  invalidateAppRouteCache,
+} from "../packages/vinext/src/routing/app-router.js";
 import {
   apiRouter,
   invalidateRouteCache,

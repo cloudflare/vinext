@@ -304,7 +304,10 @@ module.exports.postcss = true;`,
       expect(typeof postcssConfig).toBe("object");
       const postcssObj = postcssConfig as { plugins: any[] };
       expect(postcssObj.plugins).toHaveLength(1);
-      expect(postcssObj.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
+      expect(postcssObj.plugins[0]).toHaveProperty(
+        "postcssPlugin",
+        "mock-postcss-plugin",
+      );
     } finally {
       await server.close();
     }

@@ -67,7 +67,8 @@ const projectServers = {
     use: { baseURL: "http://localhost:4176" },
     server: {
       // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
-      command: "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
+      command:
+        "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
       cwd: "./examples/app-router-cloudflare",
       port: 4176,
       reuseExistingServer: !process.env.CI,

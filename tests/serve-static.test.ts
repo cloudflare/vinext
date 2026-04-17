@@ -118,7 +118,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("gzip, deflate, br");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/app-abc123.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/app-abc123.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -212,7 +219,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("br");
     const { res } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/nope-xxx999.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/nope-xxx999.js",
+      true,
+      cache,
+    );
 
     expect(served).toBe(false);
   });
@@ -241,7 +255,10 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq();
     const { res, captured } = mockRes();
 
-    const extraHeaders = { "X-Custom": "value", "Content-Security-Policy": "default-src 'self'" };
+    const extraHeaders = {
+      "X-Custom": "value",
+      "Content-Security-Policy": "default-src 'self'",
+    };
     await tryServeStatic(req, res, clientDir, "/photo.jpg", false, cache, extraHeaders);
 
     await captured.ended;
@@ -279,7 +296,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq();
     const { res } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/../../../etc/passwd", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/../../../etc/passwd",
+      true,
+      cache,
+    );
 
     expect(served).toBe(false);
   });
@@ -291,7 +315,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq();
     const { res } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/.vite/manifest.json", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/.vite/manifest.json",
+      true,
+      cache,
+    );
 
     expect(served).toBe(false);
   });
@@ -442,7 +473,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq(undefined, undefined, "HEAD");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/head-eee555.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/head-eee555.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -483,7 +521,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("zstd, br, gzip");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/zstd-ggg777.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/zstd-ggg777.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -546,7 +591,13 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq();
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/nocache-aaa111.js", false);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/nocache-aaa111.js",
+      false,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -570,7 +621,13 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq(undefined, undefined, "HEAD");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/head-slow-bbb222.js", false);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/head-slow-bbb222.js",
+      false,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -633,7 +690,13 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/etag-slow-abc123.js", true);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/assets/etag-slow-abc123.js",
+      true,
+    );
 
     await captured.ended;
     expect(served).toBe(true);

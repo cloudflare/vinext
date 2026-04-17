@@ -123,7 +123,10 @@ describe("scanImports", () => {
   });
 
   it("recognizes next/compat/router as supported", () => {
-    writeFile("components/shared-nav.tsx", `import { useRouter } from "next/compat/router";`);
+    writeFile(
+      "components/shared-nav.tsx",
+      `import { useRouter } from "next/compat/router";`,
+    );
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
@@ -150,7 +153,10 @@ describe("scanImports", () => {
   });
 
   it("recognizes next/constants as supported", () => {
-    writeFile("lib/phases.ts", `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";`);
+    writeFile(
+      "lib/phases.ts",
+      `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";`,
+    );
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
@@ -236,7 +242,9 @@ describe("scanImports", () => {
     );
 
     const items = scanImports(tmpDir);
-    const item = items.find((i) => i.name === "next/dist/shared/lib/router-context.shared-runtime");
+    const item = items.find(
+      (i) => i.name === "next/dist/shared/lib/router-context.shared-runtime",
+    );
     expect(item?.status).toBe("supported");
   });
 
@@ -256,7 +264,10 @@ describe("scanImports", () => {
       "next/dist/server/config-shared",
     ];
 
-    writeFile("lib/internals.ts", distImports.map((p) => `import * as m from "${p}";`).join("\n"));
+    writeFile(
+      "lib/internals.ts",
+      distImports.map((p) => `import * as m from "${p}";`).join("\n"),
+    );
 
     const items = scanImports(tmpDir);
     for (const p of distImports) {
@@ -343,7 +354,9 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "experimental.serverActions")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.serverActions")?.status).toBe(
+      "supported",
+    );
   });
 
   it("detects allowedDevOrigins as supported", () => {
@@ -376,7 +389,10 @@ describe("analyzeConfig", () => {
   });
 
   it("reads next.config.ts files", () => {
-    writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
+    writeFile(
+      "next.config.ts",
+      `const config = { basePath: "/app" }; export default config;`,
+    );
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
@@ -612,8 +628,14 @@ describe("checkConventions", () => {
 
   it("counts API routes separately", () => {
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("pages/api/hello.ts", `export default function handler(req, res) { res.json({}) }`);
-    writeFile("pages/api/users.ts", `export default function handler(req, res) { res.json({}) }`);
+    writeFile(
+      "pages/api/hello.ts",
+      `export default function handler(req, res) { res.json({}) }`,
+    );
+    writeFile(
+      "pages/api/users.ts",
+      `export default function handler(req, res) { res.json({}) }`,
+    );
 
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name.includes("2 API route"))).toBeDefined();
@@ -718,7 +740,10 @@ describe("checkConventions", () => {
 
   it("detects PostCSS string-form plugins", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
-    writeFile("postcss.config.mjs", `export default {\n  plugins: ["@tailwindcss/postcss"]\n};`);
+    writeFile(
+      "postcss.config.mjs",
+      `export default {\n  plugins: ["@tailwindcss/postcss"]\n};`,
+    );
 
     const items = checkConventions(tmpDir);
     const postcss = items.find((i) => i.name.includes("PostCSS"));
@@ -736,7 +761,10 @@ describe("checkConventions", () => {
   });
 
   it("detects __dirname usage in server files", () => {
-    writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
+    writeFile(
+      "lib/db.ts",
+      `import path from "path";\nconst dir = path.join(__dirname, "data");`,
+    );
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
@@ -923,7 +951,8 @@ describe("runCheck", () => {
     );
 
     const result = runCheck(tmpDir);
-    const total = result.summary.supported + result.summary.partial + result.summary.unsupported;
+    const total =
+      result.summary.supported + result.summary.partial + result.summary.unsupported;
     expect(total).toBe(result.summary.total);
   });
 

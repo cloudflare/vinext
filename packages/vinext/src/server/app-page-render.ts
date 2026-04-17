@@ -53,7 +53,10 @@ export type RenderAppPageLifecycleOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
-  createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  createRscOnErrorHandler: (
+    pathname: string,
+    routePath: string,
+  ) => AppPageBoundaryOnError;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -157,7 +160,10 @@ export async function renderAppPageLifecycle(
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
-  const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
+  const baseOnError = options.createRscOnErrorHandler(
+    options.cleanPathname,
+    options.routePattern,
+  );
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
   const rscStream = options.renderToReadableStream(outgoingElement, {
     onError: rscErrorTracker.onRenderError,
@@ -256,7 +262,9 @@ export async function renderAppPageLifecycle(
   }
   const htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
-    throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
+    throw new Error(
+      "[vinext] Expected an HTML stream when no fallback response was returned",
+    );
   }
 
   if (

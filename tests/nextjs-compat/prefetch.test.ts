@@ -47,7 +47,10 @@ describe("Next.js compat: prefetch", () => {
   });
 
   it("should navigate to target page (prefetch=false)", async () => {
-    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/prefetch-test/no-prefetch");
+    const { html } = await fetchHtml(
+      ctx.baseUrl,
+      "/nextjs-compat/prefetch-test/no-prefetch",
+    );
     expect(html).toContain("No Prefetch Target Page");
   });
 });

@@ -51,7 +51,9 @@ test.describe("SSE Streaming (OpenNext compat)", () => {
     await expect(msg4).toContainText('"message":"close"');
   });
 
-  test("SSE API route returns correct content-type and cache headers", async ({ request }) => {
+  test("SSE API route returns correct content-type and cache headers", async ({
+    request,
+  }) => {
     // Ref: opennextjs-cloudflare — SSE routes should have proper streaming headers
     const res = await request.get(`${BASE}/api/sse`);
     expect(res.status()).toBe(200);

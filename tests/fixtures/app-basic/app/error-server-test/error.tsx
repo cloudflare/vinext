@@ -1,6 +1,12 @@
 "use client";
 
-export default function ErrorServerBoundary({ error, reset }: { error: Error; reset: () => void }) {
+export default function ErrorServerBoundary({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
   return (
     <div data-testid="server-error-boundary">
       <h2>Server Error Caught</h2>

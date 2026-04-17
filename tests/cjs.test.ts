@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR, startFixtureServer, fetchHtml } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  PAGES_FIXTURE_DIR,
+  startFixtureServer,
+  fetchHtml,
+} from "./helpers.js";
 
 describe("CJS interop (App Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
   beforeAll(async () => {
-    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
+      appRouter: true,
+    }));
   }, 30000);
 
   afterAll(async () => {

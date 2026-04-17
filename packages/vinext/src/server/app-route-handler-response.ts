@@ -77,19 +77,25 @@ export function applyRouteHandlerRevalidateHeader(
   response: Response,
   revalidateSeconds: number,
 ): void {
-  response.headers.set("cache-control", buildRouteHandlerCacheControl("HIT", revalidateSeconds));
+  response.headers.set(
+    "cache-control",
+    buildRouteHandlerCacheControl("HIT", revalidateSeconds),
+  );
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {
   response.headers.set("X-Vinext-Cache", "MISS");
 }
 
-export async function buildAppRouteCacheValue(response: Response): Promise<CachedRouteValue> {
+export async function buildAppRouteCacheValue(
+  response: Response,
+): Promise<CachedRouteValue> {
   const body = await response.arrayBuffer();
   const headers: CachedRouteValue["headers"] = {};
 
   response.headers.forEach((value, key) => {
-    if (key === "set-cookie" || key === "x-vinext-cache" || key === "cache-control") return;
+    if (key === "set-cookie" || key === "x-vinext-cache" || key === "cache-control")
+      return;
     headers[key] = value;
   });
   const setCookies = response.headers.getSetCookie?.() ?? [];

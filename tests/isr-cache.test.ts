@@ -497,7 +497,9 @@ describe("revalidatePath type parameter", () => {
       revalidate: false,
     };
     await handler.set("entry:page-only", pageOnlyValue, { tags: ["_N_T_/about/page"] });
-    await handler.set("entry:bare-path", barePathValue, { tags: ["/about", "_N_T_/about"] });
+    await handler.set("entry:bare-path", barePathValue, {
+      tags: ["/about", "_N_T_/about"],
+    });
 
     await revalidatePath("/about", "page");
 

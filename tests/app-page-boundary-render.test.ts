@@ -16,7 +16,9 @@ function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   });
 }
 
-function renderElementToStream(element: React.ReactNode | AppElements): ReadableStream<Uint8Array> {
+function renderElementToStream(
+  element: React.ReactNode | AppElements,
+): ReadableStream<Uint8Array> {
   if (element !== null && typeof element === "object" && !React.isValidElement(element)) {
     // Flat map payload — extract the route element and render it to HTML
     // (mirrors what the real SSR entry does after deserializing the Flight stream)
@@ -45,7 +47,9 @@ function createCommonOptions() {
   }));
 
   return {
-    buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
+    buildFontLinkHeader(
+      preloads: readonly { href: string; type: string }[] | null | undefined,
+    ) {
       if (!preloads || preloads.length === 0) {
         return "";
       }
@@ -88,7 +92,11 @@ function RootLayout({
   children: React.ReactNode;
   params: { slug?: string };
 }) {
-  return React.createElement("div", { "data-layout": "root", "data-slug": params.slug }, children);
+  return React.createElement(
+    "div",
+    { "data-layout": "root", "data-slug": params.slug },
+    children,
+  );
 }
 
 function LeafLayout({
@@ -110,11 +118,19 @@ function NotFoundBoundary() {
 }
 
 function RouteErrorBoundary({ error }: { error: Error }) {
-  return React.createElement("p", { "data-boundary": "route-error" }, `route:${error.message}`);
+  return React.createElement(
+    "p",
+    { "data-boundary": "route-error" },
+    `route:${error.message}`,
+  );
 }
 
 function GlobalErrorBoundary({ error }: { error: Error }) {
-  return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
+  return React.createElement(
+    "p",
+    { "data-boundary": "global-error" },
+    `global:${error.message}`,
+  );
 }
 
 const rootLayoutModule = {
@@ -224,7 +240,10 @@ describe("app page boundary render helpers", () => {
     expect(response?.status).toBe(404);
     expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
 
-    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<
+      string,
+      unknown
+    >;
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__rootLayout).toBe("/");
     expect(payload["route:/posts/missing"]).toBeTruthy();
@@ -246,7 +265,10 @@ describe("app page boundary render helpers", () => {
 
     expect(response?.status).toBe(404);
 
-    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<
+      string,
+      unknown
+    >;
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__rootLayout).toBeNull();
     expect(payload["route:/posts/missing"]).toBeTruthy();
@@ -254,7 +276,9 @@ describe("app page boundary render helpers", () => {
 
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
     const common = createCommonOptions();
-    const sanitizeErrorForClient = vi.fn((error: Error) => new Error(`safe:${error.message}`));
+    const sanitizeErrorForClient = vi.fn(
+      (error: Error) => new Error(`safe:${error.message}`),
+    );
 
     const response = await renderAppPageErrorBoundary({
       ...common,
@@ -304,7 +328,10 @@ describe("app page boundary render helpers", () => {
     expect(response?.status).toBe(200);
     expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
 
-    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<
+      string,
+      unknown
+    >;
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__rootLayout).toBe("/");
     expect(payload["route:/posts/missing"]).toBeTruthy();

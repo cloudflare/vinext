@@ -2,7 +2,9 @@
 
 import dynamic from "next/dynamic";
 
-const DynamicNoSSR = dynamic(() => import("../text-dynamic-no-ssr-client"), { ssr: false });
+const DynamicNoSSR = dynamic(() => import("../text-dynamic-no-ssr-client"), {
+  ssr: false,
+});
 
 export default function Page() {
   return (

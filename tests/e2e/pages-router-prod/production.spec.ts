@@ -14,7 +14,9 @@ test.describe("Pages Router Production Build", () => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
-    await expect(page.locator("body")).toContainText("This is a Pages Router app running on Vite.");
+    await expect(page.locator("body")).toContainText(
+      "This is a Pages Router app running on Vite.",
+    );
   });
 
   test("about page renders", async ({ page }) => {

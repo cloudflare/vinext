@@ -77,7 +77,9 @@ function buildAppPageCacheControl(
 }
 
 function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue | null {
-  return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
+  return entry?.value.value && entry.value.value.kind === "APP_PAGE"
+    ? entry.value.value
+    : null;
 }
 
 export function buildAppPageCachedResponse(
@@ -88,7 +90,10 @@ export function buildAppPageCachedResponse(
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const status = cachedValue.status || 200;
   const headers = {
-    "Cache-Control": buildAppPageCacheControl(options.cacheState, options.revalidateSeconds),
+    "Cache-Control": buildAppPageCacheControl(
+      options.cacheState,
+      options.revalidateSeconds,
+    ),
     Vary: "RSC, Accept",
     "X-Vinext-Cache": options.cacheState,
   };
@@ -306,7 +311,10 @@ export function scheduleAppPageRscCacheWrite(
       // 2. consumeDynamicUsage() here catches APIs that fire while the RSC
       //    stream is consumed (headers(), cookies(), noStore()).
       if (options.consumeDynamicUsage()) {
-        options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
+        options.isrDebug?.(
+          "RSC cache write skipped (dynamic usage during render)",
+          rscKey,
+        );
         return;
       }
 

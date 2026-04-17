@@ -84,7 +84,14 @@ const LegacyImage = forwardRef<HTMLImageElement, LegacyImageProps>(
     const h = typeof height === "string" ? parseInt(height, 10) : height;
 
     return (
-      <Image ref={ref} width={w} height={h} style={modernStyle} onLoad={handleLoad} {...rest} />
+      <Image
+        ref={ref}
+        width={w}
+        height={h}
+        style={modernStyle}
+        onLoad={handleLoad}
+        {...rest}
+      />
     );
   },
 );

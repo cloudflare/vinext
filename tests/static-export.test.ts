@@ -20,7 +20,9 @@ const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** Simple static file server for testing. */
-function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl: string }> {
+function createStaticServer(
+  rootDir: string,
+): Promise<{ server: Server; baseUrl: string }> {
   const MIME_TYPES: Record<string, string> = {
     ".html": "text/html",
     ".js": "application/javascript",
@@ -83,9 +85,12 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     // 1. Build the fixture and run static export
     const pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
 
-    const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
-    const { pagesRouter } = await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { staticExportPages } =
+      await import("../packages/vinext/src/build/static-export.js");
+    const { pagesRouter } =
+      await import("../packages/vinext/src/routing/pages-router.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(PAGES_FIXTURE, "pages");
     const routes = await pagesRouter(pagesDir);
@@ -188,9 +193,11 @@ describe("Static export — App Router (served via HTTP)", () => {
     // 1. Build the fixture and run static export
     const rscBundlePath = await buildAppFixture(APP_FIXTURE);
 
-    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { staticExportApp } =
+      await import("../packages/vinext/src/build/static-export.js");
     const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE, "app");
     const routes = await appRouter(appDir);

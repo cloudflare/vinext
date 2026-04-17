@@ -7,7 +7,8 @@ async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
   // Vite's dev error overlay can sometimes appear and intercept clicks.
   await page
     .addStyleTag({
-      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+      content:
+        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
     })
     .catch(() => {
       // best effort
@@ -63,7 +64,9 @@ test.describe("next/form GET interception", () => {
     expect(url.searchParams.get("q")).toBe("react");
   });
 
-  test("Form GET submission includes hidden inputs in the destination URL", async ({ page }) => {
+  test("Form GET submission includes hidden inputs in the destination URL", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
     await waitForHydration(page);
@@ -95,8 +98,12 @@ test.describe("next/form GET interception", () => {
     await waitForHydration(page);
 
     await page.fill("#search-input-with-submitter-action", "button");
-    await expect(page.locator("#search-input-with-submitter-action")).toHaveValue("button");
-    await page.locator("#search-button-with-submitter-action").click({ noWaitAfter: true });
+    await expect(page.locator("#search-input-with-submitter-action")).toHaveValue(
+      "button",
+    );
+    await page
+      .locator("#search-button-with-submitter-action")
+      .click({ noWaitAfter: true });
 
     await expect(page.locator("h1")).toHaveText("Search Alt");
     await expect(page.locator("#search-result")).toHaveText("Results for: button", {
@@ -113,14 +120,20 @@ test.describe("next/form GET interception", () => {
     expect(url.search).toBe("?lang=fr&q=button&source=submitter-action");
   });
 
-  test("Form submission honors submitter formMethod GET on a POST form", async ({ page }) => {
+  test("Form submission honors submitter formMethod GET on a POST form", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
     await waitForHydration(page);
 
     await page.fill("#search-input-post-with-get-submitter", "override");
-    await expect(page.locator("#search-input-post-with-get-submitter")).toHaveValue("override");
-    await page.locator("#search-button-post-with-get-submitter").click({ noWaitAfter: true });
+    await expect(page.locator("#search-input-post-with-get-submitter")).toHaveValue(
+      "override",
+    );
+    await page
+      .locator("#search-button-post-with-get-submitter")
+      .click({ noWaitAfter: true });
 
     await expect(page.locator("h1")).toHaveText("Search Alt");
     await expect(page.locator("#search-result")).toHaveText("Results for: override", {
@@ -160,13 +173,19 @@ test.describe("next/form GET interception", () => {
     await expect(page.locator("#search-result")).toHaveText("Results for: second", {
       timeout: 10_000,
     });
-    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/search?q=second");
+    await expect
+      .poll(() => page.url(), { timeout: 10_000 })
+      .toContain("/search?q=second");
 
     // No full page reload across both
     await expect
-      .poll(() => page.evaluate(() => window.sessionStorage.getItem("__FORM_PAGE_LOAD_COUNT__")), {
-        timeout: 10_000,
-      })
+      .poll(
+        () =>
+          page.evaluate(() => window.sessionStorage.getItem("__FORM_PAGE_LOAD_COUNT__")),
+        {
+          timeout: 10_000,
+        },
+      )
       .toBe("1");
   });
 });

@@ -234,7 +234,15 @@ describe("App Router entry templates", () => {
   });
 
   it("generateRscEntry uses buildPageElements in the server-action re-render path", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
     // PR 2c returns the flat elements payload instead of the monolithic page
     // element, so the action re-render path should rebuild the keyed map.
     const actionRerenderIdx = code.indexOf(
@@ -246,7 +254,15 @@ describe("App Router entry templates", () => {
   });
 
   it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
 
     expect(code).toContain("createAppPageTreePath as __createAppPageTreePath");
     expect(code).toContain(
@@ -312,10 +328,14 @@ describe("Pages Router entry templates", () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
     const stableCode = stabilize(code);
 
-    expect(stableCode).toContain('from "<ROOT>/packages/vinext/src/server/isr-cache.js";');
+    expect(stableCode).toContain(
+      'from "<ROOT>/packages/vinext/src/server/isr-cache.js";',
+    );
     expect(code).toContain("function isrGet(key) {");
     expect(code).toContain("return __sharedIsrGet(key);");
-    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).toContain(
+      "return __sharedTriggerBackgroundRegeneration(key, renderFn);",
+    );
     expect(code).not.toContain("const promise = renderFn()");
     expect(code).not.toContain("ctx.waitUntil(promise)");
   });
@@ -325,13 +345,18 @@ describe("Pages Router entry templates", () => {
     const renderPageIndex = code.indexOf(
       "async function _renderPage(request, url, manifest, middlewareHeaders) {",
     );
-    const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
+    const unifiedCtxIndex = code.indexOf(
+      "const __uCtx = _createUnifiedCtx({",
+      renderPageIndex,
+    );
 
     expect(renderPageIndex).toBeGreaterThan(-1);
     expect(unifiedCtxIndex).toBeGreaterThan(renderPageIndex);
 
     const renderPageSection = code.slice(unifiedCtxIndex, unifiedCtxIndex + 200);
-    expect(renderPageSection).toContain("executionContext: _getRequestExecutionContext(),");
+    expect(renderPageSection).toContain(
+      "executionContext: _getRequestExecutionContext(),",
+    );
   });
 
   it("server entry passes a fresh unified-context ISR runner into the typed page-data helper", async () => {
@@ -368,12 +393,18 @@ describe("Pages Router entry templates", () => {
       "triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration",
     );
     expect(code).toContain("const pageDataResult = await __resolvePagesPageData({");
-    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).toContain(
+      "return __sharedTriggerBackgroundRegeneration(key, renderFn);",
+    );
     expect(code).not.toContain("async function isrGet(key)");
-    expect(code).not.toContain("async function isrSet(key, data, revalidateSeconds, tags)");
+    expect(code).not.toContain(
+      "async function isrSet(key, data, revalidateSeconds, tags)",
+    );
     expect(code).not.toContain("const pendingRegenerations = new Map();");
     expect(code).not.toContain("function fnv1a64(input)");
-    expect(code).not.toContain("const result = await pageModule.getServerSideProps(ctx);");
+    expect(code).not.toContain(
+      "const result = await pageModule.getServerSideProps(ctx);",
+    );
     expect(code).not.toContain("const result = await pageModule.getStaticProps(ctx);");
   });
 

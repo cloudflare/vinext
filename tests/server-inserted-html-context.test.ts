@@ -12,7 +12,8 @@ import { renderToString } from "react-dom/server";
 
 describe("ServerInsertedHTMLContext", () => {
   beforeEach(async () => {
-    const { clearServerInsertedHTML } = await import("../packages/vinext/src/shims/navigation.js");
+    const { clearServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
     clearServerInsertedHTML();
   });
 
@@ -129,7 +130,11 @@ describe("ServerInsertedHTMLContext", () => {
     const tree = React.createElement(
       ServerInsertedHTMLContext!.Provider,
       { value: useServerInsertedHTML },
-      React.createElement(StyledComponentsRegistry, null, React.createElement(ApolloRegistry)),
+      React.createElement(
+        StyledComponentsRegistry,
+        null,
+        React.createElement(ApolloRegistry),
+      ),
     );
 
     renderToString(tree);

@@ -42,9 +42,13 @@ describe("dev origin check", () => {
     });
 
     it("allows subdomains of localhost", () => {
-      expect(isAllowedDevOrigin("http://storybook.localhost:6006", "localhost:5173")).toBe(true);
+      expect(
+        isAllowedDevOrigin("http://storybook.localhost:6006", "localhost:5173"),
+      ).toBe(true);
       expect(isAllowedDevOrigin("http://foo.localhost", "localhost:5173")).toBe(true);
-      expect(isAllowedDevOrigin("http://a.b.localhost:3000", "localhost:5173")).toBe(true);
+      expect(isAllowedDevOrigin("http://a.b.localhost:3000", "localhost:5173")).toBe(
+        true,
+      );
     });
 
     it("blocks external origins", () => {
@@ -55,9 +59,13 @@ describe("dev origin check", () => {
 
     it("blocks origins that look like localhost but aren't", () => {
       // "notlocalhost" should not match
-      expect(isAllowedDevOrigin("http://notlocalhost:5173", "localhost:5173")).toBe(false);
+      expect(isAllowedDevOrigin("http://notlocalhost:5173", "localhost:5173")).toBe(
+        false,
+      );
       // "localhost.evil.com" should not match
-      expect(isAllowedDevOrigin("http://localhost.evil.com", "localhost:5173")).toBe(false);
+      expect(isAllowedDevOrigin("http://localhost.evil.com", "localhost:5173")).toBe(
+        false,
+      );
     });
 
     it("blocks malformed origin headers", () => {
@@ -67,34 +75,48 @@ describe("dev origin check", () => {
 
     it("allows same-origin by matching Host header", () => {
       // Origin hostname matches Host hostname
-      expect(isAllowedDevOrigin("http://myapp.local:5173", "myapp.local:5173")).toBe(true);
-      expect(isAllowedDevOrigin("http://192.168.1.5:3000", "192.168.1.5:3000")).toBe(true);
+      expect(isAllowedDevOrigin("http://myapp.local:5173", "myapp.local:5173")).toBe(
+        true,
+      );
+      expect(isAllowedDevOrigin("http://192.168.1.5:3000", "192.168.1.5:3000")).toBe(
+        true,
+      );
     });
 
     it("same-origin check ignores port differences", () => {
       // Hostname matches even though port differs
-      expect(isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173")).toBe(true);
+      expect(isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173")).toBe(
+        true,
+      );
     });
 
     it("same-origin check handles comma-separated Host header", () => {
-      expect(isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173, proxy:8080")).toBe(
-        true,
-      );
+      expect(
+        isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173, proxy:8080"),
+      ).toBe(true);
     });
 
     it("allows origins in the allowedDevOrigins list", () => {
       const allowed = ["custom-origin.com", "*.my-domain.com"];
-      expect(isAllowedDevOrigin("http://custom-origin.com:3000", "localhost:5173", allowed)).toBe(
+      expect(
+        isAllowedDevOrigin("http://custom-origin.com:3000", "localhost:5173", allowed),
+      ).toBe(true);
+      expect(
+        isAllowedDevOrigin("http://sub.my-domain.com", "localhost:5173", allowed),
+      ).toBe(true);
+      expect(isAllowedDevOrigin("http://my-domain.com", "localhost:5173", allowed)).toBe(
         true,
       );
-      expect(isAllowedDevOrigin("http://sub.my-domain.com", "localhost:5173", allowed)).toBe(true);
-      expect(isAllowedDevOrigin("http://my-domain.com", "localhost:5173", allowed)).toBe(true);
-      expect(isAllowedDevOrigin("http://a.b.my-domain.com", "localhost:5173", allowed)).toBe(true);
+      expect(
+        isAllowedDevOrigin("http://a.b.my-domain.com", "localhost:5173", allowed),
+      ).toBe(true);
     });
 
     it("rejects origins not in the allowedDevOrigins list", () => {
       const allowed = ["custom-origin.com"];
-      expect(isAllowedDevOrigin("https://other.com", "localhost:5173", allowed)).toBe(false);
+      expect(isAllowedDevOrigin("https://other.com", "localhost:5173", allowed)).toBe(
+        false,
+      );
     });
 
     it("handles case-insensitive hostnames", () => {
@@ -168,7 +190,9 @@ describe("dev origin check", () => {
 
     it("passes allowedDevOrigins to origin check", () => {
       expect(
-        validateDevRequest({ origin: "http://custom.com", host: "localhost:5173" }, ["custom.com"]),
+        validateDevRequest({ origin: "http://custom.com", host: "localhost:5173" }, [
+          "custom.com",
+        ]),
       ).toBeNull();
     });
   });

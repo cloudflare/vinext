@@ -18,8 +18,13 @@ import {
 } from "./app-route-handler-execution.js";
 
 type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
-type RouteHandlerBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
-type RouteHandlerRevalidationContextRunner = (renderFn: () => Promise<void>) => Promise<void>;
+type RouteHandlerBackgroundRegenerator = (
+  key: string,
+  renderFn: () => Promise<void>,
+) => void;
+type RouteHandlerRevalidationContextRunner = (
+  renderFn: () => Promise<void>,
+) => Promise<void>;
 
 export type ReadAppRouteHandlerCacheOptions = {
   basePath?: string;
@@ -54,7 +59,9 @@ export type ReadAppRouteHandlerCacheOptions = {
 };
 
 function getCachedAppRouteValue(entry: ISRCacheEntry | null) {
-  return entry?.value.value && entry.value.value.kind === "APP_ROUTE" ? entry.value.value : null;
+  return entry?.value.value && entry.value.value.kind === "APP_ROUTE"
+    ? entry.value.value
+    : null;
 }
 
 export async function readAppRouteHandlerCacheResponse(
@@ -105,7 +112,10 @@ export async function readAppRouteHandlerCacheResponse(
 
           if (dynamicUsedInHandler) {
             markKnownDynamicAppRoute(options.routePattern);
-            options.isrDebug?.("route regen skipped (dynamic usage)", options.cleanPathname);
+            options.isrDebug?.(
+              "route regen skipped (dynamic usage)",
+              options.cleanPathname,
+            );
             return;
           }
 
@@ -114,7 +124,12 @@ export async function readAppRouteHandlerCacheResponse(
             options.getCollectedFetchTags(),
           );
           const routeCacheValue = await buildAppRouteCacheValue(response);
-          await options.isrSet(routeKey, routeCacheValue, options.revalidateSeconds, routeTags);
+          await options.isrSet(
+            routeKey,
+            routeCacheValue,
+            options.revalidateSeconds,
+            routeTags,
+          );
           options.isrDebug?.("route regen complete", routeKey);
         });
       });

@@ -7,10 +7,17 @@ export function ScriptNonceProvider(
     nonce?: string;
   }>,
 ): React.ReactElement {
-  return React.createElement(ScriptNonceContext.Provider, { value: props.nonce }, props.children);
+  return React.createElement(
+    ScriptNonceContext.Provider,
+    { value: props.nonce },
+    props.children,
+  );
 }
 
-export function withScriptNonce(element: React.ReactElement, nonce?: string): React.ReactElement {
+export function withScriptNonce(
+  element: React.ReactElement,
+  nonce?: string,
+): React.ReactElement {
   if (!nonce) {
     return element;
   }

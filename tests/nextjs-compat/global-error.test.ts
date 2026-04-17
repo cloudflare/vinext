@@ -106,7 +106,10 @@ describe("Next.js compat: global-error", () => {
     // generateMetadata() throws, local error.tsx catches it — not global-error.
     // Next.js returns 200 (error is "handled" by the boundary).
     // Source: index.test.ts#L68-L73
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-error-with-boundary");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-error-with-boundary",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("Local error boundary");
   });
@@ -144,8 +147,12 @@ describe("Next.js compat: global-error", () => {
       const { html } = await fetchHtml(baseUrl, route);
       const htmlTags = (html.match(/<html/gi) || []).length;
       const bodyTags = (html.match(/<body/gi) || []).length;
-      expect(htmlTags, `${route} should have exactly 1 <html> tag, got ${htmlTags}`).toBe(1);
-      expect(bodyTags, `${route} should have exactly 1 <body> tag, got ${bodyTags}`).toBe(1);
+      expect(htmlTags, `${route} should have exactly 1 <html> tag, got ${htmlTags}`).toBe(
+        1,
+      );
+      expect(bodyTags, `${route} should have exactly 1 <body> tag, got ${bodyTags}`).toBe(
+        1,
+      );
     }
   });
 
@@ -240,7 +247,10 @@ describe("Next.js compat: global-error (production preview)", () => {
   });
 
   it("generateMetadata() errors render the co-located error.tsx boundary with 200", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-error-with-boundary");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-error-with-boundary",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("Local error boundary");
     expect(html).not.toContain("global-error");

@@ -63,7 +63,9 @@ export default function LinkTestPage() {
         </Link>
       </div>
 
-      {preventedNav && <div data-testid="prevented-message">Navigation was prevented</div>}
+      {preventedNav && (
+        <div data-testid="prevented-message">Navigation was prevented</div>
+      )}
 
       <div data-testid="current-path">{router.asPath}</div>
     </div>

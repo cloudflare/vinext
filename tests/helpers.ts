@@ -16,7 +16,10 @@ import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
 // ── Fixture paths ─────────────────────────────────────────────
-export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+export const PAGES_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-basic",
+);
 export const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 export const PAGES_I18N_DOMAINS_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -147,7 +150,8 @@ export async function createIsolatedFixture(
   // node_modules so fixtures don't need their own install.
   await fs.cp(fixtureDir, tmpDir, {
     recursive: true,
-    filter: (src) => !src.includes(`${path.sep}node_modules`) && (filter == null || filter(src)),
+    filter: (src) =>
+      !src.includes(`${path.sep}node_modules`) && (filter == null || filter(src)),
   });
 
   const resolvedNodeModules =
@@ -281,7 +285,10 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
     undefined,
     path.join(fixtureDir, "node_modules"),
   );
-  const cfPluginPath = path.join(tmpDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs");
+  const cfPluginPath = path.join(
+    tmpDir,
+    "node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+  );
   const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as unknown as {
     cloudflare: (opts?: {
       viteEnvironment?: { name: string; childEnvironments?: string[] };

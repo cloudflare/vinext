@@ -42,7 +42,11 @@ export type WrapAppPageBoundaryElementOptions<
   makeThenableParams: (params: AppPageParams) => unknown;
   matchedParams: AppPageParams;
   renderErrorBoundary: (component: TGlobalErrorComponent, children: TElement) => TElement;
-  renderLayout: (component: TLayoutComponent, children: TElement, params: unknown) => TElement;
+  renderLayout: (
+    component: TLayoutComponent,
+    children: TElement,
+    params: unknown,
+  ) => TElement;
   renderLayoutSegmentProvider?: (
     segmentMap: { children: TChildSegments },
     children: TElement,
@@ -63,7 +67,10 @@ type AppPageBoundaryOnError = (
 ) => unknown;
 
 export type RenderAppPageBoundaryResponseOptions<TElement> = {
-  createHtmlResponse: (rscStream: ReadableStream<Uint8Array>, status: number) => Promise<Response>;
+  createHtmlResponse: (
+    rscStream: ReadableStream<Uint8Array>,
+    status: number,
+  ) => Promise<Response>;
   createRscOnErrorHandler: () => AppPageBoundaryOnError;
   element: TElement;
   isRscRequest: boolean;
@@ -103,7 +110,9 @@ export function resolveAppPageErrorBoundary<TModule, TComponent>(
 
   if (options.layoutErrorModules) {
     for (let index = options.layoutErrorModules.length - 1; index >= 0; index--) {
-      const layoutErrorComponent = options.getDefaultExport(options.layoutErrorModules[index]);
+      const layoutErrorComponent = options.getDefaultExport(
+        options.layoutErrorModules[index],
+      );
       if (layoutErrorComponent) {
         return {
           component: layoutErrorComponent,
@@ -153,18 +162,27 @@ export function wrapAppPageBoundaryElement<
         options.renderLayoutSegmentProvider &&
         options.resolveChildSegments
       ) {
-        const treePosition = options.layoutTreePositions ? options.layoutTreePositions[index] : 0;
+        const treePosition = options.layoutTreePositions
+          ? options.layoutTreePositions[index]
+          : 0;
         const childSegments = options.resolveChildSegments(
           options.routeSegments ?? [],
           treePosition,
           options.matchedParams,
         );
-        element = options.renderLayoutSegmentProvider({ children: childSegments }, element);
+        element = options.renderLayoutSegmentProvider(
+          { children: childSegments },
+          element,
+        );
       }
     }
   }
 
-  if (options.isRscRequest && options.includeGlobalErrorBoundary && options.globalErrorComponent) {
+  if (
+    options.isRscRequest &&
+    options.includeGlobalErrorBoundary &&
+    options.globalErrorComponent
+  ) {
     element = options.renderErrorBoundary(options.globalErrorComponent, element);
   }
 

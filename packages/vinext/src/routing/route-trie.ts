@@ -43,7 +43,9 @@ function createNode<R>(): TrieNode<R> {
  * First route to claim a terminal position wins (routes are pre-sorted
  * by precedence, so insertion order preserves correct priority).
  */
-export function buildRouteTrie<R extends { patternParts: string[] }>(routes: R[]): TrieNode<R> {
+export function buildRouteTrie<R extends { patternParts: string[] }>(
+  routes: R[],
+): TrieNode<R> {
   const root = createNode<R>();
 
   for (const route of routes) {

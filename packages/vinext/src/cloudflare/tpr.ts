@@ -194,13 +194,18 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
       (ns: Record<string, unknown>) =>
         ns && typeof ns === "object" && ns.binding === "VINEXT_CACHE",
     );
-    if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
+    if (
+      vinextKV &&
+      typeof vinextKV.id === "string" &&
+      vinextKV.id !== "<your-kv-namespace-id>"
+    ) {
       result.kvNamespaceId = vinextKV.id;
     }
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const domain =
+    extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
 
   return result;
@@ -361,12 +366,15 @@ async function resolveZoneId(domain: string, apiToken: string): Promise<string |
 
 /** Resolve the account ID associated with the API token. */
 async function resolveAccountId(apiToken: string): Promise<string | null> {
-  const response = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=1", {
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      "Content-Type": "application/json",
+  const response = await fetch(
+    "https://api.cloudflare.com/client/v4/accounts?per_page=1",
+    {
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        "Content-Type": "application/json",
+      },
     },
-  });
+  );
 
   if (!response.ok) return null;
 
@@ -422,7 +430,9 @@ async function queryTraffic(
   });
 
   if (!response.ok) {
-    throw new Error(`Zone analytics query failed: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Zone analytics query failed: ${response.status} ${response.statusText}`,
+    );
   }
 
   const data = (await response.json()) as {
@@ -609,7 +619,12 @@ async function prerenderRoutes(
  * to the current module (works whether vinext is installed or linked).
  */
 function startLocalServer(root: string, port: number): ChildProcess {
-  const prodServerPath = path.resolve(import.meta.dirname, "..", "server", "prod-server.js");
+  const prodServerPath = path.resolve(
+    import.meta.dirname,
+    "..",
+    "server",
+    "prod-server.js",
+  );
   const outDir = path.join(root, "dist");
 
   // Escape backslashes for Windows paths inside the JS string
@@ -810,7 +825,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 6. Resolve zone ID ────────────────────────────────────────
-  console.log(`  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`);
+  console.log(
+    `  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`,
+  );
 
   const zoneId = await resolveZoneId(wranglerConfig.customDomain, apiToken);
   if (!zoneId) {
@@ -822,7 +839,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   try {
     traffic = await queryTraffic(zoneId, apiToken, windowHours);
   } catch (err) {
-    return skip(`analytics query failed: ${err instanceof Error ? err.message : String(err)}`);
+    return skip(
+      `analytics query failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   if (traffic.length === 0) {
@@ -855,7 +874,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   try {
     rendered = await prerenderRoutes(routePaths, root, wranglerConfig.customDomain);
   } catch (err) {
-    return skip(`pre-rendering failed: ${err instanceof Error ? err.message : String(err)}`);
+    return skip(
+      `pre-rendering failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   if (rendered.size === 0) {
@@ -872,7 +893,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   // Read buildId from the BUILD_ID file written by vinext:build-id plugin.
   let buildId: string;
   try {
-    buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
+    buildId = fs
+      .readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8")
+      .trim();
   } catch {
     // BUILD_ID is written by vinext:build-id during every production build.
     // If missing, the build output is likely corrupted or incomplete.

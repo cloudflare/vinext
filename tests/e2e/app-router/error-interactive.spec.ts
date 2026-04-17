@@ -7,7 +7,8 @@ async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
   // and intercept pointer events, causing flaky click failures.
   await page
     .addStyleTag({
-      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+      content:
+        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
     })
     .catch(() => {
       // best effort

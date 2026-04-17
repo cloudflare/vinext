@@ -19,7 +19,9 @@ test.describe("Shallow routing (Pages Router)", () => {
     await waitForHydration(page);
 
     // Record the initial GSSP call ID
-    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    const initialCallId = await page
+      .locator('[data-testid="gssp-call-id"]')
+      .textContent();
     expect(initialCallId).toMatch(/^gssp:\d+$/);
 
     // Set marker to detect full page reload
@@ -51,7 +53,9 @@ test.describe("Shallow routing (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
     await waitForHydration(page);
 
-    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    const initialCallId = await page
+      .locator('[data-testid="gssp-call-id"]')
+      .textContent();
 
     // Click the deep push button (no shallow option)
     await page.click('[data-testid="deep-push"]');
@@ -61,7 +65,9 @@ test.describe("Shallow routing (Pages Router)", () => {
 
     // GSSP call ID SHOULD change (server re-fetch occurred)
     await expect(async () => {
-      const afterCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+      const afterCallId = await page
+        .locator('[data-testid="gssp-call-id"]')
+        .textContent();
       expect(afterCallId).not.toBe(initialCallId);
     }).toPass({ timeout: 5_000 });
   });
@@ -71,7 +77,9 @@ test.describe("Shallow routing (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
     await waitForHydration(page);
 
-    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    const initialCallId = await page
+      .locator('[data-testid="gssp-call-id"]')
+      .textContent();
 
     await page.evaluate(() => {
       (window as any).__SHALLOW_MARKER__ = true;
@@ -102,19 +110,25 @@ test.describe("Shallow routing (Pages Router)", () => {
     await expect(page).not.toHaveURL(/shallow-test/);
   });
 
-  test("shallow push followed by deep push re-fetches with current query", async ({ page }) => {
+  test("shallow push followed by deep push re-fetches with current query", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/shallow-test`);
     await expect(page.locator("h1")).toHaveText("Shallow Routing Test");
     await waitForHydration(page);
 
-    const initialCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    const initialCallId = await page
+      .locator('[data-testid="gssp-call-id"]')
+      .textContent();
 
     // Shallow push first
     await page.click('[data-testid="shallow-push"]');
     await expect(page).toHaveURL(`${BASE}/shallow-test?tab=settings`);
 
     // GSSP unchanged after shallow
-    const afterShallowCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+    const afterShallowCallId = await page
+      .locator('[data-testid="gssp-call-id"]')
+      .textContent();
     expect(afterShallowCallId).toBe(initialCallId);
 
     // Now do a deep push
@@ -123,7 +137,9 @@ test.describe("Shallow routing (Pages Router)", () => {
 
     // GSSP should now have been called again
     await expect(async () => {
-      const afterDeepCallId = await page.locator('[data-testid="gssp-call-id"]').textContent();
+      const afterDeepCallId = await page
+        .locator('[data-testid="gssp-call-id"]')
+        .textContent();
       expect(afterDeepCallId).not.toBe(initialCallId);
     }).toPass({ timeout: 5_000 });
   });
@@ -134,7 +150,9 @@ test.describe("Shallow routing (Pages Router)", () => {
     await waitForHydration(page);
 
     // Initial asPath
-    const initialAsPath = await page.locator('[data-testid="router-asPath"]').textContent();
+    const initialAsPath = await page
+      .locator('[data-testid="router-asPath"]')
+      .textContent();
     expect(initialAsPath).toBe("/shallow-test");
 
     // Shallow push
@@ -158,7 +176,9 @@ test.describe("Shallow routing (Pages Router)", () => {
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
     });
 
-    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"tag":["a","b"]}');
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText(
+      '{"tag":["a","b"]}',
+    );
     await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
       "/shallow-test?tag=a&tag=b#frag",
     );
@@ -176,8 +196,12 @@ test.describe("Shallow routing (Pages Router)", () => {
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
     });
 
-    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"slug":["a","b"]}');
-    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/docs/a/b#section");
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText(
+      '{"slug":["a","b"]}',
+    );
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
+      "/docs/a/b#section",
+    );
   });
 
   test("router.query prefers catch-all route params over same-key search params", async ({
@@ -194,7 +218,11 @@ test.describe("Shallow routing (Pages Router)", () => {
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
     });
 
-    await expect(page.locator('[data-testid="router-query"]')).toHaveText('{"slug":["a","b"]}');
-    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/docs/a/b?slug=c");
+    await expect(page.locator('[data-testid="router-query"]')).toHaveText(
+      '{"slug":["a","b"]}',
+    );
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
+      "/docs/a/b?slug=c",
+    );
   });
 });

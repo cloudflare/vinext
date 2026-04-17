@@ -24,7 +24,9 @@ test.describe("Pages Router ISR", () => {
     expect(["MISS", "HIT", "STALE"]).toContain(cacheHeader);
   });
 
-  test("second request within TTL is a cache HIT with same timestamp", async ({ request }) => {
+  test("second request within TTL is a cache HIT with same timestamp", async ({
+    request,
+  }) => {
     // First request: populate cache
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
@@ -43,7 +45,9 @@ test.describe("Pages Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test("request after TTL expires returns STALE with same cached content", async ({ request }) => {
+  test("request after TTL expires returns STALE with same cached content", async ({
+    request,
+  }) => {
     // Populate cache
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
@@ -83,7 +87,9 @@ test.describe("Pages Router ISR", () => {
     expect(hitRes.headers()["x-vinext-cache"]).toBe("HIT");
   });
 
-  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({ request }) => {
+  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({
+    request,
+  }) => {
     const res = await request.get(`${BASE}/isr-test`);
     const cc = res.headers()["cache-control"];
 

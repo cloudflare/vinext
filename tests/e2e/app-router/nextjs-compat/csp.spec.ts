@@ -23,10 +23,12 @@ test.describe("Next.js compat: CSP nonce (browser)", () => {
     );
 
     await waitForAppRouterHydration(page);
-    await expect(page.locator("#client-page-pathname")).toHaveText("/use-client-page-pathname");
-    expect(consoleErrors.filter((message) => message.includes("Content Security Policy"))).toEqual(
-      [],
+    await expect(page.locator("#client-page-pathname")).toHaveText(
+      "/use-client-page-pathname",
     );
+    expect(
+      consoleErrors.filter((message) => message.includes("Content Security Policy")),
+    ).toEqual([]);
   });
 
   test("next/dynamic preloads carry the middleware nonce and hydrate cleanly", async ({
@@ -44,8 +46,8 @@ test.describe("Next.js compat: CSP nonce (browser)", () => {
     await expect(page.locator("#css-text-dynamic-client")).toContainText(
       "next-dynamic dynamic on client",
     );
-    expect(consoleErrors.filter((message) => message.includes("Content Security Policy"))).toEqual(
-      [],
-    );
+    expect(
+      consoleErrors.filter((message) => message.includes("Content Security Policy")),
+    ).toEqual([]);
   });
 });

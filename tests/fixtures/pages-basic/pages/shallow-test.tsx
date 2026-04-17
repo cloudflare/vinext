@@ -36,16 +36,23 @@ export default function ShallowTestPage({ gsspCallId, serverQuery }: ShallowTest
       <p data-testid="router-asPath">{router.asPath}</p>
       <button
         data-testid="shallow-push"
-        onClick={() => router.push("/shallow-test?tab=settings", undefined, { shallow: true })}
+        onClick={() =>
+          router.push("/shallow-test?tab=settings", undefined, { shallow: true })
+        }
       >
         Shallow Push
       </button>
-      <button data-testid="deep-push" onClick={() => router.push("/shallow-test?tab=profile")}>
+      <button
+        data-testid="deep-push"
+        onClick={() => router.push("/shallow-test?tab=profile")}
+      >
         Deep Push
       </button>
       <button
         data-testid="shallow-replace"
-        onClick={() => router.replace("/shallow-test?view=grid", undefined, { shallow: true })}
+        onClick={() =>
+          router.replace("/shallow-test?view=grid", undefined, { shallow: true })
+        }
       >
         Shallow Replace
       </button>

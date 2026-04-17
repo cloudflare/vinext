@@ -9,7 +9,9 @@ test.describe("router.beforePopState (Pages Router)", () => {
 
     // Enable blocking BEFORE navigating away
     await page.click('[data-testid="enable-blocking"]');
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: ON");
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
+      "Blocking: ON",
+    );
 
     // Navigate to about (this is a client-side navigation via Link, not popstate)
     await page.click('[data-testid="link-about"]');
@@ -39,7 +41,9 @@ test.describe("router.beforePopState (Pages Router)", () => {
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     await page.click('[data-testid="enable-blocking"]');
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: ON");
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
+      "Blocking: ON",
+    );
 
     await page.click('[data-testid="link-destination"]');
     await expect(page.locator("h1")).toHaveText("Before Pop State Destination");
@@ -64,7 +68,9 @@ test.describe("router.beforePopState (Pages Router)", () => {
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     // Blocking is OFF by default — verify
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: OFF");
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
+      "Blocking: OFF",
+    );
 
     // Navigate to about
     await page.click('[data-testid="link-about"]');
@@ -73,7 +79,9 @@ test.describe("router.beforePopState (Pages Router)", () => {
     // Go back — should be allowed (beforePopState returns true)
     await page.goBack();
     await expect(page.locator("h1")).toHaveText("Before Pop State Test");
-    await expect(page.locator('[data-testid="current-path"]')).toHaveText("/before-pop-state-test");
+    await expect(page.locator('[data-testid="current-path"]')).toHaveText(
+      "/before-pop-state-test",
+    );
   });
 
   test("allowing callback permits back navigation when destination mounts useRouter", async ({
@@ -82,7 +90,9 @@ test.describe("router.beforePopState (Pages Router)", () => {
     await page.goto(`${BASE}/before-pop-state-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: OFF");
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
+      "Blocking: OFF",
+    );
 
     await page.click('[data-testid="link-destination"]');
     await expect(page.locator("h1")).toHaveText("Before Pop State Destination");
@@ -92,6 +102,8 @@ test.describe("router.beforePopState (Pages Router)", () => {
 
     await page.goBack();
     await expect(page.locator("h1")).toHaveText("Before Pop State Test");
-    await expect(page.locator('[data-testid="current-path"]')).toHaveText("/before-pop-state-test");
+    await expect(page.locator('[data-testid="current-path"]')).toHaveText(
+      "/before-pop-state-test",
+    );
   });
 });

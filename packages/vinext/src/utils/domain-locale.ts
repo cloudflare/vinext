@@ -2,7 +2,9 @@ import type { NextI18nConfig } from "../config/next-config.js";
 
 export type DomainLocale = NonNullable<NextI18nConfig["domains"]>[number];
 
-export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {
+export function normalizeDomainHostname(
+  hostname: string | null | undefined,
+): string | undefined {
   if (!hostname) return undefined;
   return hostname.split(",", 1)[0]?.trim().split(":", 1)[0]?.toLowerCase() || undefined;
 }
@@ -38,7 +40,11 @@ export function detectDomainLocale(
   return undefined;
 }
 
-export function addLocalePrefix(path: string, locale: string, localeDefault: string): string {
+export function addLocalePrefix(
+  path: string,
+  locale: string,
+  localeDefault: string,
+): string {
   const normalizedLocale = locale.toLowerCase();
   if (normalizedLocale === localeDefault.toLowerCase()) return path;
 
@@ -47,7 +53,10 @@ export function addLocalePrefix(path: string, locale: string, localeDefault: str
   const normalizedPathname = pathname.toLowerCase();
   const localePrefix = `/${normalizedLocale}`;
 
-  if (normalizedPathname === localePrefix || normalizedPathname.startsWith(`${localePrefix}/`)) {
+  if (
+    normalizedPathname === localePrefix ||
+    normalizedPathname.startsWith(`${localePrefix}/`)
+  ) {
     return path.startsWith("/") ? path : pathWithLeadingSlash;
   }
 
@@ -82,7 +91,8 @@ export function getDomainLocaleUrl(
 
   if (
     currentDomain &&
-    normalizeDomainHostname(currentDomain.domain) === normalizeDomainHostname(targetDomain.domain)
+    normalizeDomainHostname(currentDomain.domain) ===
+      normalizeDomainHostname(targetDomain.domain)
   ) {
     // Same-domain switches fall back to the caller's standard locale-prefix
     // logic. This relies on __VINEXT_DEFAULT_LOCALE__ matching the current

@@ -25,7 +25,9 @@ test.describe("connection() dynamic rendering", () => {
     expect(cacheHeader).toBeUndefined();
   });
 
-  test("connection() page returns different timestamps on each request", async ({ request }) => {
+  test("connection() page returns different timestamps on each request", async ({
+    request,
+  }) => {
     const res1 = await request.get(`${BASE}/connection-test`);
     const html1 = await res1.text();
     const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];

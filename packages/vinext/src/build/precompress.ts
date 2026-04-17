@@ -17,7 +17,8 @@ import { promisify } from "node:util";
 
 const brotliCompress = promisify(zlib.brotliCompress);
 const gzip = promisify(zlib.gzip);
-const zstdCompress = typeof zlib.zstdCompress === "function" ? promisify(zlib.zstdCompress) : null;
+const zstdCompress =
+  typeof zlib.zstdCompress === "function" ? promisify(zlib.zstdCompress) : null;
 
 /** File extensions worth compressing (text-based, not already compressed). */
 const COMPRESSIBLE_EXTENSIONS = new Set([

@@ -81,7 +81,9 @@ function _getInheritedExecutionContext(): ExecutionContextLike | null {
  * Create a fresh `UnifiedRequestContext` with defaults for all fields.
  * Pass partial overrides for the fields you need to pre-populate.
  */
-export function createRequestContext(opts?: Partial<UnifiedRequestContext>): UnifiedRequestContext {
+export function createRequestContext(
+  opts?: Partial<UnifiedRequestContext>,
+): UnifiedRequestContext {
   return {
     headersContext: null,
     dynamicUsageDetected: false,

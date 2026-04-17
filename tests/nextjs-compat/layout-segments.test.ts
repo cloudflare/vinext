@@ -87,7 +87,10 @@ describe("Next.js compat: useSelectedLayoutSegment(s)", () => {
     });
 
     it("returns dynamic param segments (inner layout)", async () => {
-      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first/slug1");
+      const { html } = await fetchHtml(
+        baseUrl,
+        "/nextjs-compat/hooks-segments/first/slug1",
+      );
       expect(html).toContain(`<p id="inner-layout">[${Q}slug1${Q}]</p>`);
     });
   });

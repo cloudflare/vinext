@@ -142,7 +142,9 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain("path: __vinext_local_font_1");
     // Original paths should be gone
     expect(result.code).not.toMatch(/path:\s*["']\.\/fonts\/InterVariable\.woff2["']/);
-    expect(result.code).not.toMatch(/path:\s*["']\.\/fonts\/InterVariable-Italic\.woff2["']/);
+    expect(result.code).not.toMatch(
+      /path:\s*["']\.\/fonts\/InterVariable-Italic\.woff2["']/,
+    );
   });
 
   // ── Font file extensions ─────────────────────────────────────
@@ -290,7 +292,9 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "../fonts/my-font.woff2";`);
+    expect(result.code).toContain(
+      `import __vinext_local_font_0 from "../fonts/my-font.woff2";`,
+    );
   });
 
   // ── Security: CSS injection via font file paths ────────────
@@ -396,7 +400,10 @@ describe("vinext:local-fonts plugin", () => {
     const result = localFont({
       src: "./font.woff2",
       declarations: [
-        { prop: "font-weight", value: "400; } body { color: red; } .x { font-weight: 400" },
+        {
+          prop: "font-weight",
+          value: "400; } body { color: red; } .x { font-weight: 400",
+        },
       ],
     });
     expect(result.className).toBeDefined();

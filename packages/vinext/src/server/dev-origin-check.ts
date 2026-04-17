@@ -72,7 +72,8 @@ export function isAllowedDevOrigin(
     for (const pattern of allowedDevOrigins) {
       if (pattern.startsWith("*.")) {
         const suffix = pattern.slice(1); // ".example.com"
-        if (originHostname === pattern.slice(2) || originHostname.endsWith(suffix)) return true;
+        if (originHostname === pattern.slice(2) || originHostname.endsWith(suffix))
+          return true;
       } else if (originHostname === pattern) {
         return true;
       }

@@ -18,7 +18,8 @@ describe("ALS per-request isolation", () => {
       await import("../../packages/vinext/src/shims/headers.js");
 
     // We need to dynamically import headers() since it reads from ALS
-    const { headers: headersFn } = await import("../../packages/vinext/src/shims/headers.js");
+    const { headers: headersFn } =
+      await import("../../packages/vinext/src/shims/headers.js");
 
     const CONCURRENCY = 20;
     const results: { id: string; sawId: string }[] = [];
@@ -123,7 +124,8 @@ describe("ALS per-request isolation", () => {
   it("cookies from one request don't leak into another", async () => {
     const { runWithHeadersContext, headersContextFromRequest } =
       await import("../../packages/vinext/src/shims/headers.js");
-    const { cookies: cookiesFn } = await import("../../packages/vinext/src/shims/headers.js");
+    const { cookies: cookiesFn } =
+      await import("../../packages/vinext/src/shims/headers.js");
 
     const CONCURRENCY = 20;
     const results: { session: string; sawSession: string }[] = [];

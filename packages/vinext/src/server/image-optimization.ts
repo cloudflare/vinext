@@ -124,7 +124,8 @@ export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
  * active content that might be served through the image endpoint.
  * Matches Next.js default: script-src 'none'; frame-src 'none'; sandbox;
  */
-export const IMAGE_CONTENT_SECURITY_POLICY = "script-src 'none'; frame-src 'none'; sandbox;";
+export const IMAGE_CONTENT_SECURITY_POLICY =
+  "script-src 'none'; frame-src 'none'; sandbox;";
 
 /**
  * Allowlist of Content-Types that are safe to serve from the image endpoint.
@@ -177,7 +178,10 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
   );
 }
 
-function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+function createPassthroughImageResponse(
+  source: Response,
+  config?: ImageConfig,
+): Response {
   const headers = new Headers(source.headers);
   headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
   headers.set("Vary", "Accept");
@@ -235,7 +239,9 @@ export async function handleImageOptimization(
   // when dangerouslyAllowSVG is explicitly enabled in next.config.js.
   const sourceContentType = source.headers.get("Content-Type");
   if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
-    return new Response("The requested resource is not an allowed image type", { status: 400 });
+    return new Response("The requested resource is not an allowed image type", {
+      status: 400,
+    });
   }
 
   // SVG passthrough: SVG is a vector format, so transformation (resize, format
@@ -261,7 +267,12 @@ export async function handleImageOptimization(
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.
-      if (!isSafeImageContentType(headers.get("Content-Type"), imageConfig?.dangerouslyAllowSVG)) {
+      if (
+        !isSafeImageContentType(
+          headers.get("Content-Type"),
+          imageConfig?.dangerouslyAllowSVG,
+        )
+      ) {
         headers.set("Content-Type", format);
       }
 
@@ -283,7 +294,9 @@ export async function handleImageOptimization(
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
     if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
-      return new Response("The requested resource is not an allowed image type", { status: 400 });
+      return new Response("The requested resource is not an allowed image type", {
+        status: 400,
+      });
     }
 
     return createPassthroughImageResponse(refetchedSource, imageConfig);

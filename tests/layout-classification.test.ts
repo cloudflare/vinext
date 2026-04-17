@@ -42,7 +42,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/components/nav.tsx": { importedIds: [] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "static",
+    );
   });
 
   it('returns "needs-probe" when headers shim is transitively imported', () => {
@@ -87,7 +89,9 @@ describe("classifyLayoutByModuleGraph", () => {
       "/b.ts": { importedIds: ["/a.ts"] },
     });
 
-    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    expect(classifyLayoutByModuleGraph("/app/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "static",
+    );
   });
 
   it("detects dynamic shim through deep transitive chains", () => {
@@ -122,7 +126,9 @@ describe("classifyLayoutByModuleGraph", () => {
   it('returns "static" when module info is null (unknown module)', () => {
     const graph = createFakeModuleGraph({});
 
-    expect(classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph)).toBe("static");
+    expect(classifyLayoutByModuleGraph("/unknown/layout.tsx", DYNAMIC_SHIMS, graph)).toBe(
+      "static",
+    );
   });
 });
 

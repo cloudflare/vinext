@@ -157,7 +157,9 @@ describe("buildRouteTrie + trieMatch", () => {
       const routes = [r("/blog/:id/comments"), r("/blog/:path+")];
       const trie = buildRouteTrie(routes);
 
-      expect(trieMatch(trie, ["blog", "42", "comments"])!.route.pattern).toBe("/blog/:id/comments");
+      expect(trieMatch(trie, ["blog", "42", "comments"])!.route.pattern).toBe(
+        "/blog/:id/comments",
+      );
       expect(trieMatch(trie, ["blog", "42", "comments"])!.params).toEqual({
         id: "42",
       });
@@ -234,7 +236,9 @@ describe("buildRouteTrie + trieMatch", () => {
       const routes = [r("/a/b/c/d/e/f")];
       const trie = buildRouteTrie(routes);
 
-      expect(trieMatch(trie, ["a", "b", "c", "d", "e", "f"])!.route.pattern).toBe("/a/b/c/d/e/f");
+      expect(trieMatch(trie, ["a", "b", "c", "d", "e", "f"])!.route.pattern).toBe(
+        "/a/b/c/d/e/f",
+      );
       expect(trieMatch(trie, ["a", "b", "c", "d", "e"])).toBeNull();
     });
   });

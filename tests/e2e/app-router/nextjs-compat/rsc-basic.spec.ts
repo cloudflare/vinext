@@ -19,7 +19,9 @@ test.describe("Next.js compat: rsc-basic (browser)", () => {
   });
 
   // Client component receives props from server and is interactive
-  test("client component receives props from server and is interactive", async ({ page }) => {
+  test("client component receives props from server and is interactive", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nextjs-compat/rsc-server`);
     await waitForAppRouterHydration(page);
 

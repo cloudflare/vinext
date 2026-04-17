@@ -71,7 +71,8 @@ export function resolveAppRouteHandlerMethod(
 ): ResolvedAppRouteHandlerMethod {
   const exportedMethods = collectRouteHandlerMethods(handler);
   const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods);
-  const shouldAutoRespondToOptions = method === "OPTIONS" && typeof handler.OPTIONS !== "function";
+  const shouldAutoRespondToOptions =
+    method === "OPTIONS" && typeof handler.OPTIONS !== "function";
 
   let handlerFn =
     typeof handler[method as RouteHandlerHttpMethod] === "function"
@@ -97,7 +98,9 @@ export function resolveAppRouteHandlerMethod(
   };
 }
 
-export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheReadOptions): boolean {
+export function shouldReadAppRouteHandlerCache(
+  options: AppRouteHandlerCacheReadOptions,
+): boolean {
   return (
     options.isProduction &&
     options.revalidateSeconds !== null &&

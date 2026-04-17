@@ -58,7 +58,9 @@ export type ShouldRerenderAppPageWithGlobalErrorOptions = {
   hasLocalBoundary: boolean;
 };
 
-export function createAppPageFontData(options: CreateAppPageFontDataOptions): AppPageFontData {
+export function createAppPageFontData(
+  options: CreateAppPageFontDataOptions,
+): AppPageFontData {
   return {
     links: options.getLinks(),
     preloads: options.getPreloads(),

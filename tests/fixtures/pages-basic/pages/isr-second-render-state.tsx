@@ -6,7 +6,9 @@ interface ISRSecondRenderStateProps {
   timestamp: number;
 }
 
-export default function ISRSecondRenderStatePage({ timestamp }: ISRSecondRenderStateProps) {
+export default function ISRSecondRenderStatePage({
+  timestamp,
+}: ISRSecondRenderStateProps) {
   const ctx = getRequestContext();
   const headBefore = ctx.ssrHeadChildren.length;
   const privateCacheBefore = ctx._privateCache?.size ?? 0;
@@ -16,7 +18,9 @@ export default function ISRSecondRenderStatePage({ timestamp }: ISRSecondRenderS
     ctx._privateCache = new Map();
   }
   ctx._privateCache.set("isr-second-render-state", timestamp);
-  ctx.serverInsertedHTMLCallbacks.push(() => "<style data-isr-second-render-state></style>");
+  ctx.serverInsertedHTMLCallbacks.push(
+    () => "<style data-isr-second-render-state></style>",
+  );
 
   return (
     <>

@@ -34,7 +34,9 @@ export type LayoutClassificationOptions = {
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
   /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
+  runWithIsolatedDynamicScope: <T>(
+    fn: () => T,
+  ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 export type ProbeAppPageLayoutsOptions = {
@@ -63,7 +65,11 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 function getAppPageStatusText(statusCode: number): string {
-  return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+  return statusCode === 403
+    ? "Forbidden"
+    : statusCode === 401
+      ? "Unauthorized"
+      : "Not Found";
 }
 
 export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError | null {
@@ -104,7 +110,9 @@ export async function buildAppPageSpecialErrorResponse(
   }
 
   if (options.renderFallbackPage) {
-    const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
+    const fallbackResponse = await options.renderFallbackPage(
+      options.specialError.statusCode,
+    );
     if (fallbackResponse) {
       return fallbackResponse;
     }
@@ -129,7 +137,8 @@ export async function probeAppPageLayouts(
       if (cls && buildTimeResult) {
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
         // but still probe for special errors (redirects, not-found).
-        layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
+        layoutFlags[cls.getLayoutId(layoutIndex)] =
+          buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
         continue;
@@ -199,7 +208,9 @@ export async function probeAppPageComponent(
   });
 }
 
-export async function readAppPageTextStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+export async function readAppPageTextStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -268,6 +279,9 @@ export function buildAppPageFontLinkHeader(
   }
 
   return preloads
-    .map((preload) => `<${preload.href}>; rel=preload; as=font; type=${preload.type}; crossorigin`)
+    .map(
+      (preload) =>
+        `<${preload.href}>; rel=preload; as=font; type=${preload.type}; crossorigin`,
+    )
     .join(", ");
 }

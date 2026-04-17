@@ -4,5 +4,7 @@
  * propagates to the parent NotFoundBoundary, not the sibling-level one).
  */
 export default function NotFound() {
-  return <p id="not-found-layout-page-parent-nf">Not Found (layout-page parent boundary)</p>;
+  return (
+    <p id="not-found-layout-page-parent-nf">Not Found (layout-page parent boundary)</p>
+  );
 }

@@ -28,7 +28,8 @@ export type I18nState = {
 const _ALS_KEY = Symbol.for("vinext.i18n.als");
 const _FALLBACK_KEY = Symbol.for("vinext.i18n.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<I18nState>()) as AsyncLocalStorage<I18nState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<I18nState>()) as AsyncLocalStorage<I18nState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   i18nContext: null,

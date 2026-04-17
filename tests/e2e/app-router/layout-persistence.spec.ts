@@ -87,13 +87,17 @@ test.describe("Layout persistence", () => {
     await expect(page.locator("h1")).toHaveText("Settings");
 
     // Layout counter should preserve its value — the layout was NOT remounted.
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    await expect(page.getByTestId("layout-count")).toHaveText(
+      `Layout count: ${initialCount + 2}`,
+    );
 
     // Navigate back to dashboard home
     await page.getByTestId("dash-home-link").click();
     await expect(page.locator("h1")).toHaveText("Dashboard");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    await expect(page.getByTestId("layout-count")).toHaveText(
+      `Layout count: ${initialCount + 2}`,
+    );
   });
 
   test("layout counter resets on hard navigation", async ({ page }) => {
@@ -136,7 +140,9 @@ test.describe("Template remount", () => {
     await expect(page.getByTestId("template-count")).toHaveText("Template count: 0");
   });
 
-  test("root template counter persists within same top-level segment", async ({ page }) => {
+  test("root template counter persists within same top-level segment", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
     await waitForAppRouterHydration(page);
@@ -201,7 +207,9 @@ test.describe("Error recovery across navigation", () => {
     await page.click('[data-testid="error-test-link"]');
 
     // Error should be gone — fresh page renders normally
-    await expect(page.locator('[data-testid="error-content"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="error-content"]')).toBeVisible({
+      timeout: 5_000,
+    });
     await expect(page.locator("#error-boundary")).not.toBeAttached();
   });
 });
@@ -212,7 +220,9 @@ test.describe("Error recovery across navigation", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Back/forward with layout state", () => {
-  test("browser back preserves layout counter across navigation history", async ({ page }) => {
+  test("browser back preserves layout counter across navigation history", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
     await waitForAppRouterHydration(page);
@@ -224,7 +234,9 @@ test.describe("Back/forward with layout state", () => {
     await page.getByTestId("dash-settings-link").click();
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 1}`);
+    await expect(page.getByTestId("layout-count")).toHaveText(
+      `Layout count: ${initialCount + 1}`,
+    );
 
     // Increment once more while on settings
     await incrementCounter(page, layoutCounter, initialCount + 2);
@@ -233,13 +245,17 @@ test.describe("Back/forward with layout state", () => {
     await page.goBack();
     await expect(page.locator("h1")).toHaveText("Dashboard");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    await expect(page.getByTestId("layout-count")).toHaveText(
+      `Layout count: ${initialCount + 2}`,
+    );
 
     // Go forward to settings
     await page.goForward();
     await expect(page.locator("h1")).toHaveText("Settings");
 
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 2}`);
+    await expect(page.getByTestId("layout-count")).toHaveText(
+      `Layout count: ${initialCount + 2}`,
+    );
   });
 });
 
@@ -248,7 +264,9 @@ test.describe("Back/forward with layout state", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Parallel slot persistence", () => {
-  test("parallel slot content persists on soft navigation to child route", async ({ page }) => {
+  test("parallel slot content persists on soft navigation to child route", async ({
+    page,
+  }) => {
     // Load /dashboard — parallel slots @team and @analytics have page.tsx
     await page.goto(`${BASE}/dashboard`);
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -275,7 +293,9 @@ test.describe("Parallel slot persistence", () => {
     await expect(page.locator('[data-testid="analytics-default"]')).not.toBeAttached();
   });
 
-  test("parallel slots show default.tsx on hard navigation to child route", async ({ page }) => {
+  test("parallel slots show default.tsx on hard navigation to child route", async ({
+    page,
+  }) => {
     // Hard-load /dashboard/settings directly — slots should show default.tsx
     await page.goto(`${BASE}/dashboard/settings`);
     await expect(page.locator("h1")).toHaveText("Settings");

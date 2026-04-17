@@ -69,7 +69,9 @@ async function startFixture(
       if (Date.now() >= deadline) {
         cleanup();
         reject(
-          new Error(`Fixture "${name}" did not start within ${STARTUP_TIMEOUT_MS}ms: ${output}`),
+          new Error(
+            `Fixture "${name}" did not start within ${STARTUP_TIMEOUT_MS}ms: ${output}`,
+          ),
         );
         return;
       }
@@ -257,14 +259,19 @@ describe("nuqs", () => {
     await fetchPage("/");
 
     const depsDir = path.join(fixtureRoot, "node_modules", ".vite", "deps");
-    const metadata = JSON.parse(readFileSync(path.join(depsDir, "_metadata.json"), "utf8")) as {
+    const metadata = JSON.parse(
+      readFileSync(path.join(depsDir, "_metadata.json"), "utf8"),
+    ) as {
       optimized?: Record<string, { file?: string }>;
     };
     const optimizedAdapterFile = metadata.optimized?.["nuqs/adapters/next/app"]?.file;
 
     expect(optimizedAdapterFile).toBeDefined();
 
-    const optimizedAdapter = readFileSync(path.join(depsDir, optimizedAdapterFile!), "utf8");
+    const optimizedAdapter = readFileSync(
+      path.join(depsDir, optimizedAdapterFile!),
+      "utf8",
+    );
 
     expect(optimizedAdapter).toContain("__VINEXT_RSC_NAVIGATE__");
     expect(optimizedAdapter).toContain("vinext.navigation.readonlySearchParams");

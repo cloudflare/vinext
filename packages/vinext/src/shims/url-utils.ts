@@ -14,7 +14,9 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 export function toSameOriginPath(url: string): string | null {
   if (typeof window === "undefined") return null;
   try {
-    const parsed = url.startsWith("//") ? new URL(url, window.location.origin) : new URL(url);
+    const parsed = url.startsWith("//")
+      ? new URL(url, window.location.origin)
+      : new URL(url);
     if (parsed.origin === window.location.origin) {
       return parsed.pathname + parsed.search + parsed.hash;
     }
@@ -66,8 +68,13 @@ export function withBasePath(path: string, basePath: string): string {
  * Resolve a potentially relative href against the current URL.
  * Handles: "#hash", "?query", "?query#hash", and relative paths.
  */
-export function resolveRelativeHref(href: string, currentUrl?: string, basePath = ""): string {
-  const base = currentUrl ?? (typeof window !== "undefined" ? window.location.href : undefined);
+export function resolveRelativeHref(
+  href: string,
+  currentUrl?: string,
+  basePath = "",
+): string {
+  const base =
+    currentUrl ?? (typeof window !== "undefined" ? window.location.href : undefined);
 
   if (!base) return href;
 
@@ -98,7 +105,11 @@ export function resolveRelativeHref(href: string, currentUrl?: string, basePath 
  * Convert a local navigation target into the browser URL that should be used
  * for history entries, fetches, and onNavigate callbacks.
  */
-export function toBrowserNavigationHref(href: string, currentUrl?: string, basePath = ""): string {
+export function toBrowserNavigationHref(
+  href: string,
+  currentUrl?: string,
+  basePath = "",
+): string {
   const resolved = resolveRelativeHref(href, currentUrl, basePath);
 
   if (!basePath) {

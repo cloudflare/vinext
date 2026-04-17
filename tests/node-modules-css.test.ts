@@ -75,9 +75,17 @@ describe("node_modules CSS import (Pages Router)", () => {
     await fs.mkdir(fakeCssDir, { recursive: true });
     await fs.writeFile(
       path.join(fakeCssDir, "package.json"),
-      JSON.stringify({ name: "fake-css-lib", version: "1.0.0", type: "module", main: "index.js" }),
+      JSON.stringify({
+        name: "fake-css-lib",
+        version: "1.0.0",
+        type: "module",
+        main: "index.js",
+      }),
     );
-    await fs.writeFile(path.join(fakeCssDir, "styles.css"), `.fake-css-lib { color: red; }`);
+    await fs.writeFile(
+      path.join(fakeCssDir, "styles.css"),
+      `.fake-css-lib { color: red; }`,
+    );
     await fs.writeFile(
       path.join(fakeCssDir, "index.js"),
       `import "./styles.css";\nexport function FakeComponent() { return "fake-css-lib-rendered"; }\n`,

@@ -77,7 +77,9 @@ export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promi
  * but it needs a fresh callback collection so CSS-in-JS insertions from the
  * streamed render cannot accumulate into the cache-fill render.
  */
-export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+export function runWithServerInsertedHTMLState<T>(
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.serverInsertedHTMLCallbacks = [];
@@ -122,4 +124,5 @@ const _accessors = {
 } satisfies Parameters<typeof _registerStateAccessors>[0];
 
 _registerStateAccessors(_accessors);
-(globalThis as unknown as Record<PropertyKey, unknown>)[GLOBAL_ACCESSORS_KEY] = _accessors;
+(globalThis as unknown as Record<PropertyKey, unknown>)[GLOBAL_ACCESSORS_KEY] =
+  _accessors;

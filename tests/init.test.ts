@@ -59,7 +59,8 @@ function expectConsumedBeforeInitialization(
   expect(start).toBeGreaterThanOrEqual(0);
 
   const nextFunction = source.indexOf("function ", start + 1);
-  const body = nextFunction === -1 ? source.slice(start) : source.slice(start, nextFunction);
+  const body =
+    nextFunction === -1 ? source.slice(start) : source.slice(start, nextFunction);
 
   const consumedIndex = body.indexOf("model.$$consumed = !0;");
   const initializationIndex = body.indexOf(initializationSnippet);
@@ -95,7 +96,11 @@ function setupProject(
 
   if (router === "app") {
     mkdir(dir, "app");
-    writeFile(dir, "app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      dir,
+      "app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     writeFile(
       dir,
       "app/layout.tsx",
@@ -103,7 +108,11 @@ function setupProject(
     );
   } else {
     mkdir(dir, "pages");
-    writeFile(dir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      dir,
+      "pages/index.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
   }
 }
 
@@ -127,7 +136,10 @@ function noopExec(): {
 async function runInit(
   dir: string,
   opts: Partial<InitOptions> = {},
-): Promise<{ result: Awaited<ReturnType<typeof init>>; execCalls: Array<{ cmd: string }> }> {
+): Promise<{
+  result: Awaited<ReturnType<typeof init>>;
+  execCalls: Array<{ cmd: string }>;
+}> {
   const { exec, calls } = noopExec();
 
   // Suppress console output during tests
@@ -135,7 +147,9 @@ async function runInit(
   const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
   // Mock process.exit to prevent test from exiting
-  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+    code?: string | number | null,
+  ) => {
     throw new Error(`process.exit(${code})`);
   }) as never);
 
@@ -157,12 +171,17 @@ async function runInit(
 /**
  * Run init expecting it to fail (process.exit).
  */
-async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): Promise<string> {
+async function runInitExpectExit(
+  dir: string,
+  opts: Partial<InitOptions> = {},
+): Promise<string> {
   const { exec } = noopExec();
 
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+    code?: string | number | null,
+  ) => {
     throw new Error(`process.exit(${code})`);
   }) as never);
 
@@ -364,7 +383,11 @@ describe("@vitejs/plugin-rsc vendored React Flight protections", () => {
 
       expectConsumedBeforeInitialization(source, "createMap", "new Map(model)");
       expectConsumedBeforeInitialization(source, "createSet", "new Set(model)");
-      expectConsumedBeforeInitialization(source, "extractIterator", "model[Symbol.iterator]()");
+      expectConsumedBeforeInitialization(
+        source,
+        "extractIterator",
+        "model[Symbol.iterator]()",
+      );
     });
   }
 });
@@ -486,7 +509,10 @@ describe("init — CJS config renaming", () => {
 
     const { result } = await runInit(tmpDir);
 
-    expect(result.renamedConfigs).toContainEqual(["postcss.config.js", "postcss.config.cjs"]);
+    expect(result.renamedConfigs).toContainEqual([
+      "postcss.config.js",
+      "postcss.config.cjs",
+    ]);
     expect(fs.existsSync(path.join(tmpDir, "postcss.config.cjs"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "postcss.config.js"))).toBe(false);
   });
@@ -613,7 +639,10 @@ describe("init — dependency installation", () => {
     expect(reactUpgradeCall).toBeUndefined();
   });
 
-  function withUserAgent<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+  function withUserAgent<T>(
+    value: string | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> {
     const previous = process.env.npm_config_user_agent;
     if (value === undefined) {
       delete process.env.npm_config_user_agent;

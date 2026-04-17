@@ -14,7 +14,11 @@ import zlib from "node:zlib";
 import { precompressAssets } from "../packages/vinext/src/build/precompress.js";
 
 /** Write a file with repeated content to ensure it exceeds compression threshold. */
-async function writeAsset(clientDir: string, relativePath: string, content: string): Promise<void> {
+async function writeAsset(
+  clientDir: string,
+  relativePath: string,
+  content: string,
+): Promise<void> {
   const fullPath = path.join(clientDir, relativePath);
   await fsp.mkdir(path.dirname(fullPath), { recursive: true });
   await fsp.writeFile(fullPath, content);
@@ -55,7 +59,9 @@ describe("precompressAssets", () => {
 
     await precompressAssets(clientDir);
 
-    const brBuffer = await fsp.readFile(path.join(clientDir, "assets/hello-def456.js.br"));
+    const brBuffer = await fsp.readFile(
+      path.join(clientDir, "assets/hello-def456.js.br"),
+    );
     const decompressed = zlib.brotliDecompressSync(brBuffer).toString();
     expect(decompressed).toBe(jsContent);
   });
@@ -66,7 +72,9 @@ describe("precompressAssets", () => {
 
     await precompressAssets(clientDir);
 
-    const gzBuffer = await fsp.readFile(path.join(clientDir, "assets/styles-789abc.css.gz"));
+    const gzBuffer = await fsp.readFile(
+      path.join(clientDir, "assets/styles-789abc.css.gz"),
+    );
     const decompressed = zlib.gunzipSync(gzBuffer).toString();
     expect(decompressed).toBe(cssContent);
   });
@@ -94,7 +102,9 @@ describe("precompressAssets", () => {
     const result = await precompressAssets(clientDir);
 
     expect(fs.existsSync(path.join(clientDir, "assets/logo-bbb222.png.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/font-ccc333.woff2.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "assets/font-ccc333.woff2.br"))).toBe(
+      false,
+    );
     expect(result.filesCompressed).toBe(0);
   });
 
@@ -128,8 +138,12 @@ describe("precompressAssets", () => {
     await precompressAssets(clientDir);
     await precompressAssets(clientDir);
 
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.br.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.gz.gz"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.br.br"))).toBe(
+      false,
+    );
+    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.gz.gz"))).toBe(
+      false,
+    );
   });
 
   it("handles nested directories under assets/", async () => {
@@ -139,8 +153,12 @@ describe("precompressAssets", () => {
     const result = await precompressAssets(clientDir);
 
     expect(result.filesCompressed).toBe(1);
-    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.br"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.gz"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.br"))).toBe(
+      true,
+    );
+    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.gz"))).toBe(
+      true,
+    );
   });
 
   it("only compresses files inside assets/ not other client files", async () => {
@@ -176,7 +194,9 @@ describe("precompressAssets", () => {
 
     await precompressAssets(clientDir);
 
-    const zstdBuffer = await fsp.readFile(path.join(clientDir, "assets/hello-zstd.js.zst"));
+    const zstdBuffer = await fsp.readFile(
+      path.join(clientDir, "assets/hello-zstd.js.zst"),
+    );
     const decompressed = zlib.zstdDecompressSync(zstdBuffer).toString();
     expect(decompressed).toBe(jsContent);
   });

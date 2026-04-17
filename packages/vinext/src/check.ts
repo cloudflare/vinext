@@ -39,7 +39,10 @@ export type CheckResult = {
 const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
-  "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/image": {
+    status: "supported",
+    detail: "uses @unpic/react (no local optimization yet)",
+  },
   "next/legacy/image": {
     status: "supported",
     detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",
@@ -73,7 +76,10 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
-  "next/form": { status: "supported", detail: "Form component with client-side navigation" },
+  "next/form": {
+    status: "supported",
+    detail: "Form component with client-side navigation",
+  },
   "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
   "next/constants": { status: "supported", detail: "PHASE_* constants" },
   "next/third-parties/google": {
@@ -85,15 +91,18 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   // Internal next/dist/* paths used by libraries (testing utilities, older libs, etc.)
   "next/dist/shared/lib/router-context.shared-runtime": {
     status: "supported",
-    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
+    detail:
+      "RouterContext for Pages Router; used by testing utilities and older libraries",
   },
   "next/dist/shared/lib/app-router-context.shared-runtime": {
     status: "supported",
-    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+    detail:
+      "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
   },
   "next/dist/shared/lib/app-router-context": {
     status: "supported",
-    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+    detail:
+      "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
   },
   "next/dist/shared/lib/utils": {
     status: "supported",
@@ -145,9 +154,15 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   redirects: { status: "supported" },
   rewrites: { status: "supported" },
   headers: { status: "supported" },
-  i18n: { status: "supported", detail: "path-prefix routing; domain routing for Pages Router" },
+  i18n: {
+    status: "supported",
+    detail: "path-prefix routing; domain routing for Pages Router",
+  },
   env: { status: "supported" },
-  images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
+  images: {
+    status: "partial",
+    detail: "remotePatterns validated, no local optimization",
+  },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
     status: "supported",
@@ -158,8 +173,14 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "Vite replaces webpack — custom webpack configs need migration",
   },
-  "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
-  "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
+  "experimental.ppr": {
+    status: "unsupported",
+    detail: "partial prerendering not yet implemented",
+  },
+  "experimental.typedRoutes": {
+    status: "unsupported",
+    detail: "typed routes not implemented",
+  },
   "experimental.serverActions": {
     status: "supported",
     detail: "server actions via 'use server' directive",
@@ -181,7 +202,10 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-themes": { status: "supported" },
   nuqs: { status: "supported" },
   "next-view-transitions": { status: "supported" },
-  "@vercel/analytics": { status: "supported", detail: "analytics script injected client-side" },
+  "@vercel/analytics": {
+    status: "supported",
+    detail: "analytics script injected client-side",
+  },
   "next-intl": {
     status: "supported",
     detail:
@@ -219,7 +243,10 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "shadcn-ui": { status: "supported" },
   zod: { status: "supported" },
   "react-hook-form": { status: "supported" },
-  prisma: { status: "supported", detail: "works on Cloudflare Workers with Prisma Accelerate" },
+  prisma: {
+    status: "supported",
+    detail: "works on Cloudflare Workers with Prisma Accelerate",
+  },
   drizzle: { status: "supported", detail: "works with D1 on Cloudflare Workers" },
 };
 
@@ -261,7 +288,8 @@ export function scanImports(root: string): CheckItem[] {
   const files = findSourceFiles(root);
   const importUsage = new Map<string, string[]>();
 
-  const importRegex = /(?:import\s+(?:[\w{},\s*]+\s+from\s+)?|require\s*\()['"]([^'"]+)['"]\)?/g;
+  const importRegex =
+    /(?:import\s+(?:[\w{},\s*]+\s+from\s+)?|require\s*\()['"]([^'"]+)['"]\)?/g;
   // Skip `import type` and `import { type ... }` — they're erased at compile time
   const typeOnlyImportRegex = /import\s+type\s+/;
 
@@ -329,7 +357,12 @@ export function scanImports(root: string): CheckItem[] {
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
  */
 export function analyzeConfig(root: string): CheckItem[] {
-  const configFiles = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
   let configPath: string | null = null;
   for (const f of configFiles) {
     const p = path.join(root, f);
@@ -467,7 +500,8 @@ export function checkConventions(root: string): CheckItem[] {
   const hasPages = pagesDir !== null;
   const hasApp = appDirPath !== null;
   const hasProxy =
-    fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
+    fs.existsSync(path.join(root, "proxy.ts")) ||
+    fs.existsSync(path.join(root, "proxy.js"));
   const hasMiddleware =
     fs.existsSync(path.join(root, "middleware.ts")) ||
     fs.existsSync(path.join(root, "middleware.js"));
@@ -528,18 +562,26 @@ export function checkConventions(root: string): CheckItem[] {
     const routes = appFiles.filter(
       (f) => f.endsWith("route.tsx") || f.endsWith("route.ts") || f.endsWith("route.js"),
     );
-    const loadings = appFiles.filter((f) => f.endsWith("loading.tsx") || f.endsWith("loading.jsx"));
-    const errors = appFiles.filter((f) => f.endsWith("error.tsx") || f.endsWith("error.jsx"));
+    const loadings = appFiles.filter(
+      (f) => f.endsWith("loading.tsx") || f.endsWith("loading.jsx"),
+    );
+    const errors = appFiles.filter(
+      (f) => f.endsWith("error.tsx") || f.endsWith("error.jsx"),
+    );
     const notFounds = appFiles.filter(
       (f) => f.endsWith("not-found.tsx") || f.endsWith("not-found.jsx"),
     );
 
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
-    if (layouts.length) items.push({ name: `${layouts.length} layout(s)`, status: "supported" });
+    if (layouts.length)
+      items.push({ name: `${layouts.length} layout(s)`, status: "supported" });
     if (routes.length)
       items.push({ name: `${routes.length} route handler(s)`, status: "supported" });
     if (loadings.length)
-      items.push({ name: `${loadings.length} loading boundary(ies)`, status: "supported" });
+      items.push({
+        name: `${loadings.length} loading boundary(ies)`,
+        status: "supported",
+      });
     if (errors.length)
       items.push({ name: `${errors.length} error boundary(ies)`, status: "supported" });
     if (notFounds.length)
@@ -581,7 +623,8 @@ export function checkConventions(root: string): CheckItem[] {
   // string literals, template literals, and comments before testing for the identifier,
   // so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
-  const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  const viewTransitionRegex =
+    /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   // Single-pass regex: skip tokens that can contain identifier-like text, expose everything else
   // to the identifier capture branch. Template literals are skipped segment-by-segment between
   // `${` boundaries — the `${...}` body itself is NOT consumed, so `__dirname` inside template
@@ -612,13 +655,18 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({
       name: "ViewTransition (React canary API)",
       status: "partial",
-      detail: "vinext auto-shims with a passthrough fallback, view transitions won't animate",
+      detail:
+        "vinext auto-shims with a passthrough fallback, view transitions won't animate",
       files: viewTransitionFiles,
     });
   }
 
   // Check PostCSS config for string-form plugins
-  const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
+  const postcssConfigs = [
+    "postcss.config.mjs",
+    "postcss.config.js",
+    "postcss.config.cjs",
+  ];
   for (const configFile of postcssConfigs) {
     const configPath = path.join(root, configFile);
     if (fs.existsSync(configPath)) {
@@ -685,7 +733,10 @@ export function runCheck(root: string): CheckResult {
 /**
  * Format the check result as a colored terminal report.
  */
-export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
+export function formatReport(
+  result: CheckResult,
+  opts?: { calledFromInit?: boolean },
+): string {
   const lines: string[] = [];
   const hasAppRouter = result.conventions.some(
     (item) => item.name === "App Router (app/)" || item.name === "App Router (src/app/)",
@@ -734,7 +785,9 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
   // Libraries
   if (result.libraries.length > 0) {
     const libSupported = result.libraries.filter((i) => i.status === "supported").length;
-    lines.push(`  \x1b[1mLibraries\x1b[0m: ${libSupported}/${result.libraries.length} compatible`);
+    lines.push(
+      `  \x1b[1mLibraries\x1b[0m: ${libSupported}/${result.libraries.length} compatible`,
+    );
     for (const item of result.libraries) {
       const suffix = item.detail ? ` \x1b[90m— ${item.detail}\x1b[0m` : "";
       lines.push(`    ${statusIcon(item.status)}  ${item.name}${suffix}`);
@@ -771,7 +824,9 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     ];
     for (const item of allItems) {
       if (item.status === "unsupported") {
-        lines.push(`    \x1b[31m✗\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        lines.push(
+          `    \x1b[31m✗\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`,
+        );
         if (item.files && item.files.length > 0) {
           for (const f of item.files) {
             lines.push(`       \x1b[90m${f}\x1b[0m`);
@@ -792,7 +847,9 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     ];
     for (const item of allItems) {
       if (item.status === "partial") {
-        lines.push(`    \x1b[33m~\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        lines.push(
+          `    \x1b[33m~\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`,
+        );
       }
     }
   }

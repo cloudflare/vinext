@@ -41,7 +41,9 @@ function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesReques
   return query;
 }
 
-export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
+export async function handlePagesApiRoute(
+  options: HandlePagesApiRouteOptions,
+): Promise<Response> {
   if (!options.match) {
     return new Response("404 - API route not found", { status: 404 });
   }

@@ -174,7 +174,10 @@ function clearClientNavigationCaches(): void {
   clearPrefetchState();
 }
 
-function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
+function queuePrePaintNavigationEffect(
+  renderId: number,
+  effect: (() => void) | null,
+): void {
   if (!effect) {
     return;
   }
@@ -415,7 +418,9 @@ function NavigationCommitSignal({
   return children;
 }
 
-function normalizeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
+function normalizeAppElementsPromise(
+  payload: Promise<AppWireElements>,
+): Promise<AppElements> {
   // Wrap in Promise.resolve() because createFromReadableStream() returns a
   // React Flight thenable whose .then() returns undefined (not a new Promise).
   // Without the wrap, chaining .then() produces undefined → use() crashes.
@@ -539,7 +544,10 @@ function BrowserRoot({
     }
 
     replaceHistoryStateWithoutNotify(
-      createHistoryStateWithPreviousNextUrl(window.history.state, treeState.previousNextUrl),
+      createHistoryStateWithPreviousNextUrl(
+        window.history.state,
+        treeState.previousNextUrl,
+      ),
       "",
       window.location.href,
     );
@@ -719,7 +727,11 @@ function restorePopstateScrollPosition(state: unknown): void {
 async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
   const vinext = getVinextBrowserGlobal();
 
-  if (vinext.__VINEXT_RSC__ || vinext.__VINEXT_RSC_CHUNKS__ || vinext.__VINEXT_RSC_DONE__) {
+  if (
+    vinext.__VINEXT_RSC__ ||
+    vinext.__VINEXT_RSC_CHUNKS__ ||
+    vinext.__VINEXT_RSC_DONE__
+  ) {
     if (vinext.__VINEXT_RSC__) {
       const embedData = vinext.__VINEXT_RSC__;
       delete vinext.__VINEXT_RSC__;
@@ -754,20 +766,29 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
     return createProgressiveRscStream();
   }
 
-  const rscResponse = await fetch(toRscUrl(window.location.pathname + window.location.search));
+  const rscResponse = await fetch(
+    toRscUrl(window.location.pathname + window.location.search),
+  );
 
   let params: Record<string, string | string[]> = {};
   const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
   if (paramsHeader) {
     try {
-      params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
+      params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
+        string,
+        string | string[]
+      >;
       applyClientParams(params);
     } catch {
       // Ignore malformed param headers and continue with hydration.
     }
   }
 
-  restoreHydrationNavigationContext(window.location.pathname, window.location.search, params);
+  restoreHydrationNavigationContext(
+    window.location.pathname,
+    window.location.search,
+    params,
+  );
 
   if (!rscResponse.body) {
     throw new Error("[vinext] Initial RSC response had no body");
@@ -784,11 +805,14 @@ function registerServerActionCallback(): void {
     // Interception context on server-action re-renders is intentionally
     // deferred: action POSTs always target the current URL's full page without
     // propagating the source-route provenance.
-    const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
-      method: "POST",
-      headers: { "x-rsc-action": id },
-      body,
-    });
+    const fetchResponse = await fetch(
+      toRscUrl(window.location.pathname + window.location.search),
+      {
+        method: "POST",
+        headers: { "x-rsc-action": id },
+        body,
+      },
+    );
 
     const actionRedirect = fetchResponse.headers.get("x-action-redirect");
     if (actionRedirect) {
@@ -807,7 +831,8 @@ function registerServerActionCallback(): void {
       // currently returns an empty body for redirect responses. RSC navigation
       // requires a valid RSC payload. This is a known parity gap with Next.js,
       // which pre-renders the redirect target's RSC payload.
-      const redirectType = fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
+      const redirectType =
+        fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
       if (redirectType === "push") {
         window.location.assign(actionRedirect);
       } else {
@@ -844,7 +869,9 @@ async function main(): Promise<void> {
   registerServerActionCallback();
 
   const rscStream = await readInitialRscStream();
-  const root = normalizeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
+  const root = normalizeAppElementsPromise(
+    createFromReadableStream<AppWireElements>(rscStream),
+  );
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
     latestClientParams,
@@ -928,7 +955,10 @@ async function main(): Promise<void> {
         // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
         // wrapping only) — no stale-navigation recheck needed between here and the
         // next await.
-        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
+        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
+          href,
+          cachedParams,
+        );
         const cachedPayload = normalizeAppElementsPromise(
           createFromFetch<AppWireElements>(
             Promise.resolve(restoreRscResponse(cachedRoute.response)),
@@ -1035,7 +1065,9 @@ async function main(): Promise<void> {
       if (navId !== activeNavigationId) return;
 
       const rscPayload = normalizeAppElementsPromise(
-        createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
+        createFromFetch<AppWireElements>(
+          Promise.resolve(restoreRscResponse(responseSnapshot)),
+        ),
       );
 
       if (navId !== activeNavigationId) return;
@@ -1114,7 +1146,8 @@ async function main(): Promise<void> {
   window.addEventListener("popstate", (event) => {
     notifyAppRouterTransitionStart(window.location.href, "traverse");
     const pendingNavigation =
-      window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ?? Promise.resolve();
+      window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ??
+      Promise.resolve();
     window.__VINEXT_RSC_PENDING__ = pendingNavigation;
     void pendingNavigation.finally(() => {
       restorePopstateScrollPosition(event.state);

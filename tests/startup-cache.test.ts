@@ -4,7 +4,15 @@
  * Task 1a: hasMdxFiles() should cache its result per (root, appDir, pagesDir) combination.
  * Task 1b: resolvePostcssStringPlugins() should cache its result per project root.
  */
-import { afterEach, describe, it, expect, beforeAll, beforeEach, vi } from "vite-plus/test";
+import {
+  afterEach,
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  vi,
+} from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -152,7 +160,10 @@ describe("resolvePostcssStringPlugins caching", () => {
     vi.restoreAllMocks();
   });
 
-  async function createTmpProject(configFileName: string, configContent: string): Promise<string> {
+  async function createTmpProject(
+    configFileName: string,
+    configContent: string,
+  ): Promise<string> {
     const fsp = await import("node:fs/promises");
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-cache-"));
 

@@ -15,7 +15,11 @@ class UrlNode {
     this.insertSegments(urlPath.split("/").filter(Boolean), [], false);
   }
 
-  private insertSegments(urlPaths: string[], slugNames: string[], isCatchAll: boolean): void {
+  private insertSegments(
+    urlPaths: string[],
+    slugNames: string[],
+    isCatchAll: boolean,
+  ): void {
     if (urlPaths.length === 0) {
       this.placeholder = false;
       return;
@@ -54,7 +58,9 @@ class UrlNode {
       }
 
       if (segmentName.startsWith(".")) {
-        throw new Error(`Segment names may not start with erroneous periods ('${segmentName}').`);
+        throw new Error(
+          `Segment names may not start with erroneous periods ('${segmentName}').`,
+        );
       }
 
       const handleSlug = (previousSlug: string | null, nextSlug: string): void => {
@@ -105,7 +111,9 @@ class UrlNode {
         }
       } else {
         if (isOptional) {
-          throw new Error(`Optional route parameters are not yet supported ("${urlPaths[0]}").`);
+          throw new Error(
+            `Optional route parameters are not yet supported ("${urlPaths[0]}").`,
+          );
         }
 
         handleSlug(this.slugName, segmentName);

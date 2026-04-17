@@ -20,7 +20,10 @@ type ResponseWithVinextStreamingMetadata = Response & {
 };
 
 function isVinextStreamedHtmlResponse(response: Response): boolean {
-  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
+  return (
+    (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse ===
+    true
+  );
 }
 
 function isContentLengthHeader(name: string): boolean {

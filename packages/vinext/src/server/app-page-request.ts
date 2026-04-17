@@ -43,7 +43,10 @@ export type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   isRscRequest: boolean;
-  renderInterceptResponse: (route: TRoute, element: unknown) => Promise<Response> | Response;
+  renderInterceptResponse: (
+    route: TRoute,
+    element: unknown,
+  ) => Promise<Response> | Response;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
     params: AppPageParams;
@@ -121,7 +124,10 @@ export async function validateAppPageDynamicParams(
 
   try {
     const staticParams = await options.generateStaticParams({ params: options.params });
-    if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
+    if (
+      Array.isArray(staticParams) &&
+      !areStaticParamsAllowed(options.params, staticParams)
+    ) {
       options.clearRequestContext();
       return new Response("Not Found", { status: 404 });
     }

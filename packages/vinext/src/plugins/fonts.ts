@@ -134,7 +134,9 @@ type GoogleFontNamedSpecifier = {
  * Supports: string literals, numeric literals, boolean literals,
  * arrays of the above, and nested object literals.
  */
-export function parseStaticObjectLiteral(objectStr: string): Record<string, unknown> | null {
+export function parseStaticObjectLiteral(
+  objectStr: string,
+): Record<string, unknown> | null {
   let ast: ReturnType<typeof parseAst>;
   try {
     // Wrap in parens so the parser treats `{…}` as an expression, not a block
@@ -242,7 +244,9 @@ function parseGoogleFontsVirtualId(id: string): {
   const cleanId = id.startsWith("\0") ? id.slice(1) : id;
   if (!cleanId.startsWith(VIRTUAL_GOOGLE_FONTS)) return null;
   const queryIndex = cleanId.indexOf("?");
-  const params = new URLSearchParams(queryIndex === -1 ? "" : cleanId.slice(queryIndex + 1));
+  const params = new URLSearchParams(
+    queryIndex === -1 ? "" : cleanId.slice(queryIndex + 1),
+  );
   return {
     hasDefault: params.get("default") === "1",
     fonts:
@@ -277,7 +281,9 @@ export function generateGoogleFontsVirtualModule(
   if (payload.hasDefault) reExports.push("default");
   reExports.push(...utilities);
   if (reExports.length > 0) {
-    lines.push(`export { ${reExports.join(", ")} } from ${JSON.stringify(fontGoogleShimPath)};`);
+    lines.push(
+      `export { ${reExports.join(", ")} } from ${JSON.stringify(fontGoogleShimPath)};`,
+    );
   }
 
   for (const fontName of fonts) {
@@ -328,7 +334,10 @@ function parseGoogleFontImportClause(clause: string): {
     return {
       defaultLocal: null,
       namespaceLocal: null,
-      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd), true),
+      named: parseGoogleFontNamedSpecifiers(
+        trimmed.slice(braceStart + 1, braceEnd),
+        true,
+      ),
     };
   }
 
@@ -393,7 +402,10 @@ async function fetchAndCacheFont(
   // Use a hash of the URL for the cache key
   const { createHash } = await import("node:crypto");
   const urlHash = createHash("md5").update(cssUrl).digest("hex").slice(0, 12);
-  const fontDir = path.join(cacheDir, `${family.toLowerCase().replace(/\s+/g, "-")}-${urlHash}`);
+  const fontDir = path.join(
+    cacheDir,
+    `${family.toLowerCase().replace(/\s+/g, "-")}-${urlHash}`,
+  );
 
   // Check if already cached
   const cachedCSSPath = path.join(fontDir, "style.css");
@@ -485,7 +497,10 @@ async function fetchAndCacheFont(
  * literals including `${...}` interpolations) are fully skipped so that brace
  * characters inside string values do not affect the depth count.
  */
-export function _findBalancedObject(code: string, searchStart: number): [number, number] | null {
+export function _findBalancedObject(
+  code: string,
+  searchStart: number,
+): [number, number] | null {
   let i = searchStart;
   // Skip leading whitespace before the opening brace
   while (
@@ -605,7 +620,10 @@ export function _findCallEnd(code: string, objEnd: number): number | null {
   return i + 1;
 }
 
-export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: string): Plugin {
+export function createGoogleFontsPlugin(
+  fontGoogleShimPath: string,
+  shimsDir: string,
+): Plugin {
   // Vite does not bind `this` to the plugin object when calling hooks, so
   // plugin state must be held in closure variables rather than as properties.
   let isBuild = false;
@@ -644,7 +662,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         // where `this` is untyped). Captured at the top of the hook so
         // a single handler invocation always threads one consistent
         // value through every font-loader call site it rewrites.
-        const transformAssetsDir = this.environment?.config?.build?.assetsDir ?? DEFAULT_ASSETS_DIR;
+        const transformAssetsDir =
+          this.environment?.config?.build?.assetsDir ?? DEFAULT_ASSETS_DIR;
 
         const s = new MagicString(code);
         let hasChanges = false;
@@ -653,7 +672,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const fontLocals = new Map<string, string>();
         const proxyObjectLocals = new Set<string>();
 
-        const importRe = /^[ \t]*import\s+([^;]+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
+        const importRe =
+          /^[ \t]*import\s+([^;]+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
         let importMatch;
         while ((importMatch = importRe.exec(code)) !== null) {
           const [fullMatch, clause] = importMatch;
@@ -706,7 +726,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           }
         }
 
-        const exportRe = /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
+        const exportRe =
+          /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
         let exportMatch;
         while ((exportMatch = exportRe.exec(code)) !== null) {
           const [fullMatch, specifiers] = exportMatch;
@@ -830,7 +851,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           //   - Empty string if the object is empty ({ is the last non-whitespace char)
           //   - Empty string if there's already a trailing comma (avoid double comma)
           //   - ", " otherwise (before the new property)
-          const separator = beforeBrace.endsWith("{") || beforeBrace.endsWith(",") ? "" : ", ";
+          const separator =
+            beforeBrace.endsWith("{") || beforeBrace.endsWith(",") ? "" : ", ";
           const optionsWithCSS =
             optionsStr.slice(0, closingBrace) +
             separator +
@@ -864,7 +886,9 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             const callEnd = _findCallEnd(code, objRange[1]);
             if (callEnd === null) continue;
 
-            if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+            if (
+              overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)
+            ) {
               continue;
             }
 
@@ -893,7 +917,9 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             const callEnd = _findCallEnd(code, objRange[1]);
             if (callEnd === null) continue;
 
-            if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+            if (
+              overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)
+            ) {
               continue;
             }
 
@@ -1017,7 +1043,8 @@ export function createLocalFontsPlugin(): Plugin {
 
         // Match font file paths in `path: "..."` or `src: "..."` properties.
         // Captures: (1) property+colon prefix, (2) quote char, (3) the path.
-        const fontPathRe = /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
+        const fontPathRe =
+          /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
 
         let match;
         while ((match = fontPathRe.exec(code)) !== null) {

@@ -144,7 +144,9 @@ describe("prefetch cache eviction", () => {
     const restored = restoreRscResponse(snapshot);
 
     expect(restored.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
+    expect(restored.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent('{"id":"2"}'),
+    );
     await expect(restored.text()).resolves.toBe("flight");
   });
 

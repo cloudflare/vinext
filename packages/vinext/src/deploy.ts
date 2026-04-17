@@ -172,7 +172,8 @@ export function detectProject(root: string): ProjectInfo {
   const hasApp =
     fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
   const hasPages =
-    fs.existsSync(path.join(root, "pages")) || fs.existsSync(path.join(root, "src", "pages"));
+    fs.existsSync(path.join(root, "pages")) ||
+    fs.existsSync(path.join(root, "src", "pages"));
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
@@ -192,7 +193,8 @@ export function detectProject(root: string): ProjectInfo {
   // Check node_modules for installed packages.
   // Walk up ancestor directories so that monorepo-hoisted packages are found
   // even when node_modules lives at the workspace root rather than app root.
-  const hasCloudflarePlugin = _findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
+  const hasCloudflarePlugin =
+    _findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
   const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
@@ -281,7 +283,11 @@ function scanDirForPattern(dir: string, pattern: RegExp): boolean {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+    if (
+      entry.isDirectory() &&
+      !entry.name.startsWith(".") &&
+      entry.name !== "node_modules"
+    ) {
       if (scanDirForPattern(fullPath, pattern)) return true;
     } else if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name)) {
       try {
@@ -301,13 +307,19 @@ function scanDirForPattern(dir: string, pattern: RegExp): boolean {
  */
 function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boolean {
   // Check next.config for pageExtensions with mdx
-  const configFiles = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
   for (const f of configFiles) {
     const p = path.join(root, f);
     if (fs.existsSync(p)) {
       try {
         const content = fs.readFileSync(p, "utf-8");
-        if (/pageExtensions.*mdx/i.test(content) || /@next\/mdx/.test(content)) return true;
+        if (/pageExtensions.*mdx/i.test(content) || /@next\/mdx/.test(content))
+          return true;
       } catch {
         // ignore
       }
@@ -340,7 +352,11 @@ function scanDirForExtension(dir: string, ext: string): boolean {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+    if (
+      entry.isDirectory() &&
+      !entry.name.startsWith(".") &&
+      entry.name !== "node_modules"
+    ) {
       if (scanDirForExtension(fullPath, ext)) return true;
     } else if (entry.isFile() && entry.name.endsWith(ext)) {
       return true;
@@ -917,7 +933,9 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
   const plugins: string[] = [];
 
   if (info?.hasMDX) {
-    plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
+    plugins.push(
+      `    // vinext auto-injects @mdx-js/rollup with plugins from next.config`,
+    );
   }
   plugins.push(`    vinext(),`);
 
@@ -1199,7 +1217,10 @@ export function buildWranglerDeployArgs(
   return { args, env };
 }
 
-function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
+function runWranglerDeploy(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+): string {
   // Walk up ancestor directories so the binary is found even when node_modules
   // is hoisted to the workspace root in a monorepo.
   const wranglerBin =
@@ -1252,7 +1273,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
-    console.error("  vinext deploy requires a Next.js project with an app/ or pages/ directory");
+    console.error(
+      "  vinext deploy requires a Next.js project with an app/ or pages/ directory",
+    );
     console.error("  (also checks src/app/ and src/pages/).\n");
     process.exit(1);
   }
@@ -1312,11 +1335,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init` generates a minimal local-dev config without it.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
-    throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
+    throw new Error(
+      formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }),
+    );
   }
 
   if (options.dryRun) {
-    console.log("\n  Dry run complete. Files generated but no build or deploy performed.\n");
+    console.log(
+      "\n  Dry run complete. Files generated but no build or deploy performed.\n",
+    );
     return;
   }
 

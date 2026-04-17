@@ -52,7 +52,8 @@ export class PrerenderProgress {
     const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
     // Truncate long route names to keep the line under ~80 chars
     const maxRoute = 40;
-    const routeLabel = route.length > maxRoute ? "…" + route.slice(-(maxRoute - 1)) : route;
+    const routeLabel =
+      route.length > maxRoute ? "…" + route.slice(-(maxRoute - 1)) : route;
     const line = `Prerendering routes... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${routeLabel}`;
     // Pad to overwrite previous line, then carriage-return (no newline)
     const padded = line.padEnd(this.lastLineLen);
@@ -115,7 +116,9 @@ export type RunPrerenderOptions = {
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  */
-export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
+export async function runPrerender(
+  options: RunPrerenderOptions,
+): Promise<PrerenderResult | null> {
   const { root } = options;
 
   // Detect directories
@@ -164,7 +167,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       ? path.join(root, "dist", "client")
       : path.join(root, "dist", "server", "prerendered-routes");
 
-  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const rscBundlePath =
+    options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
   const serverDir = path.dirname(rscBundlePath);
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
@@ -260,7 +264,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   } finally {
     // Close the shared prod server if we started one.
     if (sharedProdServer) {
-      await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        sharedProdServer!.server.close(() => resolve()),
+      );
     }
   }
 

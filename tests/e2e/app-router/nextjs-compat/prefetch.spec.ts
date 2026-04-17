@@ -19,9 +19,12 @@ test.describe("Next.js compat: prefetch (browser)", () => {
 
     // Click the no-prefetch link
     await page.click("#no-prefetch-link");
-    await expect(page.locator("#no-prefetch-target")).toHaveText("No Prefetch Target Page", {
-      timeout: 10_000,
-    });
+    await expect(page.locator("#no-prefetch-target")).toHaveText(
+      "No Prefetch Target Page",
+      {
+        timeout: 10_000,
+      },
+    );
   });
 
   // Test that prefetched link navigates correctly
@@ -78,9 +81,9 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       const cache = (window as any).__VINEXT_RSC_PREFETCH_CACHE__;
       return cache ? Array.from(cache.keys()) : [];
     });
-    expect((cachedUrls as string[]).some((url) => url.includes("prefetch-test/target.rsc"))).toBe(
-      true,
-    );
+    expect(
+      (cachedUrls as string[]).some((url) => url.includes("prefetch-test/target.rsc")),
+    ).toBe(true);
   });
 
   // Test that prefetch={false} does NOT populate the cache

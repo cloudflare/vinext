@@ -169,7 +169,9 @@ describe("slot primitives", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      await expect(renderPromise).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+      await expect(renderPromise).rejects.toMatchObject({
+        digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      });
     } finally {
       consoleError.mockRestore();
     }
@@ -297,7 +299,8 @@ describe("slot primitives", () => {
   });
 
   it("mergeElements on traversal: UNMATCHED_SLOT in next is restored from prev and not cleared", async () => {
-    const { mergeElements, UNMATCHED_SLOT } = await import("../packages/vinext/src/shims/slot.js");
+    const { mergeElements, UNMATCHED_SLOT } =
+      await import("../packages/vinext/src/shims/slot.js");
 
     const realContent = React.createElement("div", null, "modal content");
     const merged = mergeElements(

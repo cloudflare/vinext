@@ -108,7 +108,9 @@ describe("app route handler response helpers", () => {
       revalidateSeconds: 60,
     });
     expect(staleHead.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(staleHead.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
+    expect(staleHead.headers.get("cache-control")).toBe(
+      "s-maxage=0, stale-while-revalidate",
+    );
     await expect(staleHead.text()).resolves.toBe("");
   });
 
@@ -215,7 +217,9 @@ describe("app route handler response helpers", () => {
     applyRouteHandlerRevalidateHeader(response, 30);
     markRouteHandlerCacheMiss(response);
 
-    expect(response.headers.get("cache-control")).toBe("s-maxage=30, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe(
+      "s-maxage=30, stale-while-revalidate",
+    );
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
 });

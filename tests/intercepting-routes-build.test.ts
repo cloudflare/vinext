@@ -6,7 +6,10 @@ import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
-async function withTempDir<T>(prefix: string, run: (tmpDir: string) => Promise<T>): Promise<T> {
+async function withTempDir<T>(
+  prefix: string,
+  run: (tmpDir: string) => Promise<T>,
+): Promise<T> {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
   try {
     return await run(tmpDir);
@@ -49,7 +52,11 @@ describe("App Router intercepting routes in production builds", () => {
       writeFixtureFile(
         root,
         "package.json",
-        JSON.stringify({ name: "vinext-intercept-build", private: true, type: "module" }, null, 2),
+        JSON.stringify(
+          { name: "vinext-intercept-build", private: true, type: "module" },
+          null,
+          2,
+        ),
       );
       writeFixtureFile(
         root,
@@ -150,7 +157,9 @@ export default function InterceptingLayout({
       await buildApp(root);
 
       expect(fs.existsSync(path.join(root, "dist", "server", "index.js"))).toBe(true);
-      expect(fs.existsSync(path.join(root, "dist", "server", "ssr", "index.js"))).toBe(true);
+      expect(fs.existsSync(path.join(root, "dist", "server", "ssr", "index.js"))).toBe(
+        true,
+      );
       expect(fs.existsSync(path.join(root, "dist", "client"))).toBe(true);
     });
   }, 60_000);

@@ -15,7 +15,8 @@ export default async function SearchQueryPage({
   const headerStore = await headers();
   const mwSearchParams = headerStore.get("x-search-params") || "";
 
-  const searchParamsValue = typeof params.searchParams === "string" ? params.searchParams : "";
+  const searchParamsValue =
+    typeof params.searchParams === "string" ? params.searchParams : "";
   const multi = params.multi;
   const multiCount = Array.isArray(multi) ? multi.length : multi ? 1 : 0;
 

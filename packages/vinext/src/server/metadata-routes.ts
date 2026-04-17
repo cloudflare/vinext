@@ -25,7 +25,14 @@ import path from "node:path";
 export type SitemapEntry = {
   url: string;
   lastModified?: string | Date;
-  changeFrequency?: "always" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "never";
+  changeFrequency?:
+    | "always"
+    | "hourly"
+    | "daily"
+    | "weekly"
+    | "monthly"
+    | "yearly"
+    | "never";
   priority?: number;
   alternates?: {
     languages?: Record<string, string>;
@@ -191,7 +198,9 @@ function escapeXml(s: string): string {
  * Convert a sitemap array to XML string.
  */
 export function sitemapToXml(entries: SitemapEntry[]): string {
-  const hasAlternates = entries.some((entry) => Object.keys(entry.alternates ?? {}).length > 0);
+  const hasAlternates = entries.some(
+    (entry) => Object.keys(entry.alternates ?? {}).length > 0,
+  );
   const hasImages = entries.some((entry) => Boolean(entry.images?.length));
   const hasVideos = entries.some((entry) => Boolean(entry.videos?.length));
   let content = "";
@@ -287,7 +296,9 @@ export function robotsToText(config: RobotsConfig): string {
   const rules = Array.isArray(config.rules) ? config.rules : [config.rules];
 
   for (const rule of rules) {
-    const agents = Array.isArray(rule.userAgent) ? rule.userAgent : [rule.userAgent ?? "*"];
+    const agents = Array.isArray(rule.userAgent)
+      ? rule.userAgent
+      : [rule.userAgent ?? "*"];
 
     for (const agent of agents) {
       lines.push(`User-Agent: ${agent}`);

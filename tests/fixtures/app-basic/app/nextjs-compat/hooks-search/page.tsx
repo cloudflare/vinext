@@ -13,7 +13,11 @@ export default function Page() {
       <button
         id="push-search"
         onClick={() => {
-          window.history.pushState(null, "", "/nextjs-compat/hooks-search?q=updated&page=2");
+          window.history.pushState(
+            null,
+            "",
+            "/nextjs-compat/hooks-search?q=updated&page=2",
+          );
         }}
       >
         Update Search

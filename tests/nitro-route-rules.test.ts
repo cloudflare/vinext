@@ -38,11 +38,15 @@ afterEach(() => {
 });
 
 function isPlugin(plugin: unknown): plugin is Plugin {
-  return !!plugin && !Array.isArray(plugin) && typeof plugin === "object" && "name" in plugin;
+  return (
+    !!plugin && !Array.isArray(plugin) && typeof plugin === "object" && "name" in plugin
+  );
 }
 
 function findNamedPlugin(plugins: ReturnType<typeof vinext>, name: string) {
-  return plugins.find((plugin): plugin is Plugin => isPlugin(plugin) && plugin.name === name);
+  return plugins.find(
+    (plugin): plugin is Plugin => isPlugin(plugin) && plugin.name === name,
+  );
 }
 
 function makeTempProject(prefix: string): string {
@@ -125,9 +129,15 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
 
   // Passing empty plugins array means hasNitroPlugin=false in the closure,
   // but the nitro.setup hook doesn't gate on hasNitroPlugin (Nitro calls it directly).
-  await configPlugin.config({ root, plugins: [] }, { command: "build", mode: "production" });
+  await configPlugin.config(
+    { root, plugins: [] },
+    { command: "build", mode: "production" },
+  );
 
-  const nitroPlugin = findNamedPlugin(plugins, "vinext:nitro-route-rules") as NitroSetupPlugin;
+  const nitroPlugin = findNamedPlugin(
+    plugins,
+    "vinext:nitro-route-rules",
+  ) as NitroSetupPlugin;
   if (!nitroPlugin?.nitro?.setup) {
     throw new Error("vinext:nitro-route-rules plugin not found");
   }

@@ -36,7 +36,9 @@ test.describe("next/dynamic with ssr: false (Pages Router)", () => {
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     // The client-only component should now be visible in both containers
-    const withLoading = page.locator('[data-testid="with-loading"] [data-testid="client-only"]');
+    const withLoading = page.locator(
+      '[data-testid="with-loading"] [data-testid="client-only"]',
+    );
     await expect(withLoading).toBeVisible();
 
     const withoutLoading = page.locator(

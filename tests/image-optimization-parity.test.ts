@@ -12,7 +12,9 @@ const PNG_1X1 = Buffer.from(
 
 async function createImageFixture(router: "app" | "pages"): Promise<string> {
   const baseFixtureDir = router === "app" ? APP_FIXTURE_DIR : PAGES_FIXTURE_DIR;
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), `vinext-${router}-image-parity-`));
+  const rootDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), `vinext-${router}-image-parity-`),
+  );
   await fs.cp(baseFixtureDir, rootDir, { recursive: true });
   try {
     await fs.access(path.join(rootDir, "node_modules"));
@@ -28,8 +30,14 @@ async function createImageFixture(router: "app" | "pages"): Promise<string> {
   await fs.writeFile(path.join(rootDir, "public", "hello world.png"), PNG_1X1);
 
   if (router === "app") {
-    await fs.rm(path.join(rootDir, "app", "alias-test"), { recursive: true, force: true });
-    await fs.rm(path.join(rootDir, "app", "baseurl-test"), { recursive: true, force: true });
+    await fs.rm(path.join(rootDir, "app", "alias-test"), {
+      recursive: true,
+      force: true,
+    });
+    await fs.rm(path.join(rootDir, "app", "baseurl-test"), {
+      recursive: true,
+      force: true,
+    });
     await fs.mkdir(path.join(rootDir, "app", "image-parity"), { recursive: true });
     await fs.writeFile(
       path.join(rootDir, "app", "image-parity", "page.tsx"),
@@ -103,7 +111,9 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
 
     beforeAll(async () => {
       fixtureDir = await createImageFixture(router);
-      ({ server, baseUrl } = await startFixtureServer(fixtureDir, { appRouter: router === "app" }));
+      ({ server, baseUrl } = await startFixtureServer(fixtureDir, {
+        appRouter: router === "app",
+      }));
     }, 30000);
 
     afterAll(async () => {

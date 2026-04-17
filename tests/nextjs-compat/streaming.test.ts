@@ -59,7 +59,10 @@ describe("Next.js compat: streaming", () => {
   it("nested streaming page returns 200", async () => {
     // Next.js: streaming SSR with Suspense boundaries
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test/nested");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/streaming-test/nested",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("Nested Streaming Test");
   });

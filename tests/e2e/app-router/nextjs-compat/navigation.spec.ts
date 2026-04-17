@@ -55,7 +55,9 @@ test.describe("Next.js compat: navigation (browser)", () => {
     await waitForAppRouterHydration(page);
 
     // Verify the page loaded correctly first
-    await expect(page.locator("#notfound-trigger-page")).toHaveText("Not Found Trigger Page");
+    await expect(page.locator("#notfound-trigger-page")).toHaveText(
+      "Not Found Trigger Page",
+    );
 
     // Click button to trigger notFound()
     await page.click("#trigger-notfound");
@@ -92,7 +94,9 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Client-side navigation to a non-existent route should render not-found
   // This is the core bug from the issue: clicking a Link to a page that doesn't
   // exist should render the not-found.tsx boundary, not a blank white page.
-  test("Link to non-existent route renders not-found via client navigation", async ({ page }) => {
+  test("Link to non-existent route renders not-found via client navigation", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
     await waitForAppRouterHydration(page);
 
@@ -141,14 +145,20 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
     // Go back
     await page.goBack();
-    await expect(page.locator("#link-test-page")).toHaveText("Link Test Page", { timeout: 10_000 });
+    await expect(page.locator("#link-test-page")).toHaveText("Link Test Page", {
+      timeout: 10_000,
+    });
   });
 
-  test("Link onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
+  test("Link onNavigate reports the resolved URL for relative query hrefs", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
     await waitForAppRouterHydration(page);
     await expect(async () => {
-      const ready = await page.evaluate(() => !!(window as any).__APP_RELATIVE_QUERY_LINK_READY__);
+      const ready = await page.evaluate(
+        () => !!(window as any).__APP_RELATIVE_QUERY_LINK_READY__,
+      );
       expect(ready).toBe(true);
     }).toPass({ timeout: 10_000 });
 
@@ -157,9 +167,12 @@ test.describe("Next.js compat: navigation (browser)", () => {
     });
 
     await page.click("#link-relative-query");
-    await expect(page.locator("#relative-query-page")).toHaveText("Current page param: 2", {
-      timeout: 10_000,
-    });
+    await expect(page.locator("#relative-query-page")).toHaveText(
+      "Current page param: 2",
+      {
+        timeout: 10_000,
+      },
+    );
     expect(page.url()).toBe(`${BASE}/nextjs-compat/nav-link-test?page=2`);
 
     const reportedUrl = await page.evaluate(

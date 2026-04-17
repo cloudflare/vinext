@@ -24,7 +24,9 @@ export function getVinextBrowserGlobal(): typeof globalThis & VinextBrowserGloba
 /**
  * Convert embedded text chunks back to a ReadableStream of Uint8Array chunks.
  */
-export function chunksToReadableStream(chunks: readonly string[]): ReadableStream<Uint8Array> {
+export function chunksToReadableStream(
+  chunks: readonly string[],
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     start(controller) {

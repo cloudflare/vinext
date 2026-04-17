@@ -59,8 +59,12 @@ export function isProxyFile(filePath: string): boolean {
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
  * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
  */
-// oxlint-disable-next-line typescript/no-unsafe-function-type
-export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath: string): Function {
+/* oxlint-disable typescript/no-unsafe-function-type */
+export function resolveMiddlewareHandler(
+  mod: Record<string, unknown>,
+  filePath: string,
+): Function {
+  /* oxlint-enable typescript/no-unsafe-function-type */
   const isProxy = isProxyFile(filePath);
   const handler = isProxy ? (mod.proxy ?? mod.default) : (mod.middleware ?? mod.default);
 
@@ -83,7 +87,10 @@ const MIDDLEWARE_LOCATIONS = ["", "src/"];
  * Checks for proxy.ts (Next.js 16) first, then falls back to middleware.ts.
  * If middleware.ts is found, logs a deprecation warning.
  */
-export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher): string | null {
+export function findMiddlewareFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
   // Check proxy.ts first (Next.js 16 replacement for middleware.ts)
   for (const dir of MIDDLEWARE_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
@@ -180,7 +187,9 @@ export function matchesMiddleware(
 }
 
 // Keep this in sync with __isValidMiddlewareMatcherObject in middleware-codegen.ts.
-function isValidMiddlewareMatcherObject(value: unknown): value is MiddlewareMatcherObject {
+function isValidMiddlewareMatcherObject(
+  value: unknown,
+): value is MiddlewareMatcherObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 
   const matcher = value as Record<string, unknown>;
@@ -192,9 +201,15 @@ function isValidMiddlewareMatcherObject(value: unknown): value is MiddlewareMatc
     }
   }
 
-  if ("locale" in matcher && matcher.locale !== undefined && matcher.locale !== false) return false;
-  if ("has" in matcher && matcher.has !== undefined && !Array.isArray(matcher.has)) return false;
-  if ("missing" in matcher && matcher.missing !== undefined && !Array.isArray(matcher.missing)) {
+  if ("locale" in matcher && matcher.locale !== undefined && matcher.locale !== false)
+    return false;
+  if ("has" in matcher && matcher.has !== undefined && !Array.isArray(matcher.has))
+    return false;
+  if (
+    "missing" in matcher &&
+    matcher.missing !== undefined &&
+    !Array.isArray(matcher.missing)
+  ) {
     return false;
   }
 
@@ -467,7 +482,11 @@ export async function runMiddleware(
         responseHeaders.append(key, value);
       }
     }
-    return { continue: true, responseHeaders, waitUntilPromises: fetchEvent.waitUntilPromises };
+    return {
+      continue: true,
+      responseHeaders,
+      waitUntilPromises: fetchEvent.waitUntilPromises,
+    };
   }
 
   // Check for redirect (3xx status)

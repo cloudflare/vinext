@@ -48,7 +48,9 @@ type ErrorBoundaryInnerConstructor = {
   } | null;
 };
 
-function isErrorBoundaryInnerConstructor(value: unknown): value is ErrorBoundaryInnerConstructor {
+function isErrorBoundaryInnerConstructor(
+  value: unknown,
+): value is ErrorBoundaryInnerConstructor {
   return value !== null && typeof value === "function";
 }
 

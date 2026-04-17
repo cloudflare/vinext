@@ -24,7 +24,10 @@ import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { classifyPagesRoute, classifyAppRoute } from "./report.js";
-import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
+import {
+  createValidFileMatcher,
+  type ValidFileMatcher,
+} from "../routing/file-matcher.js";
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
 import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
 import { startProdServer } from "../server/prod-server.js";
@@ -442,7 +445,13 @@ export async function prerenderPages({
       filePath: r.filePath,
       module: {
         getStaticPaths: r.isDynamic
-          ? async ({ locales, defaultLocale }: { locales: string[]; defaultLocale: string }) => {
+          ? async ({
+              locales,
+              defaultLocale,
+            }: {
+              locales: string[];
+              defaultLocale: string;
+            }) => {
               const search = new URLSearchParams({ pattern: r.pattern });
               if (locales.length > 0) search.set("locales", JSON.stringify(locales));
               if (defaultLocale) search.set("defaultLocale", defaultLocale);
@@ -488,7 +497,9 @@ export async function prerenderPages({
       );
       if (!fsRoute) continue;
 
-      const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
+      const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(
+        route.filePath,
+      );
 
       // Route type detection uses static file analysis (classifyPagesRoute).
       // Rendering is always done via HTTP through a local prod server, so we
@@ -524,12 +535,19 @@ export async function prerenderPages({
               error: `Dynamic route requires getStaticPaths with output: 'export'`,
             });
           } else {
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            results.push({
+              route: route.pattern,
+              status: "skipped",
+              reason: "no-static-params",
+            });
           }
           continue;
         }
 
-        const pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        const pathsResult = await route.module.getStaticPaths({
+          locales: [],
+          defaultLocale: "",
+        });
         const fallback = pathsResult?.fallback ?? false;
 
         if (mode === "export" && fallback !== false) {
@@ -647,7 +665,9 @@ export async function prerenderPages({
     setCacheHandler(previousHandler);
     delete process.env.VINEXT_PRERENDER;
     if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        ownedProdServerHandle!.server.close(() => resolve()),
+      );
     }
   }
 }
@@ -776,9 +796,12 @@ export async function prerenderApp({
             if (Object.keys(params).length > 0) {
               search.set("parentParams", JSON.stringify(params));
             }
-            const res = await fetch(`${baseUrl}/__vinext/prerender/static-params?${search}`, {
-              headers: secretHeaders,
-            });
+            const res = await fetch(
+              `${baseUrl}/__vinext/prerender/static-params?${search}`,
+              {
+                headers: secretHeaders,
+              },
+            );
             const text = await res.text();
             if (!res.ok) {
               console.warn(
@@ -882,12 +905,20 @@ export async function prerenderApp({
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
             } else {
-              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+              results.push({
+                route: route.pattern,
+                status: "skipped",
+                reason: "no-static-params",
+              });
             }
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, routeIndex, staticParamsMap);
+          const parentParamSets = await resolveParentParams(
+            route,
+            routeIndex,
+            staticParamsMap,
+          );
           let paramSets: Record<string, string | string[]>[] | null;
 
           if (parentParamSets.length > 0) {
@@ -921,14 +952,22 @@ export async function prerenderApp({
                 error: `Dynamic route requires generateStaticParams() with output: 'export'`,
               });
             } else {
-              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+              results.push({
+                route: route.pattern,
+                status: "skipped",
+                reason: "no-static-params",
+              });
             }
             continue;
           }
 
           if (!Array.isArray(paramSets) || paramSets.length === 0) {
             // Empty params — skip with warning
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            results.push({
+              route: route.pattern,
+              status: "skipped",
+              reason: "no-static-params",
+            });
             continue;
           }
 
@@ -992,8 +1031,9 @@ export async function prerenderApp({
         // reaches the worker isolate. The wrapping is a no-op for the CF path but
         // harmless — and it keeps renderUrl() shape-compatible across both modes.
         const htmlRequest = new Request(`http://localhost${urlPath}`);
-        const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
-          rscHandler(htmlRequest),
+        const htmlRes = await runWithHeadersContext(
+          headersContextFromRequest(htmlRequest),
+          () => rscHandler(htmlRequest),
         );
         if (!htmlRes.ok) {
           if (isSpeculative) {
@@ -1025,8 +1065,9 @@ export async function prerenderApp({
         const rscRequest = new Request(`http://localhost${urlPath}`, {
           headers: { Accept: "text/x-component", RSC: "1" },
         });
-        const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
-          rscHandler(rscRequest),
+        const rscRes = await runWithHeadersContext(
+          headersContextFromRequest(rscRequest),
+          () => rscHandler(rscRequest),
         );
         const rscData = rscRes.ok ? await rscRes.text() : null;
 
@@ -1067,16 +1108,20 @@ export async function prerenderApp({
     }
 
     let completedApp = 0;
-    const appResults = await runWithConcurrency(urlsToRender, concurrency, async (urlToRender) => {
-      const result = await renderUrl(urlToRender);
-      onProgress?.({
-        completed: ++completedApp,
-        total: urlsToRender.length,
-        route: urlToRender.urlPath,
-        status: result.status,
-      });
-      return result;
-    });
+    const appResults = await runWithConcurrency(
+      urlsToRender,
+      concurrency,
+      async (urlToRender) => {
+        const result = await renderUrl(urlToRender);
+        onProgress?.({
+          completed: ++completedApp,
+          total: urlsToRender.length,
+          route: urlToRender.urlPath,
+          status: result.status,
+        });
+        return result;
+      },
+    );
     results.push(...appResults);
 
     // ── Render 404 page ───────────────────────────────────────────────────────
@@ -1118,7 +1163,9 @@ export async function prerenderApp({
     setCacheHandler(previousHandler);
     delete process.env.VINEXT_PRERENDER;
     if (ownedProdServerHandle) {
-      await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        ownedProdServerHandle!.server.close(() => resolve()),
+      );
     }
   }
 }

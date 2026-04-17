@@ -125,21 +125,34 @@ export class NextRequest extends Request {
    * Returns undefined if not available.
    */
   get geo():
-    | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
+    | {
+        city?: string;
+        country?: string;
+        region?: string;
+        latitude?: string;
+        longitude?: string;
+      }
     | undefined {
     // Check Cloudflare-style headers, Vercel-style headers
     const country =
-      this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
+      this.headers.get("cf-ipcountry") ??
+      this.headers.get("x-vercel-ip-country") ??
+      undefined;
     if (!country) return undefined;
     return {
       country,
-      city: this.headers.get("cf-ipcity") ?? this.headers.get("x-vercel-ip-city") ?? undefined,
+      city:
+        this.headers.get("cf-ipcity") ??
+        this.headers.get("x-vercel-ip-city") ??
+        undefined,
       region:
         this.headers.get("cf-region") ??
         this.headers.get("x-vercel-ip-country-region") ??
         undefined,
       latitude:
-        this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
+        this.headers.get("cf-iplatitude") ??
+        this.headers.get("x-vercel-ip-latitude") ??
+        undefined,
       longitude:
         this.headers.get("cf-iplongitude") ??
         this.headers.get("x-vercel-ip-longitude") ??
@@ -196,7 +209,9 @@ export class NextResponse<_Body = unknown> extends Response {
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
     if (!REDIRECT_STATUSES.has(status)) {
-      throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
+      throw new RangeError(
+        `Failed to execute "redirect" on "response": Invalid status code`,
+      );
     }
     const destination = typeof url === "string" ? url : url.toString();
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
@@ -530,7 +545,9 @@ export class RequestCookies {
   }
 
   private _serialize(): string {
-    return [...this._parsed.entries()].map(([n, v]) => `${n}=${encodeURIComponent(v)}`).join("; ");
+    return [...this._parsed.entries()]
+      .map(([n, v]) => `${n}=${encodeURIComponent(v)}`)
+      .join("; ");
   }
 
   private _syncHeader(): void {
@@ -590,7 +607,10 @@ export class ResponseCookies {
       } catch {
         value = raw;
       }
-      this._parsed.set(cookieName, { serialized: header, entry: { name: cookieName, value } });
+      this._parsed.set(cookieName, {
+        serialized: header,
+        entry: { name: cookieName, value },
+      });
     }
   }
 

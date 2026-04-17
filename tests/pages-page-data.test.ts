@@ -165,9 +165,11 @@ describe("pages page data", () => {
     const runInFreshUnifiedContext = vi.fn(
       async <T>(callback: () => Promise<T>): Promise<T> => callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
-    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
-      regenPromise = renderFn();
-    });
+    const triggerBackgroundRegeneration = vi.fn(
+      (_key: string, renderFn: () => Promise<void>) => {
+        regenPromise = renderFn();
+      },
+    );
 
     const result = await resolvePagesPageData(
       createOptions({
@@ -207,7 +209,9 @@ describe("pages page data", () => {
 
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(result.response.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
+    expect(result.response.headers.get("cache-control")).toBe(
+      "s-maxage=0, stale-while-revalidate",
+    );
     expect(result.response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );

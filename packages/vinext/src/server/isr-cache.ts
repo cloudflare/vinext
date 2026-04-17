@@ -70,10 +70,10 @@ export async function isrSet(
 
 const _PENDING_REGEN_KEY = Symbol.for("vinext.isrCache.pendingRegenerations");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise<void>>()) as Map<
+const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<
   string,
   Promise<void>
->;
+>()) as Map<string, Promise<void>>;
 
 /**
  * Trigger a background regeneration for a cache key.
@@ -85,7 +85,10 @@ const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise
  * `ctx.waitUntil()` via the ALS-backed ExecutionContext, keeping the isolate
  * alive until the regeneration completes even after the Response is returned.
  */
-export function triggerBackgroundRegeneration(key: string, renderFn: () => Promise<void>): void {
+export function triggerBackgroundRegeneration(
+  key: string,
+  renderFn: () => Promise<void>,
+): void {
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()
@@ -147,7 +150,11 @@ export function buildAppPageCacheValue(
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
-export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
+export function isrCacheKey(
+  router: "pages" | "app",
+  pathname: string,
+  buildId?: string,
+): string {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
   const prefix = buildId ? `${router}:${buildId}` : router;
   const key = `${prefix}:${normalized}`;

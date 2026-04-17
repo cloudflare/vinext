@@ -35,7 +35,9 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("About");
 
     // scroll={false} means scrollTo(0,0) should NOT have been called
-    const scrollToTopCalled = await page.evaluate(() => (window as any).__scrollToTopCalled);
+    const scrollToTopCalled = await page.evaluate(
+      () => (window as any).__scrollToTopCalled,
+    );
     expect(scrollToTopCalled).toBe(false);
   });
 
@@ -95,7 +97,9 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(link).toHaveAttribute("href", "/about");
   });
 
-  test("onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
+  test("onNavigate reports the resolved URL for relative query hrefs", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/link-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
@@ -106,7 +110,9 @@ test.describe("Link advanced props (Pages Router)", () => {
 
     await page.click('[data-testid="link-relative-query"]');
 
-    await expect(page.locator('[data-testid="current-path"]')).toHaveText("/link-test?page=2");
+    await expect(page.locator('[data-testid="current-path"]')).toHaveText(
+      "/link-test?page=2",
+    );
     expect(page.url()).toBe(`${BASE}/link-test?page=2`);
     const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
     expect(marker).toBe(true);

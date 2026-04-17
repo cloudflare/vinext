@@ -14,9 +14,13 @@ export const ROUTE_HANDLER_HTTP_METHODS = [
 
 export type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number];
 
-export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
+export type RouteHandlerModule = Partial<
+  Record<RouteHandlerHttpMethod | "default", unknown>
+>;
 
-export function collectRouteHandlerMethods(handler: RouteHandlerModule): RouteHandlerHttpMethod[] {
+export function collectRouteHandlerMethods(
+  handler: RouteHandlerModule,
+): RouteHandlerHttpMethod[] {
   const methods = ROUTE_HANDLER_HTTP_METHODS.filter(
     (method) => typeof handler[method] === "function",
   );
@@ -172,7 +176,10 @@ export function createTrackedAppRouteRequest(
 
   const wrapRequest = (input: Request): NextRequest => {
     const requestHeaders = options.middlewareHeaders
-      ? buildRequestHeadersFromMiddlewareResponse(input.headers, options.middlewareHeaders)
+      ? buildRequestHeadersFromMiddlewareResponse(
+          input.headers,
+          options.middlewareHeaders,
+        )
       : null;
     const requestWithOverrides = requestHeaders
       ? rebuildRequestWithHeaders(input, requestHeaders)

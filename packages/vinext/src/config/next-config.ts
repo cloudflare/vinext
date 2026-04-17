@@ -22,7 +22,8 @@ import { isExternalUrl } from "./config-matchers.js";
 export function parseBodySizeLimit(value: string | number | undefined | null): number {
   if (value === undefined || value === null) return 1 * 1024 * 1024;
   if (typeof value === "number") {
-    if (value < 1) throw new Error(`Body size limit must be a positive number, got ${value}`);
+    if (value < 1)
+      throw new Error(`Body size limit must be a positive number, got ${value}`);
     return value;
   }
   const trimmed = value.trim();
@@ -58,7 +59,8 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
     default:
       return 1 * 1024 * 1024;
   }
-  if (bytes < 1) throw new Error(`Body size limit must be a positive number, got ${bytes}`);
+  if (bytes < 1)
+    throw new Error(`Body size limit must be a positive number, got ${bytes}`);
   return bytes;
 }
 
@@ -252,7 +254,12 @@ export type ResolvedNextConfig = {
   buildId: string;
 };
 
-const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+const CONFIG_FILES = [
+  "next.config.ts",
+  "next.config.mjs",
+  "next.config.js",
+  "next.config.cjs",
+];
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -496,11 +503,18 @@ export async function resolveNextConfig(
   }
 
   {
-    const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
-    const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+    const allRewrites = [
+      ...rewrites.beforeFiles,
+      ...rewrites.afterFiles,
+      ...rewrites.fallback,
+    ];
+    const externalRewrites = allRewrites.filter((rewrite) =>
+      isExternalUrl(rewrite.destination),
+    );
 
     if (externalRewrites.length > 0) {
-      const noun = externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
+      const noun =
+        externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
       const listing = externalRewrites
         .map((rewrite) => `  ${rewrite.source} → ${rewrite.destination}`)
         .join("\n");
@@ -530,11 +544,15 @@ export async function resolveNextConfig(
     ...webpackProbe.aliases,
   };
 
-  const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
+  const allowedDevOrigins = Array.isArray(config.allowedDevOrigins)
+    ? config.allowedDevOrigins
+    : [];
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = config.experimental as Record<string, unknown> | undefined;
-  const serverActionsConfig = experimental?.serverActions as Record<string, unknown> | undefined;
+  const serverActionsConfig = experimental?.serverActions as
+    | Record<string, unknown>
+    | undefined;
   const serverActionsAllowedOrigins = Array.isArray(serverActionsConfig?.allowedOrigins)
     ? (serverActionsConfig.allowedOrigins as string[])
     : [];
@@ -830,8 +848,12 @@ function isMdxLoader(loaderPath: string): boolean {
 function extractPluginsFromOptions(opts: any): MdxOptions | null {
   if (!opts || typeof opts !== "object") return null;
 
-  const remarkPlugins = Array.isArray(opts.remarkPlugins) ? opts.remarkPlugins : undefined;
-  const rehypePlugins = Array.isArray(opts.rehypePlugins) ? opts.rehypePlugins : undefined;
+  const remarkPlugins = Array.isArray(opts.remarkPlugins)
+    ? opts.remarkPlugins
+    : undefined;
+  const rehypePlugins = Array.isArray(opts.rehypePlugins)
+    ? opts.rehypePlugins
+    : undefined;
   const recmaPlugins = Array.isArray(opts.recmaPlugins) ? opts.recmaPlugins : undefined;
 
   // Only return if at least one plugin array is non-empty

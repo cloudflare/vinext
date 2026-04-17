@@ -170,7 +170,8 @@ export async function runInstrumentation(
     // Store onRequestError handler on globalThis so environments can reach the
     // same handler.
     if (typeof mod.onRequestError === "function") {
-      globalThis.__VINEXT_onRequestErrorHandler__ = mod.onRequestError as OnRequestErrorHandler;
+      globalThis.__VINEXT_onRequestErrorHandler__ =
+        mod.onRequestError as OnRequestErrorHandler;
     }
   } catch (err) {
     console.error(

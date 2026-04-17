@@ -88,7 +88,9 @@ async function collectStream(stream: ReadableStream<Uint8Array>): Promise<string
  * Collect output from a ReadableStream as individual string chunks,
  * preserving the chunk boundaries from the TransformStream output.
  */
-async function collectStreamChunks(stream: ReadableStream<Uint8Array>): Promise<string[]> {
+async function collectStreamChunks(
+  stream: ReadableStream<Uint8Array>,
+): Promise<string[]> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -144,13 +146,17 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const rscEmbed = createRscEmbedTransform(rsc.stream, "vinext-test-nonce");
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const htmlStream = createMockHtmlStream([["<html><head></head><body></body></html>"]]);
+    const htmlStream = createMockHtmlStream([
+      ["<html><head></head><body></body></html>"],
+    ]);
     rsc.close();
 
     const transform = createTickBufferedTransform(rscEmbed);
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
-    expect(output).toContain('<script nonce="vinext-test-nonce">self.__VINEXT_RSC_CHUNKS__=');
+    expect(output).toContain(
+      '<script nonce="vinext-test-nonce">self.__VINEXT_RSC_CHUNKS__=',
+    );
     expect(output).toContain(
       '<script nonce="vinext-test-nonce">self.__VINEXT_RSC_DONE__=true</script>',
     );
@@ -172,7 +178,10 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     // Simulate Fizz splitting an element across chunks in the SAME macrotask
     const htmlStream = createMockHtmlStream([
-      ["<html><head></head><body><svg><linearGradi", "ent id='g1'></linearGradient></svg>"],
+      [
+        "<html><head></head><body><svg><linearGradi",
+        "ent id='g1'></linearGradient></svg>",
+      ],
     ]);
 
     rsc.close();
@@ -359,7 +368,9 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const rscEmbed = createRscEmbedTransform(rsc.stream);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const htmlStream = createMockHtmlStream([["<html><head></head><body>Hello</body></html>"]]);
+    const htmlStream = createMockHtmlStream([
+      ["<html><head></head><body>Hello</body></html>"],
+    ]);
 
     const transform = createTickBufferedTransform(rscEmbed);
     const output = await collectStream(htmlStream.pipeThrough(transform));
@@ -378,7 +389,9 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const rscEmbed = createRscEmbedTransform(rsc.stream);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const htmlStream = createMockHtmlStream([["<html><head></head><body>Shell</body></html>"]]);
+    const htmlStream = createMockHtmlStream([
+      ["<html><head></head><body>Shell</body></html>"],
+    ]);
 
     // Push more RSC data after a delay, then close
     setTimeout(() => {
@@ -410,7 +423,9 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const htmlStream = createMockHtmlStream([["<html><head></head><body>content</body></html>"]]);
+    const htmlStream = createMockHtmlStream([
+      ["<html><head></head><body>content</body></html>"],
+    ]);
 
     const transform = createTickBufferedTransform(rscEmbed);
     const output = await collectStream(htmlStream.pipeThrough(transform));
@@ -455,7 +470,9 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
           // Push RSC chunk for this boundary
           rsc.push(`${i + 1}:["$","div",null,{"children":"Boundary ${i}"}]\n`);
           await new Promise((resolve) => setTimeout(resolve, 5));
-          controller.enqueue(encoder.encode(`<div data-boundary="${i}">Content ${i}</div>`));
+          controller.enqueue(
+            encoder.encode(`<div data-boundary="${i}">Content ${i}</div>`),
+          );
         }
 
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -501,7 +518,9 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const rscEmbed = createRscEmbedTransform(rsc.stream);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const htmlStream = createMockHtmlStream([["<html><head></head><body>content</body></html>"]]);
+    const htmlStream = createMockHtmlStream([
+      ["<html><head></head><body>content</body></html>"],
+    ]);
 
     const transform = createTickBufferedTransform(rscEmbed);
     const output = await collectStream(htmlStream.pipeThrough(transform));

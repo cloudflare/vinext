@@ -50,7 +50,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render description meta tag", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
-    expect(html).toMatch(/meta\s+name="description"\s+content="this is the layout description"/);
+    expect(html).toMatch(
+      /meta\s+name="description"\s+content="this is the layout description"/,
+    );
   });
 
   // ── Title template ───────────────────────────────────────────
@@ -68,7 +70,10 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L40-L44
 
   it("should apply title template to child page", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/child",
+    );
     // Layout template "%s | Layout", child page title "Extra Page"
     expect(html).toContain("<title>Extra Page | Layout</title>");
   });
@@ -136,7 +141,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render og:description", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
-    expect(html).toMatch(/meta\s+property="og:description"\s+content="My custom description"/);
+    expect(html).toMatch(
+      /meta\s+property="og:description"\s+content="My custom description"/,
+    );
   });
 
   it("should render og:url", async () => {
@@ -146,7 +153,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render og:site_name", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
-    expect(html).toMatch(/meta\s+property="og:site_name"\s+content="My custom site name"/);
+    expect(html).toMatch(
+      /meta\s+property="og:site_name"\s+content="My custom site name"/,
+    );
   });
 
   it("should render og:type", async () => {
@@ -172,20 +181,29 @@ describe("Next.js compat: metadata", () => {
   // See: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#opengraph
 
   it("should render og:image when images is a single object", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
     expect(html).toMatch(
       /meta\s+property="og:image"\s+content="https:\/\/example\.com\/single\.png"/,
     );
   });
 
   it("should render og:image dimensions for single image object", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
     expect(html).toMatch(/meta\s+property="og:image:width"\s+content="1200"/);
     expect(html).toMatch(/meta\s+property="og:image:height"\s+content="630"/);
   });
 
   it("should render twitter:image when images is a single object", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
     expect(html).toMatch(
       /meta\s+name="twitter:image"\s+content="https:\/\/example\.com\/twitter-single\.png"/,
     );
@@ -207,7 +225,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render twitter:description", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter");
-    expect(html).toMatch(/meta\s+name="twitter:description"\s+content="Twitter Description"/);
+    expect(html).toMatch(
+      /meta\s+name="twitter:description"\s+content="Twitter Description"/,
+    );
   });
 
   it("should render twitter:image", async () => {
@@ -240,7 +260,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render canonical link", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-alternates");
-    expect(html).toMatch(/link\s+rel="canonical"\s+href="https:\/\/example\.com\/alternates"/);
+    expect(html).toMatch(
+      /link\s+rel="canonical"\s+href="https:\/\/example\.com\/alternates"/,
+    );
   });
 
   it("should render hreflang alternate links", async () => {
@@ -260,8 +282,13 @@ describe("Next.js compat: metadata", () => {
   });
 
   it("should render description from generateMetadata with params", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-generate/test-page");
-    expect(html).toMatch(/meta\s+name="description"\s+content="Description for test-page"/);
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-generate/test-page",
+    );
+    expect(html).toMatch(
+      /meta\s+name="description"\s+content="Description for test-page"/,
+    );
   });
 
   // ── Default charset and viewport injection ────────────────────
@@ -276,7 +303,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should always include viewport meta tag in SSR output", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
-    expect(html).toMatch(/meta\s+name="viewport"\s+content="width=device-width, initial-scale=1"/);
+    expect(html).toMatch(
+      /meta\s+name="viewport"\s+content="width=device-width, initial-scale=1"/,
+    );
   });
 
   it("should include charset and viewport even on pages with only OG metadata", async () => {
@@ -330,7 +359,10 @@ describe("Next.js compat: metadata", () => {
   });
 
   it("generateMetadata searchParams defaults to empty when no query string", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-generate-searchparams");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-generate-searchparams",
+    );
     expect(html).toContain("<title>search: (none)</title>");
   });
 
@@ -355,7 +387,9 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain('property="al:ios:app_store_id" content="123456789"');
     expect(html).toContain('property="al:ios:app_name" content="My iOS App"');
     expect(html).toContain('property="al:android:package" content="com.example.app"');
-    expect(html).toContain('property="al:android:url" content="https://example.com/android"');
+    expect(html).toContain(
+      'property="al:android:url" content="https://example.com/android"',
+    );
     expect(html).toContain('property="al:android:app_name" content="My Android App"');
     expect(html).toContain('property="al:web:url" content="https://example.com"');
     expect(html).toContain('property="al:web:should_fallback" content="true"');
@@ -369,7 +403,9 @@ describe("Next.js compat: metadata", () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter-player");
     expect(html).toContain('name="twitter:card" content="player"');
     expect(html).toContain('name="twitter:player" content="https://example.com/player"');
-    expect(html).toContain('name="twitter:player:stream" content="https://example.com/stream"');
+    expect(html).toContain(
+      'name="twitter:player:stream" content="https://example.com/stream"',
+    );
     expect(html).toContain('name="twitter:player:width" content="480"');
     expect(html).toContain('name="twitter:player:height" content="360"');
   });
@@ -381,10 +417,14 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain('name="twitter:card" content="app"');
     expect(html).toContain('name="twitter:app:name:iphone" content="My App"');
     expect(html).toContain('name="twitter:app:id:iphone" content="id123456789"');
-    expect(html).toContain('name="twitter:app:url:iphone" content="https://example.com/iphone"');
+    expect(html).toContain(
+      'name="twitter:app:url:iphone" content="https://example.com/iphone"',
+    );
     expect(html).toContain('name="twitter:app:name:ipad" content="My App"');
     expect(html).toContain('name="twitter:app:id:ipad" content="id123456789"');
-    expect(html).toContain('name="twitter:app:url:ipad" content="https://example.com/ipad"');
+    expect(html).toContain(
+      'name="twitter:app:url:ipad" content="https://example.com/ipad"',
+    );
     expect(html).toContain('name="twitter:app:name:googleplay" content="My App"');
     expect(html).toContain('name="twitter:app:id:googleplay" content="com.example.app"');
     expect(html).toContain(

@@ -36,8 +36,16 @@ import {
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
-import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "../utils/query.js";
-import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
+import {
+  appendSearchParamsToUrl,
+  type UrlQuery,
+  urlQueryToSearchParams,
+} from "../utils/query.js";
+import {
+  addLocalePrefix,
+  getDomainLocaleUrl,
+  type DomainLocale,
+} from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 
@@ -119,13 +127,21 @@ function prefetchUrl(href: string): void {
 
   // Normalize same-origin absolute URLs to local paths before prefetching
   let prefetchHref = href;
-  if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+  if (
+    href.startsWith("http://") ||
+    href.startsWith("https://") ||
+    href.startsWith("//")
+  ) {
     const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) return; // truly external — don't prefetch
     prefetchHref = localPath;
   }
 
-  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const fullHref = toBrowserNavigationHref(
+    prefetchHref,
+    window.location.href,
+    __basePath,
+  );
 
   // Distinguish the same visible URL when it is prefetched from different
   // interception sources such as /feed vs /gallery.
@@ -136,7 +152,8 @@ function prefetchUrl(href: string): void {
   if (prefetched.has(cacheKey)) return;
   prefetched.add(cacheKey);
 
-  const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
+  const schedule =
+    window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
@@ -160,7 +177,9 @@ function prefetchUrl(href: string): void {
         interceptionContext,
         mountedSlotsHeader,
       );
-    } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
+    } else if (
+      (window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl
+    ) {
       // Pages Router: inject a prefetch link for the target page module
       // We can't easily resolve the target page's module URL from the Link,
       // so we create a <link rel="prefetch"> for the HTML page which helps
@@ -182,7 +201,8 @@ let sharedObserver: IntersectionObserver | null = null;
 const observerCallbacks = new WeakMap<Element, () => void>();
 
 function getSharedObserver(): IntersectionObserver | null {
-  if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return null;
+  if (typeof window === "undefined" || typeof IntersectionObserver === "undefined")
+    return null;
   if (sharedObserver) return sharedObserver;
 
   sharedObserver = new IntersectionObserver(
@@ -257,7 +277,11 @@ function applyLocaleToHref(href: string, locale: string | false | undefined): st
 
   // Absolute and protocol-relative URLs must not be prefixed — locale
   // only applies to local paths.
-  if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+  if (
+    href.startsWith("http://") ||
+    href.startsWith("https://") ||
+    href.startsWith("//")
+  ) {
     return href;
   }
 
@@ -384,7 +408,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     // Resolve relative hrefs (#hash, ?query) against the current URL once so
     // onNavigate and the actual navigation target stay in sync.
-    const absoluteHref = resolveRelativeHref(navigateHref, window.location.href, __basePath);
+    const absoluteHref = resolveRelativeHref(
+      navigateHref,
+      window.location.href,
+      __basePath,
+    );
     const absoluteFullHref = toBrowserNavigationHref(
       navigateHref,
       window.location.href,

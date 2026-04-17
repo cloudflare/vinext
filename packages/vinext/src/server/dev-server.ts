@@ -18,14 +18,21 @@ import type { CachedPagesValue } from "../shims/cache.js";
 import { _runWithCacheState } from "../shims/cache.js";
 import { runWithPrivateCache } from "../shims/cache-runtime.js";
 import { ensureFetchPatch, runWithFetchCache } from "../shims/fetch-cache.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../shims/unified-request-context.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
 import "../shims/router-state.js";
 import { runWithHeadState } from "../shims/head-state.js";
 import { runWithServerInsertedHTMLState } from "../shims/navigation-state.js";
 import { withScriptNonce } from "../shims/script-nonce-context.js";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  safeJsonStringify,
+} from "./html.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
@@ -33,7 +40,10 @@ import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
-import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
+import {
+  createValidFileMatcher,
+  type ValidFileMatcher,
+} from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
   detectLocaleFromAcceptLanguage,
@@ -63,7 +73,9 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
   return await runWithServerInsertedHTMLState(() =>
     runWithHeadState(() =>
       _runWithCacheState(() =>
-        runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+        runWithPrivateCache(() =>
+          runWithFetchCache(async () => renderToStringAsync(element)),
+        ),
       ),
     ),
   );
@@ -229,7 +241,10 @@ export function detectLocaleFromHeaders(
  * Parse the NEXT_LOCALE cookie from a request.
  * Returns the cookie value if it matches a configured locale, otherwise null.
  */
-export function parseCookieLocale(req: IncomingMessage, i18nConfig: NextI18nConfig): string | null {
+export function parseCookieLocale(
+  req: IncomingMessage,
+  i18nConfig: NextI18nConfig,
+): string | null {
   return parseCookieLocaleFromHeader(req.headers.cookie, i18nConfig);
 }
 
@@ -280,7 +295,8 @@ export function createSSRHandler(
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
-      const compileMs = _compileEnd !== undefined ? Math.round(_compileEnd - _reqStart) : undefined;
+      const compileMs =
+        _compileEnd !== undefined ? Math.round(_compileEnd - _reqStart) : undefined;
       // renderMs = time from end of compile to end of stream.
       // _renderEnd is set just after streamPageToResponse resolves.
       const renderMs =
@@ -314,7 +330,8 @@ export function createSSRHandler(
       );
       locale = resolved.locale;
       localeStrippedUrl = resolved.url;
-      currentDefaultLocale = resolved.domainLocale?.defaultLocale ?? i18nConfig.defaultLocale;
+      currentDefaultLocale =
+        resolved.domainLocale?.defaultLocale ?? i18nConfig.defaultLocale;
 
       if (resolved.redirectUrl) {
         res.writeHead(307, { Location: resolved.redirectUrl });
@@ -327,7 +344,17 @@ export function createSSRHandler(
 
     if (!match) {
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
+      await renderErrorPage(
+        server,
+        runner,
+        req,
+        res,
+        url,
+        pagesDir,
+        404,
+        undefined,
+        matcher,
+      );
       return;
     }
 
@@ -407,14 +434,15 @@ export function createSSRHandler(
             // Only allow paths explicitly listed in getStaticPaths
             const paths: Array<{ params: Record<string, string | string[]> }> =
               pathsResult?.paths ?? [];
-            const isValidPath = paths.some((p: { params: Record<string, string | string[]> }) =>
-              Object.entries(p.params).every(([key, val]) => {
-                const actual = params[key];
-                if (Array.isArray(val)) {
-                  return Array.isArray(actual) && val.join("/") === actual.join("/");
-                }
-                return String(val) === String(actual);
-              }),
+            const isValidPath = paths.some(
+              (p: { params: Record<string, string | string[]> }) =>
+                Object.entries(p.params).every(([key, val]) => {
+                  const actual = params[key];
+                  if (Array.isArray(val)) {
+                    return Array.isArray(actual) && val.join("/") === actual.join("/");
+                  }
+                  return String(val) === String(actual);
+                }),
             );
 
             if (!isValidPath) {
@@ -523,8 +551,12 @@ export function createSSRHandler(
         // Collect font preloads early so ISR cached responses can include
         // the Link header (font preloads are module-level state that persists
         // across requests after the font modules are first loaded).
-        const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
-        const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
+        const responseHeaders =
+          typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
+        const scriptNonce = getScriptNonceFromNodeHeaderSources(
+          req.headers,
+          responseHeaders,
+        );
         let earlyFontLinkHeader = "";
         try {
           const earlyPreloads: Array<{ href: string; type: string }> = [];
@@ -538,7 +570,9 @@ export function createSSRHandler(
           }
           if (earlyPreloads.length > 0) {
             earlyFontLinkHeader = earlyPreloads
-              .map((p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`)
+              .map(
+                (p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`,
+              )
               .join(", ");
           }
         } catch {
@@ -556,7 +590,12 @@ export function createSSRHandler(
           );
           const cached = await isrGet(cacheKey);
 
-          if (cached && !cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            !cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce
+          ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -573,7 +612,12 @@ export function createSSRHandler(
             return;
           }
 
-          if (cached && cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce
+          ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -598,7 +642,9 @@ export function createSSRHandler(
                 });
                 if (freshResult && "props" in freshResult) {
                   const revalidate =
-                    typeof freshResult.revalidate === "number" ? freshResult.revalidate : 0;
+                    typeof freshResult.revalidate === "number"
+                      ? freshResult.revalidate
+                      : 0;
                   if (revalidate > 0) {
                     const freshProps = freshResult.props;
 
@@ -634,7 +680,10 @@ export function createSSRHandler(
                     const appPath = path.join(pagesDir, "_app");
                     if (findFileWithExtensions(appPath, matcher)) {
                       try {
-                        const appMod = (await runner.import(appPath)) as Record<string, unknown>;
+                        const appMod = (await runner.import(appPath)) as Record<
+                          string,
+                          unknown
+                        >;
                         RegenApp = appMod.default ?? null;
                       } catch {
                         // _app failed to load
@@ -667,21 +716,23 @@ export function createSSRHandler(
                         : path.join(pagesDir, "_app")
                       : null;
 
-                    const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-                      props: { pageProps: freshProps },
-                      page: patternToNextFormat(route.pattern),
-                      query: params,
-                      buildId: process.env.__VINEXT_BUILD_ID,
-                      isFallback: false,
-                      locale: locale ?? currentDefaultLocale,
-                      locales: i18nConfig?.locales,
-                      defaultLocale: currentDefaultLocale,
-                      domainLocales,
-                      __vinext: {
-                        pageModuleUrl: regenPageUrl,
-                        appModuleUrl: regenAppUrl,
+                    const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify(
+                      {
+                        props: { pageProps: freshProps },
+                        page: patternToNextFormat(route.pattern),
+                        query: params,
+                        buildId: process.env.__VINEXT_BUILD_ID,
+                        isFallback: false,
+                        locale: locale ?? currentDefaultLocale,
+                        locales: i18nConfig?.locales,
+                        defaultLocale: currentDefaultLocale,
+                        domainLocales,
+                        __vinext: {
+                          pageModuleUrl: regenPageUrl,
+                          appModuleUrl: regenAppUrl,
+                        },
                       },
-                    })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
+                    )}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
 
                     const hydrationMatch = cachedHtml.match(
                       /<script type="module">[\s\S]*?<\/script>/,
@@ -689,7 +740,11 @@ export function createSSRHandler(
                     const hydrationScript = hydrationMatch?.[0] ?? "";
 
                     const freshHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${freshBody}</div>${freshNextData}\n  ${hydrationScript}</body></html>`;
-                    await isrSet(cacheKey, buildPagesCacheValue(freshHtml, freshProps), revalidate);
+                    await isrSet(
+                      cacheKey,
+                      buildPagesCacheValue(freshHtml, freshProps),
+                      revalidate,
+                    );
                     setRevalidateDuration(cacheKey, revalidate);
                   }
                 }
@@ -970,7 +1025,9 @@ hydrate();
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
           getHeadHTML: () =>
-            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+            typeof headShim.getSSRHeadHTML === "function"
+              ? headShim.getSSRHeadHTML()
+              : "",
         });
         _renderEnd = now();
 
@@ -1003,7 +1060,11 @@ hydrate();
             // which is fine: dev doesn't need cross-deploy cache isolation.
             process.env.__VINEXT_BUILD_ID,
           );
-          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
+          await isrSet(
+            cacheKey,
+            buildPagesCacheValue(isrHtml, pageProps),
+            isrRevalidateSeconds,
+          );
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         }
       } catch (e) {
@@ -1033,7 +1094,17 @@ hydrate();
         });
         // Try to render custom 500 error page
         try {
-          await renderErrorPage(server, runner, req, res, url, pagesDir, 500, undefined, matcher);
+          await renderErrorPage(
+            server,
+            runner,
+            req,
+            res,
+            url,
+            pagesDir,
+            500,
+            undefined,
+            matcher,
+          );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
           // This is a dev-only code path (prod uses prod-server.ts), so
@@ -1070,7 +1141,11 @@ async function renderErrorPage(
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
   const candidates =
-    statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
+    statusCode === 404
+      ? ["404", "_error"]
+      : statusCode === 500
+        ? ["500", "_error"]
+        : ["_error"];
 
   for (const candidate of candidates) {
     try {
@@ -1170,5 +1245,7 @@ async function renderErrorPage(
 
   // No custom error page found — use plain text fallback
   res.writeHead(statusCode, { "Content-Type": "text/plain" });
-  res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
+  res.end(
+    `${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`,
+  );
 }

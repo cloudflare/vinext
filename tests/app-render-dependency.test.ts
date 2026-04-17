@@ -61,7 +61,11 @@ describe("app render dependency helpers", () => {
     async function LocaleLayout() {
       await Promise.resolve();
       activeLocale = "de";
-      return createElement("div", null, renderWithAppDependencyBarrier("layout", layoutDependency));
+      return createElement(
+        "div",
+        null,
+        renderWithAppDependencyBarrier("layout", layoutDependency),
+      );
     }
 
     function LocalePage() {

@@ -119,11 +119,19 @@ function GroupLayout(props: Record<string, unknown>) {
 }
 
 function SlotLayout(props: Record<string, unknown>) {
-  return createElement("div", { "data-slot-layout": "sidebar" }, readChildren(props.children));
+  return createElement(
+    "div",
+    { "data-slot-layout": "sidebar" },
+    readChildren(props.children),
+  );
 }
 
 function SlotPage(props: Record<string, unknown>) {
-  return createElement("p", { "data-slot-page": readNode(props.label) }, readNode(props.label));
+  return createElement(
+    "p",
+    { "data-slot-page": readNode(props.label) },
+    readNode(props.label),
+  );
 }
 
 function ParentModalLayout(props: Record<string, unknown>) {
@@ -322,7 +330,8 @@ describe("app page route wiring helpers", () => {
         slots: {
           "modal@parent/@modal": {
             default: {
-              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+              default: () =>
+                createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
             },
             error: null,
             layout: null,
@@ -334,7 +343,8 @@ describe("app page route wiring helpers", () => {
           },
           "modal@parent/child/@modal": {
             default: {
-              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+              default: () =>
+                createElement("p", { "data-child-slot": "true" }, "child-slot"),
             },
             error: null,
             layout: null,
@@ -383,7 +393,8 @@ describe("app page route wiring helpers", () => {
         slots: {
           "modal@parent/@modal": {
             default: {
-              default: () => createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
+              default: () =>
+                createElement("p", { "data-parent-slot": "true" }, "parent-slot"),
             },
             error: null,
             layout: null,
@@ -395,7 +406,8 @@ describe("app page route wiring helpers", () => {
           },
           "modal@parent/child/@modal": {
             default: {
-              default: () => createElement("p", { "data-child-slot": "true" }, "child-slot"),
+              default: () =>
+                createElement("p", { "data-child-slot": "true" }, "child-slot"),
             },
             error: null,
             layout: null,
@@ -590,7 +602,10 @@ describe("app page route wiring helpers", () => {
       rootNotFoundModule: null,
     });
 
-    const body = await withTimeout(renderRouteEntry(elements, "route:/layout-only"), 1_000);
+    const body = await withTimeout(
+      renderRouteEntry(elements, "route:/layout-only"),
+      1_000,
+    );
 
     expect(body).toContain("Layout only");
     expect(body).not.toContain("Page content");
@@ -634,7 +649,11 @@ describe("app page route wiring helpers", () => {
     async function AsyncTemplate(props: Record<string, unknown>) {
       await Promise.resolve();
       activeLocale = "de";
-      return createElement("div", { "data-template": "async" }, readChildren(props.children));
+      return createElement(
+        "div",
+        { "data-template": "async" },
+        readChildren(props.children),
+      );
     }
 
     function LocalePage() {
@@ -681,7 +700,11 @@ describe("app page route wiring helpers", () => {
 
   it("renders template-only segments in the route entry even without a matching layout", async () => {
     function BlogTemplate(props: Record<string, unknown>) {
-      return createElement("div", { "data-template": "blog" }, readChildren(props.children));
+      return createElement(
+        "div",
+        { "data-template": "blog" },
+        readChildren(props.children),
+      );
     }
 
     function BlogPage() {
@@ -758,7 +781,10 @@ describe("app page route wiring helpers", () => {
       if (!isValidElement(node)) return;
       const element = node as { type: unknown; props: Record<string, unknown> };
 
-      if (typeof element.props.id === "string" && element.props.id.startsWith("template:")) {
+      if (
+        typeof element.props.id === "string" &&
+        element.props.id.startsWith("template:")
+      ) {
         found.set(`template:${element.props.id}`, depth);
       }
 
@@ -792,7 +818,8 @@ describe("app page route wiring helpers", () => {
     walkDepth(elements["route:/blog"], 0, depthMap);
 
     const templateDepth = depthMap.get("template:template:/");
-    const notFoundDepth = depthMap.get("NotFoundBoundaryInner") ?? depthMap.get("NotFoundBoundary");
+    const notFoundDepth =
+      depthMap.get("NotFoundBoundaryInner") ?? depthMap.get("NotFoundBoundary");
 
     expect(templateDepth).toBeDefined();
     expect(notFoundDepth).toBeDefined();

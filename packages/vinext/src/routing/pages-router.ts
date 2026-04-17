@@ -1,5 +1,9 @@
 import path from "node:path";
-import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
+import {
+  compareRoutes,
+  decodeRouteSegment,
+  normalizePathnameForRouteMatch,
+} from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -65,7 +69,10 @@ export async function pagesRouter(
   return routes;
 }
 
-async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
+async function scanPageRoutes(
+  pagesDir: string,
+  matcher: ValidFileMatcher,
+): Promise<Route[]> {
   const routes: Route[] = [];
 
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
@@ -90,7 +97,11 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
 /**
  * Convert a file path relative to pages/ into a Route.
  */
-function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher): Route | null {
+function fileToRoute(
+  file: string,
+  pagesDir: string,
+  matcher: ValidFileMatcher,
+): Route | null {
   // Remove extension
   const withoutExt = matcher.stripExtension(file);
   if (withoutExt === file) return null;
@@ -212,7 +223,10 @@ export async function apiRouter(
   return routes;
 }
 
-async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
+async function scanApiRoutes(
+  pagesDir: string,
+  matcher: ValidFileMatcher,
+): Promise<Route[]> {
   const apiDir = path.join(pagesDir, "api");
   let files: string[];
   try {

@@ -9,7 +9,9 @@ import {
 describe("CSP nonce helpers", () => {
   it("extracts the nonce from script-src", () => {
     expect(
-      getScriptNonceFromHeader("default-src 'self'; script-src 'self' 'nonce-test-nonce';"),
+      getScriptNonceFromHeader(
+        "default-src 'self'; script-src 'self' 'nonce-test-nonce';",
+      ),
     ).toBe("test-nonce");
   });
 
@@ -57,7 +59,8 @@ describe("CSP nonce helpers", () => {
 
   it("reads Content-Security-Policy-Report-Only when CSP is absent", () => {
     const headers = new Headers({
-      "content-security-policy-report-only": "script-src 'nonce-test-nonce' 'strict-dynamic';",
+      "content-security-policy-report-only":
+        "script-src 'nonce-test-nonce' 'strict-dynamic';",
     });
 
     expect(getScriptNonceFromHeaders(headers)).toBe("test-nonce");
@@ -81,10 +84,13 @@ describe("CSP nonce helpers", () => {
       "content-security-policy": "script-src 'self' 'strict-dynamic';",
     });
     const fallbackHeaders = new Headers({
-      "content-security-policy-report-only": "script-src 'nonce-request-nonce' 'strict-dynamic';",
+      "content-security-policy-report-only":
+        "script-src 'nonce-request-nonce' 'strict-dynamic';",
     });
 
-    expect(getScriptNonceFromHeaderSources(requestHeaders, fallbackHeaders)).toBe("request-nonce");
+    expect(getScriptNonceFromHeaderSources(requestHeaders, fallbackHeaders)).toBe(
+      "request-nonce",
+    );
   });
 
   it("reads the first nonce across Node request/response header sources without allocating Headers", () => {
@@ -92,7 +98,8 @@ describe("CSP nonce helpers", () => {
       "content-security-policy": "script-src 'self' 'strict-dynamic';",
     };
     const responseHeaders = {
-      "content-security-policy-report-only": "script-src 'nonce-response-nonce' 'strict-dynamic';",
+      "content-security-policy-report-only":
+        "script-src 'nonce-response-nonce' 'strict-dynamic';",
     };
 
     expect(getScriptNonceFromNodeHeaderSources(requestHeaders, responseHeaders)).toBe(

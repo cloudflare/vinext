@@ -18,7 +18,12 @@
  *   </Form>
  */
 
-import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
+import {
+  forwardRef,
+  useActionState,
+  type FormHTMLAttributes,
+  type ForwardedRef,
+} from "react";
 import { navigateClientSide } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath } from "./url-utils.js";
@@ -86,7 +91,9 @@ function checkFormActionUrl(action: string, source: "action" | "formAction"): vo
   try {
     testUrl = new URL(action, "http://n");
   } catch {
-    console.error(`<Form> received ${aPropName} that cannot be parsed as a URL: "${action}".`);
+    console.error(
+      `<Form> received ${aPropName} that cannot be parsed as a URL: "${action}".`,
+    );
     return;
   }
 
@@ -170,7 +177,10 @@ type FormProps = {
   scroll?: boolean;
 } & FormHTMLAttributes<HTMLFormElement>;
 
-const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
+const Form = forwardRef(function Form(
+  props: FormProps,
+  ref: ForwardedRef<HTMLFormElement>,
+) {
   const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
 
   // If action is a function (server action), pass it directly to React
@@ -208,7 +218,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (method !== "GET") return;
 
     const effectiveAction = getEffectiveAction(submitter, action as string);
-    if (process.env.NODE_ENV !== "production" && submitter?.getAttribute("formaction") !== null) {
+    if (
+      process.env.NODE_ENV !== "production" &&
+      submitter?.getAttribute("formaction") !== null
+    ) {
       checkFormActionUrl(effectiveAction, "formAction");
     }
     if (!isSafeAction(effectiveAction)) {
@@ -220,7 +233,11 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
 
     e.preventDefault();
-    const url = createFormSubmitDestinationUrl(effectiveAction, e.currentTarget, submitter);
+    const url = createFormSubmitDestinationUrl(
+      effectiveAction,
+      e.currentTarget,
+      submitter,
+    );
 
     // Navigate client-side
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {

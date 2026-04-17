@@ -20,7 +20,12 @@ export type LoadDotenvResult = {
  * Next.js-compatible dotenv lookup order (highest priority first).
  */
 export function getDotenvFiles(mode: VinextEnvMode): string[] {
-  return [`.env.${mode}.local`, ...(mode === "test" ? [] : [".env.local"]), `.env.${mode}`, ".env"];
+  return [
+    `.env.${mode}.local`,
+    ...(mode === "test" ? [] : [".env.local"]),
+    `.env.${mode}`,
+    ".env",
+  ];
 }
 
 /**

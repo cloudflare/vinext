@@ -106,7 +106,10 @@ type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
 
-function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
+function resolveOptionalDependency(
+  projectRoot: string,
+  specifier: string,
+): string | null {
   try {
     const projectRequire = createRequire(path.join(projectRoot, "package.json"));
     return projectRequire.resolve(specifier);
@@ -159,12 +162,20 @@ function resolveTsconfigPathCandidate(candidate: string): string | null {
 
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
+  if (
+    specifier.startsWith(".") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("\\")
+  ) {
     return resolveTsconfigPathCandidate(path.resolve(fromDir, specifier));
   }
 
   const requireFromConfig = createRequire(configPath);
-  const candidates = [specifier, `${specifier}.json`, path.join(specifier, "tsconfig.json")];
+  const candidates = [
+    specifier,
+    `${specifier}.json`,
+    path.join(specifier, "tsconfig.json"),
+  ];
 
   for (const item of candidates) {
     try {
@@ -192,7 +203,10 @@ function materializeTsconfigPathAliases(
 
     if (find.includes("*") || target.includes("*")) {
       if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
-      if (find.indexOf("*") !== find.length - 1 || target.indexOf("*") !== target.length - 1) {
+      if (
+        find.indexOf("*") !== find.length - 1 ||
+        target.indexOf("*") !== target.length - 1
+      ) {
         continue;
       }
 
@@ -200,7 +214,10 @@ function materializeTsconfigPathAliases(
       const targetDir = target.slice(0, -2);
       if (!aliasKey || !targetDir) continue;
 
-      aliases[aliasKey] = toViteAliasReplacement(path.resolve(baseUrl, targetDir), projectRoot);
+      aliases[aliasKey] = toViteAliasReplacement(
+        path.resolve(baseUrl, targetDir),
+        projectRoot,
+      );
       continue;
     }
 
@@ -258,13 +275,17 @@ function loadTsconfigPathAliases(
     }
   }
 
-  const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
+  const compilerOptions = isRecord(parsed.compilerOptions)
+    ? parsed.compilerOptions
+    : null;
   const pathsConfig =
     compilerOptions && isRecord(compilerOptions.paths) ? compilerOptions.paths : null;
   if (!pathsConfig) return aliases;
 
   const baseUrl =
-    compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
+    compilerOptions && typeof compilerOptions.baseUrl === "string"
+      ? compilerOptions.baseUrl
+      : ".";
   const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
 
   return {
@@ -302,7 +323,9 @@ function getViteMajorVersion(): number {
     return 7;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`);
+    console.warn(
+      `[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`,
+    );
     return 7;
   }
 }
@@ -378,7 +401,9 @@ const clientOutputConfig = createClientOutputConfig(clientManualChunks);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
 
 function getClientOutputConfigForVite(viteMajorVersion: number) {
-  return viteMajorVersion >= 8 ? { codeSplitting: clientCodeSplittingConfig } : clientOutputConfig;
+  return viteMajorVersion >= 8
+    ? { codeSplitting: clientCodeSplittingConfig }
+    : clientOutputConfig;
 }
 
 export type VinextOptions = {
@@ -592,7 +617,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       });
   }
 
-  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+  const reactOptions =
+    options.react && options.react !== true ? options.react : undefined;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
@@ -624,7 +650,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasUserMdxPlugin = false;
   let warnedMissingMdxPlugin = false;
 
-  async function ensureMdxDelegate(reason: "detected" | "on-demand"): Promise<Plugin | null> {
+  async function ensureMdxDelegate(
+    reason: "detected" | "on-demand",
+  ): Promise<Plugin | null> {
     // Reuse the auto-injected delegate once it has been created.
     // If the user registered their own MDX plugin and `mdxDelegate` is still null,
     // return null here so transform() falls through without handling the file and
@@ -640,9 +668,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ) => Plugin;
           const mdxOpts: Record<string, unknown> = {};
           if (nextConfig.mdx) {
-            if (nextConfig.mdx.remarkPlugins) mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
-            if (nextConfig.mdx.rehypePlugins) mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
-            if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
+            if (nextConfig.mdx.remarkPlugins)
+              mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
+            if (nextConfig.mdx.rehypePlugins)
+              mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
+            if (nextConfig.mdx.recmaPlugins)
+              mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
           }
           const delegate = mdxFactory(mdxOpts);
           mdxDelegate = delegate;
@@ -655,7 +686,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               console.log("[vinext] Auto-injected @mdx-js/rollup for MDX support");
             }
           } else {
-            console.log("[vinext] Auto-injected @mdx-js/rollup for on-demand MDX support");
+            console.log(
+              "[vinext] Auto-injected @mdx-js/rollup for on-demand MDX support",
+            );
           }
           return delegate;
         } catch {
@@ -694,7 +727,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         root = config.root ?? process.cwd();
-        const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
+        const userResolve = config.resolve as
+          | UserResolveConfigWithTsconfigPaths
+          | undefined;
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
         const tsconfigPathAliases = resolveTsconfigAliases(root);
@@ -804,7 +839,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           defines[`process.env.${key}`] = JSON.stringify(value);
         }
         // Expose basePath to client-side code
-        defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(
+          nextConfig.basePath,
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -819,11 +856,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const deviceSizes = nextConfig.images?.deviceSizes ?? [
             640, 750, 828, 1080, 1200, 1920, 2048, 3840,
           ];
-          const imageSizes = nextConfig.images?.imageSizes ?? [16, 32, 48, 64, 96, 128, 256, 384];
+          const imageSizes = nextConfig.images?.imageSizes ?? [
+            16, 32, 48, 64, 96, 128, 256, 384,
+          ];
           defines["process.env.__VINEXT_IMAGE_DEVICE_SIZES"] = JSON.stringify(
             JSON.stringify(deviceSizes),
           );
-          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
+          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(
+            JSON.stringify(imageSizes),
+          );
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
         // When false (default), .svg sources bypass the optimization endpoint.
@@ -833,7 +874,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
-        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
+        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(
+          crypto.randomUUID(),
+        );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
         // Also used to namespace ISR cache keys so old cached entries from a
@@ -895,7 +938,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "internal",
               "cookies",
             ),
-            "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
+            "next/dist/compiled/@edge-runtime/cookies": path.join(
+              shimsDir,
+              "internal",
+              "cookies",
+            ),
             "next/dist/server/app-render/work-unit-async-storage.external": path.join(
               shimsDir,
               "internal",
@@ -923,18 +970,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "server-only": path.join(shimsDir, "server-only"),
             "client-only": path.join(shimsDir, "client-only"),
             "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
-            "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
+            "vinext/layout-segment-context": path.join(
+              shimsDir,
+              "layout-segment-context",
+            ),
             "vinext/metadata": path.join(shimsDir, "metadata"),
             "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
             "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
             "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
-            "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
+            "vinext/unified-request-context": path.join(
+              shimsDir,
+              "unified-request-context",
+            ),
             "vinext/router-state": path.join(shimsDir, "router-state"),
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
-            "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
+            "vinext/instrumentation": path.resolve(
+              __dirname,
+              "server",
+              "instrumentation",
+            ),
             "vinext/instrumentation-client": path.resolve(
               __dirname,
               "client",
@@ -942,7 +999,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ),
             "vinext/html": path.resolve(__dirname, "server", "html"),
             "private-next-instrumentation-client":
-              instrumentationClientPath ?? path.resolve(__dirname, "client", "empty-module"),
+              instrumentationClientPath ??
+              path.resolve(__dirname, "client", "empty-module"),
           }).flatMap(([k, v]) =>
             k.startsWith("next/")
               ? [
@@ -969,7 +1027,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             typeof p === "object" &&
             "name" in p &&
             typeof p.name === "string" &&
-            (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
+            (p.name === "vite-plugin-cloudflare" ||
+              p.name.startsWith("vite-plugin-cloudflare:")),
         );
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
@@ -1109,7 +1168,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           server: {
             cors: {
               preflightContinue: true,
-              origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
+              origin:
+                /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
             },
           },
           // Configure SSR transform behaviour for Node targets.
@@ -1208,7 +1268,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og", "@tailwindcss/oxide"])],
+          exclude: [
+            ...new Set([
+              ...incomingExclude,
+              "vinext",
+              "@vercel/og",
+              "@tailwindcss/oxide",
+            ]),
+          ],
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           rolldownOptions: { plugins: [depOptimizeAliasPlugin] },
         };
@@ -1237,7 +1304,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationPath,
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
-          const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          const optimizeEntries = [
+            ...new Set([...appEntries, ...explicitInstrumentationEntries]),
+          ];
 
           viteConfig.environments = {
             rsc: {
@@ -1254,7 +1323,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       external:
                         userSsrExternal === true
                           ? true
-                          : ["satori", "@resvg/resvg-js", "yoga-wasm-web", ...userSsrExternal],
+                          : [
+                              "satori",
+                              "@resvg/resvg-js",
+                              "yoga-wasm-web",
+                              ...userSsrExternal,
+                            ],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -1318,7 +1392,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // but the browser optimizer resolves to `core.js` which lacks it,
                 // causing MISSING_EXPORT build failures).
                 exclude: [
-                  ...new Set([...incomingExclude, "vinext", "@vercel/og", ...nextServerExternal]),
+                  ...new Set([
+                    ...incomingExclude,
+                    "vinext",
+                    "@vercel/og",
+                    ...nextServerExternal,
+                  ]),
                 ],
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
@@ -1363,7 +1442,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps:
-                pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
+                pagesOptimizeEntries.length > 0
+                  ? { entries: pagesOptimizeEntries }
+                  : undefined,
               build: {
                 manifest: true,
                 ssrManifest: true,
@@ -1388,7 +1469,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps:
-                pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
+                pagesOptimizeEntries.length > 0
+                  ? { entries: pagesOptimizeEntries }
+                  : undefined,
               build: {
                 outDir: "dist/client",
                 manifest: true,
@@ -1534,7 +1617,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
           if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
-            return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
+            return (
+              RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length)
+            );
           }
           if (
             cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
@@ -1717,7 +1802,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
         // This is safe because the virtual module re-exports everything from
         // react, so non-canary imports continue to work.
-        const result = code.replace(/from\s*['"]react['"]/g, 'from "virtual:vinext-react-canary"');
+        const result = code.replace(
+          /from\s*['"]react['"]/g,
+          'from "virtual:vinext-react-canary"',
+        );
         if (result !== code) {
           return { code: result, map: null };
         }
@@ -1735,7 +1823,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // the browser.
       hotUpdate(options: { file: string; server: ViteDevServer; modules: unknown[] }) {
         if (!hasPagesDir || hasAppDir) return;
-        if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
+        if (
+          options.file.startsWith(pagesDir) &&
+          fileMatcher.extensionRegex.test(options.file)
+        ) {
           options.server.environments.client.hot.send({ type: "full-reload" });
           return [];
         }
@@ -1766,7 +1857,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!pagesRunner) {
             const env =
               server.environments["ssr"] ??
-              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+              Object.values(server.environments).find(
+                (e) => e !== server.environments["rsc"],
+              ) ??
               Object.values(server.environments)[0];
             pagesRunner = createDirectRunner(env);
           }
@@ -1793,7 +1886,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         server.watcher.on("add", (filePath: string) => {
-          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          if (
+            hasPagesDir &&
+            filePath.startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
             invalidateRouteCache(pagesDir);
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
@@ -1802,7 +1899,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
-          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          if (
+            hasPagesDir &&
+            filePath.startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
             invalidateRouteCache(pagesDir);
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
@@ -1883,7 +1984,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules") ||
-                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
+                (url.includes(".") &&
+                  !pathname.endsWith(".html") &&
+                  !pathname.endsWith(".rsc"))
               ) {
                 return next();
               }
@@ -1921,7 +2024,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   inHandlerCompileMs !== -1
                 ) {
                   _compileMs =
-                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                    Math.max(0, Math.round(handlerStart - _reqStart)) +
+                    inHandlerCompileMs;
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;
@@ -2026,7 +2130,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 {
                   origin: req.headers.origin as string | undefined,
                   host: req.headers.host,
-                  "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+                  "x-forwarded-host": req.headers["x-forwarded-host"] as
+                    | string
+                    | undefined,
                   "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
                   "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
                 },
@@ -2060,11 +2166,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   imgUrl.startsWith("/node_modules")
                 ) {
                   res.writeHead(400);
-                  res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  res.end(
+                    !rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed",
+                  );
                   return;
                 }
                 // Validate the constructed URL's origin hasn't changed (defense in depth).
-                const resolvedImg = new URL(imgUrl, `http://${req.headers.host || "localhost"}`);
+                const resolvedImg = new URL(
+                  imgUrl,
+                  `http://${req.headers.host || "localhost"}`,
+                );
                 if (resolvedImg.origin !== `http://${req.headers.host || "localhost"}`) {
                   res.writeHead(400);
                   res.end("Only relative URLs allowed");
@@ -2221,13 +2332,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Only trust X-Forwarded-Proto when behind a trusted proxy
                 const devTrustProxy =
                   process.env.VINEXT_TRUST_PROXY === "1" ||
-                  (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
+                  (process.env.VINEXT_TRUSTED_HOSTS ?? "")
+                    .split(",")
+                    .some((h) => h.trim());
                 const rawProto = devTrustProxy
                   ? String(req.headers["x-forwarded-proto"] || "")
                       .split(",")[0]
                       .trim()
                   : "";
-                const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+                const mwProto =
+                  rawProto === "https" || rawProto === "http" ? rawProto : "http";
                 const origin = `${mwProto}://${req.headers.host || "localhost"}`;
                 const middlewareRequest = new Request(new URL(url, origin), {
                   method: req.method,
@@ -2425,7 +2539,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return;
               }
 
-              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+              const routes = await pagesRouter(
+                pagesDir,
+                nextConfig?.pageExtensions,
+                fileMatcher,
+              );
 
               // Apply afterFiles rewrites — these run after initial route matching
               // If beforeFiles already rewrote the URL, afterFiles still run on the
@@ -2744,9 +2862,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
               // Walk into variable declarations, export declarations, etc.
               for (const key of Object.keys(node)) {
-                if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
+                if (key === "type" || key === "start" || key === "end" || key === "loc")
+                  continue;
                 const child = node[key as keyof typeof node] as ASTNode;
-                if (Array.isArray(child) && child.some((c) => c && typeof c === "object")) {
+                if (
+                  Array.isArray(child) &&
+                  child.some((c) => c && typeof c === "object")
+                ) {
                   if (astHasInlineCache(child)) return true;
                 } else if (child && typeof child === "object" && child.type) {
                   if (astHasInlineCache([child])) return true;
@@ -2781,7 +2903,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const variant =
               directiveValue === "use cache"
                 ? ""
-                : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
+                : directiveValue
+                    .replace("use cache:", "")
+                    .replace("use cache: ", "")
+                    .trim();
 
             // Only skip default export wrapping for layouts and templates —
             // they receive {children} from the framework which requires
@@ -2847,12 +2972,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             try {
               const result = transformHoistInlineDirective(code, ast, {
                 directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
+                runtime: (
+                  value: string,
+                  name: string,
+                  meta: { directiveMatch: string[] },
+                ) => {
                   const directiveMatch = meta.directiveMatch[0];
                   const variant =
                     directiveMatch === "use cache"
                       ? ""
-                      : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
+                      : directiveMatch
+                          .replace("use cache:", "")
+                          .replace("use cache: ", "")
+                          .trim();
                   return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
                 },
                 rejectNonAsyncFunction: false,
@@ -2907,7 +3039,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
           };
 
-          fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
+          fs.writeFileSync(
+            path.join(outDir, "image-config.json"),
+            JSON.stringify(imageConfig),
+          );
         },
       },
     },
@@ -2968,7 +3103,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!outDir) return;
 
             const manifest = { prerenderSecret };
-            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+            fs.writeFileSync(
+              path.join(outDir, "vinext-server.json"),
+              JSON.stringify(manifest),
+            );
           },
         },
       };
@@ -3026,10 +3164,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!fs.existsSync(ssrManifestPath)) return;
 
           try {
-            const ssrManifest = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8")) as Record<
-              string,
-              string[]
-            >;
+            const ssrManifest = JSON.parse(
+              fs.readFileSync(ssrManifestPath, "utf-8"),
+            ) as Record<string, string[]>;
             const buildRoot = this.environment?.config.root ?? process.cwd();
             const buildBase = this.environment?.config.base ?? "/";
             const augmentedManifest = augmentSsrManifestFromBundle(
@@ -3090,7 +3227,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
                 const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
                 const maxFile = 30;
-                const fileLabel = file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
+                const fileLabel =
+                  file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
                 const line = `Compressing assets... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${fileLabel}`;
                 const padded = line.padEnd(lastLineLen);
                 lastLineLen = line.length;
@@ -3175,7 +3313,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
           if (fs.existsSync(buildManifestPath)) {
             try {
-              const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+              const buildManifest = JSON.parse(
+                fs.readFileSync(buildManifestPath, "utf-8"),
+              );
               // oxlint-disable-next-line typescript/no-explicit-any
               for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
                 if (value && value.isEntry && value.file) {
@@ -3183,7 +3323,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   break;
                 }
               }
-              const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
+              const lazy = manifestFilesWithBase(
+                computeLazyChunks(buildManifest),
+                clientBase,
+              );
               if (lazy.length > 0) lazyChunksData = lazy;
             } catch {
               /* ignore parse errors */
@@ -3252,10 +3395,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 const files = fs.readdirSync(assetsDir);
                 const entry = files.find(
                   (f: string) =>
-                    (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
+                    (f.includes("vinext-client-entry") ||
+                      f.includes("vinext-app-browser-entry")) &&
                     f.endsWith(".js"),
                 );
-                if (entry) clientEntryFile = manifestFileWithBase("assets/" + entry, clientBase);
+                if (entry)
+                  clientEntryFile = manifestFileWithBase("assets/" + entry, clientBase);
               }
             }
 
@@ -3333,7 +3478,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
         // module), fall back to compiling from inline base64 bytes for Node.js.
         // Yoga WASM is ~70KB so inlining the base64 (~95KB) is acceptable.
-        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+        const YOGA_DATA_URL_RE =
+          /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
         const yogaMatch = YOGA_DATA_URL_RE.exec(result);
         if (yogaMatch) {
           const yogaBase64 = yogaMatch[1];
@@ -3450,7 +3596,9 @@ function applyRedirects(
   if (result) {
     // Sanitize to prevent open redirect via protocol-relative URLs
     const dest = sanitizeDestination(
-      basePath && !isExternalUrl(result.destination) && !hasBasePath(result.destination, basePath)
+      basePath &&
+        !isExternalUrl(result.destination) &&
+        !hasBasePath(result.destination, basePath)
         ? basePath + result.destination
         : result.destination,
     );
@@ -3499,7 +3647,9 @@ async function proxyExternalRewriteNode(
     proxyResponse.headers.forEach((value, key) => {
       const existing = nodeHeaders[key];
       if (existing !== undefined) {
-        nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+        nodeHeaders[key] = Array.isArray(existing)
+          ? [...existing, value]
+          : [existing, value];
       } else {
         nodeHeaders[key] = value;
       }

@@ -18,7 +18,9 @@ test.describe("App Router ISR", () => {
     expect(html).toContain("Hello from ISR");
   });
 
-  test.skip("second request within TTL is a cache HIT with same timestamp", async ({ request }) => {
+  test.skip("second request within TTL is a cache HIT with same timestamp", async ({
+    request,
+  }) => {
     // SKIP: ISR cache is disabled in dev mode — no HIT/MISS/STALE semantics.
     // This test should run against a production server.
     const res1 = await request.get(`${BASE}/isr-test`);
@@ -55,7 +57,9 @@ test.describe("App Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test.skip("after STALE triggers regen, subsequent request is HIT", async ({ request }) => {
+  test.skip("after STALE triggers regen, subsequent request is HIT", async ({
+    request,
+  }) => {
     // SKIP: ISR cache is disabled in dev mode.
     await request.get(`${BASE}/isr-test`);
 
@@ -70,7 +74,9 @@ test.describe("App Router ISR", () => {
     expect(hitRes.headers()["x-vinext-cache"]).toBe("HIT");
   });
 
-  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({ request }) => {
+  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({
+    request,
+  }) => {
     const res = await request.get(`${BASE}/isr-test`);
     const cc = res.headers()["cache-control"];
 
@@ -101,7 +107,9 @@ test.describe("App Router ISR", () => {
     expect(Number(tsText)).toBeGreaterThan(0);
   });
 
-  test("existing revalidate-test page (60s TTL) has correct Cache-Control", async ({ request }) => {
+  test("existing revalidate-test page (60s TTL) has correct Cache-Control", async ({
+    request,
+  }) => {
     // The revalidate-test fixture uses revalidate=60
     const res = await request.get(`${BASE}/revalidate-test`);
     const cc = res.headers()["cache-control"];
@@ -138,7 +146,9 @@ test.describe("ISR dynamicParams cache headers", () => {
       expect(html).toMatch(/Product\s*(?:<!--.*?-->)*\s*1/);
     });
 
-    test("should return 404 for a path not in generateStaticParams", async ({ request }) => {
+    test("should return 404 for a path not in generateStaticParams", async ({
+      request,
+    }) => {
       // Ref: opennextjs-cloudflare isr.test.ts "should 404 for a path that is not found"
       const res = await request.get(`${BASE}/products/999`);
       expect(res.status()).toBe(404);
@@ -212,7 +222,9 @@ test.describe("ISR dynamicParams cache headers", () => {
 test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () => {
   // SKIP: These tests depend on ISR caching (MISS/HIT/STALE semantics) which is
   // disabled in dev mode. They should run against a production server E2E project.
-  test.skip("revalidateTag invalidates cached page and regenerates", async ({ request }) => {
+  test.skip("revalidateTag invalidates cached page and regenerates", async ({
+    request,
+  }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate tag"
     test.setTimeout(30_000);
 
@@ -302,7 +314,9 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     expect(reqId2).not.toBe(reqId1);
   });
 
-  test.skip("after invalidation + regen, subsequent request is HIT", async ({ request }) => {
+  test.skip("after invalidation + regen, subsequent request is HIT", async ({
+    request,
+  }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts — after MISS, next request should be HIT
     test.setTimeout(30_000);
 

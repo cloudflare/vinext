@@ -11,7 +11,9 @@ test.describe("router.events (Pages Router)", () => {
     await page.click('[data-testid="clear-events"]');
   });
 
-  test("routeChangeStart and routeChangeComplete fire on Link click", async ({ page }) => {
+  test("routeChangeStart and routeChangeComplete fire on Link click", async ({
+    page,
+  }) => {
     // Click the Link to About
     await page.click('[data-testid="link-about"]');
     await expect(page.locator("h1")).toHaveText("About");
@@ -92,7 +94,9 @@ test.describe("router.events (Pages Router)", () => {
     expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
   });
 
-  test("hashChangeStart fires before hashChangeComplete on hash push", async ({ page }) => {
+  test("hashChangeStart fires before hashChangeComplete on hash push", async ({
+    page,
+  }) => {
     await page.click('[data-testid="push-hash"]');
 
     const events: string[] = await page.evaluate((key) => {
@@ -123,7 +127,9 @@ test.describe("router.events (Pages Router)", () => {
     expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
   });
 
-  test("hash-only back/forward emits hashChange events, not routeChange", async ({ page }) => {
+  test("hash-only back/forward emits hashChange events, not routeChange", async ({
+    page,
+  }) => {
     // Push a hash change, then go back — popstate should detect hash-only navigation
     await page.click('[data-testid="push-hash"]');
     await page.click('[data-testid="clear-events"]');

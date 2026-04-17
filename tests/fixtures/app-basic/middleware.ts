@@ -92,7 +92,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/mw-gated-before" && request.nextUrl.searchParams.has("mw-auth")) {
     const headers = new Headers(request.headers);
     const existing = headers.get("cookie") ?? "";
-    headers.set("cookie", existing ? existing + "; mw-before-user=1" : "mw-before-user=1");
+    headers.set(
+      "cookie",
+      existing ? existing + "; mw-before-user=1" : "mw-before-user=1",
+    );
     return NextResponse.next({ request: { headers } });
   }
 
@@ -102,14 +105,20 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/mw-gated-fallback" && request.nextUrl.searchParams.has("mw-auth")) {
     const headers = new Headers(request.headers);
     const existing = headers.get("cookie") ?? "";
-    headers.set("cookie", existing ? existing + "; mw-fallback-user=1" : "mw-fallback-user=1");
+    headers.set(
+      "cookie",
+      existing ? existing + "; mw-fallback-user=1" : "mw-fallback-user=1",
+    );
     return NextResponse.next({ request: { headers } });
   }
 
   // Inject mw-pages-fallback-user=1 cookie for mixed app/pages fallback routing.
   // This ensures the host dev shell can still match a Pages-targeted fallback
   // rewrite in a mixed project after the middleware header ownership changes.
-  if (pathname === "/mw-gated-fallback-pages" && request.nextUrl.searchParams.has("mw-auth")) {
+  if (
+    pathname === "/mw-gated-fallback-pages" &&
+    request.nextUrl.searchParams.has("mw-auth")
+  ) {
     const headers = new Headers(request.headers);
     const existing = headers.get("cookie") ?? "";
     headers.set(
@@ -128,7 +137,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return res;
   }
 
-  if (pathname === "/header-override-delete" || pathname === "/api/header-override-delete") {
+  if (
+    pathname === "/header-override-delete" ||
+    pathname === "/api/header-override-delete"
+  ) {
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("cookie");
@@ -213,7 +225,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
   if (pathname === "/revalidate-test" && request.nextUrl.searchParams.has("csp-nonce")) {
     const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
-    r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
+    r.headers.set(
+      "content-security-policy",
+      `script-src 'nonce-${nonce}' 'strict-dynamic';`,
+    );
   }
   if (
     pathname.startsWith("/nextjs-compat/dynamic") &&

@@ -68,7 +68,9 @@ test.describe("Config Redirects (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare config.redirect.test.ts — cookie conditions
-  test("redirect with has cookie condition only fires when cookie present", async ({ request }) => {
+  test("redirect with has cookie condition only fires when cookie present", async ({
+    request,
+  }) => {
     // Without the cookie — should NOT redirect (200 or 404, not 3xx)
     const noRedirect = await request.get(`${BASE}/has-cookie-redirect`, {
       maxRedirects: 0,
@@ -122,7 +124,9 @@ test.describe("Config Rewrites (OpenNext compat)", () => {
 
 test.describe("Config Custom Headers (OpenNext compat)", () => {
   // Ref: opennextjs-cloudflare headers.test.ts — "Headers"
-  test("custom header from next.config headers() is present on pages", async ({ request }) => {
+  test("custom header from next.config headers() is present on pages", async ({
+    request,
+  }) => {
     const res = await request.get(`${BASE}/about`);
     expect(res.status()).toBe(200);
     // The /(.*) catch-all header applies to all routes

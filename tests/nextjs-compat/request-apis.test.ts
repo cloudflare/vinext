@@ -55,7 +55,9 @@ describe("Next.js compat: request-apis", () => {
     const html = await res.text();
 
     expect(html).toContain("Headers cannot be modified");
-    expect(html).toContain("Cookies can only be modified in a Server Action or Route Handler");
+    expect(html).toContain(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
     expect(html).toContain("original-header");
     expect(html).toContain("original-cookie");
     expect(res.headers.getSetCookie()).toEqual([]);
@@ -69,7 +71,9 @@ describe("Next.js compat: request-apis", () => {
       /Page with `dynamic = (?:&quot;|\\")error(?:&quot;|\\")` used a dynamic API/,
     );
     expect(html).not.toContain("Headers cannot be modified");
-    expect(html).not.toContain("Cookies can only be modified in a Server Action or Route Handler");
+    expect(html).not.toContain(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
   });
 
   it("allows sync cookies() mutation in route handlers", async () => {

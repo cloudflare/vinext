@@ -21,7 +21,11 @@ const defaultFetchMockImplementation = async (
 ) => {
   requestCount++;
   const url =
-    typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
   return new Response(JSON.stringify({ url, count: requestCount }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -42,7 +46,8 @@ const {
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
-const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
+const { runWithExecutionContext } =
+  await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 
@@ -246,17 +251,23 @@ describe("fetch cache shim", () => {
 
   it("preserves Request bodies for stale background revalidation", async () => {
     const seenBodies: string[] = [];
-    fetchMock.mockImplementation(async (input: string | URL | Request, _init?: RequestInit) => {
-      requestCount++;
-      const url =
-        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      const body = input instanceof Request ? await input.clone().text() : "";
-      seenBodies.push(body);
-      return new Response(JSON.stringify({ url, count: requestCount, body }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
+    fetchMock.mockImplementation(
+      async (input: string | URL | Request, _init?: RequestInit) => {
+        requestCount++;
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        const body = input instanceof Request ? await input.clone().text() : "";
+        seenBodies.push(body);
+        return new Response(JSON.stringify({ url, count: requestCount, body }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    );
 
     const makeRequest = () =>
       new Request("https://api.example.com/stale-request-body", {
@@ -370,7 +381,11 @@ describe("fetch cache shim", () => {
       await refetchGate;
       requestCount++;
       const url =
-        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
       return new Response(JSON.stringify({ url, count: requestCount }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -934,11 +949,15 @@ describe("fetch cache shim", () => {
         ].join("\r\n"),
       });
 
-    const res1 = await fetch(makeMultipartRequest("boundary-a"), { next: { revalidate: 60 } });
+    const res1 = await fetch(makeMultipartRequest("boundary-a"), {
+      next: { revalidate: 60 },
+    });
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    const res2 = await fetch(makeMultipartRequest("boundary-b"), { next: { revalidate: 60 } });
+    const res2 = await fetch(makeMultipartRequest("boundary-b"), {
+      next: { revalidate: 60 },
+    });
     const data2 = await res2.json();
     expect(data2.count).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -959,11 +978,15 @@ describe("fetch cache shim", () => {
         ].join("\r\n"),
       });
 
-    const res1 = await fetch(makeMalformedMultipartRequest(), { next: { revalidate: 60 } });
+    const res1 = await fetch(makeMalformedMultipartRequest(), {
+      next: { revalidate: 60 },
+    });
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    const res2 = await fetch(makeMalformedMultipartRequest(), { next: { revalidate: 60 } });
+    const res2 = await fetch(makeMalformedMultipartRequest(), {
+      next: { revalidate: 60 },
+    });
     const data2 = await res2.json();
     expect(data2.count).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -973,7 +996,9 @@ describe("fetch cache shim", () => {
     const makeRequest = (charset: string) =>
       new Request("https://api.example.com/req-form-charset", {
         method: "POST",
-        headers: { "content-type": `application/x-www-form-urlencoded; charset=${charset}` },
+        headers: {
+          "content-type": `application/x-www-form-urlencoded; charset=${charset}`,
+        },
         body: "name=value",
       });
 
@@ -1475,7 +1500,10 @@ describe("fetch cache shim", () => {
       formA.append("file", new File(["same-bytes"], "a.txt", { type: "text/plain" }));
 
       const formB = new FormData();
-      formB.append("file", new File(["same-bytes"], "b.bin", { type: "application/octet-stream" }));
+      formB.append(
+        "file",
+        new File(["same-bytes"], "b.bin", { type: "application/octet-stream" }),
+      );
 
       const res1 = await fetch("https://api.example.com/body-form-file-metadata", {
         method: "POST",
@@ -1754,12 +1782,14 @@ describe("fetch cache shim", () => {
     });
 
     it("already-consumed Request bodies bypass cache key generation and defer to the underlying fetch", async () => {
-      fetchMock.mockImplementation(async (input: string | URL | Request, _init?: RequestInit) => {
-        if (input instanceof Request && input.bodyUsed) {
-          throw new TypeError("body already used");
-        }
-        return defaultFetchMockImplementation(input, _init);
-      });
+      fetchMock.mockImplementation(
+        async (input: string | URL | Request, _init?: RequestInit) => {
+          if (input instanceof Request && input.bodyUsed) {
+            throw new TypeError("body already used");
+          }
+          return defaultFetchMockImplementation(input, _init);
+        },
+      );
 
       const request = new Request("https://api.example.com/request-used", {
         method: "POST",
@@ -2012,7 +2042,9 @@ describe("fetch cache shim", () => {
       const res2 = await fetch("https://api.example.com/body-usp-charset", {
         method: "POST",
         body: new URLSearchParams({ q: "same" }),
-        headers: { "content-type": "application/x-www-form-urlencoded; charset=shift_jis" },
+        headers: {
+          "content-type": "application/x-www-form-urlencoded; charset=shift_jis",
+        },
         next: { revalidate: 60 },
       });
       const data2 = await res2.json();

@@ -45,7 +45,9 @@ export function resetSSRHead(): void {
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
   return reduceHeadChildren(_getSSRHeadChildren())
-    .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
+    .map((child) =>
+      headChildToHTML(child.type as string, child.props as Record<string, unknown>),
+    )
     .filter(Boolean)
     .join("\n  ");
 }
@@ -54,7 +56,15 @@ export function getSSRHeadHTML(): string {
  * Tags allowed inside <head>. Anything else is silently dropped.
  * This prevents injection of dangerous elements like <iframe>, <object>, etc.
  */
-const ALLOWED_HEAD_TAGS = new Set(["title", "meta", "link", "style", "script", "base", "noscript"]);
+const ALLOWED_HEAD_TAGS = new Set([
+  "title",
+  "meta",
+  "link",
+  "style",
+  "script",
+  "base",
+  "noscript",
+]);
 const ALLOWED_HEAD_TAGS_LIST = Array.from(ALLOWED_HEAD_TAGS).join(", ");
 const META_TYPES = ["name", "httpEquiv", "charSet", "itemProp"] as const;
 
@@ -89,10 +99,9 @@ function collectHeadElements(
     return list;
   }
   if (child.type === React.Fragment) {
-    return Children.toArray((child.props as { children?: React.ReactNode }).children).reduce(
-      collectHeadElements,
-      list,
-    );
+    return Children.toArray(
+      (child.props as { children?: React.ReactNode }).children,
+    ).reduce(collectHeadElements, list);
   }
   if (typeof child.type !== "string") {
     return list;
@@ -176,7 +185,9 @@ function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
   };
 }
 
-export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
+export function reduceHeadChildren(
+  headChildren: React.ReactNode[],
+): React.ReactElement[] {
   return headChildren
     .reduce<React.ReactNode[]>(
       (flattenedChildren, child) => flattenedChildren.concat(Children.toArray(child)),
@@ -199,7 +210,13 @@ const SAFE_ATTR_NAME_RE = /^[a-zA-Z][a-zA-Z0-9\-:.]*$/;
 export function isSafeAttrName(name: string): boolean {
   if (!SAFE_ATTR_NAME_RE.test(name)) return false;
   // Block inline event handlers (onclick, onerror, etc.)
-  if (name.length > 2 && name[0] === "o" && name[1] === "n" && name[2] >= "A" && name[2] <= "z")
+  if (
+    name.length > 2 &&
+    name[0] === "o" &&
+    name[1] === "n" &&
+    name[2] >= "A" &&
+    name[2] <= "z"
+  )
     return false;
   return true;
 }

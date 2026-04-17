@@ -19,7 +19,10 @@ const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
 const originalHTMLElement = globalThis.HTMLElement;
 
-function setGlobalValue(key: "document" | "window" | "HTMLElement", value: unknown): void {
+function setGlobalValue(
+  key: "document" | "window" | "HTMLElement",
+  value: unknown,
+): void {
   if (value === undefined) {
     Reflect.deleteProperty(globalThis, key);
     return;

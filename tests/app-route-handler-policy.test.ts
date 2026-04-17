@@ -60,15 +60,17 @@ describe("app route handler policy helpers", () => {
     };
 
     expect(shouldReadAppRouteHandlerCache(base)).toBe(true);
-    expect(shouldReadAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(false);
+    expect(
+      shouldReadAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" }),
+    ).toBe(false);
     expect(shouldReadAppRouteHandlerCache({ ...base, isKnownDynamic: true })).toBe(false);
     expect(shouldReadAppRouteHandlerCache({ ...base, method: "POST" })).toBe(false);
-    expect(shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: true })).toBe(
-      true,
-    );
-    expect(shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: false })).toBe(
-      false,
-    );
+    expect(
+      shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: true }),
+    ).toBe(true);
+    expect(
+      shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: false }),
+    ).toBe(false);
   });
 
   it("determines when route handler cache headers and writes are allowed", () => {
@@ -87,13 +89,16 @@ describe("app route handler policy helpers", () => {
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, dynamicUsedInHandler: true }),
     ).toBe(false);
     expect(
-      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCacheControl: true }),
+      shouldApplyAppRouteHandlerRevalidateHeader({
+        ...base,
+        handlerSetCacheControl: true,
+      }),
     ).toBe(false);
     expect(shouldWriteAppRouteHandlerCache(base)).toBe(true);
     expect(shouldWriteAppRouteHandlerCache({ ...base, isProduction: false })).toBe(false);
-    expect(shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(
-      false,
-    );
+    expect(
+      shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" }),
+    ).toBe(false);
   });
 
   it("maps special route handler digests to typed redirect and status results", () => {
@@ -128,8 +133,8 @@ describe("app route handler policy helpers", () => {
       statusCode: 401,
     });
 
-    expect(resolveAppRouteHandlerSpecialError(new Error("no digest"), "https://example.com")).toBe(
-      null,
-    );
+    expect(
+      resolveAppRouteHandlerSpecialError(new Error("no digest"), "https://example.com"),
+    ).toBe(null);
   });
 });

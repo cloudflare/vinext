@@ -36,7 +36,9 @@ const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLConte
  * Arrays are mutable (`string[]`) to match Next.js's public API return type
  * without requiring `as` casts. The map itself is Readonly — no key addition.
  */
-export type SegmentMap = Readonly<Record<string, string[]>> & { readonly children: string[] };
+export type SegmentMap = Readonly<Record<string, string[]>> & {
+  readonly children: string[];
+};
 
 type _LayoutSegmentGlobal = typeof globalThis & {
   [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<SegmentMap> | null;
@@ -87,7 +89,9 @@ export function getLayoutSegmentContext(): React.Context<SegmentMap> | null {
 
   const globalState = globalThis as _LayoutSegmentGlobal;
   if (!globalState[_LAYOUT_SEGMENT_CTX_KEY]) {
-    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<SegmentMap>({ children: [] });
+    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<SegmentMap>({
+      children: [],
+    });
   }
 
   return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
@@ -125,7 +129,9 @@ export type NavigationContext = {
 };
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
-const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
+const _READONLY_SEARCH_PARAMS_SOURCE = Symbol(
+  "vinext.navigation.readonlySearchParamsSource",
+);
 
 type NavigationContextWithReadonlyCache = NavigationContext & {
   [_READONLY_SEARCH_PARAMS]?: ReadonlyURLSearchParams;
@@ -161,7 +167,9 @@ type _StateAccessors = {
 
 export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
 const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
-type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
+type _GlobalWithAccessors = typeof globalThis & {
+  [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors;
+};
 
 function _getGlobalAccessors(): _StateAccessors | undefined {
   return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
@@ -382,7 +390,9 @@ export function storePrefetchResponse(
  * Snapshot an RSC response to an ArrayBuffer for caching and replay.
  * Consumes the response body and stores it with content-type and URL metadata.
  */
-export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
+export async function snapshotRscResponse(
+  response: Response,
+): Promise<CachedRscResponse> {
   const buffer = await response.arrayBuffer();
   return {
     buffer,
@@ -746,7 +756,8 @@ export function createClientNavigationRenderSnapshot(
   href: string,
   params: Record<string, string | string[]>,
 ): ClientNavigationRenderSnapshot {
-  const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "http://localhost";
   const url = new URL(href, origin);
 
   return {
@@ -781,7 +792,9 @@ export function setClientParams(params: Record<string, string | string[]>): void
   }
 }
 
-export function replaceClientParamsWithoutNotify(params: Record<string, string | string[]>): void {
+export function replaceClientParamsWithoutNotify(
+  params: Record<string, string | string[]>,
+): void {
   const state = getClientNavigationState();
   if (!state) return;
 
@@ -866,7 +879,10 @@ export function usePathname(): string {
   // hooks return the pending URL, not the stale committed one. After commit,
   // fall through to useSyncExternalStore so user pushState/replaceState
   // calls are immediately reflected.
-  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
+  if (
+    renderSnapshot &&
+    (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0
+  ) {
     return renderSnapshot.pathname;
   }
   return pathname;
@@ -889,7 +905,10 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
-  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
+  if (
+    renderSnapshot &&
+    (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0
+  ) {
     return renderSnapshot.searchParams;
   }
   return searchParams;
@@ -913,7 +932,10 @@ export function useParams<
     getClientParamsSnapshot as () => T,
     getServerParamsSnapshot as () => T,
   );
-  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
+  if (
+    renderSnapshot &&
+    (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0
+  ) {
     return renderSnapshot.params as T;
   }
   return params;
@@ -941,7 +963,9 @@ function isHashOnlyChange(href: string): boolean {
     const strippedCurrentPath = stripBasePath(current.pathname, __basePath);
     const strippedNextPath = stripBasePath(next.pathname, __basePath);
     return (
-      strippedCurrentPath === strippedNextPath && current.search === next.search && next.hash !== ""
+      strippedCurrentPath === strippedNextPath &&
+      current.search === next.search &&
+      next.hash !== ""
     );
   } catch {
     return false;
@@ -1134,7 +1158,11 @@ export async function navigateClientSide(
     normalizedHref = localPath;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  const fullHref = toBrowserNavigationHref(
+    normalizedHref,
+    window.location.href,
+    __basePath,
+  );
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
   notifyAppRouterTransitionStart(fullHref, mode);
@@ -1456,7 +1484,10 @@ export function permanentRedirect(
  * Trigger a not-found response (404). Caught by the framework.
  */
 export function notFound(): never {
-  throw new VinextNavigationError("NEXT_NOT_FOUND", `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`);
+  throw new VinextNavigationError(
+    "NEXT_NOT_FOUND",
+    `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`,
+  );
 }
 
 /**
@@ -1465,7 +1496,10 @@ export function notFound(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function forbidden(): never {
-  throw new VinextNavigationError("NEXT_FORBIDDEN", `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`);
+  throw new VinextNavigationError(
+    "NEXT_FORBIDDEN",
+    `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`,
+  );
 }
 
 /**
@@ -1474,7 +1508,10 @@ export function forbidden(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function unauthorized(): never {
-  throw new VinextNavigationError("NEXT_UNAUTHORIZED", `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`);
+  throw new VinextNavigationError(
+    "NEXT_UNAUTHORIZED",
+    `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`,
+  );
 }
 
 // ---------------------------------------------------------------------------

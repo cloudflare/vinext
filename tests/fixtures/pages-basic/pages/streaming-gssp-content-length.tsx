@@ -7,7 +7,9 @@ const DelayedChunk = lazy(
         resolve({
           default: function DelayedChunkImpl() {
             return (
-              <div data-testid="gssp-streamed-content">Delayed gSSP stream content loaded</div>
+              <div data-testid="gssp-streamed-content">
+                Delayed gSSP stream content loaded
+              </div>
             );
           },
         });
@@ -30,7 +32,9 @@ export default function StreamingGsspContentLengthPage() {
     <main>
       <h1>Streaming gSSP Content-Length Test</h1>
       <Suspense
-        fallback={<div data-testid="gssp-streaming-fallback">Loading delayed gSSP chunk...</div>}
+        fallback={
+          <div data-testid="gssp-streaming-fallback">Loading delayed gSSP chunk...</div>
+        }
       >
         <DelayedChunk />
       </Suspense>

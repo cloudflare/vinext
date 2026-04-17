@@ -27,7 +27,10 @@ export function createInstrumentationClientTransformPlugin(
       }
 
       const s = new MagicString(code);
-      s.appendLeft(insertPos, "\nconst __vinextInstrumentationClientStart = performance.now();\n");
+      s.appendLeft(
+        insertPos,
+        "\nconst __vinextInstrumentationClientStart = performance.now();\n",
+      );
       s.append(
         "\nconst __vinextInstrumentationClientEnd = performance.now();\n" +
           "const __vinextInstrumentationClientDuration = __vinextInstrumentationClientEnd - __vinextInstrumentationClientStart;\n" +

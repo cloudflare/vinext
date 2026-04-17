@@ -147,7 +147,10 @@ export type CacheHandler = {
 // ---------------------------------------------------------------------------
 
 export class NoOpCacheHandler implements CacheHandler {
-  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(
+    _key: string,
+    _ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
     return null;
   }
 
@@ -159,7 +162,10 @@ export class NoOpCacheHandler implements CacheHandler {
     // intentionally empty
   }
 
-  async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(
+    _tags: string | string[],
+    _durations?: { expire?: number },
+  ): Promise<void> {
     // intentionally empty
   }
 }
@@ -193,7 +199,10 @@ export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
 
-  async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(
+    key: string,
+    _ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
 
@@ -266,7 +275,10 @@ export class MemoryCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(
+    tags: string | string[],
+    _durations?: { expire?: number },
+  ): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     for (const tag of tagList) {
@@ -289,7 +301,10 @@ export class MemoryCacheHandler implements CacheHandler {
 // ---------------------------------------------------------------------------
 
 export type { ExecutionContextLike } from "./request-context.js";
-export { runWithExecutionContext, getRequestExecutionContext } from "./request-context.js";
+export {
+  runWithExecutionContext,
+  getRequestExecutionContext,
+} from "./request-context.js";
 
 // ---------------------------------------------------------------------------
 // Active cache handler — the singleton used by next/cache API functions.
@@ -377,7 +392,10 @@ export async function revalidateTag(
  * The `type` parameter is App Router only — Pages Router does not generate
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
-export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
+export async function revalidatePath(
+  path: string,
+  type?: "page" | "layout",
+): Promise<void> {
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
@@ -648,7 +666,8 @@ const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
 type CacheResultWrapper = { v: unknown } | { undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
-  const wrapper: CacheResultWrapper = value === undefined ? { undef: true } : { v: value };
+  const wrapper: CacheResultWrapper =
+    value === undefined ? { undef: true } : { v: value };
   return JSON.stringify(wrapper);
 }
 
@@ -702,9 +721,15 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       kind: "FETCH",
       tags,
     });
-    if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
+    if (
+      existing?.value &&
+      existing.value.kind === "FETCH" &&
+      existing.cacheState !== "stale"
+    ) {
       try {
-        return deserializeUnstableCacheResult(existing.value.data.body) as Awaited<ReturnType<T>>;
+        return deserializeUnstableCacheResult(existing.value.data.body) as Awaited<
+          ReturnType<T>
+        >;
       } catch {
         // Corrupted entry, fall through to re-fetch
       }

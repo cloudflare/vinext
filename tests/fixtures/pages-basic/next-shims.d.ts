@@ -94,7 +94,11 @@ declare module "next/image" {
 declare module "next/dynamic" {
   import { ComponentType } from "react";
   interface DynamicOptions {
-    loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+    loading?: ComponentType<{
+      error?: Error | null;
+      isLoading?: boolean;
+      pastDelay?: boolean;
+    }>;
     ssr?: boolean;
   }
   function dynamic<P extends object = object>(
@@ -130,7 +134,11 @@ declare module "next" {
 
 declare module "next/document" {
   import { ComponentType, ReactNode } from "react";
-  export const Html: ComponentType<{ lang?: string; children?: ReactNode; [key: string]: unknown }>;
+  export const Html: ComponentType<{
+    lang?: string;
+    children?: ReactNode;
+    [key: string]: unknown;
+  }>;
   export const Head: ComponentType<{ children?: ReactNode }>;
   export const Main: ComponentType;
   export const NextScript: ComponentType;

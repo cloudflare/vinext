@@ -1145,7 +1145,9 @@ describe("Pages Router allowedDevOrigins config", () => {
   let tmpDir: string;
 
   beforeAll(async () => {
-    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-allowed-dev-origins-"));
+    tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-pages-allowed-dev-origins-"),
+    );
     await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
     await fsp.symlink(
       path.resolve(import.meta.dirname, "../node_modules"),
@@ -1228,7 +1230,9 @@ describe("Virtual server entry generation", () => {
     });
 
     try {
-      const resolved = await testServer.pluginContainer.resolveId("virtual:vinext-client-entry");
+      const resolved = await testServer.pluginContainer.resolveId(
+        "virtual:vinext-client-entry",
+      );
       expect(resolved).toBeTruthy();
       const loaded = await testServer.pluginContainer.load(resolved!.id);
       expect(loaded).toBeTruthy();
@@ -1344,7 +1348,10 @@ describe("Plugin config", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(tmpDir, ".env"), `${envKey}=loaded-before-inline-config\n`);
+    await fsp.writeFile(
+      path.join(tmpDir, ".env"),
+      `${envKey}=loaded-before-inline-config\n`,
+    );
 
     try {
       const plugins = vinext({
@@ -1385,7 +1392,8 @@ describe("Plugin config", () => {
     ).flat();
 
     const hasReactPlugin = resolvedPlugins.some(
-      (plugin) => plugin && typeof plugin.name === "string" && plugin.name.startsWith("vite:react"),
+      (plugin) =>
+        plugin && typeof plugin.name === "string" && plugin.name.startsWith("vite:react"),
     );
     expect(hasReactPlugin).toBe(true);
   });
@@ -1602,13 +1610,19 @@ describe("Plugin config", () => {
     await expect(
       mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
     ).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?url", {}),
+    ).resolves.toBeUndefined();
     await expect(
       mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
     ).resolves.toBeUndefined();
     // Additional query variations
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?v=123", {}),
+    ).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?mdx", {}),
+    ).resolves.toBeUndefined();
     // Edge case: query value contains .mdx but isn't the extension
     await expect(
       mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
@@ -1679,7 +1693,9 @@ export const marker = "mdx-evaluated";
     }
 
     // Without the guard: ?raw import is incorrectly handed to the MDX compiler
-    expect(transformWithoutGuard("", "/app/content.mdx?raw")).toEqual(mockTransformResult);
+    expect(transformWithoutGuard("", "/app/content.mdx?raw")).toEqual(
+      mockTransformResult,
+    );
     expect(mockDelegate.transform).toHaveBeenCalledWith("", "/app/content.mdx?raw", {});
 
     mockDelegate.transform.mockClear();
@@ -1779,7 +1795,9 @@ export const config = { matcher: ["/protected"] };
 
       const entryPath = path.join(fixtureOutDir, "server", "entry.js");
       const entryModule = await import(pathToFileURL(entryPath).href);
-      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+      const result = await entryModule.runMiddleware(
+        new Request("http://localhost/protected"),
+      );
 
       expect(result.continue).toBe(false);
       expect(result.redirectStatus).toBe(307);
@@ -1790,7 +1808,9 @@ export const config = { matcher: ["/protected"] };
   });
 
   it("runMiddleware in generated pages prod entry prefers named proxy export over default (matching Next.js)", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-precedence-"));
+    const tmpRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-pages-proxy-precedence-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     const fixtureOutDir = path.join(tmpRoot, "dist");
 
@@ -1849,7 +1869,9 @@ export const config = { matcher: ["/protected"] };
 
       const entryPath = path.join(fixtureOutDir, "server", "entry.js");
       const entryModule = await import(pathToFileURL(entryPath).href);
-      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+      const result = await entryModule.runMiddleware(
+        new Request("http://localhost/protected"),
+      );
 
       expect(result.continue).toBe(false);
       expect(result.redirectStatus).toBe(307);
@@ -1884,25 +1906,27 @@ export const config = { matcher: ["/protected"] };
     const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
     expect(fs.existsSync(manifestPath)).toBe(true);
 
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<string, string[]>;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
+      string,
+      string[]
+    >;
     // Manifest should have entries (module IDs -> asset URLs)
     expect(Object.keys(manifest).length).toBeGreaterThan(0);
 
     // Verify build manifest was also produced (needed for lazy chunk computation)
     const buildManifestPath = path.join(outDir, "client", ".vite", "manifest.json");
     expect(fs.existsSync(buildManifestPath)).toBe(true);
-    const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
-      string,
-      ClientBuildManifestEntry
-    >;
+    const buildManifest = JSON.parse(
+      fs.readFileSync(buildManifestPath, "utf-8"),
+    ) as Record<string, ClientBuildManifestEntry>;
     const counterBuildManifestEntries = findBuildManifestEntries(
       buildManifest,
       "pages/counter.tsx",
     );
     expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
-    expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
-      true,
-    );
+    expect(
+      counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string"),
+    ).toBe(true);
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -1930,7 +1954,9 @@ export const config = { matcher: ["/protected"] };
       ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
     );
     expect(counterManifestEntry).toBeDefined();
-    expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+    expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(
+      true,
+    );
   });
 
   it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
@@ -1942,7 +1968,10 @@ export const config = { matcher: ["/protected"] };
       await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
       await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
 
-      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "package.json"),
+        JSON.stringify({ type: "module" }),
+      );
       await fsp.writeFile(
         path.join(tmpRoot, "next.config.mjs"),
         `export default { basePath: "/docs" };\n`,
@@ -1986,21 +2015,30 @@ export default function CounterPage() {
         },
       });
 
-      const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
-      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
-        string,
-        ClientBuildManifestEntry
-      >;
+      const buildManifestPath = path.join(
+        fixtureOutDir,
+        "client",
+        ".vite",
+        "manifest.json",
+      );
+      const buildManifest = JSON.parse(
+        fs.readFileSync(buildManifestPath, "utf-8"),
+      ) as Record<string, ClientBuildManifestEntry>;
       const counterBuildManifestEntries = findBuildManifestEntries(
         buildManifest,
         "pages/counter.tsx",
       );
       expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
-      expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
-        true,
-      );
+      expect(
+        counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string"),
+      ).toBe(true);
 
-      const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
+      const manifestPath = path.join(
+        fixtureOutDir,
+        "client",
+        ".vite",
+        "ssr-manifest.json",
+      );
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
         string,
         string[]
@@ -2009,11 +2047,12 @@ export default function CounterPage() {
         ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
       );
       expect(counterManifestEntry).toBeDefined();
-      expect(counterManifestEntry?.[1].every((file: string) => file.startsWith("docs/"))).toBe(
-        true,
-      );
+      expect(
+        counterManifestEntry?.[1].every((file: string) => file.startsWith("docs/")),
+      ).toBe(true);
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { startProdServer } =
+        await import("../packages/vinext/src/server/prod-server.js");
       const prodServer = unwrapStartedProdServer(
         await startProdServer({
           port: 0,
@@ -2038,7 +2077,9 @@ export default function CounterPage() {
   });
 
   it("emits stylesheet and static asset URLs for backfilled inlined pages", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-inline-assets-"));
+    const tmpRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-pages-inline-assets-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     const fixtureOutDir = path.join(tmpRoot, "dist");
 
@@ -2046,7 +2087,10 @@ export default function CounterPage() {
       await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
       await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
 
-      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "package.json"),
+        JSON.stringify({ type: "module" }),
+      );
       await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
       await fsp.writeFile(
         path.join(tmpRoot, "pages", "counter.module.css"),
@@ -2096,11 +2140,15 @@ export default function CounterPage() {
         },
       });
 
-      const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
-      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
-        string,
-        ClientBuildManifestEntry
-      >;
+      const buildManifestPath = path.join(
+        fixtureOutDir,
+        "client",
+        ".vite",
+        "manifest.json",
+      );
+      const buildManifest = JSON.parse(
+        fs.readFileSync(buildManifestPath, "utf-8"),
+      ) as Record<string, ClientBuildManifestEntry>;
       const counterBuildManifestEntries = findBuildManifestEntries(
         buildManifest,
         "pages/counter.tsx",
@@ -2115,7 +2163,12 @@ export default function CounterPage() {
         ),
       ).toBe(true);
 
-      const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
+      const manifestPath = path.join(
+        fixtureOutDir,
+        "client",
+        ".vite",
+        "ssr-manifest.json",
+      );
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
         string,
         string[]
@@ -2132,11 +2185,15 @@ export default function CounterPage() {
         file.endsWith(".css"),
       );
       expect(cssFile).toBeDefined();
-      const cssContent = fs.readFileSync(path.join(fixtureOutDir, "client", cssFile!), "utf-8");
+      const cssContent = fs.readFileSync(
+        path.join(fixtureOutDir, "client", cssFile!),
+        "utf-8",
+      );
       expect(cssContent).toContain("url(");
       expect(cssContent).toMatch(/data:image\/svg\+xml|\.svg/);
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { startProdServer } =
+        await import("../packages/vinext/src/server/prod-server.js");
       const prodServer = unwrapStartedProdServer(
         await startProdServer({
           port: 0,
@@ -2466,7 +2523,8 @@ describe("Production server middleware (Pages Router)", () => {
       });
     }
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { startProdServer } =
+      await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
         port: 0,
@@ -2520,7 +2578,8 @@ describe("Production server middleware (Pages Router)", () => {
         },
       });
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { startProdServer } =
+        await import("../packages/vinext/src/server/prod-server.js");
       prodServer = unwrapStartedProdServer(
         await startProdServer({
           port: 0,
@@ -2539,7 +2598,9 @@ describe("Production server middleware (Pages Router)", () => {
       expect(nestedRes.status).toBe(418);
       expect(await nestedRes.text()).toBe("nested blocked");
     } finally {
-      await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      await new Promise<void>(
+        (resolve) => prodServer?.close(() => resolve()) ?? resolve(),
+      );
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -2585,7 +2646,9 @@ describe("Production server middleware (Pages Router)", () => {
     expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
-    expect(secondHtml).toContain('<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ');
+    expect(secondHtml).toContain(
+      '<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ',
+    );
   });
 
   it("rewrites /rewritten to render /ssr content", async () => {
@@ -2761,7 +2824,9 @@ describe("Production server middleware (Pages Router)", () => {
     const body = Buffer.from(await res.arrayBuffer());
     // Must match exactly: invalid UTF-8-leading bytes + null + ASCII tail.
     // This catches any accidental text() decode/re-encode in prod-server.
-    expect(body.equals(Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x61, 0x62, 0x63]))).toBe(true);
+    expect(body.equals(Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x61, 0x62, 0x63]))).toBe(
+      true,
+    );
   });
 
   it("preserves repeated urlencoded API body keys in production", async () => {
@@ -2863,7 +2928,9 @@ describe("Production Pages Router SSR streaming", () => {
   async function withFreshStreamingProdServer<T>(
     run: (freshProdUrl: string) => Promise<T>,
   ): Promise<T> {
-    const freshOutDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-streaming-fresh-"));
+    const freshOutDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-pages-streaming-fresh-"),
+    );
     let freshServer: import("node:http").Server | undefined;
 
     try {
@@ -2874,7 +2941,8 @@ describe("Production Pages Router SSR streaming", () => {
       );
       await buildPagesFixtureToOutDir(FIXTURE_DIR, freshOutDir);
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { startProdServer } =
+        await import("../packages/vinext/src/server/prod-server.js");
       freshServer = unwrapStartedProdServer(
         await startProdServer({
           port: 0,
@@ -2902,7 +2970,8 @@ describe("Production Pages Router SSR streaming", () => {
     );
     await buildPagesFixtureToOutDir(FIXTURE_DIR, outDir);
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { startProdServer } =
+      await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
         port: 0,
@@ -3008,9 +3077,12 @@ describe("Production Pages Router SSR streaming", () => {
     // Parity target: Next.js only sets Content-Length for unchunked render
     // payloads; streamed HTML is sent without one.
     // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-payload.ts
-    const response = await captureStreamedResponse(`${prodUrl}/streaming-gssp-content-length`, {
-      headers: { "accept-encoding": "br" },
-    });
+    const response = await captureStreamedResponse(
+      `${prodUrl}/streaming-gssp-content-length`,
+      {
+        headers: { "accept-encoding": "br" },
+      },
+    );
     const partialHtml = response.snapshot.toString("utf8");
     const finalHtml = response.body.toString("utf8");
 
@@ -3085,7 +3157,8 @@ describe("Production server next.config.js features (Pages Router)", () => {
       });
     }
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { startProdServer } =
+      await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
         port: 0,
@@ -3273,10 +3346,12 @@ describe("Static export (Pages Router)", () => {
   });
 
   it("exports static pages to HTML files", async () => {
-    const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
+    const { staticExportPages } =
+      await import("../packages/vinext/src/build/static-export.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
     const routes = await pagesRouter(pagesDir);
@@ -3310,9 +3385,14 @@ describe("Static export (Pages Router)", () => {
   it("pre-renders dynamic routes from getStaticPaths", async () => {
     // blog/[slug] has getStaticPaths returning hello-world and getting-started
     expect(fs.existsSync(path.join(exportDir, "blog", "hello-world.html"))).toBe(true);
-    expect(fs.existsSync(path.join(exportDir, "blog", "getting-started.html"))).toBe(true);
+    expect(fs.existsSync(path.join(exportDir, "blog", "getting-started.html"))).toBe(
+      true,
+    );
 
-    const blogHtml = fs.readFileSync(path.join(exportDir, "blog", "hello-world.html"), "utf-8");
+    const blogHtml = fs.readFileSync(
+      path.join(exportDir, "blog", "hello-world.html"),
+      "utf-8",
+    );
     expect(blogHtml).toContain("Hello World");
     expect(blogHtml).toContain("hello-world");
   });
@@ -3334,10 +3414,12 @@ describe("Static export (Pages Router)", () => {
 
   it("reports errors for pages using getServerSideProps", async () => {
     // The result from the first test should have errors for SSR-only pages
-    const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
+    const { staticExportPages } =
+      await import("../packages/vinext/src/build/static-export.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
     const routes = await pagesRouter(pagesDir);
@@ -3356,7 +3438,9 @@ describe("Static export (Pages Router)", () => {
       });
 
       // Should report errors for getServerSideProps pages
-      const ssrErrors = result.errors.filter((e) => e.error.includes("getServerSideProps"));
+      const ssrErrors = result.errors.filter((e) =>
+        e.error.includes("getServerSideProps"),
+      );
       expect(ssrErrors.length).toBeGreaterThan(0);
 
       // Should warn about API routes
@@ -3372,10 +3456,12 @@ describe("Static export (Pages Router)", () => {
   });
 
   it("respects trailingSlash config", async () => {
-    const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
+    const { staticExportPages } =
+      await import("../packages/vinext/src/build/static-export.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
     const routes = await pagesRouter(pagesDir);
@@ -3407,7 +3493,9 @@ describe("Static export (Pages Router)", () => {
 
 describe("Pages Router production rewrite status reason phrases", () => {
   it("drops stale statusText when middleware rewrite status overrides an API response status", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-rewrite-status-text-"));
+    const tmpRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-pages-rewrite-status-text-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     const outDir = path.join(tmpRoot, "dist");
 
@@ -3415,7 +3503,10 @@ describe("Pages Router production rewrite status reason phrases", () => {
       await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
       await fsp.mkdir(path.join(tmpRoot, "pages", "api"), { recursive: true });
 
-      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "package.json"),
+        JSON.stringify({ type: "module" }),
+      );
       await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
       await fsp.writeFile(
         path.join(tmpRoot, "middleware.ts"),
@@ -3461,7 +3552,8 @@ export function middleware(request) {
         },
       });
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { startProdServer } =
+        await import("../packages/vinext/src/server/prod-server.js");
       const prodServer = unwrapStartedProdServer(
         await startProdServer({
           port: 0,
@@ -3507,7 +3599,10 @@ describe("Pages Router production no-body rewrite statuses", () => {
     );
     await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
 
-    await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(tmpRoot, "package.json"),
+      JSON.stringify({ type: "module" }),
+    );
     await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
     await fsp.writeFile(
       path.join(tmpRoot, "middleware.ts"),
@@ -3557,7 +3652,8 @@ export function middleware(request) {
 
     await buildPagesFixtureToOutDir(tmpRoot, outDir);
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { startProdServer } =
+      await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
         port: 0,
@@ -3612,7 +3708,8 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
   let routerBaseUrl: string;
 
   beforeAll(async () => {
-    ({ server: routerServer, baseUrl: routerBaseUrl } = await startFixtureServer(FIXTURE_DIR));
+    ({ server: routerServer, baseUrl: routerBaseUrl } =
+      await startFixtureServer(FIXTURE_DIR));
   });
 
   afterAll(async () => {
@@ -3702,9 +3799,11 @@ describe("Pages Router dev ISR regeneration", () => {
           },
         }),
         isrSet: isrSetSpy,
-        triggerBackgroundRegeneration: vi.fn((_key: string, renderFn: () => Promise<void>) => {
-          regenPromise = renderFn();
-        }),
+        triggerBackgroundRegeneration: vi.fn(
+          (_key: string, renderFn: () => Promise<void>) => {
+            regenPromise = renderFn();
+          },
+        ),
       };
     });
 

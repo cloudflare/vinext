@@ -8,7 +8,12 @@
 import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
-import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
+import Document, {
+  Html,
+  Head,
+  Main,
+  NextScript,
+} from "../packages/vinext/src/shims/document.js";
 
 function render(el: React.ReactElement): string {
   return ReactDOMServer.renderToString(el);

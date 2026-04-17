@@ -150,12 +150,14 @@ export function getLocaleRedirect({
   // Next.js treats localeDetection as the global auto-redirect switch, so
   // disabling it also disables root domain-locale redirects, including
   // cross-domain redirects driven by the current host or Accept-Language.
-  if (!i18n || i18n.localeDetection === false || urlParsed.pathname !== "/") return undefined;
+  if (!i18n || i18n.localeDetection === false || urlParsed.pathname !== "/")
+    return undefined;
 
   const domainLocale = detectDomainLocale(i18n.domains, urlParsed.hostname ?? undefined);
   const defaultLocale = domainLocale?.defaultLocale || i18n.defaultLocale;
   const preferredLocale =
-    detectLocaleFromAcceptLanguage(readHeader(headers, "accept-language"), i18n) ?? undefined;
+    detectLocaleFromAcceptLanguage(readHeader(headers, "accept-language"), i18n) ??
+    undefined;
   const detectedLocale =
     pathLocale ||
     domainLocale?.defaultLocale ||
@@ -167,7 +169,8 @@ export function getLocaleRedirect({
   const preferredDomain = detectDomainLocale(i18n.domains, undefined, preferredLocale);
   if (domainLocale && preferredDomain) {
     const sameDomain =
-      normalizeHostname(domainLocale.domain) === normalizeHostname(preferredDomain.domain);
+      normalizeHostname(domainLocale.domain) ===
+      normalizeHostname(preferredDomain.domain);
     const sameLocale =
       preferredLocale !== undefined &&
       preferredDomain.defaultLocale.toLowerCase() === preferredLocale.toLowerCase();
@@ -177,9 +180,11 @@ export function getLocaleRedirect({
       // host (for example /nl-BE). This matches Next.js and doesn't loop because
       // the next request is prefixed and therefore skips getLocaleRedirect().
       const scheme = `http${preferredDomain.http ? "" : "s"}`;
-      const localePath = sameLocale || preferredLocale === undefined ? "" : `/${preferredLocale}`;
+      const localePath =
+        sameLocale || preferredLocale === undefined ? "" : `/${preferredLocale}`;
       const basePath = nextConfig.basePath ?? "";
-      const rootPath = `${basePath}${localePath}${nextConfig.trailingSlash ? "/" : ""}` || "/";
+      const rootPath =
+        `${basePath}${localePath}${nextConfig.trailingSlash ? "/" : ""}` || "/";
       const normalizedPath = rootPath.startsWith("/") ? rootPath : `/${rootPath}`;
       return `${scheme}://${preferredDomain.domain}${normalizedPath}${search}`;
     }

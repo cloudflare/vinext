@@ -4,7 +4,9 @@
 
 import { test, expect } from "@playwright/test";
 
-test("executes instrumentation-client before hydration in Pages Router", async ({ page }) => {
+test("executes instrumentation-client before hydration in Pages Router", async ({
+  page,
+}) => {
   await page.goto("/instrumentation-client");
   await page.waitForFunction(() => {
     const win = window as Window & {

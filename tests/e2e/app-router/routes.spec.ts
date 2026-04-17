@@ -7,21 +7,27 @@ test.describe("Catch-all routes", () => {
   test("renders with single segment", async ({ page }) => {
     await page.goto(`${BASE}/docs/getting-started`);
     await expect(page.locator("h1")).toHaveText("Documentation");
-    await expect(page.locator("main > p:first-of-type")).toHaveText("Path: getting-started");
+    await expect(page.locator("main > p:first-of-type")).toHaveText(
+      "Path: getting-started",
+    );
     await expect(page.locator("main > p:nth-of-type(2)")).toHaveText("Segments: 1");
   });
 
   test("renders with multiple segments", async ({ page }) => {
     await page.goto(`${BASE}/docs/api/reference/hooks`);
     await expect(page.locator("h1")).toHaveText("Documentation");
-    await expect(page.locator("main > p:first-of-type")).toHaveText("Path: api/reference/hooks");
+    await expect(page.locator("main > p:first-of-type")).toHaveText(
+      "Path: api/reference/hooks",
+    );
     await expect(page.locator("main > p:nth-of-type(2)")).toHaveText("Segments: 3");
   });
 
   test("renders with two segments", async ({ page }) => {
     await page.goto(`${BASE}/docs/guides/deployment`);
     await expect(page.locator("h1")).toHaveText("Documentation");
-    await expect(page.locator("main > p:first-of-type")).toHaveText("Path: guides/deployment");
+    await expect(page.locator("main > p:first-of-type")).toHaveText(
+      "Path: guides/deployment",
+    );
     await expect(page.locator("main > p:nth-of-type(2)")).toHaveText("Segments: 2");
   });
 });
@@ -130,10 +136,14 @@ test.describe("Dashboard nested not-found", () => {
     const response = await page.goto(`${BASE}/dashboard/missing`);
     expect(response?.status()).toBe(404);
     await expect(page.locator("#dashboard-not-found")).toBeVisible();
-    await expect(page.locator("#dashboard-not-found h2")).toHaveText("Dashboard: Page Not Found");
+    await expect(page.locator("#dashboard-not-found h2")).toHaveText(
+      "Dashboard: Page Not Found",
+    );
   });
 
-  test("dashboard layout is preserved when nested not-found renders", async ({ page }) => {
+  test("dashboard layout is preserved when nested not-found renders", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/dashboard/missing`);
     // The dashboard layout should still wrap the not-found page
     await expect(page.locator("#dashboard-layout")).toBeVisible();
@@ -145,12 +155,16 @@ test.describe("Client navigation hooks SSR", () => {
   test("usePathname renders correct pathname on SSR", async ({ page }) => {
     await page.goto(`${BASE}/client-nav-test`);
     await expect(page.locator("h1")).toHaveText("Client Nav Test");
-    await expect(page.locator('[data-testid="client-pathname"]')).toHaveText("/client-nav-test");
+    await expect(page.locator('[data-testid="client-pathname"]')).toHaveText(
+      "/client-nav-test",
+    );
   });
 
   test("useSearchParams renders query param on SSR", async ({ page }) => {
     await page.goto(`${BASE}/client-nav-test?q=hello`);
-    await expect(page.locator('[data-testid="client-pathname"]')).toHaveText("/client-nav-test");
+    await expect(page.locator('[data-testid="client-pathname"]')).toHaveText(
+      "/client-nav-test",
+    );
     await expect(page.locator('[data-testid="client-search-q"]')).toHaveText("hello");
   });
 
@@ -161,14 +175,18 @@ test.describe("Client navigation hooks SSR", () => {
 });
 
 test.describe('"use client" page component with usePathname (issue #688)', () => {
-  test("usePathname renders correct pathname when page itself is use client", async ({ page }) => {
+  test("usePathname renders correct pathname when page itself is use client", async ({
+    page,
+  }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(err.message));
 
     await page.goto(`${BASE}/use-client-page-pathname`);
     await waitForAppRouterHydration(page);
 
-    await expect(page.locator("#client-page-pathname")).toHaveText("/use-client-page-pathname");
+    await expect(page.locator("#client-page-pathname")).toHaveText(
+      "/use-client-page-pathname",
+    );
     expect(errors.filter((e) => e.includes("Hydration"))).toHaveLength(0);
   });
 

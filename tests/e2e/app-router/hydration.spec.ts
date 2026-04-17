@@ -45,7 +45,9 @@ test.describe("App Router Hydration", () => {
     const currentText = await page.locator('[data-testid="count"]').textContent();
     const currentCount = parseInt(currentText!.replace("Count: ", ""), 10);
     await incrementBtn.click();
-    await expect(page.locator('[data-testid="count"]')).toHaveText(`Count: ${currentCount + 1}`);
+    await expect(page.locator('[data-testid="count"]')).toHaveText(
+      `Count: ${currentCount + 1}`,
+    );
 
     // consoleErrors fixture will fail the test if any errors occurred
     void consoleErrors;

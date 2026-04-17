@@ -36,7 +36,10 @@ export function getScriptNonceFromHeader(cspHeaderValue: string): string | undef
     .split(" ")
     .slice(1)
     .map((source) => source.trim())
-    .find((source) => source.startsWith("'nonce-") && source.length > 8 && source.endsWith("'"))
+    .find(
+      (source) =>
+        source.startsWith("'nonce-") && source.length > 8 && source.endsWith("'"),
+    )
     ?.slice(7, -1);
 
   if (!nonce) {
@@ -52,9 +55,12 @@ export function getScriptNonceFromHeader(cspHeaderValue: string): string | undef
   return nonce;
 }
 
-export function getScriptNonceFromHeaders(headers: Headers | null | undefined): string | undefined {
+export function getScriptNonceFromHeaders(
+  headers: Headers | null | undefined,
+): string | undefined {
   const csp =
-    headers?.get("content-security-policy") ?? headers?.get("content-security-policy-report-only");
+    headers?.get("content-security-policy") ??
+    headers?.get("content-security-policy-report-only");
 
   if (!csp) {
     return undefined;

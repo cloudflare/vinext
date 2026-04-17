@@ -98,7 +98,9 @@ describe("clientManualChunks", () => {
 
   it("handles scoped package names correctly", () => {
     // Scoped packages should not be grouped into framework
-    expect(clientManualChunks("/node_modules/@tanstack/react-query/index.js")).toBeUndefined();
+    expect(
+      clientManualChunks("/node_modules/@tanstack/react-query/index.js"),
+    ).toBeUndefined();
   });
 });
 
@@ -143,7 +145,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
-      expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+      expect(new Set(result.optimizeDeps.exclude).size).toBe(
+        result.optimizeDeps.exclude.length,
+      );
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -165,7 +169,9 @@ describe("optimizeDeps.exclude for vinext", () => {
     const fsp = await import("node:fs/promises");
     const path = await import("node:path");
 
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-merge-"));
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-optdeps-merge-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
 
@@ -196,18 +202,23 @@ describe("optimizeDeps.exclude for vinext", () => {
       // All environments should contain the incoming excludes
       for (const envName of ["rsc", "ssr", "client"]) {
         const envExclude = result.environments[envName].optimizeDeps?.exclude;
-        expect(envExclude, `${envName} should contain @lingui/macro`).toContain("@lingui/macro");
+        expect(envExclude, `${envName} should contain @lingui/macro`).toContain(
+          "@lingui/macro",
+        );
         expect(envExclude, `${envName} should contain @lingui/core/macro`).toContain(
           "@lingui/core/macro",
         );
         // vinext's own excludes should still be present
         expect(envExclude, `${envName} should contain vinext`).toContain("vinext");
-        expect(envExclude, `${envName} should contain @vercel/og`).toContain("@vercel/og");
+        expect(envExclude, `${envName} should contain @vercel/og`).toContain(
+          "@vercel/og",
+        );
         // Verify no duplicates exist (Set-based dedup works correctly even
         // when incoming config overlaps with vinext's own entries)
-        expect(new Set(envExclude).size, `${envName} should have no duplicate excludes`).toBe(
-          envExclude.length,
-        );
+        expect(
+          new Set(envExclude).size,
+          `${envName} should have no duplicate excludes`,
+        ).toBe(envExclude.length);
       }
 
       // Client environment should merge incoming includes
@@ -233,7 +244,9 @@ describe("optimizeDeps.exclude for vinext", () => {
     const fsp = await import("node:fs/promises");
     const path = await import("node:path");
 
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-app-"));
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-optdeps-app-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
 
@@ -300,7 +313,10 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
@@ -327,7 +343,10 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "serve", mode: "development" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "serve",
+        mode: "development",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("development"));
     } finally {
@@ -344,7 +363,10 @@ describe("process.env.NODE_ENV define", () => {
         plugins: [],
         define: { "process.env.NODE_ENV": JSON.stringify("staging") },
       };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
@@ -488,8 +510,12 @@ describe("treeshake config integration", () => {
       });
 
       // RSC and SSR environments should NOT have treeshake
-      expect(getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake).toBeUndefined();
-      expect(getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake).toBeUndefined();
+      expect(
+        getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake,
+      ).toBeUndefined();
+      expect(
+        getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake,
+      ).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -559,7 +585,9 @@ describe("treeshake config integration", () => {
     const fsp = await import("node:fs/promises");
     const path = await import("node:path");
 
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-cf-manifest-"));
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-cf-manifest-"),
+    );
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
 
@@ -996,7 +1024,10 @@ describe("augmentSsrManifestFromBundle", () => {
 
     const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
 
-    expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+    expect(augmented["pages/counter.tsx"]).toEqual([
+      "assets/counter.js",
+      "assets/counter.css",
+    ]);
     expect(augmented["/app/pages/counter.tsx"]).toBeUndefined();
   });
 
@@ -1007,7 +1038,10 @@ describe("augmentSsrManifestFromBundle", () => {
     const realModulePath = path.join(realRoot, "pages", "counter.tsx");
 
     await fsp.mkdir(path.join(realRoot, "pages"), { recursive: true });
-    await fsp.writeFile(realModulePath, "export default function Counter() { return null; }\n");
+    await fsp.writeFile(
+      realModulePath,
+      "export default function Counter() { return null; }\n",
+    );
     await fsp.symlink(realRoot, aliasRoot, "junction");
 
     const escapedAliasKey = path.relative(aliasRoot, realModulePath).replace(/\\/g, "/");
@@ -1032,7 +1066,10 @@ describe("augmentSsrManifestFromBundle", () => {
     try {
       const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, aliasRoot);
 
-      expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+      expect(augmented["pages/counter.tsx"]).toEqual([
+        "assets/counter.js",
+        "assets/counter.css",
+      ]);
       expect(augmented[escapedAliasKey]).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
@@ -1057,7 +1094,10 @@ describe("collectAssetTags lazy chunk filtering", () => {
    *
    * Must match the actual collectAssetTags implementation in index.ts.
    */
-  function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
+  function simulateAssetTagFiltering(
+    ssrManifestFiles: string[],
+    lazyChunks: string[],
+  ): string[] {
     const lazySet = new Set(lazyChunks);
     const tags: string[] = [];
     const seen = new Set<string>();
@@ -1116,7 +1156,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // Entry and framework should have modulepreload + script tags
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" src="/assets/entry.js" crossorigin></script>',
+    );
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
 
     // Page chunk and mermaid are lazy — should have NO tags at all
@@ -1171,8 +1213,12 @@ describe("collectAssetTags lazy chunk filtering", () => {
     // Both should be present
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
     expect(tags).toContain('<link rel="modulepreload" href="/assets/utils.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
-    expect(tags).toContain('<script type="module" src="/assets/utils.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" src="/assets/entry.js" crossorigin></script>',
+    );
+    expect(tags).toContain(
+      '<script type="module" src="/assets/utils.js" crossorigin></script>',
+    );
   });
 
   it("normalizes leading slashes from SSR manifest values", () => {
@@ -1215,7 +1261,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // Entry and framework should be present with correct single-slash paths
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" src="/assets/entry.js" crossorigin></script>',
+    );
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
 
     // Page chunk is lazy — should be excluded even with leading-slash input
@@ -1251,7 +1299,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
     expect(tags).toContain(
       '<script type="module" src="/docs/assets/entry.js" crossorigin></script>',
     );
-    expect(tags).toContain('<link rel="modulepreload" href="/docs/assets/framework.js" />');
+    expect(tags).toContain(
+      '<link rel="modulepreload" href="/docs/assets/framework.js" />',
+    );
     expect(tags.join("\n")).not.toContain("page-index.js");
   });
 
@@ -1269,7 +1319,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
     const tags = simulateAssetTagFiltering(ssrFiles, []);
 
     // entry.js should appear exactly once in modulepreload tags
-    const entryPreloads = tags.filter((t) => t.includes("entry.js") && t.includes("modulepreload"));
+    const entryPreloads = tags.filter(
+      (t) => t.includes("entry.js") && t.includes("modulepreload"),
+    );
     expect(entryPreloads).toHaveLength(1);
 
     // framework.js should also appear with correct path
@@ -1284,7 +1336,10 @@ describe("vinext:async-hooks-stub", () => {
 
   // The resolveId handler uses `this.environment?.name`, so we call it with a
   // mock context to control which environment is being simulated.
-  function resolveId(id: string, environmentName: string | undefined): string | undefined {
+  function resolveId(
+    id: string,
+    environmentName: string | undefined,
+  ): string | undefined {
     const handler = (
       _asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }
     ).handler;
@@ -1295,8 +1350,9 @@ describe("vinext:async-hooks-stub", () => {
   }
 
   function load(id: string): string | undefined {
-    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined })
-      .handler;
+    const handler = (
+      _asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined }
+    ).handler;
     return handler.call({}, id);
   }
 

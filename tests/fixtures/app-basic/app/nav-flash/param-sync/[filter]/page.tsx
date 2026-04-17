@@ -6,7 +6,11 @@ async function FilteredContent({ filter }: { filter: string }) {
   return <p id="filtered-content">Showing: {filter}</p>;
 }
 
-export default async function ParamSyncPage({ params }: { params: Promise<{ filter: string }> }) {
+export default async function ParamSyncPage({
+  params,
+}: {
+  params: Promise<{ filter: string }>;
+}) {
   const { filter } = await params;
   return (
     <div>

@@ -137,7 +137,9 @@ async function buildPagesShellHtml(
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
-    let html = await options.renderDocumentToString(React.createElement(options.DocumentComponent));
+    let html = await options.renderDocumentToString(
+      React.createElement(options.DocumentComponent),
+    );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
     if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
       html = html.replace(
@@ -212,7 +214,11 @@ function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): 
       headers.set(key, value.join(", "));
       continue;
     }
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
       headers.set(key, String(value));
     }
   }
@@ -224,7 +230,11 @@ export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
   const pageElement = withScriptNonce(
-    React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
+    React.createElement(
+      React.Fragment,
+      null,
+      options.createPageElement(options.pageProps),
+    ),
     options.scriptNonce,
   );
 
@@ -260,7 +270,11 @@ export async function renderPagesPageResponse(
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const bodyStream = await options.renderToReadableStream(pageElement);
-  const compositeStream = await buildPagesCompositeStream(bodyStream, shellPrefix, shellSuffix);
+  const compositeStream = await buildPagesCompositeStream(
+    bodyStream,
+    shellPrefix,
+    shellSuffix,
+  );
 
   if (
     // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()

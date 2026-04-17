@@ -70,7 +70,9 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     const html = await res.text();
 
     expect(html).toContain('<span id="client-page-search-q">hello</span>');
-    expect(html).toContain('<span id="client-page-search-string">q=hello&amp;page=2</span>');
+    expect(html).toContain(
+      '<span id="client-page-search-string">q=hello&amp;page=2</span>',
+    );
   });
 
   it("__VINEXT_RSC_NAV__ searchParams matches query string", async () => {
@@ -107,7 +109,9 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     expect(html).toContain(
       '<script nonce="vinext-test-nonce">self.__VINEXT_RSC_DONE__=true</script>',
     );
-    expect(html).toMatch(/<link rel="modulepreload" nonce="vinext-test-nonce" href="[^"]+"/);
+    expect(html).toMatch(
+      /<link rel="modulepreload" nonce="vinext-test-nonce" href="[^"]+"/,
+    );
 
     const scriptTags = [...html.matchAll(/<script\b[^>]*>/g)].map((match) => match[0]);
     expect(scriptTags.length).toBeGreaterThan(0);
@@ -134,7 +138,9 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     });
     const html = await res.text();
 
-    expect(html).toContain('<script nonce="request-header">self.__VINEXT_RSC_PARAMS__={}</script>');
+    expect(html).toContain(
+      '<script nonce="request-header">self.__VINEXT_RSC_PARAMS__={}</script>',
+    );
   });
 
   it("returns 500 when the nonce contains HTML escape characters", async () => {
@@ -158,7 +164,9 @@ describe('"use client" dynamic page: usePathname() + useParams() SSR', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
 
-    expect(html).toContain(`<span id="client-page-dynamic-pathname">${dynamicPath}</span>`);
+    expect(html).toContain(
+      `<span id="client-page-dynamic-pathname">${dynamicPath}</span>`,
+    );
   });
 
   it("SSR HTML contains correct slug param", async () => {

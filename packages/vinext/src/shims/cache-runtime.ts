@@ -84,7 +84,10 @@ export function getCacheContext(): CacheContext | null {
  */
 type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
-  createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
+  createFromReadableStream: <T>(
+    stream: ReadableStream<Uint8Array>,
+    options?: object,
+  ) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
@@ -164,7 +167,9 @@ export async function replyToCacheKey(reply: string | FormData): Promise<string>
   // entries with the same name) so the hash is deterministic.
   const entries: [string, FormDataEntryValue][] = [...reply.entries()];
   const valStr = (v: FormDataEntryValue): string => (typeof v === "string" ? v : v.name);
-  entries.sort((a, b) => a[0].localeCompare(b[0]) || valStr(a[1]).localeCompare(valStr(b[1])));
+  entries.sort(
+    (a, b) => a[0].localeCompare(b[0]) || valStr(a[1]).localeCompare(valStr(b[1])),
+  );
 
   const parts: string[] = [];
   for (const [name, value] of entries) {
@@ -173,7 +178,9 @@ export async function replyToCacheKey(reply: string | FormData): Promise<string>
     } else {
       // Blob/File: include type, size, and content bytes
       const bytes = new Uint8Array(await value.arrayBuffer());
-      parts.push(`${name}=b:${value.type}:${value.size}:${Buffer.from(bytes).toString("base64")}`);
+      parts.push(
+        `${name}=b:${value.type}:${value.size}:${Buffer.from(bytes).toString("base64")}`,
+      );
     }
   }
 
@@ -217,7 +224,9 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
     }
     if (config.expire !== undefined) {
       result.expire =
-        result.expire !== undefined ? Math.min(result.expire, config.expire) : config.expire;
+        result.expire !== undefined
+          ? Math.min(result.expire, config.expire)
+          : config.expire;
     }
   }
 
@@ -380,7 +389,11 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // Check cache — deserialize via RSC stream when available, JSON otherwise
     const existing = await handler.get(cacheKey, { kind: "FETCH" });
-    if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
+    if (
+      existing?.value &&
+      existing.value.kind === "FETCH" &&
+      existing.cacheState !== "stale"
+    ) {
       try {
         if (rsc && existing.value.data.headers["x-vinext-rsc"] === "1") {
           // RSC-serialized entry: base64 → bytes → stream → deserialize

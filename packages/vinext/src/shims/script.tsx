@@ -60,10 +60,15 @@ function getClientAutoNonce(): string | undefined {
     return undefined;
   }
 
-  return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
+  return (
+    existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined
+  );
 }
 
-function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): string | undefined {
+function resolveScriptNonce(
+  explicitNonce: unknown,
+  contextualNonce?: string,
+): string | undefined {
   if (typeof explicitNonce === "string" && explicitNonce.length > 0) {
     return explicitNonce;
   }

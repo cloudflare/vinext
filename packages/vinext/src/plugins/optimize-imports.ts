@@ -33,7 +33,10 @@ async function readFileSafe(filepath: string): Promise<string | null> {
 
 /** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node.
  * Returns null for unexpected node shapes so callers can degrade gracefully rather than crash. */
-function astName(node: { name?: string; value?: string | boolean | number | null }): string | null {
+function astName(node: {
+  name?: string;
+  value?: string | boolean | number | null;
+}): string | null {
   if (node.name !== undefined) return node.name;
   if (typeof node.value === "string") return node.value;
   return null;
@@ -197,7 +200,10 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
  * When `preferReactServer` is true (RSC environment), "react-server" is checked first
  * so that packages like `react` and `react-dom` resolve their RSC-compatible entry points.
  */
-function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): string | null {
+function resolveExportsValue(
+  value: ExportsValue,
+  preferReactServer: boolean,
+): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "object" && value !== null) {
     // In the RSC environment prefer "react-server" before standard conditions so that
@@ -254,7 +260,9 @@ async function resolvePackageInfo(
         for (let i = 0; i < 10; i++) {
           const candidate = path.join(dir, "package.json");
           try {
-            const parsed = JSON.parse(await fs.readFile(candidate, "utf-8")) as PackageJson;
+            const parsed = JSON.parse(
+              await fs.readFile(candidate, "utf-8"),
+            ) as PackageJson;
             if (parsed.name === packageName) {
               return { pkgDir: dir, pkgJson: parsed };
             }
@@ -398,7 +406,8 @@ async function buildExportMapFromFile(
   for (const node of ast.body as AstBodyNode[]) {
     switch (node.type) {
       case "ImportDeclaration": {
-        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        const rawSource =
+          typeof node.source?.value === "string" ? node.source.value : null;
         if (!rawSource) break;
         const source = normalizeSource(rawSource);
         for (const spec of node.specifiers ?? []) {
@@ -443,14 +452,18 @@ async function buildExportMapFromFile(
   for (const node of ast.body as AstBodyNode[]) {
     switch (node.type) {
       case "ExportAllDeclaration": {
-        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        const rawSource =
+          typeof node.source?.value === "string" ? node.source.value : null;
         if (!rawSource) break;
 
         if (node.exported) {
           // export * as Name from "sub-pkg" — namespace re-export
           const name = astName(node.exported);
           if (name !== null) {
-            exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
+            exportMap.set(name, {
+              source: normalizeSource(rawSource),
+              isNamespace: true,
+            });
           }
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
@@ -508,7 +521,8 @@ async function buildExportMapFromFile(
       }
 
       case "ExportNamedDeclaration": {
-        const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
+        const rawSource =
+          typeof node.source?.value === "string" ? node.source.value : null;
         if (rawSource) {
           const source = normalizeSource(rawSource);
           // export { A, B } from "sub-pkg"
@@ -755,7 +769,8 @@ export function createOptimizeImportsPlugin(
         for (const node of ast.body as AstBodyNode[]) {
           if (node.type !== "ImportDeclaration") continue;
 
-          const importSource = typeof node.source?.value === "string" ? node.source.value : null;
+          const importSource =
+            typeof node.source?.value === "string" ? node.source.value : null;
           if (!importSource || !packages.has(importSource)) continue;
 
           // Build or retrieve the barrel export map for this package.
@@ -766,7 +781,11 @@ export function createOptimizeImportsPlugin(
           const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${importSource}`;
           let barrelEntry: string | null | undefined = entryPathCache.get(cacheKey);
           if (barrelEntry === undefined) {
-            barrelEntry = await resolvePackageEntry(importSource, root, preferReactServer);
+            barrelEntry = await resolvePackageEntry(
+              importSource,
+              root,
+              preferReactServer,
+            );
             entryPathCache.set(cacheKey, barrelEntry ?? null);
           }
           const exportMap = await buildBarrelExportMap(
@@ -863,7 +882,10 @@ export function createOptimizeImportsPlugin(
                     );
                     break;
                   }
-                } else if (spec.type === "ImportDefaultSpecifier" && !exportMap.has("default")) {
+                } else if (
+                  spec.type === "ImportDefaultSpecifier" &&
+                  !exportMap.has("default")
+                ) {
                   console.debug(
                     `[vinext:optimize-imports] skipping "${importSource}": default export not found in barrel export map`,
                   );

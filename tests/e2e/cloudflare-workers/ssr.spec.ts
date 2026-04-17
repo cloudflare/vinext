@@ -33,7 +33,9 @@ test.describe("Cloudflare Workers SSR", () => {
     );
   });
 
-  test("each request gets a fresh server render (dynamic timestamp)", async ({ page }) => {
+  test("each request gets a fresh server render (dynamic timestamp)", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/`);
     const ts1 = await page.textContent('[data-testid="timestamp"]');
 

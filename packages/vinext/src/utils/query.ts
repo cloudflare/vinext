@@ -88,7 +88,10 @@ export function urlQueryToSearchParams(query: UrlQuery): URLSearchParams {
  * Append query parameters to a URL while preserving any existing query string
  * and fragment identifier.
  */
-export function appendSearchParamsToUrl(url: string, params: Iterable<[string, string]>): string {
+export function appendSearchParamsToUrl(
+  url: string,
+  params: Iterable<[string, string]>,
+): string {
   const hashIndex = url.indexOf("#");
   const beforeHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
   const hash = hashIndex === -1 ? "" : url.slice(hashIndex);

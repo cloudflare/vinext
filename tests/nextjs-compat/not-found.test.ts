@@ -85,13 +85,19 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("dynamic [id] page renders for valid id", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-dynamic/123");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-dynamic/123",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("dynamic [id]");
   });
 
   it("dynamic [id] notFound() uses scoped not-found boundary", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-dynamic/404");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-dynamic/404",
+    );
     expect(res.status).toBe(404);
     // Should render the scoped not-found.tsx at [id] level, not the root one
     expect(html).toContain("dynamic/[id] not found");
@@ -104,19 +110,28 @@ describe("Next.js compat: not-found", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts#L89-L107
 
   it("layout without not-found boundary renders its page normally", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-no-boundary");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-no-boundary",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("Dynamic with Layout");
   });
 
   it("dynamic [id] page renders for valid id (no-boundary)", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-no-boundary/123");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-no-boundary/123",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("not-found-no-boundary [id]");
   });
 
   it("notFound() escalates to root not-found when no local boundary exists", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-no-boundary/404");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-no-boundary/404",
+    );
     expect(res.status).toBe(404);
     // Should render ROOT not-found.tsx since there's no local not-found boundary
     expect(html).toContain("404 - Page Not Found");
@@ -162,7 +177,10 @@ describe("Next.js compat: not-found", () => {
   // Next.js cascades metadata from parent layouts into not-found/error pages.
 
   it("not-found page should inherit metadata title from parent layout", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
     expect(res.status).toBe(404);
     // Should render the not-found content
     expect(html).toContain("Not Found (metadata test)");
@@ -171,14 +189,20 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("not-found page should inherit metadata description from parent layout", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
     expect(html).toContain(
       '<meta name="description" content="Layout description for not-found test"',
     );
   });
 
   it("not-found page should still include noindex meta tag alongside layout metadata", async () => {
-    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
     // noindex should still be present
     expect(html).toContain("noindex");
     // Layout metadata should also be present
@@ -253,14 +277,20 @@ describe("Next.js compat: not-found", () => {
   // parent layout's NotFoundBoundary (per-layout boundary matching Next.js).
 
   it("valid slug renders page through layout", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout/hello");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout/hello",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("not-found-layout-page");
     expect(html).toContain("not-found-layout-wrapper");
   });
 
   it("notFound() from layout is caught by parent boundary", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout/invalid");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout/invalid",
+    );
     expect(res.status).toBe(404);
     // Should render the PARENT not-found.tsx (not-found-layout/not-found.tsx)
     // because the layout at [slug] level threw, and the boundary at that level
@@ -285,14 +315,20 @@ describe("Next.js compat: not-found", () => {
   // throwing layout, causing a 500 error.
 
   it("layout+page notFound(): valid slug renders page", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-page/hello");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-page/hello",
+    );
     expect(res.status).toBe(200);
     expect(html).toContain("not-found-layout-page-content");
     expect(html).toContain("not-found-layout-page-wrapper");
   });
 
   it("layout+page notFound(): invalid slug caught by parent boundary (not 500)", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-page/invalid");
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-page/invalid",
+    );
     // Must be 404, NOT 500 — the layout's notFound() should be caught first,
     // rendering with parent layouts only (excluding the throwing layout).
     expect(res.status).toBe(404);
@@ -305,9 +341,12 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("layout+page notFound(): RSC request returns 404 (not 500)", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetch(
+      `${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`,
+      {
+        headers: { Accept: "text/x-component" },
+      },
+    );
     // RSC response must be 404 with valid flight data, not 500
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("text/x-component");

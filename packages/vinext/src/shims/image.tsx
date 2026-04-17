@@ -184,7 +184,11 @@ const RESPONSIVE_WIDTHS = __imageDeviceSizes;
  * the Images binding to resize/transcode on the fly. In dev, the Vite dev
  * server handles it as a passthrough (serves the original file).
  */
-export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
+export function imageOptimizationUrl(
+  src: string,
+  width: number,
+  quality: number = 75,
+): string {
   return `/_vinext/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
 }
 
@@ -195,7 +199,11 @@ export function imageOptimizationUrl(src: string, width: number, quality: number
  * server can resize and transcode the image. Only includes widths that are
  * <= 2x the original image width to avoid pointless upscaling.
  */
-function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
+function generateSrcSet(
+  src: string,
+  originalWidth: number,
+  quality: number = 75,
+): string {
   const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
   if (widths.length === 0)
     return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
@@ -288,8 +296,11 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
     }
 
-    const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-    const bg = placeholder === "blur" && sanitizedBlur ? `url(${sanitizedBlur})` : undefined;
+    const sanitizedBlur = imgBlurDataURL
+      ? sanitizeBlurDataURL(imgBlurDataURL)
+      : undefined;
+    const bg =
+      placeholder === "blur" && sanitizedBlur ? `url(${sanitizedBlur})` : undefined;
 
     if (fill) {
       return (
@@ -364,7 +375,9 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Blur placeholder: show a low-quality background while the image loads.
   // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
-  const sanitizedLocalBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+  const sanitizedLocalBlur = imgBlurDataURL
+    ? sanitizeBlurDataURL(imgBlurDataURL)
+    : undefined;
   const blurStyle =
     placeholder === "blur" && sanitizedLocalBlur
       ? {
@@ -491,7 +504,9 @@ export function getImageProps(props: ImageProps): {
       : undefined;
 
   // Blur placeholder styles — sanitize to prevent CSS injection
-  const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+  const sanitizedBlurURL = imgBlurDataURL
+    ? sanitizeBlurDataURL(imgBlurDataURL)
+    : undefined;
   const blurStyle =
     placeholder === "blur" && sanitizedBlurURL
       ? {

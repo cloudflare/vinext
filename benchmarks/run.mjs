@@ -14,7 +14,14 @@
  */
 
 import { execSync, spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -28,8 +35,14 @@ process.env.NEXT_TELEMETRY_DISABLED = "1";
 
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "5", 10);
-const DEV_RUNS = parseInt(args.find((a) => a.startsWith("--dev-runs="))?.split("=")[1] ?? "10", 10);
+const RUNS = parseInt(
+  args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "5",
+  10,
+);
+const DEV_RUNS = parseInt(
+  args.find((a) => a.startsWith("--dev-runs="))?.split("=")[1] ?? "10",
+  10,
+);
 const SKIP_BUILD = args.includes("--skip-build");
 const SKIP_DEV = args.includes("--skip-dev");
 const SKIP_SSR = args.includes("--skip-ssr");
@@ -266,7 +279,10 @@ async function main() {
 
     // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
-    exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+    exec("./node_modules/.bin/next build --turbopack", {
+      cwd: nextjsDir,
+      timeout: 120000,
+    });
     exec("rm -rf .next", { cwd: nextjsDir });
 
     console.log("  Warmup: vinext build...");
@@ -274,7 +290,9 @@ async function main() {
     exec("rm -rf dist", { cwd: vinextDir });
 
     // Measured runs with hyperfine (single invocation with --shuffle for fair ordering)
-    console.log(`\n  Running ${RUNS} build iterations with hyperfine (randomized order)...\n`);
+    console.log(
+      `\n  Running ${RUNS} build iterations with hyperfine (randomized order)...\n`,
+    );
 
     function parseHyperfineResult(r) {
       return {
@@ -321,7 +339,10 @@ async function main() {
           run: () => {
             exec("rm -rf .next", { cwd: nextjsDir });
             const start = performance.now();
-            exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+            exec("./node_modules/.bin/next build --turbopack", {
+              cwd: nextjsDir,
+              timeout: 120000,
+            });
             buildTimes.nextjs.push(performance.now() - start);
           },
         },
@@ -340,7 +361,9 @@ async function main() {
       for (let i = 0; i < RUNS; i++) {
         const order = shuffle(buildRunners);
         buildRunOrders.push(order.map((r) => r.key));
-        console.log(`  Run ${i + 1}/${RUNS} (order: ${order.map((r) => r.key).join(" → ")})...`);
+        console.log(
+          `  Run ${i + 1}/${RUNS} (order: ${order.map((r) => r.key).join(" → ")})...`,
+        );
         for (const runner of order) runner.run();
       }
 
@@ -377,7 +400,10 @@ async function main() {
 
     // Rebuild both to get fresh output
     exec("rm -rf .next", { cwd: nextjsDir });
-    exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+    exec("./node_modules/.bin/next build --turbopack", {
+      cwd: nextjsDir,
+      timeout: 120000,
+    });
 
     exec("rm -rf dist", { cwd: vinextDir });
     exec("./node_modules/.bin/vp build", { cwd: vinextDir, timeout: 120000 });
@@ -478,7 +504,9 @@ async function main() {
   if (!SKIP_SSR) {
     console.log("\n=== SSR Throughput & TTFB ===\n");
     console.log("  Skipped — vinext production server not yet wired for benchmark app.");
-    console.log("  Next.js `next start` does SSR; vinext `vite preview` only serves static.");
+    console.log(
+      "  Next.js `next start` does SSR; vinext `vite preview` only serves static.",
+    );
     console.log("  This will be added once the prod server integration is complete.\n");
   }
 
@@ -498,7 +526,8 @@ async function main() {
   md += `- **CPUs**: ${results.system.cpus}\n`;
   md += `- **Build runs**: ${results.buildRuns}\n`;
   md += `- **Dev cold start runs**: ${results.devRuns}\n`;
-  if (results.system.nextjsVersion) md += `- **Next.js**: ${results.system.nextjsVersion}\n`;
+  if (results.system.nextjsVersion)
+    md += `- **Next.js**: ${results.system.nextjsVersion}\n`;
   if (results.system.viteVersion) md += `- **Vite**: ${results.system.viteVersion}\n`;
   md += "\n";
   md += `> **Note:** TypeScript type checking is disabled for the Next.js build (\`typescript.ignoreBuildErrors: true\`) so that build timings measure bundler/compilation speed only. Vite does not type-check during build.\n\n`;

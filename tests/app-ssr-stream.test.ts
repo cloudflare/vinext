@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { fixFlightHints, fixPreloadAs } from "../packages/vinext/src/server/app-ssr-stream.js";
+import {
+  fixFlightHints,
+  fixPreloadAs,
+} from "../packages/vinext/src/server/app-ssr-stream.js";
 
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
     it('replaces as="stylesheet" with as="style" for preload links', () => {
       expect(
-        fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>'),
+        fixPreloadAs(
+          '<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>',
+        ),
       ).toBe('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>');
 
       expect(fixPreloadAs('<link as="stylesheet" rel="preload" href="/file.css"/>')).toBe(
@@ -14,9 +19,9 @@ describe("App SSR stream helpers", () => {
     });
 
     it("leaves non-preload links and other preload types unchanged", () => {
-      expect(fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>')).toBe(
-        '<link rel="stylesheet" href="/file.css" as="stylesheet"/>',
-      );
+      expect(
+        fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>'),
+      ).toBe('<link rel="stylesheet" href="/file.css" as="stylesheet"/>');
 
       expect(fixPreloadAs('<link rel="preload" href="/font.woff2" as="font"/>')).toBe(
         '<link rel="preload" href="/font.woff2" as="font"/>',
@@ -42,9 +47,9 @@ describe("App SSR stream helpers", () => {
         ':HL["/assets/index.css","style"]',
       );
 
-      expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
-        '2:HL["/assets/index.css","style",{"crossOrigin":""}]',
-      );
+      expect(
+        fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]'),
+      ).toBe('2:HL["/assets/index.css","style",{"crossOrigin":""}]');
     });
 
     it("leaves unrelated content unchanged", () => {
@@ -52,19 +57,25 @@ describe("App SSR stream helpers", () => {
         fixFlightHints(
           '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]',
         ),
-      ).toBe('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]');
+      ).toBe(
+        '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]',
+      );
 
-      expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe('2:HL["/font.woff2","font"]');
-      expect(fixFlightHints(':HL["/font.woff2","font"]')).toBe(':HL["/font.woff2","font"]');
+      expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe(
+        '2:HL["/font.woff2","font"]',
+      );
+      expect(fixFlightHints(':HL["/font.woff2","font"]')).toBe(
+        ':HL["/font.woff2","font"]',
+      );
     });
 
     it("handles multiple hints in a single chunk", () => {
-      expect(fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]')).toBe(
-        '2:HL["/a.css","style"]\n3:HL["/b.css","style"]',
-      );
-      expect(fixFlightHints(':HL["/a.css","stylesheet"]\n:HL["/b.css","stylesheet"]')).toBe(
-        ':HL["/a.css","style"]\n:HL["/b.css","style"]',
-      );
+      expect(
+        fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]'),
+      ).toBe('2:HL["/a.css","style"]\n3:HL["/b.css","style"]');
+      expect(
+        fixFlightHints(':HL["/a.css","stylesheet"]\n:HL["/b.css","stylesheet"]'),
+      ).toBe(':HL["/a.css","style"]\n:HL["/b.css","style"]');
     });
   });
 });

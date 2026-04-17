@@ -10,7 +10,12 @@ import {
 } from "./app-elements.js";
 import { ErrorBoundary, NotFoundBoundary } from "../shims/error-boundary.js";
 import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
-import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "../shims/metadata.js";
+import {
+  MetadataHead,
+  ViewportHead,
+  type Metadata,
+  type Viewport,
+} from "../shims/metadata.js";
 import { Children, ParallelSlot, Slot } from "../shims/slot.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
@@ -209,7 +214,9 @@ export function resolveAppPageChildSegments(
       if (paramValue === undefined) {
         continue;
       }
-      resolvedSegments.push(Array.isArray(paramValue) ? paramValue.join("/") : paramValue);
+      resolvedSegments.push(
+        Array.isArray(paramValue) ? paramValue.join("/") : paramValue,
+      );
       continue;
     }
 
@@ -244,7 +251,9 @@ function resolveAppPageVisibleSegments(
   params: AppPageParams,
 ): string[] {
   const resolvedSegments = resolveAppPageChildSegments(routeSegments, 0, params);
-  return resolvedSegments.filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+  return resolvedSegments.filter(
+    (segment) => !(segment.startsWith("(") && segment.endsWith(")")),
+  );
 }
 
 function resolveAppPageTemplateKey(
@@ -252,7 +261,10 @@ function resolveAppPageTemplateKey(
   treePosition: number,
   params: AppPageParams,
 ): string {
-  const visibleSegments = resolveAppPageVisibleSegments(routeSegments.slice(treePosition), params);
+  const visibleSegments = resolveAppPageVisibleSegments(
+    routeSegments.slice(treePosition),
+    params,
+  );
   return visibleSegments[0] ?? "";
 }
 
@@ -269,7 +281,8 @@ function createAppPageParallelSlotEntries<
 
   for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
     const slotName = slot.name;
-    const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+    const targetIndex =
+      slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
     if (targetIndex !== layoutIndex) {
       continue;
     }
@@ -290,7 +303,10 @@ function createAppPageParallelSlotEntries<
   return Object.keys(parallelSlots).length > 0 ? parallelSlots : undefined;
 }
 
-function createAppPageRouteHead(metadata: Metadata | null, viewport: Viewport): ReactNode {
+function createAppPageRouteHead(
+  metadata: Metadata | null,
+  viewport: Viewport,
+): ReactNode {
   return (
     <>
       <meta charSet="utf-8" />
@@ -310,7 +326,10 @@ export function buildAppPageElements<
   const pageId = createAppPayloadPageId(options.routePath, interceptionContext);
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
-  const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
+  const layoutEntriesByTreePosition = new Map<
+    number,
+    AppPageLayoutEntry<TModule, TErrorModule>
+  >();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
   for (const layoutEntry of layoutEntries) {
     layoutEntriesByTreePosition.set(layoutEntry.treePosition, layoutEntry);
@@ -425,7 +444,8 @@ export function buildAppPageElements<
 
     for (const slot of Object.values(options.route.slots ?? {})) {
       const slotName = slot.name;
-      const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+      const targetIndex =
+        slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (targetIndex !== index) {
         continue;
       }
@@ -454,7 +474,8 @@ export function buildAppPageElements<
 
   for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
     const slotName = slot.name;
-    const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+    const targetIndex =
+      slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
     const treePath = layoutEntries[targetIndex]?.treePath ?? "/";
     const slotId = `slot:${slotName}:${treePath}`;
     const slotOverride = resolveSlotOverride(slotKey, slotName);
@@ -506,12 +527,16 @@ export function buildAppPageElements<
     const slotLoadingComponent = getDefaultExport(slot.loading);
     if (slotLoadingComponent) {
       const SlotLoadingComponent = slotLoadingComponent;
-      slotElement = <Suspense fallback={<SlotLoadingComponent />}>{slotElement}</Suspense>;
+      slotElement = (
+        <Suspense fallback={<SlotLoadingComponent />}>{slotElement}</Suspense>
+      );
     }
 
     const slotErrorComponent = getErrorBoundaryExport(slot.error);
     if (slotErrorComponent) {
-      slotElement = <ErrorBoundary fallback={slotErrorComponent}>{slotElement}</ErrorBoundary>;
+      slotElement = (
+        <ErrorBoundary fallback={slotErrorComponent}>{slotElement}</ErrorBoundary>
+      );
     }
 
     elements[slotId] = renderAfterAppDependencies(
@@ -529,7 +554,9 @@ export function buildAppPageElements<
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   if (routeLoadingComponent) {
     const RouteLoadingComponent = routeLoadingComponent;
-    routeChildren = <Suspense fallback={<RouteLoadingComponent />}>{routeChildren}</Suspense>;
+    routeChildren = (
+      <Suspense fallback={<RouteLoadingComponent />}>{routeChildren}</Suspense>
+    );
   }
 
   const lastLayoutErrorModule =
@@ -538,15 +565,20 @@ export function buildAppPageElements<
       : null;
   const pageErrorComponent = getErrorBoundaryExport(options.route.error);
   if (pageErrorComponent && options.route.error !== lastLayoutErrorModule) {
-    routeChildren = <ErrorBoundary fallback={pageErrorComponent}>{routeChildren}</ErrorBoundary>;
+    routeChildren = (
+      <ErrorBoundary fallback={pageErrorComponent}>{routeChildren}</ErrorBoundary>
+    );
   }
 
   const notFoundComponent =
-    getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
+    getDefaultExport(options.route.notFound) ??
+    getDefaultExport(options.rootNotFoundModule);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
-      <NotFoundBoundary fallback={<NotFoundComponent />}>{routeChildren}</NotFoundBoundary>
+      <NotFoundBoundary fallback={<NotFoundComponent />}>
+        {routeChildren}
+      </NotFoundBoundary>
     );
   }
 
@@ -608,7 +640,8 @@ export function buildAppPageElements<
     };
     for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
       const slotName = slot.name;
-      const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
+      const targetIndex =
+        slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
       if (targetIndex !== layoutIndex) {
         continue;
       }
@@ -641,7 +674,9 @@ export function buildAppPageElements<
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);
   if (globalErrorComponent) {
-    routeChildren = <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>;
+    routeChildren = (
+      <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>
+    );
   }
 
   elements[routeId] = (

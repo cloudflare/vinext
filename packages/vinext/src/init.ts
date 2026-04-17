@@ -174,7 +174,11 @@ export function getReactUpgradeDeps(root: string): string[] {
     const major = parseInt(parts[0], 10);
     const minor = parseInt(parts[1], 10);
     const patch = parseInt(parts[2], 10);
-    if (major < 19 || (major === 19 && minor < 2) || (major === 19 && minor === 2 && patch < 5)) {
+    if (
+      major < 19 ||
+      (major === 19 && minor < 2) ||
+      (major === 19 && minor === 2 && patch < 5)
+    ) {
       return ["react@latest", "react-dom@latest"];
     }
     return [];
@@ -259,7 +263,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
     options._exec ??
     ((cmd: string, opts: { cwd: string; stdio: string }) => {
       const [program, ...args] = cmd.split(" ");
-      execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
+      execFileSync(program, args, { ...opts, shell: true } as Parameters<
+        typeof execFileSync
+      >[2]);
     });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
@@ -356,7 +362,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
     console.log(`    \u2713 Generated vite.config.ts`);
   }
   if (skippedViteConfig) {
-    console.log(`    - Skipped vite.config.ts (already exists, use --force to overwrite)`);
+    console.log(
+      `    - Skipped vite.config.ts (already exists, use --force to overwrite)`,
+    );
   }
   if (updatedGitignore) {
     console.log(`    \u2713 Added /dist/ to .gitignore`);

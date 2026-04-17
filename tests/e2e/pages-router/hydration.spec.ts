@@ -35,10 +35,15 @@ test.describe("Hydration", () => {
 
     // Even without JS, the page content should be there from SSR
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
-    await expect(page.locator("p")).toContainText("This is a Pages Router app running on Vite.");
+    await expect(page.locator("p")).toContainText(
+      "This is a Pages Router app running on Vite.",
+    );
   });
 
-  test("_app.tsx wrapper persists across client navigations", async ({ page, consoleErrors }) => {
+  test("_app.tsx wrapper persists across client navigations", async ({
+    page,
+    consoleErrors,
+  }) => {
     await page.goto(`${BASE}/`);
 
     // App wrapper should be present

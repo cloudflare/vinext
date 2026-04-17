@@ -70,7 +70,9 @@ test.describe("instrumentation.ts onRequestError", () => {
     expect(err.routeType).toBe("route");
   });
 
-  test("onRequestError() receives the correct route path pattern", async ({ request }) => {
+  test("onRequestError() receives the correct route path pattern", async ({
+    request,
+  }) => {
     const errorRes = await request.get("/api/error-route");
     expect(errorRes.status()).toBe(500);
 

@@ -15,7 +15,11 @@
  */
 import path from "node:path";
 import fs from "node:fs";
-import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
+import {
+  compareRoutes,
+  decodeRouteSegment,
+  normalizePathnameForRouteMatch,
+} from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -153,7 +157,11 @@ export async function appRouter(
 ): Promise<AppRoute[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const pageExtensionsKey = JSON.stringify(matcher.extensions);
-  if (cachedRoutes && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {
+  if (
+    cachedRoutes &&
+    cachedAppDir === appDir &&
+    cachedPageExtensionsKey === pageExtensionsKey
+  ) {
     return cachedRoutes;
   }
 
@@ -166,13 +174,23 @@ export async function appRouter(
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
-  for await (const file of scanWithExtensions("**/page", appDir, matcher.extensions, excludeDir)) {
+  for await (const file of scanWithExtensions(
+    "**/page",
+    appDir,
+    matcher.extensions,
+    excludeDir,
+  )) {
     const route = fileToAppRoute(file, appDir, "page", matcher);
     if (route) routes.push(route);
   }
 
   // Process route handler files (API routes) in a single pass
-  for await (const file of scanWithExtensions("**/route", appDir, matcher.extensions, excludeDir)) {
+  for await (const file of scanWithExtensions(
+    "**/route",
+    appDir,
+    matcher.extensions,
+    excludeDir,
+  )) {
     const route = fileToAppRoute(file, appDir, "route", matcher);
     if (route) routes.push(route);
   }
@@ -308,7 +326,11 @@ function discoverSlotSubRoutes(
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (!childrenDefault) continue;
 
-    for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
+    for (const {
+      rawSegments,
+      converted: convertedSubRoute,
+      slotPages,
+    } of subPathMap.values()) {
       const {
         urlSegments: urlParts,
         params: subParams,
@@ -452,7 +474,12 @@ function fileToAppRoute(
   // Discover not-found/forbidden/unauthorized: walk from route directory up to root (nearest wins).
   const notFoundPath = discoverBoundaryFile(segments, appDir, "not-found", matcher);
   const forbiddenPath = discoverBoundaryFile(segments, appDir, "forbidden", matcher);
-  const unauthorizedPath = discoverBoundaryFile(segments, appDir, "unauthorized", matcher);
+  const unauthorizedPath = discoverBoundaryFile(
+    segments,
+    appDir,
+    "unauthorized",
+    matcher,
+  );
 
   // Discover per-layout not-found files (one per layout directory).
   // These are used for per-layout NotFoundBoundary to match Next.js behavior where
@@ -462,7 +489,12 @@ function fileToAppRoute(
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
-  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir, matcher);
+  const parallelSlots = discoverInheritedParallelSlots(
+    segments,
+    appDir,
+    routeDir,
+    matcher,
+  );
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
@@ -505,7 +537,11 @@ function computeLayoutTreePositions(appDir: string, layouts: string[]): number[]
  * Discover all layout files from root to the given directory.
  * Each level of the directory tree may have a layout.tsx.
  */
-function discoverLayouts(segments: string[], appDir: string, matcher: ValidFileMatcher): string[] {
+function discoverLayouts(
+  segments: string[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): string[] {
   const layouts: string[] = [];
 
   // Check root layout
@@ -836,7 +872,9 @@ function scanForInterceptingPages(
 /**
  * Match a directory name against interception convention prefixes.
  */
-function matchInterceptConvention(name: string): { prefix: string; convention: string } | null {
+function matchInterceptConvention(
+  name: string,
+): { prefix: string; convention: string } | null {
   for (const pattern of INTERCEPT_PATTERNS) {
     if (name.startsWith(pattern.prefix)) {
       return pattern;
@@ -965,7 +1003,10 @@ function computeInterceptTarget(
   }
 
   // Add the intercept segment and any nested path segments
-  const nestedParts = path.relative(interceptRoot, currentDir).split(path.sep).filter(Boolean);
+  const nestedParts = path
+    .relative(interceptRoot, currentDir)
+    .split(path.sep)
+    .filter(Boolean);
   const allSegments = [...baseParts, interceptSegment, ...nestedParts];
 
   const convertedTarget = convertSegmentsToRouteParts(allSegments);

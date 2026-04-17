@@ -112,7 +112,9 @@ test.describe("App Router Client-side Navigation", () => {
     await page.click('a[href="/dashboard"]');
     await expect(page.locator("h1")).toHaveText("Dashboard");
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
+      "Dashboard Nav",
+    );
   });
 
   test("scroll-to-top happens after new content renders", async ({ page }) => {

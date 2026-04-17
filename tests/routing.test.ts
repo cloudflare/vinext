@@ -17,9 +17,13 @@ import {
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
-const EMPTY_ROUTE = "export async function GET() { return Response.json({ ok: true }); }\n";
+const EMPTY_ROUTE =
+  "export async function GET() { return Response.json({ ok: true }); }\n";
 
-async function withTempDir<T>(prefix: string, run: (tmpDir: string) => Promise<T>): Promise<T> {
+async function withTempDir<T>(
+  prefix: string,
+  run: (tmpDir: string) => Promise<T>,
+): Promise<T> {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
   try {
     return await run(tmpDir);
@@ -83,7 +87,9 @@ describe("pagesRouter - route discovery", () => {
     const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
     // All static routes should come before dynamic routes
-    const lastStaticIndex = routes.findIndex((r) => r === staticRoutes[staticRoutes.length - 1]);
+    const lastStaticIndex = routes.findIndex(
+      (r) => r === staticRoutes[staticRoutes.length - 1],
+    );
     const firstDynamicIndex = routes.findIndex((r) => r === dynamicRoutes[0]);
 
     if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
@@ -116,7 +122,10 @@ describe("pagesRouter - route discovery", () => {
     await withTempDir("vinext-pages-nonterminal-optional-catchall-", async (tmpDir) => {
       const pagesDir = path.join(tmpDir, "pages");
       await mkdir(path.join(pagesDir, "[[...slug]]", "edit"), { recursive: true });
-      await writeFile(path.join(pagesDir, "[[...slug]]", "edit", "index.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(pagesDir, "[[...slug]]", "edit", "index.tsx"),
+        EMPTY_PAGE,
+      );
 
       const routes = await pagesRouter(pagesDir);
 
@@ -163,11 +172,15 @@ describe("matchRoute - URL matching", () => {
       params: [],
     } as Route;
 
-    expect(matchRoute("/a%2Fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
+    expect(matchRoute("/a%2Fb", [encodedRoute, nestedRoute])?.route.pattern).toBe(
+      "/a%2Fb",
+    );
     expect(matchRoute("/a/b", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a/b");
     // Lowercase %2f should also match: normalizePathnameForRouteMatch decodes
     // then re-encodes via encodeURIComponent, which always produces uppercase.
-    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
+    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])?.route.pattern).toBe(
+      "/a%2Fb",
+    );
   });
 
   it("returns null for unmatched routes", async () => {
@@ -376,23 +389,32 @@ describe("appRouter - route discovery", () => {
   });
 
   it("rejects non-terminal optional catch-all route handlers during discovery", async () => {
-    await withTempDir("vinext-app-nonterminal-optional-catchall-route-", async (tmpDir) => {
-      const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "[[...slug]]", "edit"), { recursive: true });
-      await writeFile(path.join(appDir, "[[...slug]]", "edit", "route.ts"), EMPTY_ROUTE);
+    await withTempDir(
+      "vinext-app-nonterminal-optional-catchall-route-",
+      async (tmpDir) => {
+        const appDir = path.join(tmpDir, "app");
+        await mkdir(path.join(appDir, "[[...slug]]", "edit"), { recursive: true });
+        await writeFile(
+          path.join(appDir, "[[...slug]]", "edit", "route.ts"),
+          EMPTY_ROUTE,
+        );
 
-      invalidateAppRouteCache();
-      const routes = await appRouter(appDir);
+        invalidateAppRouteCache();
+        const routes = await appRouter(appDir);
 
-      expect(routes).toEqual([]);
-    });
+        expect(routes).toEqual([]);
+      },
+    );
   });
 
   it("rejects non-terminal catch-all routes even when the suffix is behind a route group", async () => {
     await withTempDir("vinext-app-nonterminal-catchall-group-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
       await mkdir(path.join(appDir, "[...slug]", "(admin)", "edit"), { recursive: true });
-      await writeFile(path.join(appDir, "[...slug]", "(admin)", "edit", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "[...slug]", "(admin)", "edit", "page.tsx"),
+        EMPTY_PAGE,
+      );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
@@ -418,7 +440,10 @@ describe("appRouter - route discovery", () => {
     await withTempDir("vinext-app-terminal-optional-catchall-group-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
       await mkdir(path.join(appDir, "[[...slug]]", "(admin)"), { recursive: true });
-      await writeFile(path.join(appDir, "[[...slug]]", "(admin)", "route.ts"), EMPTY_ROUTE);
+      await writeFile(
+        path.join(appDir, "[[...slug]]", "(admin)", "route.ts"),
+        EMPTY_ROUTE,
+      );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
@@ -435,7 +460,10 @@ describe("appRouter - route discovery", () => {
       });
       await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "dashboard", "default.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "dashboard", "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "dashboard", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
       await writeFile(
         path.join(appDir, "dashboard", "@modal", "[...slug]", "edit", "page.tsx"),
         EMPTY_PAGE,
@@ -451,26 +479,32 @@ describe("appRouter - route discovery", () => {
   });
 
   it("rejects non-terminal optional catch-all in synthetic @slot subroutes", async () => {
-    await withTempDir("vinext-app-slot-nonterminal-optional-catchall-", async (tmpDir) => {
-      const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "dashboard", "@modal", "[[...slug]]", "edit"), {
-        recursive: true,
-      });
-      await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "dashboard", "default.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "dashboard", "@modal", "default.tsx"), EMPTY_PAGE);
-      await writeFile(
-        path.join(appDir, "dashboard", "@modal", "[[...slug]]", "edit", "page.tsx"),
-        EMPTY_PAGE,
-      );
+    await withTempDir(
+      "vinext-app-slot-nonterminal-optional-catchall-",
+      async (tmpDir) => {
+        const appDir = path.join(tmpDir, "app");
+        await mkdir(path.join(appDir, "dashboard", "@modal", "[[...slug]]", "edit"), {
+          recursive: true,
+        });
+        await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
+        await writeFile(path.join(appDir, "dashboard", "default.tsx"), EMPTY_PAGE);
+        await writeFile(
+          path.join(appDir, "dashboard", "@modal", "default.tsx"),
+          EMPTY_PAGE,
+        );
+        await writeFile(
+          path.join(appDir, "dashboard", "@modal", "[[...slug]]", "edit", "page.tsx"),
+          EMPTY_PAGE,
+        );
 
-      invalidateAppRouteCache();
-      const routes = await appRouter(appDir);
-      const patterns = routes.map((route) => route.pattern);
+        invalidateAppRouteCache();
+        const routes = await appRouter(appDir);
+        const patterns = routes.map((route) => route.pattern);
 
-      expect(patterns).toContain("/dashboard");
-      expect(patterns).not.toContain("/dashboard/:slug*/edit");
-    });
+        expect(patterns).toContain("/dashboard");
+        expect(patterns).not.toContain("/dashboard/:slug*/edit");
+      },
+    );
   });
 
   it("allows terminal synthetic @slot catch-all when only route groups follow", async () => {
@@ -481,7 +515,10 @@ describe("appRouter - route discovery", () => {
       });
       await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "dashboard", "default.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "dashboard", "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "dashboard", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
       await writeFile(
         path.join(appDir, "dashboard", "@modal", "[...slug]", "(admin)", "page.tsx"),
         EMPTY_PAGE,
@@ -505,7 +542,10 @@ describe("appRouter - route discovery", () => {
       await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
       await writeFile(path.join(appDir, "inbox", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "inbox", "@modal", "default.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
+        EMPTY_PAGE,
+      );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
@@ -523,7 +563,10 @@ describe("appRouter - route discovery", () => {
       await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
       await writeFile(path.join(appDir, "inbox", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
+        EMPTY_PAGE,
+      );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
@@ -538,14 +581,25 @@ describe("appRouter - route discovery", () => {
   it("rejects non-terminal catch-all intercept targets", async () => {
     await withTempDir("vinext-app-intercept-nonterminal-catchall-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "edit"), {
-        recursive: true,
-      });
+      await mkdir(
+        path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "edit"),
+        {
+          recursive: true,
+        },
+      );
       await mkdir(path.join(appDir, "photos", "[id]"), { recursive: true });
       await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "photos", "[id]", "page.tsx"), EMPTY_PAGE);
       await writeFile(
-        path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "edit", "page.tsx"),
+        path.join(
+          appDir,
+          "feed",
+          "@modal",
+          "(...)photos",
+          "[...slug]",
+          "edit",
+          "page.tsx",
+        ),
         EMPTY_PAGE,
       );
 
@@ -560,40 +614,65 @@ describe("appRouter - route discovery", () => {
   });
 
   it("rejects non-terminal optional catch-all intercept targets", async () => {
-    await withTempDir("vinext-app-intercept-nonterminal-optional-catchall-", async (tmpDir) => {
-      const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "feed", "@modal", "(...)photos", "[[...slug]]", "edit"), {
-        recursive: true,
-      });
-      await mkdir(path.join(appDir, "photos", "[id]"), { recursive: true });
-      await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "photos", "[id]", "page.tsx"), EMPTY_PAGE);
-      await writeFile(
-        path.join(appDir, "feed", "@modal", "(...)photos", "[[...slug]]", "edit", "page.tsx"),
-        EMPTY_PAGE,
-      );
+    await withTempDir(
+      "vinext-app-intercept-nonterminal-optional-catchall-",
+      async (tmpDir) => {
+        const appDir = path.join(tmpDir, "app");
+        await mkdir(
+          path.join(appDir, "feed", "@modal", "(...)photos", "[[...slug]]", "edit"),
+          {
+            recursive: true,
+          },
+        );
+        await mkdir(path.join(appDir, "photos", "[id]"), { recursive: true });
+        await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
+        await writeFile(path.join(appDir, "photos", "[id]", "page.tsx"), EMPTY_PAGE);
+        await writeFile(
+          path.join(
+            appDir,
+            "feed",
+            "@modal",
+            "(...)photos",
+            "[[...slug]]",
+            "edit",
+            "page.tsx",
+          ),
+          EMPTY_PAGE,
+        );
 
-      invalidateAppRouteCache();
-      const routes = await appRouter(appDir);
-      const feedRoute = routes.find((route) => route.pattern === "/feed");
+        invalidateAppRouteCache();
+        const routes = await appRouter(appDir);
+        const feedRoute = routes.find((route) => route.pattern === "/feed");
 
-      expect(feedRoute).toBeDefined();
-      const modalSlot = feedRoute!.parallelSlots.find((slot) => slot.name === "modal");
-      expect(modalSlot).toBeUndefined();
-    });
+        expect(feedRoute).toBeDefined();
+        const modalSlot = feedRoute!.parallelSlots.find((slot) => slot.name === "modal");
+        expect(modalSlot).toBeUndefined();
+      },
+    );
   });
 
   it("allows terminal catch-all intercept targets when only route groups follow", async () => {
     await withTempDir("vinext-app-intercept-terminal-catchall-group-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "(admin)"), {
-        recursive: true,
-      });
+      await mkdir(
+        path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "(admin)"),
+        {
+          recursive: true,
+        },
+      );
       await mkdir(path.join(appDir, "photos", "[id]"), { recursive: true });
       await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "photos", "[id]", "page.tsx"), EMPTY_PAGE);
       await writeFile(
-        path.join(appDir, "feed", "@modal", "(...)photos", "[...slug]", "(admin)", "page.tsx"),
+        path.join(
+          appDir,
+          "feed",
+          "@modal",
+          "(...)photos",
+          "[...slug]",
+          "(admin)",
+          "page.tsx",
+        ),
         EMPTY_PAGE,
       );
 
@@ -649,12 +728,26 @@ describe("appRouter - route discovery", () => {
     // Target: /shop/cart
     await withTempDir("vinext-app-intercept-single-group-climb-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "shop", "(featured)", "products", "@modal", "(..)cart"), {
-        recursive: true,
-      });
-      await writeFile(path.join(appDir, "shop", "(featured)", "products", "page.tsx"), EMPTY_PAGE);
+      await mkdir(
+        path.join(appDir, "shop", "(featured)", "products", "@modal", "(..)cart"),
+        {
+          recursive: true,
+        },
+      );
       await writeFile(
-        path.join(appDir, "shop", "(featured)", "products", "@modal", "(..)cart", "page.tsx"),
+        path.join(appDir, "shop", "(featured)", "products", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(
+          appDir,
+          "shop",
+          "(featured)",
+          "products",
+          "@modal",
+          "(..)cart",
+          "page.tsx",
+        ),
         EMPTY_PAGE,
       );
       await mkdir(path.join(appDir, "shop", "cart"), { recursive: true });
@@ -677,12 +770,27 @@ describe("appRouter - route discovery", () => {
     // Visible path: /a/b → (..)(..) climbs 2 visible segments → root → /target
     await withTempDir("vinext-app-intercept-multi-group-climb-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "a", "(g1)", "(g2)", "b", "@modal", "(..)(..)target"), {
-        recursive: true,
-      });
-      await writeFile(path.join(appDir, "a", "(g1)", "(g2)", "b", "page.tsx"), EMPTY_PAGE);
+      await mkdir(
+        path.join(appDir, "a", "(g1)", "(g2)", "b", "@modal", "(..)(..)target"),
+        {
+          recursive: true,
+        },
+      );
       await writeFile(
-        path.join(appDir, "a", "(g1)", "(g2)", "b", "@modal", "(..)(..)target", "page.tsx"),
+        path.join(appDir, "a", "(g1)", "(g2)", "b", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(
+          appDir,
+          "a",
+          "(g1)",
+          "(g2)",
+          "b",
+          "@modal",
+          "(..)(..)target",
+          "page.tsx",
+        ),
         EMPTY_PAGE,
       );
       await mkdir(path.join(appDir, "target"), { recursive: true });
@@ -703,13 +811,18 @@ describe("appRouter - route discovery", () => {
   it("rejects sibling intercept targets that differ only by param name", async () => {
     await withTempDir("vinext-app-intercept-dynamic-conflict-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
-      await mkdir(path.join(appDir, "feed", "@modal", "(.)photos", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "feed", "@modal", "(.)photos", "[id]"), {
+        recursive: true,
+      });
       await mkdir(path.join(appDir, "feed", "@modal", "(.)photos", "[slug]"), {
         recursive: true,
       });
       await mkdir(path.join(appDir, "feed", "photos", "[id]"), { recursive: true });
       await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
-      await writeFile(path.join(appDir, "feed", "photos", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "feed", "photos", "[id]", "page.tsx"),
+        EMPTY_PAGE,
+      );
       await writeFile(
         path.join(appDir, "feed", "@modal", "(.)photos", "[id]", "page.tsx"),
         EMPTY_PAGE,
@@ -927,7 +1040,9 @@ describe("matchAppRoute - URL matching", () => {
     expect(teamSlot!.defaultPath).not.toBeNull();
     expect(teamSlot!.defaultPath).toContain("@team");
 
-    const analyticsSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "analytics");
+    const analyticsSlot = dashboardRoute!.parallelSlots.find(
+      (s) => s.name === "analytics",
+    );
     expect(analyticsSlot).toBeDefined();
     expect(analyticsSlot!.pagePath).not.toBeNull();
     expect(analyticsSlot!.defaultPath).not.toBeNull();
@@ -947,7 +1062,9 @@ describe("matchAppRoute - URL matching", () => {
     expect(teamSlot!.layoutPath).toContain("layout.tsx");
 
     // @analytics does NOT have a layout.tsx
-    const analyticsSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "analytics");
+    const analyticsSlot = dashboardRoute!.parallelSlots.find(
+      (s) => s.name === "analytics",
+    );
     expect(analyticsSlot).toBeDefined();
     expect(analyticsSlot!.layoutPath).toBeNull();
   });
@@ -1050,7 +1167,9 @@ describe("matchAppRoute - URL matching", () => {
     expect(teamSlot!.defaultPath).not.toBeNull();
     expect(teamSlot!.defaultPath).toContain("@team");
 
-    const analyticsSlot = settingsRoute!.parallelSlots.find((s) => s.name === "analytics");
+    const analyticsSlot = settingsRoute!.parallelSlots.find(
+      (s) => s.name === "analytics",
+    );
     expect(analyticsSlot).toBeDefined();
     expect(analyticsSlot!.pagePath).toBeNull();
     expect(analyticsSlot!.defaultPath).not.toBeNull();
@@ -1080,9 +1199,12 @@ describe("matchAppRoute - URL matching", () => {
     await withTempDir("vinext-app-intercept-inherited-slot-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
 
-      await mkdir(path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]"), {
-        recursive: true,
-      });
+      await mkdir(
+        path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]"),
+        {
+          recursive: true,
+        },
+      );
       await mkdir(path.join(appDir, "intercepting-routes", "photo", "[id]"), {
         recursive: true,
       });
@@ -1100,14 +1222,23 @@ describe("matchAppRoute - URL matching", () => {
         EMPTY_PAGE,
       );
       await writeFile(
-        path.join(appDir, "intercepting-routes", "@modal", "(.)photo", "[id]", "page.tsx"),
+        path.join(
+          appDir,
+          "intercepting-routes",
+          "@modal",
+          "(.)photo",
+          "[id]",
+          "page.tsx",
+        ),
         EMPTY_PAGE,
       );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
 
-      const galleryRoute = routes.find((route) => route.pattern === "/intercepting-routes");
+      const galleryRoute = routes.find(
+        (route) => route.pattern === "/intercepting-routes",
+      );
       const detailRoute = routes.find(
         (route) => route.pattern === "/intercepting-routes/photo/:id",
       );
@@ -1115,8 +1246,12 @@ describe("matchAppRoute - URL matching", () => {
       expect(galleryRoute).toBeDefined();
       expect(detailRoute).toBeDefined();
 
-      const galleryModal = galleryRoute!.parallelSlots.find((slot) => slot.name === "modal");
-      const detailModal = detailRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      const galleryModal = galleryRoute!.parallelSlots.find(
+        (slot) => slot.name === "modal",
+      );
+      const detailModal = detailRoute!.parallelSlots.find(
+        (slot) => slot.name === "modal",
+      );
 
       expect(galleryModal?.interceptingRoutes[0]?.targetPattern).toBe(
         "/intercepting-routes/photo/:id",
@@ -1299,7 +1434,10 @@ describe("matchAppRoute - URL matching", () => {
 
       // Dashboard-level @sidebar (closer ancestor to /dashboard/settings)
       await mkdir(path.join(appDir, "dashboard", "@sidebar"), { recursive: true });
-      await writeFile(path.join(appDir, "dashboard", "@sidebar", "default.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "dashboard", "@sidebar", "default.tsx"),
+        EMPTY_PAGE,
+      );
       await writeFile(path.join(appDir, "dashboard", "layout.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
 
@@ -1312,7 +1450,9 @@ describe("matchAppRoute - URL matching", () => {
       const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
       expect(settingsRoute).toBeDefined();
 
-      const sidebarSlots = settingsRoute!.parallelSlots.filter((s) => s.name === "sidebar");
+      const sidebarSlots = settingsRoute!.parallelSlots.filter(
+        (s) => s.name === "sidebar",
+      );
       expect(sidebarSlots).toHaveLength(2);
 
       const sidebarByOwner = new Map(
@@ -1322,7 +1462,10 @@ describe("matchAppRoute - URL matching", () => {
         ]),
       );
 
-      expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);
+      expect([...sidebarByOwner.keys()].sort()).toEqual([
+        "@sidebar",
+        "dashboard/@sidebar",
+      ]);
       expect(sidebarByOwner.get("@sidebar")!.layoutIndex).toBe(0);
       expect(sidebarByOwner.get("dashboard/@sidebar")!.layoutIndex).toBe(1);
     });

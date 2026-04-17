@@ -81,7 +81,9 @@ test.describe("Pages Router client hydration on Cloudflare Workers", () => {
     expect(nextData.props.pageProps.message).toBe("Server-Side Rendered on Workers");
   });
 
-  test("GSSP page with timestamp hydrates without errors (correct pattern)", async ({ page }) => {
+  test("GSSP page with timestamp hydrates without errors (correct pattern)", async ({
+    page,
+  }) => {
     // This test verifies the CORRECT way to use timestamps in Pages Router:
     // Generate them in getServerSideProps and pass as props.
     // The timestamp is serialized in __NEXT_DATA__ and reused during hydration,

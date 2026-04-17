@@ -130,37 +130,53 @@ describe("emitStandaloneOutput", () => {
     expect(result.copiedPackages).not.toContain("typescript");
 
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/server.js"))).toBe(true);
-    expect(fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8")).toContain(
-      "startProdServer",
-    );
+    expect(
+      fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8"),
+    ).toContain("startProdServer");
     const standalonePkg = JSON.parse(
       fs.readFileSync(path.join(appRoot, "dist/standalone/package.json"), "utf-8"),
     ) as { type: string };
     expect(standalonePkg.type).toBe("module");
 
-    expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/assets/main.js"))).toBe(
-      true,
-    );
-    expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/server/entry.js"))).toBe(true);
-    expect(fs.existsSync(path.join(appRoot, "dist/standalone/public/robots.txt"))).toBe(true);
-
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/react/package.json")),
+      fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/assets/main.js")),
     ).toBe(true);
     expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/dist/server/entry.js")),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(appRoot, "dist/standalone/public/robots.txt"))).toBe(
+      true,
+    );
+
+    expect(
       fs.existsSync(
-        path.join(appRoot, "dist/standalone/node_modules/react-server-dom-webpack/package.json"),
+        path.join(appRoot, "dist/standalone/node_modules/react/package.json"),
       ),
     ).toBe(true);
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json")),
-    ).toBe(false);
+      fs.existsSync(
+        path.join(
+          appRoot,
+          "dist/standalone/node_modules/react-server-dom-webpack/package.json",
+        ),
+      ),
+    ).toBe(true);
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/typescript/package.json")),
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json"),
+      ),
     ).toBe(false);
     expect(
       fs.existsSync(
-        path.join(appRoot, "dist/standalone/node_modules/vinext/dist/server/prod-server.js"),
+        path.join(appRoot, "dist/standalone/node_modules/typescript/package.json"),
+      ),
+    ).toBe(false);
+    expect(
+      fs.existsSync(
+        path.join(
+          appRoot,
+          "dist/standalone/node_modules/vinext/dist/server/prod-server.js",
+        ),
       ),
     ).toBe(true);
   });
@@ -200,10 +216,14 @@ describe("emitStandaloneOutput", () => {
     // Transitive dep of dep-a must also be present.
     expect(result.copiedPackages).toContain("dep-b");
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json")),
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/dep-a/package.json"),
+      ),
     ).toBe(true);
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-b/package.json")),
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/dep-b/package.json"),
+      ),
     ).toBe(true);
   });
 
@@ -273,7 +293,11 @@ describe("emitStandaloneOutput", () => {
     );
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "import 'dep-hidden';\n");
-    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-hidden"]));
+    writeFile(
+      appRoot,
+      "dist/server/vinext-externals.json",
+      JSON.stringify(["dep-hidden"]),
+    );
 
     writePackage(appRoot, "dep-hidden", {}, { exports: { ".": "./index.js" } });
 
@@ -297,7 +321,9 @@ describe("emitStandaloneOutput", () => {
 
     expect(result.copiedPackages).toContain("dep-hidden");
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-hidden/package.json")),
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/dep-hidden/package.json"),
+      ),
     ).toBe(true);
   });
 
@@ -323,7 +349,11 @@ describe("emitStandaloneOutput", () => {
     writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "console.log('server');\n");
     // missing-required is in the manifest but not installed in node_modules.
-    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["missing-required"]));
+    writeFile(
+      appRoot,
+      "dist/server/vinext-externals.json",
+      JSON.stringify(["missing-required"]),
+    );
 
     const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
     writeFile(
@@ -429,7 +459,12 @@ describe("emitStandaloneOutput", () => {
       "dist/server/prod-server.js",
       "export async function startProdServer() {}\n",
     );
-    writePackage(fakeVinextRoot, "rsc-html-stream", {}, { exports: { "./server": "./server.js" } });
+    writePackage(
+      fakeVinextRoot,
+      "rsc-html-stream",
+      {},
+      { exports: { "./server": "./server.js" } },
+    );
     writeFile(fakeVinextRoot, "node_modules/rsc-html-stream/server.js", "export {};\n");
 
     const result = emitStandaloneOutput({
@@ -501,10 +536,14 @@ describe("emitStandaloneOutput", () => {
     });
 
     expect(
-      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/dep-link/package.json")),
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/dep-link/package.json"),
+      ),
     ).toBe(true);
     expect(
-      fs.lstatSync(path.join(appRoot, "dist/standalone/node_modules/dep-link")).isSymbolicLink(),
+      fs
+        .lstatSync(path.join(appRoot, "dist/standalone/node_modules/dep-link"))
+        .isSymbolicLink(),
     ).toBe(false);
   });
 });

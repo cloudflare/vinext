@@ -28,7 +28,8 @@ export type HeadState = {
 const _ALS_KEY = Symbol.for("vinext.head.als");
 const _FALLBACK_KEY = Symbol.for("vinext.head.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<HeadState>()) as AsyncLocalStorage<HeadState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<HeadState>()) as AsyncLocalStorage<HeadState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrHeadChildren: [],

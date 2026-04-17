@@ -24,7 +24,11 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
-import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
+import {
+  StaticFileCache,
+  CONTENT_TYPES,
+  etagFromFilenameHash,
+} from "./static-file-cache.js";
 import {
   matchRedirect,
   matchRewrite,
@@ -107,7 +111,9 @@ const COMPRESS_THRESHOLD = 1024;
  */
 const HAS_ZSTD = typeof zlib.createZstdCompress === "function";
 
-function negotiateEncoding(req: IncomingMessage): "zstd" | "br" | "gzip" | "deflate" | null {
+function negotiateEncoding(
+  req: IncomingMessage,
+): "zstd" | "br" | "gzip" | "deflate" | null {
   const accept = req.headers["accept-encoding"];
   if (!accept || typeof accept !== "string") return null;
   const lower = accept.toLowerCase();
@@ -194,7 +200,10 @@ function toWebHeaders(headersRecord: Record<string, string | string[]>): Headers
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
-function hasHeader(headersRecord: Record<string, string | string[]>, name: string): boolean {
+function hasHeader(
+  headersRecord: Record<string, string | string[]>,
+  name: string,
+): boolean {
   const target = name.toLowerCase();
   return Object.keys(headersRecord).some((key) => key.toLowerCase() === target);
 }
@@ -212,7 +221,10 @@ function omitHeadersCaseInsensitive(
   return filtered;
 }
 
-function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string): boolean {
+function matchesIfNoneMatchHeader(
+  ifNoneMatch: string | undefined,
+  etag: string,
+): boolean {
   if (!ifNoneMatch) return false;
   if (ifNoneMatch === "*") return true;
   return ifNoneMatch
@@ -248,7 +260,10 @@ type ResponseWithVinextStreamingMetadata = Response & {
 };
 
 function isVinextStreamedHtmlResponse(response: Response): boolean {
-  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
+  return (
+    (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse ===
+    true
+  );
 }
 
 /**
@@ -475,7 +490,10 @@ async function tryServeStatic(
         if (err) {
           // Headers already sent — can't write a 500. Destroy the connection
           // so the client sees a reset instead of a truncated response.
-          console.warn(`[vinext] Static file stream error for ${variant.path}:`, err.message);
+          console.warn(
+            `[vinext] Static file stream error for ${variant.path}:`,
+            err.message,
+          );
           res.destroy(err);
         }
       });
@@ -493,7 +511,10 @@ async function tryServeStatic(
   }
   if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") return false;
   const staticFile = path.resolve(clientDir, "." + decodedPathname);
-  if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
+  if (
+    !staticFile.startsWith(resolvedClient + path.sep) &&
+    staticFile !== resolvedClient
+  ) {
     return false;
   }
 
@@ -503,7 +524,9 @@ async function tryServeStatic(
   const ext = path.extname(resolved.path);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   const isHashed = pathname.startsWith("/assets/");
-  const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const cacheControl = isHashed
+    ? "public, max-age=31536000, immutable"
+    : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
   // ext and the hash extraction both come from the same file — they can diverge
@@ -564,7 +587,10 @@ async function tryServeStatic(
         if (err) {
           // Headers already sent — can't write a 500. Destroy the connection
           // so the client sees a reset instead of a truncated response.
-          console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+          console.warn(
+            `[vinext] Static file stream error for ${resolved.path}:`,
+            err.message,
+          );
           res.destroy(err);
         }
       });
@@ -584,7 +610,10 @@ async function tryServeStatic(
     if (err) {
       // Headers already sent — can't write a 500. Destroy the connection
       // so the client sees a reset instead of a truncated response.
-      console.warn(`[vinext] Static file stream error for ${resolved.path}:`, err.message);
+      console.warn(
+        `[vinext] Static file stream error for ${resolved.path}:`,
+        err.message,
+      );
       res.destroy(err);
     }
   });
@@ -607,16 +636,20 @@ async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | nul
 
   const htmlFallback = staticFile + ".html";
   const htmlStat = await statIfFile(htmlFallback);
-  if (htmlStat) return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
+  if (htmlStat)
+    return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
 
   const indexFallback = path.join(staticFile, "index.html");
   const indexStat = await statIfFile(indexFallback);
-  if (indexStat) return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
+  if (indexStat)
+    return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
 
   return null;
 }
 
-async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+async function statIfFile(
+  filePath: string,
+): Promise<{ size: number; mtimeMs: number } | null> {
   try {
     const stat = await fsp.stat(filePath);
     return stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : null;
@@ -739,7 +772,9 @@ async function sendWebResponse(
   webResponse.headers.forEach((value, key) => {
     const existing = nodeHeaders[key];
     if (existing !== undefined) {
-      nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+      nodeHeaders[key] = Array.isArray(existing)
+        ? [...existing, value]
+        : [existing, value];
     } else {
       nodeHeaders[key] = value;
     }
@@ -788,7 +823,9 @@ async function sendWebResponse(
 
   // Convert Web ReadableStream to Node.js Readable and pipe to response.
   // Readable.fromWeb() is available since Node.js 17.
-  const nodeStream = Readable.fromWeb(webResponse.body as import("stream/web").ReadableStream);
+  const nodeStream = Readable.fromWeb(
+    webResponse.body as import("stream/web").ReadableStream,
+  );
 
   if (shouldCompress) {
     // Use streaming flush modes so progressive HTML remains decodable before the
@@ -852,7 +889,11 @@ type AppRouterServerOptions = {
 };
 
 type WorkerAppRouterEntry = {
-  fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
+  fetch(
+    request: Request,
+    env?: unknown,
+    ctx?: ExecutionContextLike,
+  ): Promise<Response> | Response;
 };
 
 function createNodeExecutionContext(): ExecutionContextLike {
@@ -867,7 +908,9 @@ function createNodeExecutionContext(): ExecutionContextLike {
   };
 }
 
-function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<Response> {
+function resolveAppRouterHandler(
+  entry: unknown,
+): (request: Request) => Promise<Response> {
   if (typeof entry === "function") {
     return (request) => Promise.resolve(entry(request));
   }
@@ -876,7 +919,9 @@ function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<
     const workerEntry = entry as WorkerAppRouterEntry;
     if (typeof workerEntry.fetch === "function") {
       return (request) =>
-        Promise.resolve(workerEntry.fetch(request, undefined, createNodeExecutionContext()));
+        Promise.resolve(
+          workerEntry.fetch(request, undefined, createNodeExecutionContext()),
+        );
     }
   }
 
@@ -1146,8 +1191,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Cache-bust with mtime so that rebuilds to the same output path always load
   // the freshly built module rather than a stale cached copy.
   const serverMtime = fs.statSync(serverEntryPath).mtimeMs;
-  const serverEntry = await import(`${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`);
-  const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
+  const serverEntry = await import(
+    `${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`
+  );
+  const {
+    renderPage,
+    handleApiRoute: handleApi,
+    runMiddleware,
+    vinextConfig,
+  } = serverEntry;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -1290,7 +1342,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     // ── Image optimization passthrough ──────────────────────────────
-    if (pathname === IMAGE_OPTIMIZATION_PATH || staticLookupPath === IMAGE_OPTIMIZATION_PATH) {
+    if (
+      pathname === IMAGE_OPTIMIZATION_PATH ||
+      staticLookupPath === IMAGE_OPTIMIZATION_PATH
+    ) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
       const params = parseImageParams(parsedUrl, allowedImageWidths);
       if (!params) {
@@ -1312,7 +1367,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition":
-          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
+          pagesImageConfig?.contentDispositionType === "attachment"
+            ? "attachment"
+            : "inline",
       };
       if (
         await tryServeStatic(
@@ -1363,7 +1420,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const rawProtocol = trustProxy
         ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
         : undefined;
-      const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
+      const protocol =
+        rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
@@ -1455,7 +1513,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             const setCookies = result.response.headers.getSetCookie?.() ?? [];
             if (setCookies.length > 0) respHeaders["set-cookie"] = setCookies;
             if (result.response.statusText) {
-              res.writeHead(result.response.status, result.response.statusText, respHeaders);
+              res.writeHead(
+                result.response.status,
+                result.response.statusText,
+                respHeaders,
+              );
             } else {
               res.writeHead(result.response.status, respHeaders);
             }
@@ -1564,7 +1626,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
@@ -1600,7 +1666,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // API routes may return arbitrary data (JSON, binary, etc.), so
         // default to application/octet-stream rather than text/html when
         // the handler doesn't set an explicit Content-Type.
-        const ct = mergedResponse.headers.get("content-type") ?? "application/octet-stream";
+        const ct =
+          mergedResponse.headers.get("content-type") ?? "application/octet-stream";
         const responseHeaders = mergeResponseHeaders({}, mergedResponse);
         const finalStatusText = mergedResponse.statusText || undefined;
 
@@ -1619,7 +1686,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 9. Apply afterFiles rewrites from next.config.js ──────────
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.afterFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
@@ -1652,7 +1723,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
-              const proxyResponse = await proxyExternalRequest(webRequest, fallbackRewrite);
+              const proxyResponse = await proxyExternalRequest(
+                webRequest,
+                fallbackRewrite,
+              );
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
@@ -1675,7 +1749,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // Capture the streaming marker before mergeWebResponse rebuilds the Response.
       const shouldStreamPagesResponse = isVinextStreamedHtmlResponse(response);
-      const mergedResponse = mergeWebResponse(middlewareHeaders, response, middlewareRewriteStatus);
+      const mergedResponse = mergeWebResponse(
+        middlewareHeaders,
+        response,
+        middlewareRewriteStatus,
+      );
 
       if (shouldStreamPagesResponse || !mergedResponse.body) {
         await sendWebResponse(mergedResponse, req, res, compress);

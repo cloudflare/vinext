@@ -12,7 +12,11 @@ import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from "./helpers.js";
+import {
+  buildPagesFixture,
+  buildAppFixture,
+  buildCloudflareAppFixture,
+} from "./helpers.js";
 import {
   resolveParentParams,
   type PrerenderRouteResult,
@@ -50,7 +54,8 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(PAGES_FIXTURE, "pages");
     const pageRoutes = await pagesRouter(pagesDir);
@@ -175,7 +180,11 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     expect(apiResults.length).toBeGreaterThan(0);
     // hello API is a known API route
     const hello = findRoute(results, "/api/hello");
-    expect(hello).toMatchObject({ route: "/api/hello", status: "skipped", reason: "api" });
+    expect(hello).toMatchObject({
+      route: "/api/hello",
+      status: "skipped",
+      reason: "api",
+    });
   });
 
   // ── Written files ──────────────────────────────────────────────────────────
@@ -222,7 +231,8 @@ describe("prerenderPages — export mode (pages-basic)", () => {
     const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(PAGES_FIXTURE, "pages");
     const pageRoutes = await pagesRouter(pagesDir);
@@ -246,8 +256,14 @@ describe("prerenderPages — export mode (pages-basic)", () => {
   });
 
   it("renders static and ISR routes (ISR treated as static)", () => {
-    expect(findRoute(results, "/")).toMatchObject({ status: "rendered", revalidate: false });
-    expect(findRoute(results, "/about")).toMatchObject({ status: "rendered", revalidate: false });
+    expect(findRoute(results, "/")).toMatchObject({
+      status: "rendered",
+      revalidate: false,
+    });
+    expect(findRoute(results, "/about")).toMatchObject({
+      status: "rendered",
+      revalidate: false,
+    });
     // ISR route in export mode: revalidate ignored → false
     expect(findRoute(results, "/isr-test")).toMatchObject({
       status: "rendered",
@@ -276,7 +292,8 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
     const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
     const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE, "app");
     const routes = await appRouter(appDir);
@@ -300,7 +317,11 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   it("renders force-static page", () => {
     const r = findRoute(results, "/static-test");
-    expect(r).toMatchObject({ route: "/static-test", status: "rendered", revalidate: false });
+    expect(r).toMatchObject({
+      route: "/static-test",
+      status: "rendered",
+      revalidate: false,
+    });
     if (r?.status === "rendered") {
       expect(r.outputFiles).toContain("static-test.html");
       expect(r.outputFiles).toContain("static-test.rsc");
@@ -325,14 +346,22 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   it("renders ISR page with revalidate=60", () => {
     const r = findRoute(results, "/revalidate-test");
-    expect(r).toMatchObject({ route: "/revalidate-test", status: "rendered", revalidate: 60 });
+    expect(r).toMatchObject({
+      route: "/revalidate-test",
+      status: "rendered",
+      revalidate: 60,
+    });
   });
 
   // ── Dynamic routes — skipped ───────────────────────────────────────────────
 
   it("skips force-dynamic page", () => {
     const r = findRoute(results, "/dynamic-test");
-    expect(r).toMatchObject({ route: "/dynamic-test", status: "skipped", reason: "dynamic" });
+    expect(r).toMatchObject({
+      route: "/dynamic-test",
+      status: "skipped",
+      reason: "dynamic",
+    });
   });
 
   it("skips revalidate=0 page", () => {
@@ -431,7 +460,11 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   it("renders /dashboard speculatively", () => {
     const r = findRoute(results, "/dashboard");
-    expect(r).toMatchObject({ route: "/dashboard", status: "rendered", revalidate: false });
+    expect(r).toMatchObject({
+      route: "/dashboard",
+      status: "rendered",
+      revalidate: false,
+    });
   });
 
   it("skips /headers-test (unknown route that calls headers())", () => {
@@ -494,14 +527,22 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
     // ISR route has correct revalidate
     const isrTest = index.routes.find((r: any) => r.route === "/isr-test");
-    expect(isrTest).toMatchObject({ route: "/isr-test", status: "rendered", revalidate: 1 });
+    expect(isrTest).toMatchObject({
+      route: "/isr-test",
+      status: "rendered",
+      revalidate: 1,
+    });
 
     // outputFiles not in index
     expect(isrTest?.outputFiles).toBeUndefined();
 
     // Skipped route present
     const dynamic = index.routes.find((r: any) => r.route === "/dynamic-test");
-    expect(dynamic).toMatchObject({ route: "/dynamic-test", status: "skipped", reason: "dynamic" });
+    expect(dynamic).toMatchObject({
+      route: "/dynamic-test",
+      status: "skipped",
+      reason: "dynamic",
+    });
   });
 });
 
@@ -523,7 +564,8 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
     const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(APP_FIXTURE, "pages");
     const pageRoutes = await pagesRouter(pagesDir);
@@ -548,7 +590,11 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
 
   it("renders old-school static page from pages/ in app-basic fixture", () => {
     const r = findRoute(results, "/old-school");
-    expect(r).toMatchObject({ route: "/old-school", status: "rendered", revalidate: false });
+    expect(r).toMatchObject({
+      route: "/old-school",
+      status: "rendered",
+      revalidate: false,
+    });
     if (r?.status === "rendered") {
       expect(r.outputFiles).toContain("old-school.html");
     }
@@ -577,7 +623,8 @@ describe("runPrerender — output: 'export' wiring", () => {
   }, 120_000);
 
   it("throws when next.config output: 'export' and SSR routes exist", async () => {
-    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+    const { runPrerender } =
+      await import("../packages/vinext/src/build/run-prerender.js");
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
@@ -588,7 +635,8 @@ describe("runPrerender — output: 'export' wiring", () => {
   });
 
   it("error message names the offending SSR route", async () => {
-    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+    const { runPrerender } =
+      await import("../packages/vinext/src/build/run-prerender.js");
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
@@ -619,7 +667,8 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
     outDir = path.join(root, "dist", "server", "prerendered-routes");
 
-    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+    const { runPrerender } =
+      await import("../packages/vinext/src/build/run-prerender.js");
 
     const result = await runPrerender({ root, rscBundlePath });
     allResults = result?.routes ?? [];
@@ -787,7 +836,10 @@ describe("resolveParentParams", () => {
     const parent = mockRoute("/shop/:category");
     const child = mockRoute("/shop/:category/:item");
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "electronics" }, { category: "clothing" }],
+      "/shop/:category": async () => [
+        { category: "electronics" },
+        { category: "clothing" },
+      ],
     };
     const result = await resolveParentParams(
       child,

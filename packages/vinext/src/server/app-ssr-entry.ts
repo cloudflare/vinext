@@ -21,7 +21,10 @@ import {
   escapeHtmlAttr,
   safeJsonStringify,
 } from "./html.js";
-import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
+import {
+  createRscEmbedTransform,
+  createTickBufferedTransform,
+} from "./app-ssr-stream.js";
 import {
   normalizeAppElements,
   readAppElementsMetadata,
@@ -123,7 +126,10 @@ function renderFontHtml(fontData?: FontData, nonce?: string): string {
   return fontHTML;
 }
 
-function extractModulePreloadHtml(bootstrapScriptContent?: string, nonce?: string): string {
+function extractModulePreloadHtml(
+  bootstrapScriptContent?: string,
+  nonce?: string,
+): string {
   if (!bootstrapScriptContent) return "";
 
   const match = bootstrapScriptContent.match(/import\("([^"]+)"\)/);
@@ -206,7 +212,9 @@ export async function handleSsr(
         : root;
       const ssrRoot = withScriptNonce(ssrTree, options?.scriptNonce);
 
-      const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent("index");
+      const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent(
+        "index",
+      );
 
       const htmlStream = await renderToReadableStream(ssrRoot, {
         bootstrapScriptContent,

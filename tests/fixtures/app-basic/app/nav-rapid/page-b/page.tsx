@@ -13,7 +13,11 @@ export default function PageB() {
           Go to C
         </Link>
         {" | "}
-        <Link href="/nav-rapid/page-b?filter=test" prefetch={false} data-testid="link-add-filter">
+        <Link
+          href="/nav-rapid/page-b?filter=test"
+          prefetch={false}
+          data-testid="link-add-filter"
+        >
           Add Filter
         </Link>
       </nav>

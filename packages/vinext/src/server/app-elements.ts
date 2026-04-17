@@ -42,7 +42,9 @@ export type AppElementsMetadata = {
   rootLayoutTreePath: string | null;
 };
 
-export function normalizeMountedSlotsHeader(header: string | null | undefined): string | null {
+export function normalizeMountedSlotsHeader(
+  header: string | null | undefined,
+): string | null {
   if (!header) {
     return null;
   }
@@ -57,7 +59,10 @@ export function getMountedSlotIds(elements: AppElements): string[] {
     .filter((key) => {
       const value = elements[key];
       return (
-        key.startsWith("slot:") && value !== null && value !== undefined && value !== UNMATCHED_SLOT
+        key.startsWith("slot:") &&
+        value !== null &&
+        value !== undefined &&
+        value !== UNMATCHED_SLOT
       );
     })
     .sort();
@@ -67,7 +72,10 @@ export function getMountedSlotIdsHeader(elements: AppElements): string | null {
   return normalizeMountedSlotsHeader(getMountedSlotIds(elements).join(" "));
 }
 
-function appendInterceptionContext(identity: string, interceptionContext: string | null): string {
+function appendInterceptionContext(
+  identity: string,
+  interceptionContext: string | null,
+): string {
   return interceptionContext === null
     ? identity
     : `${identity}${APP_INTERCEPTION_SEPARATOR}${interceptionContext}`;
@@ -117,7 +125,9 @@ export function normalizeAppElements(elements: AppWireElements): AppElements {
   const normalized: Record<string, AppElementValue> = {};
   for (const [key, value] of Object.entries(elements)) {
     normalized[key] =
-      key.startsWith("slot:") && value === APP_UNMATCHED_SLOT_WIRE_VALUE ? UNMATCHED_SLOT : value;
+      key.startsWith("slot:") && value === APP_UNMATCHED_SLOT_WIRE_VALUE
+        ? UNMATCHED_SLOT
+        : value;
   }
 
   return normalized;
@@ -145,7 +155,9 @@ function parseLayoutFlags(value: unknown): LayoutFlags {
  * to React's canonical `isValidElement` so we don't depend on React's internal
  * `$$typeof` marker scheme.
  */
-export function isAppElementsRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+export function isAppElementsRecord(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null) return false;
   if (Array.isArray(value)) return false;
   if (isValidElement(value)) return false;
@@ -218,7 +230,9 @@ export function readAppElementsMetadata(
     throw new Error("[vinext] Missing __rootLayout key in App Router payload");
   }
   if (rootLayoutTreePath !== null && typeof rootLayoutTreePath !== "string") {
-    throw new Error("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
+    throw new Error(
+      "[vinext] Invalid __rootLayout in App Router payload: expected string or null",
+    );
   }
 
   const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);

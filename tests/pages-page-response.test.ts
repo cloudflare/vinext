@@ -27,7 +27,9 @@ function createCommonOptions() {
       '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
-  const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
+  const renderToReadableStream = vi.fn(async () =>
+    createStream(["<div>live-body</div>"]),
+  );
 
   return {
     clearSsrContext,
@@ -150,7 +152,9 @@ describe("pages page response", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe(
+      "s-maxage=60, stale-while-revalidate",
+    );
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("<div>live-body</div>");
 
@@ -181,7 +185,9 @@ describe("pages page response", () => {
 
     const html = await response.text();
     expect(html).toContain('<script nonce="pages-test-nonce">window.__NEXT_DATA__ = ');
-    expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
+    expect(html).toContain(
+      '<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />',
+    );
     expect(html).toContain(
       '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',
     );

@@ -26,7 +26,11 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import {
+  loadNextConfig,
+  resolveNextConfig,
+  PHASE_PRODUCTION_BUILD,
+} from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 
@@ -85,8 +89,9 @@ function getViteVersion(): string {
   return _viteModule?.version ?? "unknown";
 }
 
-const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
-  .version as string;
+const VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+).version as string;
 
 // ─── CLI Argument Parsing ──────────────────────────────────────────────────────
 
@@ -257,7 +262,10 @@ function hasViteConfig(): boolean {
  * project, Vite will merge our config with it (theirs takes precedence).
  * If there's no vite.config, this provides everything needed.
  */
-function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
+function buildViteConfig(
+  overrides: Record<string, unknown> = {},
+  logger?: import("vite").Logger,
+) {
   const hasConfig = hasViteConfig();
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
@@ -308,7 +316,9 @@ function applyViteConfigCompatibility(root: string): void {
   if (!result) return;
 
   for (const [oldName, newName] of result.renamed) {
-    console.warn(`  [vinext] Renamed ${oldName} → ${newName} (required for "type": "module")`);
+    console.warn(
+      `  [vinext] Renamed ${oldName} → ${newName} (required for "type": "module")`,
+    );
   }
   if (result.addedTypeModule) {
     console.warn(
@@ -368,7 +378,9 @@ async function buildApp() {
   const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
 
   const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
-    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
+    viteMajorVersion >= 8
+      ? { rolldownOptions: bundlerOptions }
+      : { rollupOptions: bundlerOptions };
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
@@ -407,7 +419,10 @@ async function buildApp() {
       const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
       console.log("  Upgrading React for RSC compatibility...");
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], {
+        cwd: process.cwd(),
+        stdio: "inherit",
+      });
     }
   }
 
@@ -541,8 +556,14 @@ async function start() {
 
   console.log(`\n  vinext start  (port ${port})\n`);
 
-  const { startProdServer } = (await import(/* @vite-ignore */ "./server/prod-server.js")) as {
-    startProdServer: (opts: { port: number; host: string; outDir: string }) => Promise<unknown>;
+  const { startProdServer } = (await import(
+    /* @vite-ignore */ "./server/prod-server.js"
+  )) as {
+    startProdServer: (opts: {
+      port: number;
+      host: string;
+      outDir: string;
+    }) => Promise<unknown>;
   };
 
   await startProdServer({

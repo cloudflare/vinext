@@ -34,7 +34,9 @@ test.describe("middleware.ts with @cloudflare/vite-plugin (vite dev)", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("subsequent requests are served normally after middleware runs", async ({ request }) => {
+  test("subsequent requests are served normally after middleware runs", async ({
+    request,
+  }) => {
     // Ensures the crash doesn't manifest on the second request either (e.g. if
     // runner state is corrupted after the first call).
     const res1 = await request.get(`${BASE}/api/hello`);
@@ -67,7 +69,9 @@ test.describe("middleware.ts with @cloudflare/vite-plugin (vite dev)", () => {
     expect(res2.headers()["x-mw-ran"]).toBeUndefined();
   });
 
-  test("API route still returns correct JSON after middleware runs", async ({ request }) => {
+  test("API route still returns correct JSON after middleware runs", async ({
+    request,
+  }) => {
     // Ensures middleware calling NextResponse.next() correctly continues to
     // the route handler and doesn't swallow or corrupt the response.
     const res = await request.get(`${BASE}/api/hello`);

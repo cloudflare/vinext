@@ -100,16 +100,24 @@ test.describe("App Router interactive behavior on Cloudflare Workers", () => {
 test.describe("App Router dynamic routes on Cloudflare Workers", () => {
   test("renders blog post with dynamic slug", async ({ page }) => {
     await page.goto(`${BASE}/blog/hello-world`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: hello-world");
-    await expect(page.locator('[data-testid="blog-slug"]')).toHaveText("Slug: hello-world");
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
+      "Blog: hello-world",
+    );
+    await expect(page.locator('[data-testid="blog-slug"]')).toHaveText(
+      "Slug: hello-world",
+    );
   });
 
   test("different slugs render different content", async ({ page }) => {
     await page.goto(`${BASE}/blog/first-post`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: first-post");
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
+      "Blog: first-post",
+    );
 
     await page.goto(`${BASE}/blog/second-post`);
-    await expect(page.locator('[data-testid="blog-title"]')).toHaveText("Blog: second-post");
+    await expect(page.locator('[data-testid="blog-title"]')).toHaveText(
+      "Blog: second-post",
+    );
   });
 
   test("blog page has back link to home", async ({ page }) => {

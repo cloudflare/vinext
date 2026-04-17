@@ -58,7 +58,10 @@ describe("pages api route", () => {
   });
 
   it("preserves duplicate urlencoded keys and parses empty JSON bodies as {}", async () => {
-    const parseHandler = (req: { body: unknown }, res: { json: (data: unknown) => void }) => {
+    const parseHandler = (
+      req: { body: unknown },
+      res: { json: (data: unknown) => void },
+    ) => {
       res.json(req.body ?? null);
     };
 
@@ -97,7 +100,9 @@ describe("pages api route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");
     expect(response.headers.get("content-length")).toBe("3");
-    expect(Buffer.from(await response.arrayBuffer()).equals(Buffer.from([1, 2, 3]))).toBe(true);
+    expect(Buffer.from(await response.arrayBuffer()).equals(Buffer.from([1, 2, 3]))).toBe(
+      true,
+    );
   });
 
   it("reports thrown handler errors and returns a 500 response", async () => {
@@ -162,7 +167,9 @@ describe("pages api route", () => {
     });
 
     expect(response.status).toBe(500);
-    await expect(response.text()).resolves.toBe("API route does not export a default function");
+    await expect(response.text()).resolves.toBe(
+      "API route does not export a default function",
+    );
   });
 
   it("res.redirect() uses 307 by default and 2-arg form uses the given status", async () => {

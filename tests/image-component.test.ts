@@ -11,7 +11,10 @@
 import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
-import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
+import Image, {
+  getImageProps,
+  type StaticImageData,
+} from "../packages/vinext/src/shims/image.js";
 
 /** Helper: expected optimization URL matching what the image shim produces. */
 function optUrl(src: string, w: number, q = 75): string {
@@ -109,8 +112,15 @@ describe("Image SSR rendering", () => {
   });
 
   it("renders with custom loader", () => {
-    const loader = ({ src, width, quality }: { src: string; width: number; quality?: number }) =>
-      `https://cdn.example.com${src}?w=${width}&q=${quality || 75}`;
+    const loader = ({
+      src,
+      width,
+      quality,
+    }: {
+      src: string;
+      width: number;
+      quality?: number;
+    }) => `https://cdn.example.com${src}?w=${width}&q=${quality || 75}`;
 
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
@@ -138,7 +148,9 @@ describe("Image SSR rendering", () => {
         placeholder: "blur",
       }),
     );
-    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`);
+    expect(html).toContain(
+      `src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`,
+    );
 
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');

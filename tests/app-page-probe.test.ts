@@ -191,12 +191,16 @@ describe("app page probe helpers", () => {
       probePage() {
         throw new Error("should not probe page");
       },
-      renderLayoutSpecialError: vi.fn(async () => new Response("layout-fallback", { status: 404 })),
+      renderLayoutSpecialError: vi.fn(
+        async () => new Response("layout-fallback", { status: 404 }),
+      ),
       renderPageSpecialError() {
         throw new Error("should not render a page special error");
       },
       resolveSpecialError(error) {
-        return error === layoutError ? { kind: "http-access-fallback", statusCode: 404 } : null;
+        return error === layoutError
+          ? { kind: "http-access-fallback", statusCode: 404 }
+          : null;
       },
       runWithSuppressedHookWarning(probe) {
         return probe();
@@ -252,7 +256,9 @@ describe("app page probe helpers", () => {
       },
       renderPageSpecialError,
       resolveSpecialError(error) {
-        return error === NOT_FOUND_ERROR ? { kind: "http-access-fallback", statusCode: 404 } : null;
+        return error === NOT_FOUND_ERROR
+          ? { kind: "http-access-fallback", statusCode: 404 }
+          : null;
       },
       runWithSuppressedHookWarning(probe) {
         return probe();

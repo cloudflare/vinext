@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach } from "vite-plus/test";
 describe("useServerInsertedHTML", () => {
   beforeEach(async () => {
     // Clear any stale callbacks between tests
-    const { clearServerInsertedHTML } = await import("../packages/vinext/src/shims/navigation.js");
+    const { clearServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
     clearServerInsertedHTML();
   });
 

@@ -49,7 +49,9 @@ test.describe("middleware.ts with @cloudflare/vite-plugin", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("subsequent requests are served normally after middleware runs", async ({ request }) => {
+  test("subsequent requests are served normally after middleware runs", async ({
+    request,
+  }) => {
     const res1 = await request.get(`${BASE}/api/hello`);
     expect(res1.status()).toBe(200);
 

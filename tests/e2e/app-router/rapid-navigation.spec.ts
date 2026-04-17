@@ -21,8 +21,12 @@ test.describe("rapid navigation", () => {
     // Use a single page.evaluate() to click both links atomically.
     // This avoids React re-render issues and prevents "execution context destroyed" errors in CI.
     await page.evaluate(() => {
-      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
-      const linkC = document.querySelector('[data-testid="page-a-link-to-c"]') as HTMLElement;
+      const linkB = document.querySelector(
+        '[data-testid="page-a-link-to-b"]',
+      ) as HTMLElement;
+      const linkC = document.querySelector(
+        '[data-testid="page-a-link-to-c"]',
+      ) as HTMLElement;
       if (linkB) linkB.click();
       if (linkC) linkC.click();
     });
@@ -63,7 +67,9 @@ test.describe("rapid navigation", () => {
     // they match — so isSameRoute is true. This is correct behavior: the second
     // navigation is a same-route query-param change, not a cross-route navigation.
     await page.evaluate(() => {
-      const linkB = document.querySelector('[data-testid="page-a-link-to-b"]') as HTMLElement;
+      const linkB = document.querySelector(
+        '[data-testid="page-a-link-to-b"]',
+      ) as HTMLElement;
       const linkFilter = document.querySelector(
         '[data-testid="page-a-link-to-b-filter"]',
       ) as HTMLElement;

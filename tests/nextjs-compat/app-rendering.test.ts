@@ -121,14 +121,20 @@ describe("Next.js compat: app-rendering", () => {
     // VERIFY: Once fixed, also confirm that the "Invalid hook call" warnings from use() go away
     // (they may be related to the same module caching causing duplicate React instances).
     it.skip("should produce different timestamps on subsequent requests", async () => {
-      const { html: html1 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
+      const { html: html1 } = await fetchHtml(
+        baseUrl,
+        "/nextjs-compat/isr-multiple/nested",
+      );
       const layoutNow1 = html1.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
       const pageNow1 = html1.match(/id="page-now"[^>]*>(\d+)/)?.[1];
 
       // Wait for revalidation window (revalidate = 1 second)
       await new Promise((r) => setTimeout(r, 1500));
 
-      const { html: html2 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
+      const { html: html2 } = await fetchHtml(
+        baseUrl,
+        "/nextjs-compat/isr-multiple/nested",
+      );
       const layoutNow2 = html2.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
       const pageNow2 = html2.match(/id="page-now"[^>]*>(\d+)/)?.[1];
 

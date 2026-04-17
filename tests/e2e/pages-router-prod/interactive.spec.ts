@@ -73,7 +73,9 @@ test.describe("Pages Router Production — Interactive", () => {
   test("catch-all route renders in production", async ({ page }) => {
     await page.goto(`${BASE}/docs/guides/setup`);
     await expect(page.locator('[data-testid="docs-title"]')).toHaveText("Docs");
-    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText("Path: guides/setup");
+    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText(
+      "Path: guides/setup",
+    );
   });
 
   test("navigating between pages preserves _app wrapper", async ({ page }) => {

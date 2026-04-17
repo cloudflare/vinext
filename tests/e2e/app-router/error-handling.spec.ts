@@ -54,7 +54,9 @@ test.describe("Error Boundaries", () => {
     );
   });
 
-  test("nested server component error renders child error.tsx boundary", async ({ page }) => {
+  test("nested server component error renders child error.tsx boundary", async ({
+    page,
+  }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
     expect(response?.status()).toBe(200);
     // Should render the child's error.tsx, not the parent's

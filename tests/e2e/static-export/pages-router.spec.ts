@@ -48,7 +48,9 @@ test.describe("Static Export — Pages Router", () => {
     expect(nextData.props.pageProps).toBeDefined();
   });
 
-  test("product page __NEXT_DATA__ contains props from getStaticProps", async ({ page }) => {
+  test("product page __NEXT_DATA__ contains props from getStaticProps", async ({
+    page,
+  }) => {
     await page.goto(`${BASE}/products/widget`);
     const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);
     expect(nextData).toBeDefined();

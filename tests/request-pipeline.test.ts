@@ -162,14 +162,18 @@ describe("validateCsrfOrigin", () => {
   });
 
   it("blocks requests with Origin: null (CSRF via sandboxed context)", () => {
-    const res = validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }));
+    const res = validateCsrfOrigin(
+      makeRequest({ host: "localhost:3000", origin: "null" }),
+    );
     expect(res).not.toBeNull();
     expect(res!.status).toBe(403);
   });
 
   it("allows Origin: null when explicitly in allowedOrigins", () => {
     expect(
-      validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }), ["null"]),
+      validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }), [
+        "null",
+      ]),
     ).toBeNull();
   });
 
@@ -244,7 +248,10 @@ describe("validateServerActionPayload", () => {
   it("allows file-backed numeric fields when the backing graph is valid", async () => {
     const body = new FormData();
     body.set("0", new File(['["$Q1"]'], "root.txt", { type: "application/json" }));
-    body.set("1", new File(['[["a",1],["b",2]]'], "map.txt", { type: "application/json" }));
+    body.set(
+      "1",
+      new File(['[["a",1],["b",2]]'], "map.txt", { type: "application/json" }),
+    );
 
     await expect(validateServerActionPayload(body)).resolves.toBeNull();
   });

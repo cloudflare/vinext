@@ -65,9 +65,14 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
-  buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
+  buildFontLinkHeader: (
+    preloads: readonly AppPageFontPreload[] | null | undefined,
+  ) => string;
   clearRequestContext: () => void;
-  createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  createRscOnErrorHandler: (
+    pathname: string,
+    routePath: string,
+  ) => AppPageBoundaryOnError;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -90,19 +95,22 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   scriptNonce?: string;
 };
 
-export type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> =
-  {
-    boundaryComponent?: AppPageComponent | null;
-    layoutModules?: readonly (TModule | null | undefined)[] | null;
-    matchedParams: AppPageParams;
-    rootForbiddenModule?: TModule | null;
-    rootNotFoundModule?: TModule | null;
-    rootUnauthorizedModule?: TModule | null;
-    route?: AppPageBoundaryRoute<TModule> | null;
-    statusCode: number;
-  } & AppPageBoundaryRenderCommonOptions<TModule>;
+export type RenderAppPageHttpAccessFallbackOptions<
+  TModule extends AppPageModule = AppPageModule,
+> = {
+  boundaryComponent?: AppPageComponent | null;
+  layoutModules?: readonly (TModule | null | undefined)[] | null;
+  matchedParams: AppPageParams;
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  route?: AppPageBoundaryRoute<TModule> | null;
+  statusCode: number;
+} & AppPageBoundaryRenderCommonOptions<TModule>;
 
-export type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
+export type RenderAppPageErrorBoundaryOptions<
+  TModule extends AppPageModule = AppPageModule,
+> = {
   error: unknown;
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;
@@ -315,7 +323,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     return null;
   }
 
-  const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
+  const layoutModules =
+    options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const { metadata, viewport } = await resolveAppPageLayoutHead(
     layoutModules,
     options.matchedParams,
@@ -331,7 +340,12 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
 
   const element = wrapRenderedBoundaryElement({
-    element: createElement(Fragment, null, ...headElements, createElement(boundaryComponent)),
+    element: createElement(
+      Fragment,
+      null,
+      ...headElements,
+      createElement(boundaryComponent),
+    ),
     globalErrorModule: options.globalErrorModule,
     includeGlobalErrorBoundary: true,
     isRscRequest: options.isRscRequest,

@@ -39,7 +39,10 @@ export function relativeWithinRoot(root: string, moduleId: string): string | nul
 function normalizeManifestModuleId(moduleId: string, root: string): string {
   const normalizedId = moduleId.replace(/\\/g, "/");
   if (normalizedId.startsWith("\0")) return normalizedId;
-  if (normalizedId.startsWith("node_modules/") || normalizedId.includes("/node_modules/")) {
+  if (
+    normalizedId.startsWith("node_modules/") ||
+    normalizedId.includes("/node_modules/")
+  ) {
     return normalizedId;
   }
 

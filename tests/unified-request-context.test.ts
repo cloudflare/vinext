@@ -216,14 +216,20 @@ describe("unified-request-context", () => {
       });
 
       void runWithRequestContext(outerCtx, () => {
-        expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("outer");
+        expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe(
+          "outer",
+        );
 
         void runWithRequestContext(innerCtx, () => {
-          expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("inner");
+          expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe(
+            "inner",
+          );
         });
 
         // Outer scope restored
-        expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe("outer");
+        expect((getRequestContext().headersContext as any).headers.get("x-id")).toBe(
+          "outer",
+        );
       });
     });
   });
@@ -275,7 +281,11 @@ describe("unified-request-context", () => {
         draftModeCookieHeader: "c=d",
         phase: "action",
         i18nContext: { locale: "fr", defaultLocale: "en" },
-        serverContext: { pathname: "/test", searchParams: new URLSearchParams(), params: {} },
+        serverContext: {
+          pathname: "/test",
+          searchParams: new URLSearchParams(),
+          params: {},
+        },
         serverInsertedHTMLCallbacks: [() => "html"],
         requestScopedCacheLife: { stale: 10, revalidate: 20 },
         currentRequestTags: ["tag1"],
@@ -305,7 +315,8 @@ describe("unified-request-context", () => {
 
   describe("legacy wrapper semantics inside unified scope", () => {
     it("runWithHeadersContext restores the outer headers sub-state", async () => {
-      const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+      const { runWithHeadersContext } =
+        await import("../packages/vinext/src/shims/headers.js");
 
       const outerHeaders = {
         headers: new Headers({ "x-id": "outer" }),
@@ -350,7 +361,8 @@ describe("unified-request-context", () => {
     });
 
     it("runWithHeadersContext keeps spawned async work on the inner sub-state", async () => {
-      const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+      const { runWithHeadersContext } =
+        await import("../packages/vinext/src/shims/headers.js");
 
       let releaseInnerRead!: () => void;
       const waitForInnerRead = new Promise<void>((resolve) => {
@@ -374,12 +386,17 @@ describe("unified-request-context", () => {
             () => {
               innerRead = (async () => {
                 await waitForInnerRead;
-                return (getRequestContext().headersContext as any)?.headers?.get("x-id") ?? null;
+                return (
+                  (getRequestContext().headersContext as any)?.headers?.get("x-id") ??
+                  null
+                );
               })();
             },
           );
 
-          expect((getRequestContext().headersContext as any)?.headers?.get("x-id")).toBe("outer");
+          expect((getRequestContext().headersContext as any)?.headers?.get("x-id")).toBe(
+            "outer",
+          );
           releaseInnerRead();
           await expect(innerRead).resolves.toBe("inner");
         },
@@ -396,7 +413,11 @@ describe("unified-request-context", () => {
 
       void runWithRequestContext(
         createRequestContext({
-          serverContext: { pathname: "/outer", searchParams: new URLSearchParams(), params: {} },
+          serverContext: {
+            pathname: "/outer",
+            searchParams: new URLSearchParams(),
+            params: {},
+          },
           serverInsertedHTMLCallbacks: [outerCallback],
         }),
         () => {
@@ -413,13 +434,16 @@ describe("unified-request-context", () => {
           });
 
           expect((getNavigationContext() as any)?.pathname).toBe("/outer");
-          expect(getRequestContext().serverInsertedHTMLCallbacks).toEqual([outerCallback]);
+          expect(getRequestContext().serverInsertedHTMLCallbacks).toEqual([
+            outerCallback,
+          ]);
         },
       );
     });
 
     it("runWithI18nState restores the outer i18n sub-state", async () => {
-      const { runWithI18nState } = await import("../packages/vinext/src/shims/i18n-state.js");
+      const { runWithI18nState } =
+        await import("../packages/vinext/src/shims/i18n-state.js");
       const { getI18nContext, setI18nContext } =
         await import("../packages/vinext/src/shims/i18n-context.js");
 
@@ -457,13 +481,17 @@ describe("unified-request-context", () => {
     });
 
     it("cache/private/fetch/router/head sub-scopes reset and restore correctly", async () => {
-      const { _runWithCacheState } = await import("../packages/vinext/src/shims/cache.js");
-      const { runWithPrivateCache } = await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { _runWithCacheState } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { runWithPrivateCache } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
       const { runWithFetchCache, getCollectedFetchTags } =
         await import("../packages/vinext/src/shims/fetch-cache.js");
-      const { runWithRouterState } = await import("../packages/vinext/src/shims/router-state.js");
+      const { runWithRouterState } =
+        await import("../packages/vinext/src/shims/router-state.js");
       const { setSSRContext } = await import("../packages/vinext/src/shims/router.js");
-      const { runWithHeadState } = await import("../packages/vinext/src/shims/head-state.js");
+      const { runWithHeadState } =
+        await import("../packages/vinext/src/shims/head-state.js");
 
       await runWithRequestContext(
         createRequestContext({
@@ -485,7 +513,9 @@ describe("unified-request-context", () => {
             expect(getRequestContext()._privateCache?.size).toBe(0);
             getRequestContext()._privateCache?.set("inner", 2);
           });
-          expect([...getRequestContext()._privateCache!.entries()]).toEqual([["outer", 1]]);
+          expect([...getRequestContext()._privateCache!.entries()]).toEqual([
+            ["outer", 1],
+          ]);
 
           await runWithFetchCache(async () => {
             expect(getCollectedFetchTags()).toEqual([]);

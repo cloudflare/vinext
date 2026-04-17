@@ -60,7 +60,9 @@ export function routePrecedence(pattern: string): number {
   // one static prefix segment is enough to beat one bare dynamic segment,
   // and smaller than the infix-static bonus (500) so that infix ordering is
   // not disturbed between two routes that share the same prefix.
-  const isDynamic = parts.some((p) => p.startsWith(":") || p.endsWith("+") || p.endsWith("*"));
+  const isDynamic = parts.some(
+    (p) => p.startsWith(":") || p.endsWith("+") || p.endsWith("*"),
+  );
   if (isDynamic && staticPrefixCount > 0) {
     score -= staticPrefixCount * 50;
   }

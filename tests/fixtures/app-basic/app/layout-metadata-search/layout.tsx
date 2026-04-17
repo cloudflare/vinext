@@ -21,6 +21,10 @@ export async function generateMetadata({
   };
 }
 
-export default function LayoutMetadataSearchLayout({ children }: { children: React.ReactNode }) {
+export default function LayoutMetadataSearchLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return <div data-testid="layout-metadata-search-layout">{children}</div>;
 }

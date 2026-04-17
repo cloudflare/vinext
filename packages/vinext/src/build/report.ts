@@ -220,7 +220,9 @@ function extractTopLevelRevalidateValue(code: string): number | false | null {
       const valueStart = findNextNonWhitespaceIndex(code, colonIndex + 1);
       if (valueStart === -1) return null;
 
-      const valueMatch = /^(-?\d+(?:\.\d+)?|Infinity|false)\b/.exec(code.slice(valueStart));
+      const valueMatch = /^(-?\d+(?:\.\d+)?|Infinity|false)\b/.exec(
+        code.slice(valueStart),
+      );
       if (!valueMatch) return null;
       if (valueMatch[1] === "false") return false;
       if (valueMatch[1] === "Infinity") return Infinity;
@@ -775,7 +777,11 @@ export function buildReportRows(options: {
   }
 
   for (const route of options.appRoutes ?? []) {
-    const { type, revalidate } = classifyAppRoute(route.pagePath, route.routePath, route.isDynamic);
+    const { type, revalidate } = classifyAppRoute(
+      route.pagePath,
+      route.routePath,
+      route.isDynamic,
+    );
     if (type === "unknown" && renderedRoutes.has(route.pattern)) {
       // Speculative prerender confirmed this route is static.
       rows.push({ pattern: route.pattern, type: "static", prerendered: true });
@@ -850,7 +856,9 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   // Explanatory note — only shown when unknown routes are present
   if (usedTypes.includes("unknown")) {
     lines.push("");
-    lines.push("  ? Some routes could not be classified. vinext currently uses static analysis");
+    lines.push(
+      "  ? Some routes could not be classified. vinext currently uses static analysis",
+    );
     lines.push(
       "    and cannot detect dynamic API usage (headers(), cookies(), etc.) at build time.",
     );
@@ -908,7 +916,10 @@ export async function printBuildReport(options: {
     // Dynamic import to avoid loading routing code unless needed
     const { appRouter } = await import("../routing/app-router.js");
     const routes = await appRouter(appDir, options.pageExtensions);
-    const rows = buildReportRows({ appRoutes: routes, prerenderResult: options.prerenderResult });
+    const rows = buildReportRows({
+      appRoutes: routes,
+      prerenderResult: options.prerenderResult,
+    });
     if (rows.length > 0) {
       console.log("\n" + formatBuildReport(rows, "app"));
     }
