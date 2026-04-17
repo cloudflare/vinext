@@ -418,7 +418,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -443,7 +443,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -468,7 +468,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -493,7 +493,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -2664,7 +2664,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -2689,7 +2689,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -2714,7 +2714,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -2739,7 +2739,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -4917,7 +4917,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -4942,7 +4942,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -4967,7 +4967,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -4992,7 +4992,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -7193,7 +7193,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -7218,7 +7218,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -7243,7 +7243,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -7268,7 +7268,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -9443,7 +9443,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -9468,7 +9468,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -9493,7 +9493,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -9518,7 +9518,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
@@ -11695,7 +11695,7 @@ function __VINEXT_CLASS(routeIdx) {
 const routes = [
   {
     routeIdx: 0,
-    __buildTimeClassifications: __VINEXT_CLASS(0),
+    __buildTimeClassifications: __VINEXT_CLASS(0), // evaluated once at module load
     pattern: "/",
     patternParts: [],
     isDynamic: false,
@@ -11720,7 +11720,7 @@ const routes = [
   },
   {
     routeIdx: 1,
-    __buildTimeClassifications: __VINEXT_CLASS(1),
+    __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
     pattern: "/about",
     patternParts: ["about"],
     isDynamic: false,
@@ -11745,7 +11745,7 @@ const routes = [
   },
   {
     routeIdx: 2,
-    __buildTimeClassifications: __VINEXT_CLASS(2),
+    __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
     pattern: "/blog/:slug",
     patternParts: ["blog",":slug"],
     isDynamic: true,
@@ -11770,7 +11770,7 @@ const routes = [
   },
   {
     routeIdx: 3,
-    __buildTimeClassifications: __VINEXT_CLASS(3),
+    __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
     pattern: "/dashboard",
     patternParts: ["dashboard"],
     isDynamic: false,
