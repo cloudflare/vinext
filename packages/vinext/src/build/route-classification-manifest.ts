@@ -163,9 +163,9 @@ function serializeReasonExpression(reason: ClassificationReason): string {
  * classifications. The returned string is suitable for embedding into the
  * generated RSC entry via `generateBundle`.
  *
- * Layer 2 results must be filtered to only `"static"` before calling this
- * function. The module-graph classifier can only prove static; "needs-probe"
- * results must be omitted so the runtime probe takes over.
+ * `layer2PerRoute` is typed to only carry `"static"` entries — the
+ * module-graph classifier can only prove static, so "needs-probe" results
+ * are omitted by the caller before this map is constructed.
  */
 export function buildGenerateBundleReplacement(
   manifest: RouteClassificationManifest,

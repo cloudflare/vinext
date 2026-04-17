@@ -1663,6 +1663,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // The `?` after the semicolon is intentional: Rolldown may or may not
         // emit the trailing semicolon depending on minification settings.
+        // This regex relies on `__VINEXT_CLASS` retaining its name, which holds
+        // because RSC entry chunk bindings are not subject to scope-hoisting renames.
         const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 
         // Skip the scan-phase build where the RSC entry code has been
@@ -1781,6 +1783,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
         const target = chunksWithStubBody[0]!.chunk;
         target.code = target.code.replace(stubRe, patchedBody);
+        // Consume the manifest exactly once per RSC entry load. Clearing here
+        // prevents a stale manifest from leaking into a subsequent generateBundle
+        // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).
+        rscClassificationManifest = null;
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
