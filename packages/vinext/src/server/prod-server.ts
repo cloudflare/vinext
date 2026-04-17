@@ -318,7 +318,7 @@ function sendCompressed(
   statusCode: number,
   extraHeaders: Record<string, string | string[]> = {},
   compress: boolean = true,
-  statusText: string | undefined = undefined,
+  statusText?: string,
 ): void {
   const buf = typeof body === "string" ? Buffer.from(body) : body;
   const baseType = contentType.split(";")[0].trim();

@@ -197,8 +197,8 @@ catalogs:
       version: 3.24.3
 
 overrides:
-  vite: npm:@voidzero-dev/vite-plus-core@0.1.12
-  vitest: npm:@voidzero-dev/vite-plus-test@0.1.12
+  vite: npm:@voidzero-dev/vite-plus-core@0.1.17
+  vitest: npm:@voidzero-dev/vite-plus-test@0.1.17
   picomatch: '>=2.3.2'
   srvx: '>=0.11.13'
 
@@ -233,7 +233,7 @@ importers:
         version: 7.0.0-dev.20260217.1
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       image-size:
         specifier: 'catalog:'
         version: 2.0.2
@@ -253,20 +253,20 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       vitest:
-        specifier: npm:@voidzero-dev/vite-plus-test@0.1.12
-        version: '@voidzero-dev/vite-plus-test@0.1.12(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-test@0.1.17
+        version: '@voidzero-dev/vite-plus-test@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
 
   benchmarks/vinext:
     dependencies:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -282,25 +282,25 @@ importers:
     devDependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/app-router-cloudflare:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -314,8 +314,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -325,16 +325,16 @@ importers:
         version: 4.20260313.1
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/app-router-nitro:
     dependencies:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0)
+        version: nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -345,12 +345,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/app-router-playground:
     dependencies:
@@ -362,7 +362,7 @@ importers:
         version: 2.0.13
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       clsx:
         specifier: 'catalog:'
         version: 2.1.1
@@ -396,7 +396,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@tailwindcss/forms':
         specifier: 'catalog:'
         version: 0.5.10(tailwindcss@4.1.4)
@@ -420,7 +420,7 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       postcss:
         specifier: 'catalog:'
         version: 8.5.3
@@ -431,11 +431,11 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -447,19 +447,19 @@ importers:
         version: 1.6.0(@phosphor-icons/react@2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6)
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@phosphor-icons/react':
         specifier: 'catalog:'
         version: 2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@tailwindcss/vite':
         specifier: 'catalog:'
-        version: 4.2.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 4.2.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -476,15 +476,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/fumadocs-docs-template:
     dependencies:
@@ -496,7 +496,7 @@ importers:
         version: 16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6)
       fumadocs-mdx:
         specifier: 'catalog:'
-        version: 14.2.10(@types/mdast@4.0.4)(@types/mdx@2.0.13)(@types/react@19.2.14)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(fumadocs-core@16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 14.2.10(@types/mdast@4.0.4)(@types/mdx@2.0.13)(@types/react@19.2.14)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(fumadocs-core@16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       fumadocs-ui:
         specifier: 'catalog:'
         version: 16.7.9(@takumi-rs/image-response@0.72.0)(@types/mdx@2.0.13)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(fumadocs-core@16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(shiki@4.0.2)(tailwindcss@4.1.4)
@@ -518,13 +518,13 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@tailwindcss/postcss':
         specifier: 'catalog:'
         version: 4.1.4
       '@tailwindcss/vite':
         specifier: 'catalog:'
-        version: 4.2.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 4.2.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@types/mdx':
         specifier: 'catalog:'
         version: 2.0.13
@@ -539,10 +539,10 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       postcss:
         specifier: 'catalog:'
         version: 8.5.3
@@ -559,8 +559,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -569,13 +569,13 @@ importers:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       ms:
         specifier: 'catalog:'
         version: 3.0.0-canary.1
@@ -598,8 +598,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -609,13 +609,13 @@ importers:
         version: 4.20260313.1
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/nextra-docs-template:
     dependencies:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -631,7 +631,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@mdx-js/rollup':
         specifier: 'catalog:'
         version: 3.1.1
@@ -646,16 +646,16 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -664,10 +664,10 @@ importers:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -678,21 +678,21 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   examples/realworld-api-rest:
     dependencies:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -706,12 +706,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@types/node':
         specifier: 'catalog:'
         version: 25.2.3
@@ -726,7 +726,7 @@ importers:
         version: 5.9.3
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
@@ -735,10 +735,10 @@ importers:
     dependencies:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -752,8 +752,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -769,7 +769,7 @@ importers:
         version: 5.9.3
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   packages/vinext:
     dependencies:
@@ -783,14 +783,14 @@ importers:
         specifier: 'catalog:'
         version: 0.30.21
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plugin-commonjs:
         specifier: 'catalog:'
         version: 0.10.4
       vite-tsconfig-paths:
         specifier: 'catalog:'
-        version: 6.1.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(typescript@5.9.3)
+        version: 6.1.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(typescript@5.9.3)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -803,22 +803,22 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/app-basic:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       fake-context-lib:
         specifier: file:./__test_packages__/fake-context-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
@@ -841,18 +841,18 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/app-cjs-violation:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -866,18 +866,18 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/app-with-src:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -891,24 +891,24 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/cf-app-basic:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -922,15 +922,15 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
         version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/better-auth:
     dependencies:
@@ -939,10 +939,10 @@ importers:
         version: 1.9.1
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: 'catalog:'
-        version: 1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
+        version: 1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
       better-sqlite3:
         specifier: 'catalog:'
         version: 12.6.2
@@ -960,17 +960,17 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/next-intl:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       next-intl:
         specifier: 'catalog:'
         version: 4.9.1(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)(typescript@5.9.3)
@@ -988,17 +988,17 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/next-themes:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       next-themes:
         specifier: 'catalog:'
         version: 0.4.6(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -1016,17 +1016,17 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/next-view-transitions:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       next-view-transitions:
         specifier: 'catalog:'
         version: 0.3.5(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -1044,17 +1044,17 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/nuqs:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       nuqs:
         specifier: 'catalog:'
         version: 2.8.8(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
@@ -1072,11 +1072,11 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/shadcn:
     dependencies:
@@ -1091,7 +1091,7 @@ importers:
         version: 1.2.4(@types/react@19.2.14)(react@19.2.5)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       class-variance-authority:
         specifier: 'catalog:'
         version: 0.7.1
@@ -1115,11 +1115,11 @@ importers:
         version: link:../../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/ecosystem/validator:
     dependencies:
@@ -1137,17 +1137,17 @@ importers:
         specifier: workspace:*
         version: link:../../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/font-google-multiple:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -1161,12 +1161,12 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/pages-basic:
     dependencies:
@@ -1181,17 +1181,17 @@ importers:
         version: link:../../../packages/vinext
     devDependencies:
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
 
   tests/fixtures/static-export:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       react:
         specifier: 'catalog:'
         version: 19.2.5
@@ -1205,8 +1205,8 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vinext
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@0.1.12
-        version: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
 
 packages:
 
@@ -1884,16 +1884,9 @@ packages:
     resolution: {integrity: sha512-a61ljmRVVyG5MC/698C8/FfFDw5a8LOIvyOLW5fztgUXqUpc1jOfQzOitSCbge657OgXXThmY3Tk8fpiDb4UcA==}
     engines: {node: '>= 20.0.0'}
 
-  '@oxc-project/runtime@0.115.0':
-    resolution: {integrity: sha512-Rg8Wlt5dCbXhQnsXPrkOjL1DTSvXLgb2R/KYfnf1/K+R0k6UMLEmbQXPM+kwrWqSmWA2t0B1EtHy2/3zikQpvQ==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-
   '@oxc-project/runtime@0.124.0':
     resolution: {integrity: sha512-sSg6n37J3w3mM4odFvRqzQENf6+qxKnvStr/gU0FgRRg1VE/4MqryLd9PJmE0a7K5xlDfbrctBtSagaFH6ij9Q==}
     engines: {node: ^20.19.0 || >=22.12.0}
-
-  '@oxc-project/types@0.115.0':
-    resolution: {integrity: sha512-4n91DKnebUS4yjUHl2g3/b2T+IUdCfmoZGhmwsovZCDaJSs+QkVAM+0AqqTxHSsHfeiMuueT75cZaZcT/m0pSw==}
 
   '@oxc-project/types@0.124.0':
     resolution: {integrity: sha512-VBFWMTBvHxS11Z5Lvlr3IWgrwhMTXV+Md+EQF0Xf60+wAdsGFTBx7X7K/hP4pi8N7dcm1RvcHwDxZ16Qx8keUg==}
@@ -3325,66 +3318,6 @@ packages:
       react-server-dom-webpack:
         optional: true
 
-  '@voidzero-dev/vite-plus-core@0.1.12':
-    resolution: {integrity: sha512-j8YNe7A+8JcSoddztf5whvom/yJ7OKUO3Y5a3UoLIUmOL8YEKVv5nPANrxJ7eaFfHJoMnBEwzBpq1YVZ+H3uPA==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    peerDependencies:
-      '@arethetypeswrong/core': ^0.18.1
-      '@tsdown/css': 0.21.3
-      '@tsdown/exe': 0.21.3
-      '@types/node': ^20.19.0 || >=22.12.0
-      '@vitejs/devtools': ^0.0.0-alpha.31
-      esbuild: ^0.27.0
-      jiti: '>=1.21.0'
-      less: ^4.0.0
-      publint: ^0.3.0
-      sass: ^1.70.0
-      sass-embedded: ^1.70.0
-      stylus: '>=0.54.8'
-      sugarss: ^5.0.0
-      terser: ^5.16.0
-      tsx: ^4.8.1
-      typescript: ^5.0.0
-      unplugin-unused: ^0.5.0
-      yaml: ^2.4.2
-    peerDependenciesMeta:
-      '@arethetypeswrong/core':
-        optional: true
-      '@tsdown/css':
-        optional: true
-      '@tsdown/exe':
-        optional: true
-      '@types/node':
-        optional: true
-      '@vitejs/devtools':
-        optional: true
-      esbuild:
-        optional: true
-      jiti:
-        optional: true
-      less:
-        optional: true
-      publint:
-        optional: true
-      sass:
-        optional: true
-      sass-embedded:
-        optional: true
-      stylus:
-        optional: true
-      sugarss:
-        optional: true
-      terser:
-        optional: true
-      tsx:
-        optional: true
-      typescript:
-        optional: true
-      unplugin-unused:
-        optional: true
-      yaml:
-        optional: true
-
   '@voidzero-dev/vite-plus-core@0.1.17':
     resolution: {integrity: sha512-5HU0t996pbpQpo04BSpduhVsvg9/NTCnbnWquETxkZN1TpHnmWt4Rq8NLbR2EXHUxQRNuNUP3g0JFm03IpHHqg==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -3484,31 +3417,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-
-  '@voidzero-dev/vite-plus-test@0.1.12':
-    resolution: {integrity: sha512-EE8Y2vQvqS4c/1qSa7qlhUY9koAG6wYev0NFAtDZsijQCHUqE7nYXGJYnyUInAE6GX4zlQDGg7tf2DAl+CISYw==}
-    engines: {node: ^20.0.0 || ^22.0.0 || >=24.0.0}
-    peerDependencies:
-      '@edge-runtime/vm': '*'
-      '@opentelemetry/api': ^1.9.0
-      '@types/node': ^20.0.0 || ^22.0.0 || >=24.0.0
-      '@vitest/ui': 4.1.0
-      happy-dom: '*'
-      jsdom: '*'
-      vite: ^6.0.0 || ^7.0.0 || ^8.0.0-0
-    peerDependenciesMeta:
-      '@edge-runtime/vm':
-        optional: true
-      '@opentelemetry/api':
-        optional: true
-      '@types/node':
-        optional: true
-      '@vitest/ui':
-        optional: true
-      happy-dom:
-        optional: true
-      jsdom:
-        optional: true
 
   '@voidzero-dev/vite-plus-test@0.1.17':
     resolution: {integrity: sha512-+t6PpEQ1g93nrdJQBEVeWIMrNDjSepAyUTPMvLiJcjMiwbwJPYR1LXrgKNfx3WbpNj9ISYLcJ6YYh2d/9DaU2w==}
@@ -5646,12 +5554,12 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260401.1
 
-  '@cloudflare/vite-plugin@1.31.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)':
+  '@cloudflare/vite-plugin@1.31.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260401.1)(wrangler@4.80.0)':
     dependencies:
       '@cloudflare/unenv-preset': 2.16.0(unenv@2.0.0-rc.24)(workerd@1.20260401.1)
       miniflare: 4.20260401.0
       unenv: 2.0.0-rc.24
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler: 4.80.0(@cloudflare/workers-types@4.20260313.1)
       ws: 8.18.0
     transitivePeerDependencies:
@@ -6065,11 +5973,7 @@ snapshots:
 
   '@orama/orama@3.1.18': {}
 
-  '@oxc-project/runtime@0.115.0': {}
-
   '@oxc-project/runtime@0.124.0': {}
-
-  '@oxc-project/types@0.115.0': {}
 
   '@oxc-project/types@0.124.0': {}
 
@@ -7013,12 +6917,12 @@ snapshots:
       postcss-selector-parser: 6.0.10
       tailwindcss: 4.1.4
 
-  '@tailwindcss/vite@4.2.0(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))':
+  '@tailwindcss/vite@4.2.0(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))':
     dependencies:
       '@tailwindcss/node': 4.2.0
       '@tailwindcss/oxide': 4.2.0
       tailwindcss: 4.2.0
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
 
   '@takumi-rs/core-darwin-arm64@0.72.0':
     optional: true
@@ -7165,12 +7069,12 @@ snapshots:
       '@resvg/resvg-wasm': 2.4.0
       satori: 0.16.0
 
-  '@vitejs/plugin-react@6.0.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))':
+  '@vitejs/plugin-react@6.0.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))':
     dependencies:
       '@rolldown/pluginutils': 1.0.0-rc.7
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
 
-  '@vitejs/plugin-rsc@0.5.23(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)':
+  '@vitejs/plugin-rsc@0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@rolldown/pluginutils': 1.0.0-rc.13
       es-module-lexer: 2.0.0
@@ -7181,23 +7085,10 @@ snapshots:
       srvx: 0.11.13
       strip-literal: 3.1.0
       turbo-stream: 3.2.0
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
-      vitefu: 1.1.3(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vitefu: 1.1.3(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
     optionalDependencies:
       react-server-dom-webpack: 19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-
-  '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)':
-    dependencies:
-      '@oxc-project/runtime': 0.115.0
-      '@oxc-project/types': 0.115.0
-      lightningcss: 1.31.1
-      postcss: 8.5.8
-    optionalDependencies:
-      '@types/node': 25.2.3
-      esbuild: 0.27.3
-      fsevents: 2.3.3
-      jiti: 2.6.1
-      typescript: 5.9.3
 
   '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)':
     dependencies:
@@ -7230,47 +7121,7 @@ snapshots:
   '@voidzero-dev/vite-plus-linux-x64-musl@0.1.17':
     optional: true
 
-  '@voidzero-dev/vite-plus-test@0.1.12(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)':
-    dependencies:
-      '@standard-schema/spec': 1.1.0
-      '@types/chai': 5.2.3
-      '@voidzero-dev/vite-plus-core': 0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
-      es-module-lexer: 1.7.0
-      obug: 2.1.1
-      pixelmatch: 7.1.0
-      pngjs: 7.0.0
-      sirv: 3.0.2
-      std-env: 4.0.0
-      tinybench: 2.9.0
-      tinyexec: 1.0.2
-      tinyglobby: 0.2.15
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
-      ws: 8.19.0
-    optionalDependencies:
-      '@opentelemetry/api': 1.9.1
-      '@types/node': 25.2.3
-    transitivePeerDependencies:
-      - '@arethetypeswrong/core'
-      - '@tsdown/css'
-      - '@tsdown/exe'
-      - '@vitejs/devtools'
-      - bufferutil
-      - esbuild
-      - jiti
-      - less
-      - publint
-      - sass
-      - sass-embedded
-      - stylus
-      - sugarss
-      - terser
-      - tsx
-      - typescript
-      - unplugin-unused
-      - utf-8-validate
-      - yaml
-
-  '@voidzero-dev/vite-plus-test@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)':
+  '@voidzero-dev/vite-plus-test@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@types/chai': 5.2.3
@@ -7284,7 +7135,7 @@ snapshots:
       tinybench: 2.9.0
       tinyexec: 1.0.2
       tinyglobby: 0.2.15
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       ws: 8.19.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
@@ -7346,7 +7197,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.0: {}
 
-  better-auth@1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@5.9.3):
+  better-auth@1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@5.9.3):
     dependencies:
       '@better-auth/core': 1.5.6(@better-auth/utils@0.3.1)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(better-call@1.3.2(zod@4.3.6))(jose@6.1.3)(kysely@0.28.15)(nanostores@1.2.0)
       '@better-auth/drizzle-adapter': 1.5.6(@better-auth/core@1.5.6(@better-auth/utils@0.3.1)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(better-call@1.3.2(zod@4.3.6))(jose@6.1.3)(kysely@0.28.15)(nanostores@1.2.0))(@better-auth/utils@0.3.1)
@@ -7364,7 +7215,7 @@ snapshots:
       jose: 6.1.3
       kysely: 0.28.15
       nanostores: 1.2.0
-      vitest: '@voidzero-dev/vite-plus-test@0.1.12(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vitest: '@voidzero-dev/vite-plus-test@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       zod: 4.3.6
     optionalDependencies:
       better-sqlite3: 12.6.2
@@ -7380,6 +7231,8 @@ snapshots:
       - '@tsdown/exe'
       - '@types/node'
       - '@vitejs/devtools'
+      - '@vitest/coverage-istanbul'
+      - '@vitest/coverage-v8'
       - '@vitest/ui'
       - bufferutil
       - esbuild
@@ -7777,7 +7630,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  fumadocs-mdx@14.2.10(@types/mdast@4.0.4)(@types/mdx@2.0.13)(@types/react@19.2.14)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(fumadocs-core@16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5):
+  fumadocs-mdx@14.2.10(@types/mdast@4.0.4)(@types/mdx@2.0.13)(@types/react@19.2.14)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(fumadocs-core@16.7.9(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.4)(@types/mdast@4.0.4)(@types/react@19.2.14)(lucide-react@0.577.0(react@19.2.5))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.3.6))(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5):
     dependencies:
       '@mdx-js/mdx': 3.1.1
       '@standard-schema/spec': 1.1.0
@@ -7803,7 +7656,7 @@ snapshots:
       '@types/react': 19.2.14
       next: 16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       react: 19.2.5
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     transitivePeerDependencies:
       - supports-color
 
@@ -8715,7 +8568,7 @@ snapshots:
 
   nf3@0.3.16: {}
 
-  nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0):
+  nitro-nightly@3.0.1-20260415-080922-45e20aaa(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(better-sqlite3@12.6.2)(chokidar@5.0.0)(jiti@2.6.1)(miniflare@4.20260401.0):
     dependencies:
       consola: 3.4.2
       crossws: 0.4.5(srvx@0.11.13)
@@ -8733,7 +8586,7 @@ snapshots:
       unstorage: 2.0.0-alpha.7(chokidar@5.0.0)(db0@0.3.4(better-sqlite3@12.6.2))(ofetch@2.0.0-alpha.3)
     optionalDependencies:
       jiti: 2.6.1
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -9502,11 +9355,11 @@ snapshots:
       fast-glob: 3.3.3
       magic-string: 0.30.21
 
-  vite-plus@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3):
+  vite-plus@0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3):
     dependencies:
       '@oxc-project/types': 0.124.0
       '@voidzero-dev/vite-plus-core': 0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
-      '@voidzero-dev/vite-plus-test': 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+      '@voidzero-dev/vite-plus-test': 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       oxfmt: 0.45.0
       oxlint: 1.60.0(oxlint-tsgolint@0.20.0)
       oxlint-tsgolint: 0.20.0
@@ -9549,19 +9402,19 @@ snapshots:
       - vite
       - yaml
 
-  vite-tsconfig-paths@6.1.1(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(typescript@5.9.3):
+  vite-tsconfig-paths@6.1.1(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       debug: 4.4.3
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@5.9.3)
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
     transitivePeerDependencies:
       - supports-color
       - typescript
 
-  vitefu@1.1.3(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)):
+  vitefu@1.1.3(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)):
     optionalDependencies:
-      vite: '@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      vite: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
 
   web-namespaces@2.0.1: {}
 
