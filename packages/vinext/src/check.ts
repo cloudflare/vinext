@@ -168,7 +168,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
   },
-  reactStrictMode: { status: "supported", detail: "always enabled" },
+  reactStrictMode: {
+    status: "partial",
+    detail:
+      "config option recognized but not yet enforced; root is not wrapped in <React.StrictMode>",
+  },
   poweredByHeader: {
     status: "supported",
     detail: "not sent (matching Next.js default when disabled)",

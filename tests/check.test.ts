@@ -289,7 +289,10 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("supported");
+    // reactStrictMode is reported as `partial` until vinext actually wraps the
+    // hydrated root in `<React.StrictMode>` — currently the config is read but
+    // not enforced. See `packages/vinext/src/check.ts` for the rationale.
+    expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("partial");
   });
 
   it("detects unsupported webpack config", () => {

@@ -1,5 +1,6 @@
 import React from "react";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { devOnCaughtError } from "../packages/vinext/src/server/app-browser-error.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,
@@ -440,6 +441,64 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
 
     expect(Object.hasOwn(nextState.elements, "slot:modal:/feed")).toBe(true);
+  });
+});
+
+describe("devOnCaughtError (hydrateRoot dev handler)", () => {
+  it("logs caught errors to console.error", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("Maximum update depth exceeded");
+      devOnCaughtError(err, { componentStack: "\n    at List\n    at Apps" });
+      expect(consoleSpy).toHaveBeenCalled();
+      const loggedErrors = consoleSpy.mock.calls.map((args) => args[0]);
+      expect(loggedErrors).toContain(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("includes the React component stack in the log when provided", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      devOnCaughtError(new Error("boom"), {
+        componentStack: "\n    at List (apps/list.tsx:202)",
+      });
+      expect(consoleSpy).toHaveBeenCalledTimes(2);
+      expect(String(consoleSpy.mock.calls[1][0])).toContain("apps/list.tsx:202");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("does not re-dispatch a window 'error' event (would trigger Vite overlay)", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let windowErrorCount = 0;
+    const onError = (): void => {
+      windowErrorCount += 1;
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("error", onError);
+    }
+    try {
+      devOnCaughtError(new Error("caught by user error.tsx"), {});
+      expect(windowErrorCount).toBe(0);
+    } finally {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("error", onError);
+      }
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("is not a no-op (regression guard against `() => {}`)", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      devOnCaughtError(new Error("regression"), {});
+      expect(consoleSpy.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });
 
