@@ -472,6 +472,11 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
   });
 
   it("does not re-dispatch a window 'error' event (would trigger Vite overlay)", () => {
+    // This test runs in a Node environment where `window` is undefined, so the
+    // listener registration is skipped and windowErrorCount stays 0 trivially.
+    // The test still documents the contract: devOnCaughtError must not dispatch
+    // window error events (which would re-trigger the Vite overlay). If a DOM
+    // environment is ever added to this project, this will become a live check.
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     let windowErrorCount = 0;
     const onError = (): void => {
@@ -492,6 +497,9 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
   });
 
   it("is not a no-op (regression guard against `() => {}`)", () => {
+    // Explicit regression guard: the original implementation was `() => {}`,
+    // which silently swallowed all caught errors. This test ensures the handler
+    // always calls console.error at least once.
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       devOnCaughtError(new Error("regression"), {});
