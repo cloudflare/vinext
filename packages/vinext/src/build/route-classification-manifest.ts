@@ -94,6 +94,11 @@ export function collectRouteClassificationManifest(
  * downstream callers read `.reason` without branching on `kind`.
  */
 type MergedLayoutClassification = Exclude<LayoutBuildClassification, { kind: "absent" }>;
+type ModuleGraphStaticReason = {
+  layer: "module-graph";
+  result: "static";
+  firstShimMatch?: string;
+};
 
 /**
  * Merges Layer 1 (segment config) and Layer 2 (module graph) into a single
@@ -106,15 +111,15 @@ type MergedLayoutClassification = Exclude<LayoutBuildClassification, { kind: "ab
  */
 function mergeLayersForRoute(
   route: RouteManifestEntry,
-  layer2: ReadonlyMap<number, "static"> | undefined,
+  layer2: ReadonlyMap<number, ModuleGraphStaticReason> | undefined,
 ): Map<number, MergedLayoutClassification> {
   const merged = new Map<number, MergedLayoutClassification>();
 
   if (layer2) {
-    for (const layoutIdx of layer2.keys()) {
+    for (const [layoutIdx, reason] of layer2) {
       merged.set(layoutIdx, {
         kind: "static",
-        reason: { layer: "module-graph", result: "static" },
+        reason,
       });
     }
   }
@@ -165,19 +170,10 @@ function serializeReasonExpression(reason: ClassificationReason): string {
   }
 }
 
-/**
- * Builds a JavaScript arrow-function expression that dispatches route index
- * to a pre-computed `Map<layoutIndex, "static" | "dynamic">` of build-time
- * classifications. The returned string is suitable for embedding into the
- * generated RSC entry via `generateBundle`.
- *
- * `layer2PerRoute` is typed to only carry `"static"` entries — the
- * module-graph classifier can only prove static, so "needs-probe" results
- * are omitted by the caller before this map is constructed.
- */
-export function buildGenerateBundleReplacement(
+function buildRouteDispatchReplacement(
   manifest: RouteClassificationManifest,
-  layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, "static">>,
+  layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, ModuleGraphStaticReason>>,
+  serializeEntry: (value: MergedLayoutClassification) => string,
 ): string {
   const cases: string[] = [];
 
@@ -189,7 +185,7 @@ export function buildGenerateBundleReplacement(
 
     const entries = [...merged.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([idx, value]) => `[${idx}, ${JSON.stringify(value.kind)}]`)
+      .map(([idx, value]) => `[${idx}, ${serializeEntry(value)}]`)
       .join(", ");
     cases.push(`      case ${routeIdx}: return new Map([${entries}]);`);
   }
@@ -202,6 +198,25 @@ export function buildGenerateBundleReplacement(
     "    }",
     "  }",
   ].join("\n");
+}
+
+/**
+ * Builds a JavaScript arrow-function expression that dispatches route index
+ * to a pre-computed `Map<layoutIndex, "static" | "dynamic">` of build-time
+ * classifications. The returned string is suitable for embedding into the
+ * generated RSC entry via `generateBundle`.
+ *
+ * `layer2PerRoute` is typed to only carry `"static"` entries — the
+ * module-graph classifier can only prove static, so "needs-probe" results
+ * are omitted by the caller before this map is constructed.
+ */
+export function buildGenerateBundleReplacement(
+  manifest: RouteClassificationManifest,
+  layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, ModuleGraphStaticReason>>,
+): string {
+  return buildRouteDispatchReplacement(manifest, layer2PerRoute, (value) =>
+    JSON.stringify(value.kind),
+  );
 }
 
 /**
@@ -218,29 +233,9 @@ export function buildGenerateBundleReplacement(
  */
 export function buildReasonsReplacement(
   manifest: RouteClassificationManifest,
-  layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, "static">>,
+  layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, ModuleGraphStaticReason>>,
 ): string {
-  const cases: string[] = [];
-
-  for (let routeIdx = 0; routeIdx < manifest.routes.length; routeIdx++) {
-    const route = manifest.routes[routeIdx]!;
-    const merged = mergeLayersForRoute(route, layer2PerRoute.get(routeIdx));
-
-    if (merged.size === 0) continue;
-
-    const entries = [...merged.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([idx, value]) => `[${idx}, ${serializeReasonExpression(value.reason)}]`)
-      .join(", ");
-    cases.push(`      case ${routeIdx}: return new Map([${entries}]);`);
-  }
-
-  return [
-    "(routeIdx) => {",
-    "    switch (routeIdx) {",
-    ...cases,
-    "      default: return null;",
-    "    }",
-    "  }",
-  ].join("\n");
+  return buildRouteDispatchReplacement(manifest, layer2PerRoute, (value) =>
+    serializeReasonExpression(value.reason),
+  );
 }

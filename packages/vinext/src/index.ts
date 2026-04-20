@@ -108,6 +108,11 @@ import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+type ModuleGraphStaticReason = {
+  layer: "module-graph";
+  result: "static";
+  firstShimMatch?: string;
+};
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
@@ -1751,11 +1756,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           },
         };
 
-        const layer2PerRoute = new Map<number, Map<number, "static">>();
+        const layer2PerRoute = new Map<number, Map<number, ModuleGraphStaticReason>>();
         const graphCache = new Map<string, ReturnType<typeof classifyLayoutByModuleGraph>>();
         for (let routeIdx = 0; routeIdx < rscClassificationManifest.routes.length; routeIdx++) {
           const route = rscClassificationManifest.routes[routeIdx]!;
-          const perRoute = new Map<number, "static">();
+          const perRoute = new Map<number, ModuleGraphStaticReason>();
           for (let layoutIdx = 0; layoutIdx < route.layoutPaths.length; layoutIdx++) {
             // Skip layouts already decided by Layer 1 — segment config is
             // authoritative, so there is no need to walk the module graph.
@@ -1777,7 +1782,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graphCache.set(layoutModuleId, graphResult);
             }
             if (graphResult.result === "static") {
-              perRoute.set(layoutIdx, "static");
+              perRoute.set(layoutIdx, { layer: "module-graph", result: graphResult.result });
             }
           }
           if (perRoute.size > 0) {

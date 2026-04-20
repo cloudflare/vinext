@@ -199,7 +199,9 @@ describe("buildGenerateBundleReplacement", () => {
 
   it("merges Layer 1 and Layer 2 into the dispatch function's Map", () => {
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }]);
-    const layer2 = new Map<number, Map<number, "static">>([[0, new Map([[1, "static"]])]]);
+    const layer2: Parameters<typeof buildGenerateBundleReplacement>[1] = new Map([
+      [0, new Map([[1, { layer: "module-graph", result: "static" }]])],
+    ]);
     const replacement = buildGenerateBundleReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);
@@ -214,7 +216,9 @@ describe("buildGenerateBundleReplacement", () => {
     // Layer 2 proves "static" for index 0 — but Layer 1 said "dynamic", so
     // Layer 1 must win. This guards against the classifier silently demoting
     // a force-dynamic layout because the module graph happened to be clean.
-    const layer2 = new Map<number, Map<number, "static">>([[0, new Map([[0, "static"]])]]);
+    const layer2: Parameters<typeof buildGenerateBundleReplacement>[1] = new Map([
+      [0, new Map([[0, { layer: "module-graph", result: "static" }]])],
+    ]);
     const replacement = buildGenerateBundleReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);
@@ -347,7 +351,9 @@ describe("buildReasonsReplacement", () => {
 
   it("returns module-graph reasons for Layer 2 static decisions", () => {
     const manifest = makeManifest([{ layer1: [] }]);
-    const layer2 = new Map<number, Map<number, "static">>([[0, new Map([[3, "static"]])]]);
+    const layer2: Parameters<typeof buildReasonsReplacement>[1] = new Map([
+      [0, new Map([[3, { layer: "module-graph", result: "static" }]])],
+    ]);
     const replacement = buildReasonsReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);
@@ -361,7 +367,9 @@ describe("buildReasonsReplacement", () => {
 
   it("preserves Layer 1 reason priority over Layer 2 for the same layout index", () => {
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }]);
-    const layer2 = new Map<number, Map<number, "static">>([[0, new Map([[0, "static"]])]]);
+    const layer2: Parameters<typeof buildReasonsReplacement>[1] = new Map([
+      [0, new Map([[0, { layer: "module-graph", result: "static" }]])],
+    ]);
     const replacement = buildReasonsReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);

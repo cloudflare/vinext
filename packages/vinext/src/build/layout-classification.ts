@@ -96,7 +96,15 @@ export function classifyLayoutByModuleGraph(
   return { result: "static" };
 }
 
-function moduleGraphReason(graphResult: ModuleGraphClassificationResult): ClassificationReason {
+export function moduleGraphReason(
+  graphResult: ModuleGraphClassificationResult & { result: "static" },
+): { layer: "module-graph"; result: "static"; firstShimMatch?: string };
+export function moduleGraphReason(
+  graphResult: ModuleGraphClassificationResult,
+): ClassificationReason;
+export function moduleGraphReason(
+  graphResult: ModuleGraphClassificationResult,
+): ClassificationReason {
   if (graphResult.firstShimMatch === undefined) {
     return { layer: "module-graph", result: graphResult.result };
   }
