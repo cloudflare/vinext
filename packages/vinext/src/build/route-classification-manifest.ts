@@ -119,14 +119,14 @@ function mergeLayersForRoute(
     }
   }
 
-  for (const [layoutIdx, value] of route.layer1) {
+  for (const [layoutIdx, kind] of route.layer1) {
     const reason = route.layer1Reasons.get(layoutIdx);
     if (reason === undefined) {
       throw new Error(
         `vinext: layout ${layoutIdx} in route ${route.pattern} has a Layer 1 decision without a reason`,
       );
     }
-    merged.set(layoutIdx, { kind: value, reason });
+    merged.set(layoutIdx, { kind, reason });
   }
 
   return merged;

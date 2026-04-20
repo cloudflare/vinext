@@ -509,6 +509,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
 
+  // Shared with the Layer 2 generateBundle hook below. Rolldown stores module
+  // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
+  // canonicalize anything we hand to the classifier and anything we ask the
+  // module graph for. The shim files exist in the vinext package before plugin
+  // init, so realpath is safe to evaluate eagerly.
+  const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  const dynamicShimPaths: ReadonlySet<string> = new Set(
+    [
+      resolveShimModulePath(shimsDir, "headers"),
+      resolveShimModulePath(shimsDir, "server"),
+      resolveShimModulePath(shimsDir, "cache"),
+    ].map(canonicalize),
+  );
+
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
 
@@ -1715,20 +1729,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
         }
 
-        // Rolldown stores module IDs as canonicalized filesystem paths
-        // (fs.realpathSync.native). On macOS, /var/folders/... becomes
-        // /private/var/folders/..., so raw paths collected at routing-scan
-        // time won't match module-graph keys. Canonicalize everything we
-        // hand to the classifier and everything we ask the graph for.
-        const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
-
-        const dynamicShimPaths: ReadonlySet<string> = new Set(
-          [
-            resolveShimModulePath(shimsDir, "headers"),
-            resolveShimModulePath(shimsDir, "server"),
-            resolveShimModulePath(shimsDir, "cache"),
-          ].map(canonicalize),
-        );
+        // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
+        // (above) so they are constructed once per plugin instance instead of
+        // on every generateBundle invocation. The macOS realpath quirk
+        // (/var/folders/... → /private/var/folders/...) still applies to
+        // every path we hand to the classifier.
 
         // Adapter: the classifier in `build/layout-classification.ts` uses
         // `dynamicImportedIds` (matches the old-Rollup field name we used when
