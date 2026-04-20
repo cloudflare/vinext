@@ -22,7 +22,12 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import { classifyLayoutByModuleGraph } from "./build/layout-classification.js";
+import {
+  classifyLayoutByModuleGraph,
+  isStaticModuleGraphResult,
+  moduleGraphReason,
+} from "./build/layout-classification.js";
+import type { ModuleGraphStaticReason } from "./build/layout-classification-types.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   findNextConfigPath,
@@ -108,11 +113,6 @@ import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-type ModuleGraphStaticReason = {
-  layer: "module-graph";
-  result: "static";
-  firstShimMatch?: string;
-};
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
@@ -1781,8 +1781,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               );
               graphCache.set(layoutModuleId, graphResult);
             }
-            if (graphResult.result === "static") {
-              perRoute.set(layoutIdx, { layer: "module-graph", result: graphResult.result });
+            if (isStaticModuleGraphResult(graphResult)) {
+              perRoute.set(layoutIdx, moduleGraphReason(graphResult));
             }
           }
           if (perRoute.size > 0) {

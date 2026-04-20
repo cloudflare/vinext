@@ -16,6 +16,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type {
   ClassificationReason,
   LayoutBuildClassification,
+  ModuleGraphStaticReason,
 } from "./layout-classification-types.js";
 import { classifyLayoutSegmentConfig } from "./report.js";
 
@@ -94,11 +95,6 @@ export function collectRouteClassificationManifest(
  * downstream callers read `.reason` without branching on `kind`.
  */
 type MergedLayoutClassification = Exclude<LayoutBuildClassification, { kind: "absent" }>;
-type ModuleGraphStaticReason = {
-  layer: "module-graph";
-  result: "static";
-  firstShimMatch?: string;
-};
 
 /**
  * Merges Layer 1 (segment config) and Layer 2 (module graph) into a single

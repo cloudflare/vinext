@@ -18,11 +18,13 @@ import { createAppPageTreePath } from "../server/app-page-route-wiring.js";
 import type {
   ClassificationReason,
   LayoutBuildClassification,
+  ModuleGraphStaticReason,
 } from "./layout-classification-types.js";
 
 export type {
   ClassificationReason,
   LayoutBuildClassification,
+  ModuleGraphStaticReason,
 } from "./layout-classification-types.js";
 
 export type ModuleGraphClassification = "static" | "needs-probe";
@@ -98,7 +100,7 @@ export function classifyLayoutByModuleGraph(
 
 export function moduleGraphReason(
   graphResult: ModuleGraphClassificationResult & { result: "static" },
-): { layer: "module-graph"; result: "static"; firstShimMatch?: string };
+): ModuleGraphStaticReason;
 export function moduleGraphReason(
   graphResult: ModuleGraphClassificationResult,
 ): ClassificationReason;
@@ -113,6 +115,12 @@ export function moduleGraphReason(
     result: graphResult.result,
     firstShimMatch: graphResult.firstShimMatch,
   };
+}
+
+export function isStaticModuleGraphResult(
+  graphResult: ModuleGraphClassificationResult,
+): graphResult is ModuleGraphClassificationResult & { result: "static" } {
+  return graphResult.result === "static";
 }
 
 /**

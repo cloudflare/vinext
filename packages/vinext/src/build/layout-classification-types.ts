@@ -35,6 +35,12 @@ export type ClassificationReason =
     }
   | { layer: "no-classifier" };
 
+export type ModuleGraphStaticReason = {
+  layer: "module-graph";
+  result: "static";
+  firstShimMatch?: string;
+};
+
 /**
  * Build-time classification outcome for a single layout. Tagged with `kind`
  * so callers can branch exhaustively and carry diagnostic reasons alongside
