@@ -528,6 +528,46 @@ describe("app page execution helpers", () => {
     });
   });
 
+  it("emits runtime-probe reason with the error message when the probe throws", async () => {
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) throw new Error("headers() outside render");
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope(fn) {
+          return Promise.resolve(fn()).then((result) => ({ result, dynamicDetected: false }));
+        },
+      },
+    });
+
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+      error: "headers() outside render",
+    });
+    expect(byId["layout:/"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "static",
+    });
+  });
+
   it("builds Link headers for preloaded app-page fonts", () => {
     expect(
       buildAppPageFontLinkHeader([

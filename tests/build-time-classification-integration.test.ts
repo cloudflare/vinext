@@ -292,9 +292,17 @@ describe("build-time classification integration", () => {
  * targets the sibling reasons stub. Kept intentionally permissive about the
  * emitted codegen shape so this test survives the #863 refactor.
  */
+type ReasonShape = { layer: string; result?: string };
+
+function isReasonShape(value: unknown): value is ReasonShape {
+  if (!value || typeof value !== "object") return false;
+  if (!("layer" in value)) return false;
+  return typeof value.layer === "string";
+}
+
 function extractReasonsDispatch(
   chunkSource: string,
-): (routeIdx: number) => Map<number, { layer: string }> | null {
+): (routeIdx: number) => Map<number, ReasonShape> | null {
   const stubRe = /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
   if (stubRe.test(chunkSource)) {
     throw new Error("__VINEXT_CLASS_REASONS was not patched despite VINEXT_DEBUG_CLASSIFICATION=1");
@@ -312,7 +320,19 @@ function extractReasonsDispatch(
   return (routeIdx: number) => {
     const result: unknown = Reflect.apply(raw, null, [routeIdx]);
     if (result === null) return null;
-    if (result instanceof Map) return result as Map<number, { layer: string }>;
+    if (result instanceof Map) {
+      const narrowed = new Map<number, ReasonShape>();
+      for (const [key, value] of result) {
+        if (typeof key !== "number") {
+          throw new Error(`Reasons dispatch returned non-numeric key: ${String(key)}`);
+        }
+        if (!isReasonShape(value)) {
+          throw new Error(`Reasons dispatch returned malformed reason: ${JSON.stringify(value)}`);
+        }
+        narrowed.set(key, value);
+      }
+      return narrowed;
+    }
     throw new Error(
       `Reasons dispatch returned unexpected value for routeIdx ${routeIdx}: ${JSON.stringify(result)}`,
     );
@@ -335,20 +355,22 @@ describe("build-time classification integration (debug on)", () => {
     );
   });
 
-  it("emits a segment-config reason for the force-dyn layout", () => {
-    // Coarse behavioural assertion: the Layer 1 pipeline produces a
-    // `segment-config` reason for a layout that declares `dynamic = "force-dynamic"`.
-    // We do not pin the exact reason object shape beyond the discriminator
-    // tag — the #863 refactor may reshape codegen, and this test should keep
-    // catching "build-time debug branch stopped producing reasons" regressions
-    // without having to track every field.
+  it("emits both Layer 1 and Layer 2 reasons on the force-dyn route dispatch entry", () => {
+    // Only the discriminator + Layer 2 `result` are pinned so the test
+    // survives the #863 codegen reshape.
     const reasonsFor = extractReasonsDispatch(built.chunkSource);
     const routeIdx = built.routeIndexByPattern.get("/force-dyn");
     expect(routeIdx).toBeDefined();
     const reasons = reasonsFor(routeIdx!);
     expect(reasons).toBeInstanceOf(Map);
-    const layoutReason = reasons!.get(1);
-    expect(layoutReason).toBeDefined();
-    expect(layoutReason!.layer).toBe("segment-config");
+
+    const nestedReason = reasons!.get(1);
+    expect(nestedReason).toBeDefined();
+    expect(nestedReason!.layer).toBe("segment-config");
+
+    const rootReason = reasons!.get(0);
+    expect(rootReason).toBeDefined();
+    expect(rootReason!.layer).toBe("module-graph");
+    expect(rootReason!.result).toBe("static");
   });
 });
