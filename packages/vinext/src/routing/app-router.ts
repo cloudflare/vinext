@@ -143,6 +143,16 @@ export function invalidateAppRouteCache(): void {
   cachedPageExtensionsKey = null;
 }
 
+function hasParallelSlotDirectory(dir: string): boolean {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .some((entry) => entry.isDirectory() && entry.name.startsWith("@"));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Scan the app/ directory and return a list of routes.
  */
@@ -189,6 +199,7 @@ export async function appRouter(
   )) {
     const dir = path.dirname(file);
     const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+    if (!hasParallelSlotDirectory(routeDir)) continue;
     if (discoverParallelSlots(routeDir, appDir, matcher).length === 0) continue;
 
     const route = directoryToAppRoute(dir, appDir, matcher, null, null);

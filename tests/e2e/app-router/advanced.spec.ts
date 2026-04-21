@@ -239,6 +239,20 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="parallel-photo-page"]')).not.toBeVisible();
   });
 
+  test("direct navigation to slot-only parallel source route renders feed slot", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/parallel-sibling-modal/vercel`);
+
+    await expect(page.locator('[data-testid="parallel-sibling-layout"]')).toBeVisible();
+    await expect(page.locator('[data-testid="parallel-feed-page"]')).toContainText(
+      "Feed for vercel",
+    );
+    await expect(page.locator('[data-testid="parallel-modal-default"]')).toBeVisible();
+    await expect(page.locator('[data-testid="parallel-photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="parallel-photo-page"]')).not.toBeVisible();
+  });
+
   test("back then forward restores intercepted modal view", async ({ page }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);

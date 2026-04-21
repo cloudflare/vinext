@@ -930,6 +930,10 @@ function matchPattern(urlParts, patternParts) {
   return params;
 }
 
+function mergeMatchedParams(sourceParams, targetParams) {
+  return Object.assign(Object.create(null), sourceParams, targetParams);
+}
+
 // Build a global intercepting route lookup for RSC navigation.
 // Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
 const interceptLookup = [];
@@ -960,7 +964,7 @@ function findIntercept(pathname, sourcePathname = null) {
   for (const entry of interceptLookup) {
     const params = matchPattern(urlParts, entry.targetPatternParts);
     if (params !== null) {
-      let sourceParams = {};
+      let sourceParams = Object.create(null);
       if (sourcePathname !== null) {
         const sourceRoute = routes[entry.sourceRouteIndex];
         const sourceParts = sourcePathname.split("/").filter(Boolean);
@@ -971,7 +975,7 @@ function findIntercept(pathname, sourcePathname = null) {
           sourceParams = matchedSourceParams;
         }
       }
-      return { ...entry, matchedParams: { ...sourceParams, ...params } };
+      return { ...entry, matchedParams: mergeMatchedParams(sourceParams, params) };
     }
   }
   return null;
