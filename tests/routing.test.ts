@@ -1225,6 +1225,34 @@ describe("matchAppRoute - URL matching", () => {
     expect(membersRoute!.layouts).toEqual(dashboardRoute!.layouts);
   });
 
+  it("discovers layout routes whose own content is parallel slot pages", async () => {
+    await withTempDir("vinext-app-layout-parallel-slot-route-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "users", "[username]", "@feed"), { recursive: true });
+      await mkdir(path.join(appDir, "users", "[username]", "@modal"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "@feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "users", "[username]", "@feed", "default.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "users", "[username]", "@modal", "default.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/users/:username");
+
+      expect(route).toBeDefined();
+      expect(route!.pagePath).toBeNull();
+      expect(route!.parallelSlots.map((slot) => slot.name).sort()).toEqual(["feed", "modal"]);
+      expect(route!.parallelSlots.find((slot) => slot.name === "feed")!.pagePath).toContain(
+        path.join("@feed", "page.tsx"),
+      );
+    });
+  });
+
   // --- Hyphenated param names (issue #71) ---
 
   it("discovers optional catch-all with hyphenated param name [[...sign-in]]", async () => {

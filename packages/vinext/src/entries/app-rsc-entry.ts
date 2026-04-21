@@ -955,12 +955,24 @@ for (let ri = 0; ri < routes.length; ri++) {
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
  */
-function findIntercept(pathname) {
+function findIntercept(pathname, sourcePathname = null) {
   const urlParts = pathname.split("/").filter(Boolean);
   for (const entry of interceptLookup) {
     const params = matchPattern(urlParts, entry.targetPatternParts);
     if (params !== null) {
-      return { ...entry, matchedParams: params };
+      let sourceParams = {};
+      if (sourcePathname !== null) {
+        const sourceRoute = routes[entry.sourceRouteIndex];
+        const sourceParts = sourcePathname.split("/").filter(Boolean);
+        const matchedSourceParams = sourceRoute
+          ? matchPattern(sourceParts, sourceRoute.patternParts)
+          : null;
+        if (matchedSourceParams === null) {
+          continue;
+        }
+        sourceParams = matchedSourceParams;
+      }
+      return { ...entry, matchedParams: { ...sourceParams, ...params } };
     }
   }
   return null;
@@ -974,8 +986,9 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     request,
     mountedSlotsHeader,
   } = pageRequest;
+  const hasPageModule = !!route.page;
   const PageComponent = route.page?.default;
-  if (!PageComponent) {
+  if (hasPageModule && !PageComponent) {
     const _interceptionContext = opts?.interceptionContext ?? null;
     const _noExportRouteId = __createAppPayloadRouteId(routePath, _interceptionContext);
     let _noExportRootLayout = null;
@@ -1099,7 +1112,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     : null;
 
   return __buildAppPageElements({
-    element: createElement(PageComponent, pageProps),
+    element: PageComponent ? createElement(PageComponent, pageProps) : null,
     globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     isRscRequest,
     mountedSlotIds,
@@ -1863,7 +1876,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           cleanPathname,
           currentParams: actionParams,
           currentRoute: actionRoute,
-          findIntercept,
+          findIntercept(pathname) {
+            return findIntercept(pathname, interceptionContextHeader);
+          },
           getRouteParamNames(sourceRoute) {
             return sourceRoute.params;
           },
@@ -2186,8 +2201,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   // Build the component tree: layouts wrapping the page
+  const hasPageModule = !!route.page;
   const PageComponent = route.page?.default;
-  if (!PageComponent) {
+  if (hasPageModule && !PageComponent) {
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response("Page has no default export", { status: 500 });
@@ -2359,7 +2375,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
     cleanPathname,
     currentRoute: route,
-    findIntercept,
+    findIntercept(pathname) {
+      return findIntercept(pathname, interceptionContextHeader);
+    },
     getRouteParamNames(sourceRoute) {
       return sourceRoute.params;
     },

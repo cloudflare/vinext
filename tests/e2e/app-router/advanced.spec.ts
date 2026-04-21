@@ -189,6 +189,56 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
+  test("sibling (..) intercepted navigation mounts the modal slot", async ({ page }) => {
+    // Ported from the sibling-interception behavior covered by Next.js:
+    // test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    await page.goto(`${BASE}/sibling-source`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#sibling-target-42-link");
+
+    await page.waitForURL(`${BASE}/sibling-target/42`);
+    await expect(page.locator('[data-testid="sibling-source-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sibling-target-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sibling-target-modal-id"]')).toContainText(
+      "target-id:42",
+    );
+    await expect(page.locator('[data-testid="sibling-target-page"]')).not.toBeVisible();
+  });
+
+  test("top-level sibling (..) film navigation mounts the modal slot", async ({ page }) => {
+    await page.goto(`${BASE}/top`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#godfather-film-link");
+
+    await page.waitForURL(`${BASE}/film/tt0068646-the-godfather-1972`);
+    await expect(page.locator('[data-testid="top-page"]')).toBeVisible();
+    await expect(page.locator("h1")).toContainText("Top 1000");
+    await expect(page.locator('[data-testid="film-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="film-panel-id"]')).toContainText(
+      "tt0068646-the-godfather-1972",
+    );
+    await expect(page.locator('[data-testid="detail-page"]')).not.toBeVisible();
+  });
+
+  test("sibling (..) modal preserves source content in a parallel feed slot", async ({ page }) => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/app/(group)/intercepting-parallel-modal
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/parallel-routes-and-interception/app/(group)/intercepting-parallel-modal
+    await page.goto(`${BASE}/parallel-sibling-modal/vercel`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#parallel-photo-42-link");
+
+    await page.waitForURL(`${BASE}/parallel-sibling-modal/photo/42`);
+    await expect(page.locator('[data-testid="parallel-feed-page"]')).toContainText(
+      "Feed for vercel",
+    );
+    await expect(page.locator('[data-testid="parallel-photo-modal"]')).toHaveText("Photo MODAL 42");
+    await expect(page.locator('[data-testid="parallel-photo-page"]')).not.toBeVisible();
+  });
+
   test("back then forward restores intercepted modal view", async ({ page }) => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);
