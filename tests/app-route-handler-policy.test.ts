@@ -10,11 +10,50 @@ import {
 } from "../packages/vinext/src/server/app-route-handler-policy.js";
 
 describe("app route handler policy helpers", () => {
-  it("extracts finite positive route handler revalidate values", () => {
+  it("preserves revalidate = 0 as a distinct never-cache signal", () => {
+    // revalidate = 0 must not collapse to null. Downstream header and cache
+    // gates rely on 0 being observable to emit a no-store Cache-Control and
+    // to skip ISR writes. Collapsing it to null would emit no Cache-Control
+    // at all and let CDNs/browsers apply heuristic caching to a response
+    // the author explicitly opted out of.
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 60 })).toBe(60);
-    expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 0 })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 0 })).toBe(0);
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Infinity })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBeNull();
+  });
+
+  it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {
+    const readBase = {
+      dynamicConfig: "auto",
+      handlerFn() {},
+      isAutoHead: false,
+      isKnownDynamic: false,
+      isProduction: true,
+      method: "GET",
+      revalidateSeconds: 0,
+    };
+    // A never-cache handler must not be served from ISR. Otherwise stale
+    // entries written before the handler was marked never-cache would keep
+    // replaying.
+    expect(shouldReadAppRouteHandlerCache(readBase)).toBe(false);
+
+    const writeBase = {
+      dynamicConfig: "auto",
+      dynamicUsedInHandler: false,
+      handlerSetCacheControl: false,
+      isAutoHead: false,
+      isProduction: true,
+      method: "GET",
+      revalidateSeconds: 0,
+    };
+    // Writing a never-cache response to ISR would persist uncacheable
+    // content under a key that later requests would try to serve.
+    expect(shouldWriteAppRouteHandlerCache(writeBase)).toBe(false);
+
+    // The framework still owns the Cache-Control header for revalidate = 0
+    // unless the handler set its own. Gating this off would leave the
+    // response with no Cache-Control and expose it to heuristic caching.
+    expect(shouldApplyAppRouteHandlerRevalidateHeader(writeBase)).toBe(true);
   });
 
   it("detects invalid default-export route handlers", () => {

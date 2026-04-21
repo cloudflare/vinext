@@ -218,4 +218,21 @@ describe("app route handler response helpers", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=30, stale-while-revalidate");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
+
+  it("emits a no-store Cache-Control for revalidate = 0 route handlers", () => {
+    // A handler exporting `revalidate = 0` opts out of caching entirely.
+    // The Cache-Control must tell browsers and CDNs never to store the
+    // response. Emitting `s-maxage=0, stale-while-revalidate` (the SWR
+    // template) would still permit intermediate caches to serve stale
+    // copies, which is the exact opposite of the author's intent.
+    // The exact string matches Next.js's own cache-control helper:
+    // .nextjs-ref/packages/next/src/server/lib/cache-control.ts:29.
+    const response = new Response("no cache me");
+
+    applyRouteHandlerRevalidateHeader(response, 0);
+
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
 });
