@@ -18,10 +18,22 @@ export type FinalizeRouteHandlerResponseOptions = {
   isHead: boolean;
 };
 
+// Matches Next.js's getCacheControlHeader for revalidate === 0.
+// See .nextjs-ref/packages/next/src/server/lib/cache-control.ts.
+const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
+
 function buildRouteHandlerCacheControl(
   cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],
   revalidateSeconds: number,
 ): string {
+  if (revalidateSeconds === 0) {
+    // A cached response is never produced for revalidate = 0 (the ISR write
+    // path skips it), so only the HIT/STALE->fresh rewrite can arrive here
+    // with a 0 value, via applyRouteHandlerRevalidateHeader. In all such
+    // cases the author opted out of caching entirely.
+    return NEVER_CACHE_CONTROL;
+  }
+
   if (cacheState === "STALE") {
     return "s-maxage=0, stale-while-revalidate";
   }

@@ -19,6 +19,7 @@ describe("app route handler policy helpers", () => {
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 60 })).toBe(60);
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 0 })).toBe(0);
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Infinity })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Number.NaN })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBeNull();
   });
 

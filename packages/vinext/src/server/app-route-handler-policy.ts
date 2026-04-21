@@ -54,11 +54,15 @@ export type AppRouteHandlerSpecialError =
 export function getAppRouteHandlerRevalidateSeconds(
   handler: Pick<AppRouteHandlerModule, "revalidate">,
 ): number | null {
-  return typeof handler.revalidate === "number" &&
-    handler.revalidate > 0 &&
-    handler.revalidate !== Infinity
-    ? handler.revalidate
-    : null;
+  // 0 is a meaningful value ("never cache") and must be preserved so the
+  // header path can emit a no-store Cache-Control. Non-finite values
+  // (Infinity, NaN) are not valid revalidate durations and fall back to
+  // the null ("no revalidate configured") branch along with negatives.
+  const { revalidate } = handler;
+  if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
+    return null;
+  }
+  return revalidate;
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {
@@ -98,9 +102,13 @@ export function resolveAppRouteHandlerMethod(
 }
 
 export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheReadOptions): boolean {
+  // revalidateSeconds === 0 means "never cache" and must skip the ISR read.
+  // A previously written entry (e.g. from before the handler opted out)
+  // must never be replayed once the author set revalidate = 0.
   return (
     options.isProduction &&
     options.revalidateSeconds !== null &&
+    options.revalidateSeconds > 0 &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
@@ -111,6 +119,9 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
 export function shouldApplyAppRouteHandlerRevalidateHeader(
   options: Omit<AppRouteHandlerResponseCacheOptions, "dynamicConfig" | "isProduction">,
 ): boolean {
+  // Includes revalidateSeconds === 0. That case emits the no-store
+  // Cache-Control, which is exactly the header a never-cache handler
+  // needs to suppress heuristic caching.
   return (
     options.revalidateSeconds !== null &&
     !options.dynamicUsedInHandler &&
@@ -122,9 +133,12 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
 export function shouldWriteAppRouteHandlerCache(
   options: AppRouteHandlerResponseCacheOptions,
 ): boolean {
+  // Excludes revalidateSeconds === 0. A never-cache response must not be
+  // persisted to ISR, even though it still needs a Cache-Control header.
   return (
     options.isProduction &&
     options.revalidateSeconds !== null &&
+    options.revalidateSeconds > 0 &&
     options.dynamicConfig !== "force-dynamic" &&
     shouldApplyAppRouteHandlerRevalidateHeader(options)
   );
