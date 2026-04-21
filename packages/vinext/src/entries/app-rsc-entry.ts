@@ -967,10 +967,9 @@ function findIntercept(pathname, sourcePathname = null) {
         const matchedSourceParams = sourceRoute
           ? matchPattern(sourceParts, sourceRoute.patternParts)
           : null;
-        if (matchedSourceParams === null) {
-          continue;
+        if (matchedSourceParams !== null) {
+          sourceParams = matchedSourceParams;
         }
-        sourceParams = matchedSourceParams;
       }
       return { ...entry, matchedParams: { ...sourceParams, ...params } };
     }
