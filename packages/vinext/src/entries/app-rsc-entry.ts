@@ -2518,6 +2518,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       return LayoutComp({ params: _asyncLayoutParams, children: null });
     },
     probePage() {
+      if (!PageComponent) return null;
       const _probeSearchObj = {};
       url.searchParams.forEach(function(v, k) {
         if (k in _probeSearchObj) {
