@@ -5,8 +5,8 @@ import {
   startTransition,
   use,
   useLayoutEffect,
-  useReducer,
   useRef,
+  useState,
   type Dispatch,
   type ReactNode,
 } from "react";
@@ -122,8 +122,21 @@ let nextNavigationRenderId = 0;
 let activeNavigationId = 0;
 const pendingNavigationCommits = new Map<number, () => void>();
 const pendingNavigationPrePaintEffects = new Map<number, () => void>();
-let dispatchBrowserRouterAction: Dispatch<AppRouterAction> | null = null;
+type PendingBrowserRouterState = {
+  promise: Promise<AppRouterState>;
+  resolve: (state: AppRouterState) => void;
+  settled: boolean;
+};
+
+function isRouterStatePromise(
+  value: AppRouterState | Promise<AppRouterState>,
+): value is Promise<AppRouterState> {
+  return "then" in value;
+}
+
+let setBrowserRouterState: Dispatch<AppRouterState | Promise<AppRouterState>> | null = null;
 let browserRouterStateRef: { current: AppRouterState } | null = null;
+let activePendingBrowserRouterState: PendingBrowserRouterState | null = null;
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
 
@@ -131,11 +144,11 @@ function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
 }
 
-function getBrowserRouterDispatch(): Dispatch<AppRouterAction> {
-  if (!dispatchBrowserRouterAction) {
-    throw new Error("[vinext] Browser router dispatch is not initialized");
+function getBrowserRouterStateSetter(): Dispatch<AppRouterState | Promise<AppRouterState>> {
+  if (!setBrowserRouterState) {
+    throw new Error("[vinext] Browser router state setter is not initialized");
   }
-  return dispatchBrowserRouterAction;
+  return setBrowserRouterState;
 }
 
 function getBrowserRouterState(): AppRouterState {
@@ -143,6 +156,58 @@ function getBrowserRouterState(): AppRouterState {
     throw new Error("[vinext] Browser router state is not initialized");
   }
   return browserRouterStateRef.current;
+}
+
+function beginPendingBrowserRouterState(): PendingBrowserRouterState {
+  const setter = getBrowserRouterStateSetter();
+
+  if (activePendingBrowserRouterState && !activePendingBrowserRouterState.settled) {
+    activePendingBrowserRouterState.settled = true;
+    activePendingBrowserRouterState.resolve(getBrowserRouterState());
+  }
+
+  let resolve!: (state: AppRouterState) => void;
+  const promise = new Promise<AppRouterState>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  const pending: PendingBrowserRouterState = {
+    promise,
+    resolve,
+    settled: false,
+  };
+
+  activePendingBrowserRouterState = pending;
+  setter(promise);
+
+  return pending;
+}
+
+function settlePendingBrowserRouterState(
+  pending: PendingBrowserRouterState | null | undefined,
+): void {
+  if (!pending || pending.settled) return;
+
+  pending.settled = true;
+  pending.resolve(getBrowserRouterState());
+
+  if (activePendingBrowserRouterState === pending) {
+    activePendingBrowserRouterState = null;
+  }
+}
+
+function resolvePendingBrowserRouterState(
+  pending: PendingBrowserRouterState | null | undefined,
+  action: AppRouterAction,
+): void {
+  if (!pending || pending.settled) return;
+
+  pending.settled = true;
+  pending.resolve(routerReducer(getBrowserRouterState(), action));
+
+  if (activePendingBrowserRouterState === pending) {
+    activePendingBrowserRouterState = null;
+  }
 }
 
 function applyClientParams(params: Record<string, string | string[]>): void {
@@ -465,6 +530,7 @@ async function commitSameUrlNavigatePayload(
       pending.previousNextUrl,
       pending.routeId,
       pending.rootLayoutTreePath,
+      null,
       false,
     );
   }
@@ -492,7 +558,7 @@ function BrowserRoot({
 }) {
   const resolvedElements = use(initialElements);
   const initialMetadata = readAppElementsMetadata(resolvedElements);
-  const [treeState, dispatchTreeState] = useReducer(routerReducer, {
+  const [treeStateValue, setTreeStateValue] = useState<AppRouterState | Promise<AppRouterState>>({
     elements: resolvedElements,
     interceptionContext: initialMetadata.interceptionContext,
     layoutFlags: initialMetadata.layoutFlags,
@@ -502,6 +568,7 @@ function BrowserRoot({
     rootLayoutTreePath: initialMetadata.rootLayoutTreePath,
     routeId: initialMetadata.routeId,
   });
+  const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
 
   // Keep the latest router state in a ref so external callers (navigate(),
   // server actions, HMR) always read the current state. Safe: those readers
@@ -518,18 +585,18 @@ function BrowserRoot({
   // after hydrateRoot() returns; by then this layout effect has already run for
   // the hydration commit, so getBrowserRouterState() never observes a null ref.
   useLayoutEffect(() => {
-    dispatchBrowserRouterAction = dispatchTreeState;
+    setBrowserRouterState = setTreeStateValue;
     browserRouterStateRef = stateRef;
     return () => {
-      if (dispatchBrowserRouterAction === dispatchTreeState) {
-        dispatchBrowserRouterAction = null;
+      if (setBrowserRouterState === setTreeStateValue) {
+        setBrowserRouterState = null;
       }
       if (browserRouterStateRef === stateRef) {
         browserRouterStateRef = null;
       }
       setMountedSlotsHeader(null);
     };
-  }, [dispatchTreeState]);
+  }, [setTreeStateValue]);
 
   useLayoutEffect(() => {
     setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
@@ -579,22 +646,30 @@ function dispatchBrowserTree(
   previousNextUrl: string | null,
   routeId: string,
   rootLayoutTreePath: string | null,
+  pendingRouterState: PendingBrowserRouterState | null,
   useTransitionMode: boolean,
 ): void {
-  const dispatch = getBrowserRouterDispatch();
+  const setter = getBrowserRouterStateSetter();
+  const action: AppRouterAction = {
+    elements,
+    interceptionContext,
+    layoutFlags,
+    navigationSnapshot,
+    previousNextUrl,
+    renderId,
+    rootLayoutTreePath,
+    routeId,
+    type: actionType,
+  };
 
-  const applyAction = () =>
-    dispatch({
-      elements,
-      interceptionContext,
-      layoutFlags,
-      navigationSnapshot,
-      previousNextUrl,
-      renderId,
-      rootLayoutTreePath,
-      routeId,
-      type: actionType,
-    });
+  const applyAction = () => {
+    if (pendingRouterState) {
+      resolvePendingBrowserRouterState(pendingRouterState, action);
+      return;
+    }
+
+    setter(routerReducer(getBrowserRouterState(), action));
+  };
 
   if (useTransitionMode) {
     startTransition(applyAction);
@@ -611,6 +686,7 @@ async function renderNavigationPayload(
   historyUpdateMode: HistoryUpdateMode | undefined,
   params: Record<string, string | string[]>,
   previousNextUrl: string | null,
+  pendingRouterState: PendingBrowserRouterState | null,
   useTransition = true,
   actionType: "navigate" | "replace" | "traverse" = "navigate",
 ): Promise<void> {
@@ -639,6 +715,7 @@ async function renderNavigationPayload(
     });
 
     if (disposition === "skip") {
+      settlePendingBrowserRouterState(pendingRouterState);
       const resolve = pendingNavigationCommits.get(renderId);
       pendingNavigationCommits.delete(renderId);
       resolve?.();
@@ -646,6 +723,7 @@ async function renderNavigationPayload(
     }
 
     if (disposition === "hard-navigate") {
+      settlePendingBrowserRouterState(pendingRouterState);
       pendingNavigationCommits.delete(renderId);
       window.location.assign(targetHref);
       return;
@@ -673,6 +751,7 @@ async function renderNavigationPayload(
       pending.previousNextUrl,
       pending.routeId,
       pending.rootLayoutTreePath,
+      pendingRouterState,
       useTransition,
     );
   } catch (error) {
@@ -686,6 +765,7 @@ async function renderNavigationPayload(
     if (snapshotActivated) {
       commitClientNavigationState(navId);
     }
+    settlePendingBrowserRouterState(pendingRouterState);
     resolve?.();
     throw error;
   }
@@ -883,6 +963,7 @@ async function main(): Promise<void> {
     navigationKind: NavigationKind = "navigate",
     historyUpdateMode?: HistoryUpdateMode,
     previousNextUrlOverride?: string | null,
+    programmaticTransition = false,
   ): Promise<void> {
     if (redirectDepth > 10) {
       console.error(
@@ -893,10 +974,15 @@ async function main(): Promise<void> {
     }
 
     let _snapshotPending = false;
+    let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch block can guard against hard-navigating
     // to a stale URL when this navigation has already been superseded.
     const navId = ++activeNavigationId;
     try {
+      if (programmaticTransition) {
+        pendingRouterState = beginPendingBrowserRouterState();
+      }
+
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
       const requestState = getRequestState(navigationKind, previousNextUrlOverride);
@@ -935,7 +1021,10 @@ async function main(): Promise<void> {
         // between navId checks consistently; the cached path omits the check between
         // createClientNavigationRenderSnapshot (synchronous) and createFromFetch
         // because there is no await in that gap.
-        if (navId !== activeNavigationId) return;
+        if (navId !== activeNavigationId) {
+          settlePendingBrowserRouterState(pendingRouterState);
+          return;
+        }
         const cachedParams = cachedRoute.params;
         // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
         // wrapping only) — no stale-navigation recheck needed between here and the
@@ -946,7 +1035,10 @@ async function main(): Promise<void> {
             Promise.resolve(restoreRscResponse(cachedRoute.response)),
           ),
         );
-        if (navId !== activeNavigationId) return;
+        if (navId !== activeNavigationId) {
+          settlePendingBrowserRouterState(pendingRouterState);
+          return;
+        }
         _snapshotPending = true; // Set before renderNavigationPayload
         try {
           await renderNavigationPayload(
@@ -957,6 +1049,7 @@ async function main(): Promise<void> {
             historyUpdateMode,
             cachedParams,
             requestPreviousNextUrl,
+            pendingRouterState,
             isSameRoute,
             toActionType(navigationKind),
           );
@@ -996,7 +1089,10 @@ async function main(): Promise<void> {
         });
       }
 
-      if (navId !== activeNavigationId) return;
+      if (navId !== activeNavigationId) {
+        settlePendingBrowserRouterState(pendingRouterState);
+        return;
+      }
 
       const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
       const requestedUrl = new URL(rscUrl, window.location.origin);
@@ -1011,9 +1107,19 @@ async function main(): Promise<void> {
 
         const navigate = window.__VINEXT_RSC_NAVIGATE__;
         if (!navigate) {
+          settlePendingBrowserRouterState(pendingRouterState);
           window.location.href = destinationPath;
           return;
         }
+
+        // Hand ownership of the pending transition off before recursing. The
+        // recursive call will not receive pendingRouterState (programmaticTransition=false),
+        // so if we left it unsettled its promise would orphan in the useState slot
+        // until the next programmatic push caught it via the !settled branch in
+        // beginPendingBrowserRouterState. Settling here with the current committed
+        // state makes isPending flip false mid-redirect — a deliberate tradeoff
+        // over leaning on React's internal transition-completion heuristic.
+        settlePendingBrowserRouterState(pendingRouterState);
 
         // The URL has already been updated via replaceHistoryStateWithoutNotify above,
         // so the recursive navigation should NOT push/replace again. Pass undefined
@@ -1024,6 +1130,7 @@ async function main(): Promise<void> {
           navigationKind,
           undefined,
           requestPreviousNextUrl,
+          false,
         );
       }
 
@@ -1044,13 +1151,19 @@ async function main(): Promise<void> {
 
       const responseSnapshot = await snapshotRscResponse(navResponse);
 
-      if (navId !== activeNavigationId) return;
+      if (navId !== activeNavigationId) {
+        settlePendingBrowserRouterState(pendingRouterState);
+        return;
+      }
 
       const rscPayload = normalizeAppElementsPromise(
         createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
       );
 
-      if (navId !== activeNavigationId) return;
+      if (navId !== activeNavigationId) {
+        settlePendingBrowserRouterState(pendingRouterState);
+        return;
+      }
 
       _snapshotPending = true; // Set before renderNavigationPayload
       try {
@@ -1062,6 +1175,7 @@ async function main(): Promise<void> {
           historyUpdateMode,
           navParams,
           requestPreviousNextUrl,
+          pendingRouterState,
           isSameRoute,
           toActionType(navigationKind),
         );
@@ -1075,7 +1189,10 @@ async function main(): Promise<void> {
       }
       // Don't cache the response if this navigation was superseded during
       // renderNavigationPayload's await — the elements were never dispatched.
-      if (navId !== activeNavigationId) return;
+      if (navId !== activeNavigationId) {
+        settlePendingBrowserRouterState(pendingRouterState);
+        return;
+      }
       // Store the visited response only after renderNavigationPayload succeeds.
       // If we stored it before and renderNavigationPayload threw, a future
       // back/forward navigation could replay a snapshot from a navigation that
@@ -1100,6 +1217,7 @@ async function main(): Promise<void> {
         _snapshotPending = false;
         commitClientNavigationState(navId);
       }
+      settlePendingBrowserRouterState(pendingRouterState);
       // Clear pending pathname on error so subsequent navigations compare correctly.
       // Only clear if this is still the active navigation — a newer navigation
       // has already overwritten pendingPathname with its own target.
@@ -1108,7 +1226,9 @@ async function main(): Promise<void> {
       }
       // Don't hard-navigate to a stale URL if this navigation was superseded by
       // a newer one — the newer navigation is already in flight and would be clobbered.
-      if (navId !== activeNavigationId) return;
+      if (navId !== activeNavigationId) {
+        return;
+      }
       console.error("[vinext] RSC navigation error:", error);
       window.location.href = href;
     }
@@ -1168,6 +1288,7 @@ async function main(): Promise<void> {
           pending.previousNextUrl,
           pending.routeId,
           pending.rootLayoutTreePath,
+          null,
           false,
         );
       } catch (error) {

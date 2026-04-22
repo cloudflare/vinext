@@ -94,6 +94,7 @@ declare global {
           navigationKind?: "navigate" | "traverse" | "refresh",
           historyUpdateMode?: "push" | "replace",
           previousNextUrlOverride?: string | null,
+          programmaticTransition?: boolean,
         ) => Promise<void>)
       | undefined;
 

@@ -263,7 +263,14 @@ describe("Form client GET interception", () => {
     );
     expect(event.preventDefault).toHaveBeenCalledOnce();
     // navigateClientSide delegates URL push to __VINEXT_RSC_NAVIGATE__ (two-phase commit)
-    expect(navigate).toHaveBeenCalledWith("/search?q=react", 0, "navigate", "push");
+    expect(navigate).toHaveBeenCalledWith(
+      "/search?q=react",
+      0,
+      "navigate",
+      "push",
+      undefined,
+      false,
+    );
     expect(scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
@@ -294,6 +301,8 @@ describe("Form client GET interception", () => {
       0,
       "navigate",
       "push",
+      undefined,
+      false,
     );
   });
 
@@ -322,6 +331,8 @@ describe("Form client GET interception", () => {
       0,
       "navigate",
       "push",
+      undefined,
+      false,
     );
   });
 
@@ -364,6 +375,8 @@ describe("Form client GET interception", () => {
       0,
       "navigate",
       "push",
+      undefined,
+      false,
     );
   });
 

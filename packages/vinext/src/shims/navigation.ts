@@ -1117,6 +1117,7 @@ export async function navigateClientSide(
   href: string,
   mode: "push" | "replace",
   scroll: boolean,
+  programmaticTransition = false,
 ): Promise<void> {
   // Normalize same-origin absolute URLs to local paths for SPA navigation
   let normalizedHref = href;
@@ -1172,7 +1173,14 @@ export async function navigateClientSide(
   // double-push and ensures window.location still reflects the *current* URL
   // when navigateRsc computes isSameRoute (cross-route vs same-route).
   if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-    await window.__VINEXT_RSC_NAVIGATE__(fullHref, 0, "navigate", mode);
+    await window.__VINEXT_RSC_NAVIGATE__(
+      fullHref,
+      0,
+      "navigate",
+      mode,
+      undefined,
+      programmaticTransition,
+    );
   } else {
     if (mode === "replace") {
       replaceHistoryStateWithoutNotify(null, "", fullHref);
@@ -1204,11 +1212,25 @@ export async function navigateClientSide(
 const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    void navigateClientSide(href, "push", options?.scroll !== false);
+    const navigate = () => {
+      void navigateClientSide(href, "push", options?.scroll !== false, true);
+    };
+    if (typeof React.startTransition === "function") {
+      React.startTransition(navigate);
+    } else {
+      navigate();
+    }
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    void navigateClientSide(href, "replace", options?.scroll !== false);
+    const navigate = () => {
+      void navigateClientSide(href, "replace", options?.scroll !== false, true);
+    };
+    if (typeof React.startTransition === "function") {
+      React.startTransition(navigate);
+    } else {
+      navigate();
+    }
   },
   back(): void {
     if (isServer) return;
@@ -1221,8 +1243,16 @@ const _appRouter = {
   refresh(): void {
     if (isServer) return;
     // Re-fetch the current page's RSC stream
-    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      void window.__VINEXT_RSC_NAVIGATE__(window.location.href, 0, "refresh");
+    const rscNavigate = window.__VINEXT_RSC_NAVIGATE__;
+    if (typeof rscNavigate === "function") {
+      const navigate = () => {
+        void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
+      };
+      if (typeof React.startTransition === "function") {
+        React.startTransition(navigate);
+      } else {
+        navigate();
+      }
     }
   },
   prefetch(href: string): void {
