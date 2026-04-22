@@ -1212,25 +1212,15 @@ export async function navigateClientSide(
 const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    const navigate = () => {
+    React.startTransition(() => {
       void navigateClientSide(href, "push", options?.scroll !== false, true);
-    };
-    if (typeof React.startTransition === "function") {
-      React.startTransition(navigate);
-    } else {
-      navigate();
-    }
+    });
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     if (isServer) return;
-    const navigate = () => {
+    React.startTransition(() => {
       void navigateClientSide(href, "replace", options?.scroll !== false, true);
-    };
-    if (typeof React.startTransition === "function") {
-      React.startTransition(navigate);
-    } else {
-      navigate();
-    }
+    });
   },
   back(): void {
     if (isServer) return;
@@ -1248,11 +1238,7 @@ const _appRouter = {
       const navigate = () => {
         void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
       };
-      if (typeof React.startTransition === "function") {
-        React.startTransition(navigate);
-      } else {
-        navigate();
-      }
+      React.startTransition(navigate);
     }
   },
   prefetch(href: string): void {

@@ -131,7 +131,7 @@ type PendingBrowserRouterState = {
 function isRouterStatePromise(
   value: AppRouterState | Promise<AppRouterState>,
 ): value is Promise<AppRouterState> {
-  return "then" in value;
+  return value instanceof Promise;
 }
 
 let setBrowserRouterState: Dispatch<AppRouterState | Promise<AppRouterState>> | null = null;
@@ -664,6 +664,9 @@ function dispatchBrowserTree(
 
   const applyAction = () => {
     if (pendingRouterState) {
+      // The programmatic navigation is already running inside React.startTransition
+      // (from router.push/replace/refresh), so resolving the deferred promise is
+      // sufficient — no additional startTransition wrapper is needed below.
       resolvePendingBrowserRouterState(pendingRouterState, action);
       return;
     }

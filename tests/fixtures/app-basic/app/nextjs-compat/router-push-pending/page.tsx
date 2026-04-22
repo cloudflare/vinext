@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { PendingClient } from "./pending-client";
 
 async function SlowFilterResult({ filter }: { filter: string }) {
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
 
   return <p id="server-filter">server filter: {filter}</p>;
 }
