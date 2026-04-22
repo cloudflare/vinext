@@ -23,6 +23,16 @@ export function PendingClient() {
       >
         Push alpha
       </button>
+      <button
+        id="push-redirect"
+        onClick={() => {
+          startTransition(() => {
+            router.push("/nextjs-compat/router-push-pending-redirect");
+          });
+        }}
+      >
+        Push redirect
+      </button>
     </div>
   );
 }
