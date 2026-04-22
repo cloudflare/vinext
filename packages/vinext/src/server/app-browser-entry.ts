@@ -968,250 +968,227 @@ async function main(): Promise<void> {
     previousNextUrlOverride?: string | null,
     programmaticTransition = false,
   ): Promise<void> {
-    if (redirectDepth > 10) {
-      console.error(
-        "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
-      );
-      window.location.href = href;
-      return;
-    }
-
     let _snapshotPending = false;
     let pendingRouterState: PendingBrowserRouterState | null = null;
-    // Hoist navId above try so the catch block can guard against hard-navigating
-    // to a stale URL when this navigation has already been superseded.
+    // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = ++activeNavigationId;
+
+    // Loop variables for inline redirect following. On a redirect, these are
+    // updated and the loop continues without returning or re-entering navigateRsc,
+    // so a single pendingRouterState spans all hops and isPending never flashes.
+    let currentHref = href;
+    let currentHistoryMode = historyUpdateMode;
+    let currentPrevNextUrl = previousNextUrlOverride;
+    let redirectCount = redirectDepth;
+
     try {
       if (programmaticTransition) {
         pendingRouterState = beginPendingBrowserRouterState();
       }
 
-      const url = new URL(href, window.location.origin);
-      const rscUrl = toRscUrl(url.pathname + url.search);
-      const requestState = getRequestState(navigationKind, previousNextUrlOverride);
-      const requestInterceptionContext = requestState.interceptionContext;
-      const requestPreviousNextUrl = requestState.previousNextUrl;
-
-      // Compare against previous pending navigation first, then committed state.
-      // This avoids isSameRoute misclassification during rapid back-to-back clicks.
-      const navState = getClientNavigationState();
-      const currentPath =
-        navState?.pendingPathname ??
-        navState?.cachedPathname ??
-        stripBasePath(window.location.pathname, __basePath);
-
-      const targetPath = stripBasePath(url.pathname, __basePath);
-      const isSameRoute = targetPath === currentPath;
-
-      // Set this navigation as the pending pathname, overwriting any previous.
-      // Pass navId so only this navigation (or a newer one) can clear it later.
-      setPendingPathname(url.pathname, navId);
-
-      const elementsAtNavStart = getBrowserRouterState().elements;
-      const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
-      const cachedRoute = getVisitedResponse(
-        rscUrl,
-        requestInterceptionContext,
-        mountedSlotsHeader,
-        navigationKind,
-      );
-      if (cachedRoute) {
-        // Check stale-navigation before and after createFromFetch. The pre-check
-        // avoids wasted parse work; the post-check catches supersessions that
-        // occur during the await. createFromFetch on a buffered response is fast
-        // but still async, so the window exists. The non-cached path (below) places
-        // its heavyweight async steps (fetch, snapshotRscResponse, createFromFetch)
-        // between navId checks consistently; the cached path omits the check between
-        // createClientNavigationRenderSnapshot (synchronous) and createFromFetch
-        // because there is no await in that gap.
-        if (navId !== activeNavigationId) {
-          settlePendingBrowserRouterState(pendingRouterState);
+      while (true) {
+        if (redirectCount > 10) {
+          console.error(
+            "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
+          );
+          window.location.href = currentHref;
           return;
         }
-        const cachedParams = cachedRoute.params;
-        // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
-        // wrapping only) — no stale-navigation recheck needed between here and the
-        // next await.
-        const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(href, cachedParams);
-        const cachedPayload = normalizeAppElementsPromise(
-          createFromFetch<AppWireElements>(
-            Promise.resolve(restoreRscResponse(cachedRoute.response)),
-          ),
+
+        const url = new URL(currentHref, window.location.origin);
+        const rscUrl = toRscUrl(url.pathname + url.search);
+        const requestState = getRequestState(navigationKind, currentPrevNextUrl);
+        const requestInterceptionContext = requestState.interceptionContext;
+        const requestPreviousNextUrl = requestState.previousNextUrl;
+
+        // Compare against previous pending navigation first, then committed state.
+        // This avoids isSameRoute misclassification during rapid back-to-back clicks.
+        const navState = getClientNavigationState();
+        const currentPath =
+          navState?.pendingPathname ??
+          navState?.cachedPathname ??
+          stripBasePath(window.location.pathname, __basePath);
+
+        const targetPath = stripBasePath(url.pathname, __basePath);
+        const isSameRoute = targetPath === currentPath;
+
+        // Set this navigation as the pending pathname, overwriting any previous.
+        // Pass navId so only this navigation (or a newer one) can clear it later.
+        setPendingPathname(url.pathname, navId);
+
+        const elementsAtNavStart = getBrowserRouterState().elements;
+        const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
+        const cachedRoute = getVisitedResponse(
+          rscUrl,
+          requestInterceptionContext,
+          mountedSlotsHeader,
+          navigationKind,
         );
-        if (navId !== activeNavigationId) {
-          settlePendingBrowserRouterState(pendingRouterState);
+        if (cachedRoute) {
+          // Check stale-navigation before and after createFromFetch. The pre-check
+          // avoids wasted parse work; the post-check catches supersessions that
+          // occur during the await. createFromFetch on a buffered response is fast
+          // but still async, so the window exists. The non-cached path (below) places
+          // its heavyweight async steps (fetch, snapshotRscResponse, createFromFetch)
+          // between navId checks consistently; the cached path omits the check between
+          // createClientNavigationRenderSnapshot (synchronous) and createFromFetch
+          // because there is no await in that gap.
+          if (navId !== activeNavigationId) return;
+          const cachedParams = cachedRoute.params;
+          // createClientNavigationRenderSnapshot is synchronous (URL parsing + param
+          // wrapping only) — no stale-navigation recheck needed between here and the
+          // next await.
+          const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
+            currentHref,
+            cachedParams,
+          );
+          const cachedPayload = normalizeAppElementsPromise(
+            createFromFetch<AppWireElements>(
+              Promise.resolve(restoreRscResponse(cachedRoute.response)),
+            ),
+          );
+          if (navId !== activeNavigationId) return;
+          _snapshotPending = true; // Set before renderNavigationPayload
+          try {
+            await renderNavigationPayload(
+              cachedPayload,
+              cachedNavigationSnapshot,
+              currentHref,
+              navId,
+              currentHistoryMode,
+              cachedParams,
+              requestPreviousNextUrl,
+              pendingRouterState,
+              isSameRoute,
+              toActionType(navigationKind),
+            );
+          } finally {
+            // Always clear _snapshotPending so the outer catch does not
+            // double-decrement if renderNavigationPayload throws.
+            _snapshotPending = false;
+          }
           return;
         }
+
+        // Continue using the slot state captured at navigation start for fetches
+        // and prefetch compatibility decisions.
+
+        let navResponse: Response | undefined;
+        let navResponseUrl: string | null = null;
+        if (navigationKind !== "refresh") {
+          const prefetchedResponse = consumePrefetchResponse(
+            rscUrl,
+            requestInterceptionContext,
+            mountedSlotsHeader,
+          );
+          if (prefetchedResponse) {
+            navResponse = restoreRscResponse(prefetchedResponse, false);
+            navResponseUrl = prefetchedResponse.url;
+          }
+        }
+
+        if (!navResponse) {
+          const requestHeaders = createRscRequestHeaders(requestInterceptionContext);
+          if (mountedSlotsHeader) {
+            requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+          }
+          navResponse = await fetch(rscUrl, {
+            headers: requestHeaders,
+            credentials: "include",
+          });
+        }
+
+        if (navId !== activeNavigationId) return;
+
+        const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
+        const requestedUrl = new URL(rscUrl, window.location.origin);
+
+        if (finalUrl.pathname !== requestedUrl.pathname) {
+          // Server-side redirect: update the URL in history and loop to fetch
+          // the destination without settling pendingRouterState. This keeps
+          // isPending true across all redirect hops instead of flashing false.
+          const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
+          replaceHistoryStateWithoutNotify(
+            createHistoryStateWithPreviousNextUrl(null, requestPreviousNextUrl),
+            "",
+            destinationPath,
+          );
+
+          currentHref = destinationPath;
+          // URL already written above; the commit effect must not push/replace again.
+          currentHistoryMode = undefined;
+          currentPrevNextUrl = requestPreviousNextUrl;
+          redirectCount += 1;
+          continue;
+        }
+
+        let navParams: Record<string, string | string[]> = {};
+        const paramsHeader = navResponse.headers.get("X-Vinext-Params");
+        if (paramsHeader) {
+          try {
+            navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
+              string,
+              string | string[]
+            >;
+          } catch {
+            // navParams stays as {}
+          }
+        }
+        // Build snapshot from local params, not latestClientParams
+        const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
+
+        const responseSnapshot = await snapshotRscResponse(navResponse);
+
+        if (navId !== activeNavigationId) return;
+
+        const rscPayload = normalizeAppElementsPromise(
+          createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
+        );
+
+        if (navId !== activeNavigationId) return;
+
         _snapshotPending = true; // Set before renderNavigationPayload
         try {
           await renderNavigationPayload(
-            cachedPayload,
-            cachedNavigationSnapshot,
-            href,
+            rscPayload,
+            navigationSnapshot,
+            currentHref,
             navId,
-            historyUpdateMode,
-            cachedParams,
+            currentHistoryMode,
+            navParams,
             requestPreviousNextUrl,
             pendingRouterState,
             isSameRoute,
             toActionType(navigationKind),
           );
         } finally {
-          // Always clear _snapshotPending so the outer catch does not
-          // double-decrement if renderNavigationPayload throws.
+          // Always clear _snapshotPending after renderNavigationPayload returns or
+          // throws. renderNavigationPayload's inner catch already calls
+          // commitClientNavigationState() on synchronous errors and re-throws, so
+          // the outer catch must not call it again. Clearing here prevents the outer
+          // catch from double-decrementing navigationSnapshotActiveCount.
           _snapshotPending = false;
         }
-        return;
-      }
-
-      // Continue using the slot state captured at navigation start for fetches
-      // and prefetch compatibility decisions.
-
-      let navResponse: Response | undefined;
-      let navResponseUrl: string | null = null;
-      if (navigationKind !== "refresh") {
-        const prefetchedResponse = consumePrefetchResponse(
+        // Don't cache the response if this navigation was superseded during
+        // renderNavigationPayload's await — the elements were never dispatched.
+        if (navId !== activeNavigationId) return;
+        // Store the visited response only after renderNavigationPayload succeeds.
+        // If we stored it before and renderNavigationPayload threw, a future
+        // back/forward navigation could replay a snapshot from a navigation that
+        // never actually rendered successfully.
+        const resolvedElements = await rscPayload;
+        const metadata = readAppElementsMetadata(resolvedElements);
+        storeVisitedResponseSnapshot(
           rscUrl,
-          requestInterceptionContext,
-          mountedSlotsHeader,
-        );
-        if (prefetchedResponse) {
-          navResponse = restoreRscResponse(prefetchedResponse, false);
-          navResponseUrl = prefetchedResponse.url;
-        }
-      }
-
-      if (!navResponse) {
-        const requestHeaders = createRscRequestHeaders(requestInterceptionContext);
-        if (mountedSlotsHeader) {
-          requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
-        }
-        navResponse = await fetch(rscUrl, {
-          headers: requestHeaders,
-          credentials: "include",
-        });
-      }
-
-      if (navId !== activeNavigationId) {
-        settlePendingBrowserRouterState(pendingRouterState);
-        return;
-      }
-
-      const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
-      const requestedUrl = new URL(rscUrl, window.location.origin);
-
-      if (finalUrl.pathname !== requestedUrl.pathname) {
-        const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
-        replaceHistoryStateWithoutNotify(
-          createHistoryStateWithPreviousNextUrl(null, requestPreviousNextUrl),
-          "",
-          destinationPath,
-        );
-
-        const navigate = window.__VINEXT_RSC_NAVIGATE__;
-        if (!navigate) {
-          settlePendingBrowserRouterState(pendingRouterState);
-          window.location.href = destinationPath;
-          return;
-        }
-
-        // Hand ownership of the pending transition off before recursing. The
-        // recursive call will not receive pendingRouterState (programmaticTransition=false),
-        // so if we left it unsettled its promise would orphan in the useState slot
-        // until the next programmatic push caught it via the !settled branch in
-        // beginPendingBrowserRouterState. Settling here with the current committed
-        // state makes isPending flip false mid-redirect — a deliberate tradeoff
-        // over leaning on React's internal transition-completion heuristic.
-        settlePendingBrowserRouterState(pendingRouterState);
-
-        // The URL has already been updated via replaceHistoryStateWithoutNotify above,
-        // so the recursive navigation should NOT push/replace again. Pass undefined
-        // for historyUpdateMode to make the commit effect a no-op for history updates.
-        return navigate(
-          destinationPath,
-          redirectDepth + 1,
-          navigationKind,
-          undefined,
-          requestPreviousNextUrl,
-          false,
-        );
-      }
-
-      let navParams: Record<string, string | string[]> = {};
-      const paramsHeader = navResponse.headers.get("X-Vinext-Params");
-      if (paramsHeader) {
-        try {
-          navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
-            string,
-            string | string[]
-          >;
-        } catch {
-          // navParams stays as {}
-        }
-      }
-      // Build snapshot from local params, not latestClientParams
-      const navigationSnapshot = createClientNavigationRenderSnapshot(href, navParams);
-
-      const responseSnapshot = await snapshotRscResponse(navResponse);
-
-      if (navId !== activeNavigationId) {
-        settlePendingBrowserRouterState(pendingRouterState);
-        return;
-      }
-
-      const rscPayload = normalizeAppElementsPromise(
-        createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
-      );
-
-      if (navId !== activeNavigationId) {
-        settlePendingBrowserRouterState(pendingRouterState);
-        return;
-      }
-
-      _snapshotPending = true; // Set before renderNavigationPayload
-      try {
-        await renderNavigationPayload(
-          rscPayload,
-          navigationSnapshot,
-          href,
-          navId,
-          historyUpdateMode,
+          resolveVisitedResponseInterceptionContext(
+            requestInterceptionContext,
+            metadata.interceptionContext,
+          ),
+          responseSnapshot,
           navParams,
-          requestPreviousNextUrl,
-          pendingRouterState,
-          isSameRoute,
-          toActionType(navigationKind),
         );
-      } finally {
-        // Always clear _snapshotPending after renderNavigationPayload returns or
-        // throws. renderNavigationPayload's inner catch already calls
-        // commitClientNavigationState() on synchronous errors and re-throws, so
-        // the outer catch must not call it again. Clearing here prevents the outer
-        // catch from double-decrementing navigationSnapshotActiveCount.
-        _snapshotPending = false;
-      }
-      // Don't cache the response if this navigation was superseded during
-      // renderNavigationPayload's await — the elements were never dispatched.
-      if (navId !== activeNavigationId) {
-        settlePendingBrowserRouterState(pendingRouterState);
         return;
       }
-      // Store the visited response only after renderNavigationPayload succeeds.
-      // If we stored it before and renderNavigationPayload threw, a future
-      // back/forward navigation could replay a snapshot from a navigation that
-      // never actually rendered successfully.
-      const resolvedElements = await rscPayload;
-      const metadata = readAppElementsMetadata(resolvedElements);
-      storeVisitedResponseSnapshot(
-        rscUrl,
-        resolveVisitedResponseInterceptionContext(
-          requestInterceptionContext,
-          metadata.interceptionContext,
-        ),
-        responseSnapshot,
-        navParams,
-      );
-      return;
     } catch (error) {
       // Only decrement counter if snapshot was activated but not yet committed.
       // renderNavigationPayload clears _snapshotPending (via its inner try-finally)
@@ -1220,20 +1197,23 @@ async function main(): Promise<void> {
         _snapshotPending = false;
         commitClientNavigationState(navId);
       }
+      // Don't hard-navigate to a stale URL if this navigation was superseded by
+      // a newer one — the newer navigation is already in flight and would be clobbered.
+      if (navId !== activeNavigationId) return;
+      console.error("[vinext] RSC navigation error:", error);
+      window.location.href = currentHref;
+    } finally {
+      // Single settlement site: covers normal return, early returns on stale-id
+      // checks, and error paths. The finally runs even when the catch returns.
+      // settlePendingBrowserRouterState is idempotent via the settled flag.
       settlePendingBrowserRouterState(pendingRouterState);
-      // Clear pending pathname on error so subsequent navigations compare correctly.
-      // Only clear if this is still the active navigation — a newer navigation
-      // has already overwritten pendingPathname with its own target.
+      // Clear pendingPathname on all exit paths. On the success path this fires
+      // before the RAF commit effect, but commitClientNavigationState() in the
+      // commit effect clears it again — that double-clear is idempotent. Skipped
+      // when superseded so a newer navigation's pendingPathname is not disturbed.
       if (navId === activeNavigationId) {
         clearPendingPathname(navId);
       }
-      // Don't hard-navigate to a stale URL if this navigation was superseded by
-      // a newer one — the newer navigation is already in flight and would be clobbered.
-      if (navId !== activeNavigationId) {
-        return;
-      }
-      console.error("[vinext] RSC navigation error:", error);
-      window.location.href = href;
     }
   };
 
