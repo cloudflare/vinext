@@ -195,7 +195,7 @@ export function generateRscEntry(
         (ir) => `        {
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
-          layouts: [${ir.layoutPaths.map((layoutPath) => getImportVar(layoutPath)).join(", ")}],
+          interceptLayouts: [${ir.layoutPaths.map((layoutPath) => getImportVar(layoutPath)).join(", ")}],
           page: ${getImportVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
@@ -952,7 +952,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
-        layouts: intercept.layouts,
+        interceptLayouts: intercept.interceptLayouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -1898,7 +1898,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.layouts,
+              interceptLayouts: intercept.interceptLayouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -2423,7 +2423,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
-        interceptLayouts: intercept.layouts,
+        interceptLayouts: intercept.interceptLayouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,

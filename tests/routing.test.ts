@@ -1118,6 +1118,43 @@ describe("matchAppRoute - URL matching", () => {
     });
   });
 
+  it("discovers nested intercept layout chains in outermost-to-innermost order", async () => {
+    await withTempDir("vinext-app-intercept-layout-depth-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "(.)foo", "bar", "baz"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "foo", "bar", "baz"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "baz", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "bar", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "foo", "bar", "baz", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+
+      const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.interceptingRoutes).toHaveLength(1);
+      expect(modalSlot!.interceptingRoutes[0]?.layoutPaths).toEqual([
+        path.join(appDir, "@modal", "(.)foo", "layout.tsx"),
+        path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"),
+      ]);
+    });
+  });
+
   it("allows inherited intercepting slots to reuse the same target pattern", async () => {
     await withTempDir("vinext-app-intercept-inherited-slot-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

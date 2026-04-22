@@ -496,8 +496,8 @@ export function buildAppPageElements<
     let slotElement: ReactNode = <SlotComponent {...slotProps} />;
     const interceptLayouts = slotOverride?.layoutModules ?? [];
 
-    for (let index = interceptLayouts.length; index > 0; index--) {
-      const interceptLayoutComponent = getDefaultExport(interceptLayouts[index - 1]);
+    for (let layoutIndex = interceptLayouts.length - 1; layoutIndex >= 0; layoutIndex--) {
+      const interceptLayoutComponent = getDefaultExport(interceptLayouts[layoutIndex]);
       if (!interceptLayoutComponent) {
         continue;
       }

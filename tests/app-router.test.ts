@@ -4456,8 +4456,8 @@ describe("generateRscEntry ISR code generation", () => {
 
     const code = generateRscEntry("/tmp/test/app", [routeWithInterceptLayouts]);
 
-    expect(code).toContain("layouts: [mod_");
-    expect(code).toContain("interceptLayouts: intercept.layouts");
+    expect(code).toContain("interceptLayouts: [mod_");
+    expect(code).toContain("interceptLayouts: intercept.interceptLayouts");
     expect(code).toContain("layoutModules: opts.interceptLayouts || null");
   });
 
