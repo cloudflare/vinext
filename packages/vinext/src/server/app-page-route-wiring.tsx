@@ -74,6 +74,7 @@ export type AppPageRouteWiringRoute<
 };
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
+  layoutModules?: readonly (TModule | null | undefined)[] | null;
   pageModule: TModule;
   params?: AppPageParams;
   props?: Readonly<Record<string, unknown>>;
@@ -492,6 +493,19 @@ export function buildAppPageElements<
 
     const SlotComponent = slotComponent;
     let slotElement: ReactNode = <SlotComponent {...slotProps} />;
+
+    for (let index = (slotOverride?.layoutModules?.length ?? 0) - 1; index >= 0; index--) {
+      const interceptLayoutComponent = getDefaultExport(slotOverride?.layoutModules?.[index]);
+      if (!interceptLayoutComponent) {
+        continue;
+      }
+      const InterceptLayoutComponent = interceptLayoutComponent;
+      slotElement = (
+        <InterceptLayoutComponent params={options.makeThenableParams(slotParams)}>
+          {slotElement}
+        </InterceptLayoutComponent>
+      );
+    }
 
     const slotLayoutComponent = getDefaultExport(slot.layout);
     if (slotLayoutComponent) {

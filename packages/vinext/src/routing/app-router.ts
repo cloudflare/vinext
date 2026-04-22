@@ -31,6 +31,8 @@ export type InterceptingRoute = {
   targetPattern: string;
   /** Absolute path to the intercepting page component */
   pagePath: string;
+  /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
+  layoutPaths: string[];
   /** Parameter names for dynamic segments */
   params: string[];
 };
@@ -921,6 +923,7 @@ function collectInterceptingPages(
     if (targetPattern) {
       results.push({
         convention,
+        layoutPaths: collectInterceptLayoutPaths(interceptRoot, currentDir, matcher),
         targetPattern: targetPattern.pattern,
         pagePath: page,
         params: targetPattern.params,
@@ -946,6 +949,32 @@ function collectInterceptingPages(
       matcher,
     );
   }
+}
+
+function collectInterceptLayoutPaths(
+  interceptRoot: string,
+  currentDir: string,
+  matcher: ValidFileMatcher,
+): string[] {
+  const relativeDir = path.relative(interceptRoot, currentDir);
+  const relativeSegments = relativeDir === "" ? [] : relativeDir.split(path.sep);
+  const layoutPaths: string[] = [];
+  let scanDir = interceptRoot;
+
+  const rootLayout = findFile(scanDir, "layout", matcher);
+  if (rootLayout) {
+    layoutPaths.push(rootLayout);
+  }
+
+  for (const segment of relativeSegments) {
+    scanDir = path.join(scanDir, segment);
+    const layoutPath = findFile(scanDir, "layout", matcher);
+    if (layoutPath) {
+      layoutPaths.push(layoutPath);
+    }
+  }
+
+  return layoutPaths;
 }
 
 /**

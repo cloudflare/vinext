@@ -1076,6 +1076,48 @@ describe("matchAppRoute - URL matching", () => {
     expect(intercept.pagePath).toContain("(...)photos");
   });
 
+  it("discovers intercept layout chains inside parallel slots", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    await withTempDir("vinext-app-intercept-layout-chain-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "(.)explicit-layout", "deeper"), {
+        recursive: true,
+      });
+      await mkdir(path.join(appDir, "explicit-layout", "deeper"), {
+        recursive: true,
+      });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "@modal", "(.)explicit-layout", "deeper", "page.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(path.join(appDir, "explicit-layout", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "explicit-layout", "deeper", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const homeRoute = routes.find((route) => route.pattern === "/");
+
+      expect(homeRoute).toBeDefined();
+
+      const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
+      expect(modalSlot).toBeDefined();
+      expect(modalSlot!.interceptingRoutes).toHaveLength(1);
+      expect(modalSlot!.interceptingRoutes[0]).toMatchObject({
+        convention: ".",
+        targetPattern: "/explicit-layout/deeper",
+        layoutPaths: [path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx")],
+      });
+    });
+  });
+
   it("allows inherited intercepting slots to reuse the same target pattern", async () => {
     await withTempDir("vinext-app-intercept-inherited-slot-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

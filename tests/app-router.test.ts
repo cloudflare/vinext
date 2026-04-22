@@ -4409,6 +4409,58 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("const __pageBuildResult = await __buildAppPageElement({");
   });
 
+  it("generated code threads intercept layout modules through slot overrides", () => {
+    const routeWithInterceptLayouts: AppRoute = {
+      errorPath: null,
+      forbiddenPath: null,
+      isDynamic: false,
+      layoutErrorPaths: [null],
+      layouts: ["/tmp/test/app/layout.tsx"],
+      layoutTreePositions: [0],
+      loadingPath: null,
+      notFoundPath: null,
+      notFoundPaths: [null],
+      pagePath: "/tmp/test/app/page.tsx",
+      parallelSlots: [
+        {
+          defaultPath: "/tmp/test/app/@modal/default.tsx",
+          errorPath: null,
+          interceptingRoutes: [
+            {
+              convention: ".",
+              layoutPaths: ["/tmp/test/app/@modal/(.)explicit-layout/layout.tsx"],
+              pagePath: "/tmp/test/app/@modal/(.)explicit-layout/deeper/page.tsx",
+              params: [],
+              targetPattern: "/explicit-layout/deeper",
+            },
+          ],
+          key: "modal@@modal",
+          layoutIndex: 0,
+          layoutPath: "/tmp/test/app/@modal/layout.tsx",
+          loadingPath: null,
+          name: "modal",
+          ownerDir: "/tmp/test/app/@modal",
+          pagePath: null,
+          routeSegments: null,
+        },
+      ],
+      params: [],
+      pattern: "/",
+      patternParts: [],
+      routePath: null,
+      routeSegments: [],
+      templates: [],
+      templateTreePositions: [],
+      unauthorizedPath: null,
+    };
+
+    const code = generateRscEntry("/tmp/test/app", [routeWithInterceptLayouts]);
+
+    expect(code).toContain("layouts: [mod_");
+    expect(code).toContain("interceptLayouts: intercept.layouts");
+    expect(code).toContain("layoutModules: opts.interceptLayouts || null");
+  });
+
   it("generated code delegates page boundary rendering to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");

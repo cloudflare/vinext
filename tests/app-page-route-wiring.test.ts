@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import {
+  type AppPageModule,
+  type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
   resolveAppPageChildSegments,
@@ -120,6 +122,14 @@ function GroupLayout(props: Record<string, unknown>) {
 
 function SlotLayout(props: Record<string, unknown>) {
   return createElement("div", { "data-slot-layout": "sidebar" }, readChildren(props.children));
+}
+
+function InterceptOuterLayout(props: Record<string, unknown>) {
+  return createElement("div", { "data-intercept-layout": "outer" }, readChildren(props.children));
+}
+
+function InterceptInnerLayout(props: Record<string, unknown>) {
+  return createElement("div", { "data-intercept-layout": "inner" }, readChildren(props.children));
 }
 
 function SlotPage(props: Record<string, unknown>) {
@@ -299,6 +309,69 @@ describe("app page route wiring helpers", () => {
 
     expect(html).toContain('data-slot-page="override"');
     expect(html).toContain('data-sidebar-segments="members|42"');
+  });
+
+  it("wraps intercepted slot overrides with intercept layout modules inside the slot layout", async () => {
+    const sidebarOverride: AppPageSlotOverride<AppPageModule> = {
+      layoutModules: [{ default: InterceptOuterLayout }, { default: InterceptInnerLayout }],
+      pageModule: { default: SlotPage },
+      props: { label: "intercepted" },
+    };
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: { default: SlotLayout },
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        sidebar: sidebarOverride,
+      },
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+
+    expect(html).toContain('data-slot-layout="sidebar"');
+    expect(html).toContain('data-intercept-layout="outer"');
+    expect(html).toContain('data-intercept-layout="inner"');
+    expect(html).toContain('data-slot-page="intercepted"');
+
+    const slotLayoutPos = html.indexOf('data-slot-layout="sidebar"');
+    const outerLayoutPos = html.indexOf('data-intercept-layout="outer"');
+    const innerLayoutPos = html.indexOf('data-intercept-layout="inner"');
+    const pagePos = html.indexOf('data-slot-page="intercepted"');
+
+    expect(slotLayoutPos).toBeLessThan(outerLayoutPos);
+    expect(outerLayoutPos).toBeLessThan(innerLayoutPos);
+    expect(innerLayoutPos).toBeLessThan(pagePos);
   });
 
   it("renders same-named slot props independently at different layout levels", async () => {

@@ -175,9 +175,12 @@ export function generateRscEntry(
       if (slot.layoutPath) getImportVar(slot.layoutPath);
       if (slot.loadingPath) getImportVar(slot.loadingPath);
       if (slot.errorPath) getImportVar(slot.errorPath);
-      // Register intercepting route page modules
+      // Register intercepting route modules
       for (const ir of slot.interceptingRoutes) {
         getImportVar(ir.pagePath);
+        for (const layoutPath of ir.layoutPaths) {
+          getImportVar(layoutPath);
+        }
       }
     }
   }
@@ -192,6 +195,7 @@ export function generateRscEntry(
         (ir) => `        {
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
+          layouts: [${ir.layoutPaths.map((layoutPath) => getImportVar(layoutPath)).join(", ")}],
           page: ${getImportVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
@@ -935,7 +939,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -948,6 +952,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -1131,6 +1136,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -1892,6 +1898,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -2416,6 +2423,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
