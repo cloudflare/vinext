@@ -695,7 +695,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -708,6 +708,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -891,6 +892,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -1617,6 +1619,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -2099,6 +2102,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
@@ -3015,7 +3019,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -3028,6 +3032,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -3211,6 +3216,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -3943,6 +3949,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -4425,6 +4432,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
@@ -5342,7 +5350,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -5355,6 +5363,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -5538,6 +5547,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -6264,6 +6274,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -6746,6 +6757,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
@@ -7692,7 +7704,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -7705,6 +7717,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -7888,6 +7901,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -8617,6 +8631,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -9099,6 +9114,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
@@ -10022,7 +10038,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -10035,6 +10051,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -10218,6 +10235,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -10944,6 +10962,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -11426,6 +11445,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,
@@ -12342,7 +12362,7 @@ function mergeMatchedParams(sourceParams, targetParams) {
 }
 
 // Build a global intercepting route lookup for RSC navigation.
-// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, params }.
+// Maps target URL patterns to { sourceRouteIndex, slotKey, interceptPage, interceptLayouts, params }.
 const interceptLookup = [];
 for (let ri = 0; ri < routes.length; ri++) {
   const r = routes[ri];
@@ -12355,6 +12375,7 @@ for (let ri = 0; ri < routes.length; ri++) {
         slotKey,
         targetPattern: intercept.targetPattern,
         targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+        layouts: intercept.layouts,
         page: intercept.page,
         params: intercept.params,
       });
@@ -12538,6 +12559,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
       opts && opts.interceptSlotKey && opts.interceptPage
         ? {
             [opts.interceptSlotKey]: {
+              layoutModules: opts.interceptLayouts || null,
               pageModule: opts.interceptPage,
               params: opts.interceptParams || params,
             },
@@ -13631,6 +13653,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           toInterceptOpts(intercept) {
             return {
               interceptionContext: interceptionContextHeader,
+              interceptLayouts: intercept.layouts,
               interceptSlotKey: intercept.slotKey,
               interceptPage: intercept.page,
               interceptParams: intercept.matchedParams,
@@ -14113,6 +14136,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     toInterceptOpts(intercept) {
       return {
         interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.layouts,
         interceptSlotKey: intercept.slotKey,
         interceptPage: intercept.page,
         interceptParams: intercept.matchedParams,

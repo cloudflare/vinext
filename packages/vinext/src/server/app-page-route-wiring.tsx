@@ -484,8 +484,9 @@ export function buildAppPageElements<
       continue;
     }
 
+    const slotThenableParams = options.makeThenableParams(slotParams);
     const slotProps: Record<string, unknown> = {
-      params: options.makeThenableParams(slotParams),
+      params: slotThenableParams,
     };
     if (slotOverride?.props) {
       Object.assign(slotProps, slotOverride.props);
@@ -493,15 +494,16 @@ export function buildAppPageElements<
 
     const SlotComponent = slotComponent;
     let slotElement: ReactNode = <SlotComponent {...slotProps} />;
+    const interceptLayouts = slotOverride?.layoutModules ?? [];
 
-    for (let index = (slotOverride?.layoutModules?.length ?? 0) - 1; index >= 0; index--) {
-      const interceptLayoutComponent = getDefaultExport(slotOverride?.layoutModules?.[index]);
+    for (let index = interceptLayouts.length; index > 0; index--) {
+      const interceptLayoutComponent = getDefaultExport(interceptLayouts[index - 1]);
       if (!interceptLayoutComponent) {
         continue;
       }
       const InterceptLayoutComponent = interceptLayoutComponent;
       slotElement = (
-        <InterceptLayoutComponent params={options.makeThenableParams(slotParams)}>
+        <InterceptLayoutComponent params={slotThenableParams}>
           {slotElement}
         </InterceptLayoutComponent>
       );
@@ -511,9 +513,7 @@ export function buildAppPageElements<
     if (slotLayoutComponent) {
       const SlotLayoutComponent = slotLayoutComponent;
       slotElement = (
-        <SlotLayoutComponent params={options.makeThenableParams(slotParams)}>
-          {slotElement}
-        </SlotLayoutComponent>
+        <SlotLayoutComponent params={slotThenableParams}>{slotElement}</SlotLayoutComponent>
       );
     }
 

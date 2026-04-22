@@ -908,7 +908,13 @@ function collectInterceptingPages(
   appDir: string,
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
+  parentLayoutPaths: readonly string[] = [],
 ): void {
+  const currentLayoutPath = findFile(currentDir, "layout", matcher);
+  const layoutPaths = currentLayoutPath
+    ? [...parentLayoutPaths, currentLayoutPath]
+    : parentLayoutPaths;
+
   // Check for page.tsx in current directory
   const page = findFile(currentDir, "page", matcher);
   if (page) {
@@ -923,7 +929,7 @@ function collectInterceptingPages(
     if (targetPattern) {
       results.push({
         convention,
-        layoutPaths: collectInterceptLayoutPaths(interceptRoot, currentDir, matcher),
+        layoutPaths: [...layoutPaths],
         targetPattern: targetPattern.pattern,
         pagePath: page,
         params: targetPattern.params,
@@ -947,34 +953,9 @@ function collectInterceptingPages(
       appDir,
       results,
       matcher,
+      layoutPaths,
     );
   }
-}
-
-function collectInterceptLayoutPaths(
-  interceptRoot: string,
-  currentDir: string,
-  matcher: ValidFileMatcher,
-): string[] {
-  const relativeDir = path.relative(interceptRoot, currentDir);
-  const relativeSegments = relativeDir === "" ? [] : relativeDir.split(path.sep);
-  const layoutPaths: string[] = [];
-  let scanDir = interceptRoot;
-
-  const rootLayout = findFile(scanDir, "layout", matcher);
-  if (rootLayout) {
-    layoutPaths.push(rootLayout);
-  }
-
-  for (const segment of relativeSegments) {
-    scanDir = path.join(scanDir, segment);
-    const layoutPath = findFile(scanDir, "layout", matcher);
-    if (layoutPath) {
-      layoutPaths.push(layoutPath);
-    }
-  }
-
-  return layoutPaths;
 }
 
 /**
