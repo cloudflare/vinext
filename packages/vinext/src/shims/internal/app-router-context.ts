@@ -8,16 +8,16 @@
  */
 import { createContext } from "react";
 
-type NavigateOptions = {
+export type NavigateOptions = {
   scroll?: boolean;
 };
 
-type PrefetchOptions = {
+export type PrefetchOptions = {
   kind?: unknown;
   onInvalidate?: () => void;
 };
 
-type AppRouterInstance = {
+export type AppRouterInstance = {
   back(): void;
   forward(): void;
   refresh(): void;

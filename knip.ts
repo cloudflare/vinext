@@ -45,6 +45,13 @@ export default {
         // is consumed by the user's app at runtime, not by imports knip can follow.
         "src/client/instrumentation-client.ts",
         "src/client/instrumentation-client-state.ts",
+        // Shims for `next/*` internal modules — their exports are consumed by
+        // type-only imports in third-party packages' .d.ts files (e.g.
+        // @clerk/nextjs, @sentry/nextjs, nextjs-toploader). Those imports
+        // originate in node_modules and are invisible to knip.
+        "src/shims/internal/api-utils.ts",
+        "src/shims/internal/app-router-context.ts",
+        "src/shims/internal/utils.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

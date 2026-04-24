@@ -3,4 +3,9 @@
  *
  * Used by: @clerk/nextjs (type-only import of NextApiRequestCookies).
  */
-export {};
+
+export type NextApiRequestCookies = Partial<{ [key: string]: string }>;
+
+export type NextApiRequestQuery = Partial<{
+  [key: string]: string | string[];
+}>;
