@@ -75,12 +75,16 @@ export class NextRequest extends Request {
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
       const req = input;
+      // Gate body copy on method. Per the Fetch spec, init.body being non-null
+      // with method GET/HEAD throws. In Cloudflare Workers an incoming GET/HEAD
+      // can expose `body` as a non-null (often empty) ReadableStream when the
+      // request carries Content-Length or Transfer-Encoding framing, so an
+      // unconditional `body: req.body` makes the super() call throw.
+      const passBody = req.method !== "GET" && req.method !== "HEAD";
       super(req.url, {
         method: req.method,
         headers: req.headers,
-        body: req.body,
-        // @ts-expect-error - duplex is not in RequestInit type but needed for streams
-        duplex: req.body ? "half" : undefined,
+        ...(passBody ? { body: req.body, duplex: req.body ? "half" : undefined } : {}),
         ...requestInit,
       });
     } else {

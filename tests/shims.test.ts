@@ -4963,6 +4963,47 @@ describe("NextURL basePath and locale properties", () => {
     expect(req.nextUrl.pathname).toBe("/dashboard");
     expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
   });
+
+  // Regression: in Cloudflare Workers, an incoming GET/HEAD request that
+  // carries Content-Length or Transfer-Encoding framing exposes
+  // `request.body` as a non-null ReadableStream. Copying that into super()'s
+  // init made the Request constructor throw
+  // "Request with a GET or HEAD method cannot have a body.", which broke
+  // every middleware invocation for affected traffic (e.g. email-pixel GETs).
+  // We reproduce the same shape in Node.js by overriding the body getter on a
+  // normal Request instance.
+  it("NextRequest does not throw when input Request has a non-null body on GET/HEAD", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+
+    const withFakeBody = (method: "GET" | "HEAD"): Request => {
+      const req = new Request("http://localhost/x", { method });
+      Object.defineProperty(req, "body", {
+        configurable: true,
+        get: () => new ReadableStream(),
+      });
+      return req;
+    };
+
+    const getReq = withFakeBody("GET");
+    expect(getReq.body).not.toBeNull();
+    const wrappedGet = new NextRequest(getReq);
+    // Body must not be forwarded into the wrapped request on GET/HEAD.
+    expect(wrappedGet.body).toBeNull();
+    expect(wrappedGet.method).toBe("GET");
+
+    const headReq = withFakeBody("HEAD");
+    const wrappedHead = new NextRequest(headReq);
+    expect(wrappedHead.body).toBeNull();
+    expect(wrappedHead.method).toBe("HEAD");
+  });
+
+  it("NextRequest preserves body for non-GET/HEAD methods", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const post = new Request("http://localhost/x", { method: "POST", body: "hello" });
+    const wrapped = new NextRequest(post);
+    expect(wrapped.method).toBe("POST");
+    expect(await wrapped.text()).toBe("hello");
+  });
 });
 
 // ---------------------------------------------------------------------------
