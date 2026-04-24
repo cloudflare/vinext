@@ -24,6 +24,7 @@ jobs:
       - name: Build plugin (needed for benchmark workspace type resolution)
         run: vp run build
       - run: vp run check
+      - run: vp run knip
 
   test-unit:
     name: Vitest (unit)
