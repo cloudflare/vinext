@@ -50,6 +50,42 @@ function buildHeaderRecord(
   return headers;
 }
 
+function isLocalDevHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "127.0.0.1" ||
+    normalized === "0.0.0.0" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+export function applyLocalDevStreamingHeaders(response: Response, request: Request): Response {
+  if (
+    !response.body ||
+    response.headers.has("content-encoding") ||
+    response.headers.has("content-length")
+  ) {
+    return response;
+  }
+
+  if (!isLocalDevHostname(new URL(request.url).hostname)) {
+    return response;
+  }
+
+  // Miniflare/Wrangler dev can buffer streamed non-SSE responses when it
+  // infers compression. Explicit identity encoding preserves chunk delivery.
+  const headers = new Headers(response.headers);
+  headers.set("content-encoding", "identity");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export function mergeHeaders(
   response: Response,
   extraHeaders: Record<string, string | string[]>,

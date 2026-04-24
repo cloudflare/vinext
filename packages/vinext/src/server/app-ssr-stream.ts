@@ -1,3 +1,4 @@
+import { fixFlightHints } from "./flight-hints.js";
 import { createInlineScriptTag, safeJsonStringify } from "./html.js";
 
 export type RscEmbedTransform = {
@@ -5,14 +6,7 @@ export type RscEmbedTransform = {
   finalize(): Promise<string>;
 };
 
-/**
- * Fix invalid preload "as" values in RSC Flight hint lines before they reach
- * the client. React Flight emits HL hints with as="stylesheet" for CSS, but
- * the HTML spec requires as="style" for <link rel="preload">.
- */
-export function fixFlightHints(text: string): string {
-  return text.replace(/(\d*:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
-}
+export { fixFlightHints };
 
 /**
  * Create a helper that progressively embeds RSC chunks as inline <script> tags.
@@ -90,6 +84,21 @@ export function fixPreloadAs(html: string): string {
   );
 }
 
+function queueTask(callback: () => void): void {
+  if (typeof MessageChannel === "undefined") {
+    queueMicrotask(callback);
+    return;
+  }
+
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    channel.port2.close();
+    callback();
+  };
+  channel.port2.postMessage(undefined);
+}
+
 /**
  * Create the tick-buffered HTML transform that injects RSC scripts between
  * React Fizz flush cycles without corrupting split HTML chunks.
@@ -102,7 +111,7 @@ export function createTickBufferedTransform(
   const encoder = new TextEncoder();
   let injected = false;
   let buffered: string[] = [];
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let flushScheduled = false;
 
   const flushBuffered = (controller: TransformStreamDefaultController<Uint8Array>): void => {
     for (const chunk of buffered) {
@@ -121,37 +130,41 @@ export function createTickBufferedTransform(
     buffered = [];
   };
 
+  const flushHtmlAndRsc = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+    flushBuffered(controller);
+
+    const rscScripts = rscEmbed.flush();
+    if (rscScripts) {
+      controller.enqueue(encoder.encode(rscScripts));
+    }
+  };
+
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffered.push(fixPreloadAs(decoder.decode(chunk, { stream: true })));
 
-      if (timeoutId !== null) return;
+      if (flushScheduled) return;
 
-      timeoutId = setTimeout(() => {
+      flushScheduled = true;
+      queueTask(() => {
+        if (!flushScheduled) return;
+        flushScheduled = false;
         try {
-          flushBuffered(controller);
-
-          const rscScripts = rscEmbed.flush();
-          if (rscScripts) {
-            controller.enqueue(encoder.encode(rscScripts));
-          }
+          flushHtmlAndRsc(controller);
         } catch {
-          // Stream was cancelled between when the timeout was registered and
-          // when it fired (e.g. client disconnected, health-check cancelled
-          // the response body). Ignore — the stream is already closed.
+          // Stream was cancelled between when the flush was queued and when it
+          // ran (e.g. client disconnected, health-check cancelled the response
+          // body). Ignore — the stream is already closed.
         }
-
-        timeoutId = null;
-      }, 0);
+      });
     },
 
     async flush(controller) {
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
+      if (flushScheduled) {
+        flushScheduled = false;
       }
 
-      flushBuffered(controller);
+      flushHtmlAndRsc(controller);
 
       if (!injected && injectHTML) {
         controller.enqueue(encoder.encode(injectHTML));

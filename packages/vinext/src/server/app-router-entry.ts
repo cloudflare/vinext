@@ -15,7 +15,7 @@
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
-import { resolveStaticAssetSignal } from "./worker-utils.js";
+import { applyLocalDevStreamingHeaders, resolveStaticAssetSignal } from "./worker-utils.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -70,7 +70,7 @@ export default {
         });
         if (assetResponse) return assetResponse;
       }
-      return result;
+      return applyLocalDevStreamingHeaders(result, request);
     }
 
     if (result === null || result === undefined) {

@@ -30,6 +30,7 @@ import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-path
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import {
+  applyLocalDevStreamingHeaders,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
@@ -798,6 +799,60 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(merged.headers.get("x-custom")).toBe("from-middleware");
     const body = Buffer.from(await merged.arrayBuffer());
     expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  it("applyLocalDevStreamingHeaders marks localhost streamed responses as identity encoded", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      },
+    );
+
+    const wrapped = applyLocalDevStreamingHeaders(
+      response,
+      new Request("http://localhost:8787/streaming"),
+    );
+
+    expect(wrapped).not.toBe(response);
+    expect(wrapped.headers.get("content-encoding")).toBe("identity");
+    expect(wrapped.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await wrapped.text()).toBe("hello");
+  });
+
+  it("applyLocalDevStreamingHeaders leaves production responses unchanged", () => {
+    const response = new Response("hello", {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+
+    const wrapped = applyLocalDevStreamingHeaders(
+      response,
+      new Request("https://example.com/streaming"),
+    );
+
+    expect(wrapped).toBe(response);
+    expect(wrapped.headers.get("content-encoding")).toBeNull();
+  });
+
+  it("applyLocalDevStreamingHeaders preserves explicit body headers", () => {
+    const encoded = new Response("hello", {
+      headers: { "content-encoding": "gzip" },
+    });
+    const sized = new Response("hello", {
+      headers: { "content-length": "5" },
+    });
+    const request = new Request("http://127.0.0.1:8787/streaming");
+
+    expect(applyLocalDevStreamingHeaders(encoded, request)).toBe(encoded);
+    expect(applyLocalDevStreamingHeaders(sized, request)).toBe(sized);
+    expect(encoded.headers.get("content-encoding")).toBe("gzip");
+    expect(sized.headers.get("content-encoding")).toBeNull();
   });
 
   it("generated worker entry includes the no-body and streamed content-length merge guards", () => {

@@ -68,6 +68,7 @@ const appPageRenderPath = resolveEntryPath("../server/app-page-render.js", impor
 const appPageResponsePath = resolveEntryPath("../server/app-page-response.js", import.meta.url);
 const cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
+const flightHintsPath = resolveEntryPath("../server/flight-hints.js", import.meta.url);
 const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
@@ -330,35 +331,14 @@ import {
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createFlightHintFixTransform as __createFlightHintFixTransform } from ${JSON.stringify(flightHintsPath)};
 
 // React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
 // requires "style" for <link rel="preload">. Fix at the source so every
 // consumer (SSR embed, client-side navigation, server actions) gets clean data.
-//
-// Flight lines are newline-delimited, so we buffer partial lines across chunks
-// to guarantee the regex never sees a split hint.
 function renderToReadableStream(model, options) {
-  const _hlFixRe = /(\\d*:HL\\[.*?),"stylesheet"(\\]|,)/g;
   const stream = _renderToReadableStream(model, options);
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let carry = "";
-  return stream.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const text = carry + decoder.decode(chunk, { stream: true });
-      const lastNl = text.lastIndexOf("\\n");
-      if (lastNl === -1) {
-        carry = text;
-        return;
-      }
-      carry = text.slice(lastNl + 1);
-      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
-    },
-    flush(controller) {
-      const text = carry + decoder.decode();
-      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
-    }
-  }));
+  return stream.pipeThrough(__createFlightHintFixTransform());
 }
 import { createElement } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";

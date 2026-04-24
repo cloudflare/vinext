@@ -282,6 +282,56 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     expect(donePos).toBeGreaterThan(lastHtmlPos);
   });
 
+  it("streams the first HTML chunk without depending on host timers", async () => {
+    // Regression for https://github.com/cloudflare/vinext/issues/874
+    // Next.js streams Suspense fallback HTML before the final content resolves:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const rsc = createMockRscStream();
+    rsc.close();
+    const rscEmbed = createRscEmbedTransform(rsc.stream);
+
+    const htmlStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode("<html><head></head><body>Loading..."));
+        await new Promise((resolve) => originalSetTimeout(resolve, 50));
+        controller.enqueue(encoder.encode("<div>Resolved</div></body></html>"));
+        controller.close();
+      },
+    });
+
+    const neverRunSetTimeout = (() =>
+      1 as unknown as ReturnType<typeof setTimeout>) as unknown as typeof setTimeout;
+    const noopClearTimeout: typeof clearTimeout = () => {};
+    globalThis.setTimeout = neverRunSetTimeout;
+    globalThis.clearTimeout = noopClearTimeout;
+
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+      reader = htmlStream.pipeThrough(createTickBufferedTransform(rscEmbed)).getReader();
+      const first = await Promise.race([
+        reader.read().then((result) => ({ result, type: "chunk" as const })),
+        new Promise<{ type: "timeout" }>((resolve) =>
+          originalSetTimeout(() => resolve({ type: "timeout" }), 20),
+        ),
+      ]);
+
+      expect(first.type).toBe("chunk");
+      if (first.type === "chunk") {
+        expect(first.result.done).toBe(false);
+        expect(decoder.decode(first.result.value)).toContain("Loading...");
+      }
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      await reader?.cancel().catch(() => {});
+    }
+  });
+
   it("injects head content before </head>", async () => {
     const rsc = createMockRscStream();
     rsc.close(); // No RSC chunks needed for this test
