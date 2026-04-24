@@ -37,7 +37,7 @@ export const RESOLVED_VIRTUAL_GOOGLE_FONTS = "\0" + VIRTUAL_GOOGLE_FONTS;
 
 // IMPORTANT: keep this set in sync with the non-default exports from
 // packages/vinext/src/shims/font-google.ts (and its re-export barrel).
-export const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
+const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
   "buildGoogleFontsUrl",
   "getSSRFontLinks",
   "getSSRFontStyles",
@@ -62,7 +62,7 @@ export const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
  * asset names (which are emitted flat into `<assetsDir>/`) and from any
  * user-provided public files.
  */
-export const VINEXT_FONT_URL_NAMESPACE = "_vinext_fonts";
+const VINEXT_FONT_URL_NAMESPACE = "_vinext_fonts";
 
 /**
  * Rewrite absolute filesystem paths in cached Google Fonts CSS so the

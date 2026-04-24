@@ -345,7 +345,7 @@ function compileMatcherPattern(pattern: string): RegExp | null {
 }
 
 /** Result of running middleware. */
-export type MiddlewareResult = {
+type MiddlewareResult = {
   /** Whether to continue to the route handler. */
   continue: boolean;
   /** If set, redirect to this URL. */

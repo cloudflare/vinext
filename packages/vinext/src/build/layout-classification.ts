@@ -21,15 +21,9 @@ import type {
   ModuleGraphStaticReason,
 } from "./layout-classification-types.js";
 
-export type {
-  ClassificationReason,
-  LayoutBuildClassification,
-  ModuleGraphStaticReason,
-} from "./layout-classification-types.js";
+type ModuleGraphClassification = "static" | "needs-probe";
 
-export type ModuleGraphClassification = "static" | "needs-probe";
-
-export type ModuleGraphClassificationResult = {
+type ModuleGraphClassificationResult = {
   result: ModuleGraphClassification;
   /** First dynamic shim module ID encountered during BFS, when any. */
   firstShimMatch?: string;

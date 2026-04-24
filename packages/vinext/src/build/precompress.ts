@@ -43,7 +43,7 @@ const MIN_SIZE = 1024;
  */
 const CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
-export type PrecompressResult = {
+type PrecompressResult = {
   filesCompressed: number;
   totalOriginalBytes: number;
   /** Sum of brotli-compressed sizes (used for compression ratio reporting). */

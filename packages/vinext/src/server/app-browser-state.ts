@@ -37,7 +37,7 @@ export type AppRouterAction = {
   type: "navigate" | "replace" | "traverse";
 };
 
-export type PendingNavigationCommit = {
+type PendingNavigationCommit = {
   action: AppRouterAction;
   interceptionContext: string | null;
   previousNextUrl: string | null;
@@ -45,8 +45,8 @@ export type PendingNavigationCommit = {
   routeId: string;
 };
 
-export type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
-export type ClassifiedPendingNavigationCommit = {
+type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
+type ClassifiedPendingNavigationCommit = {
   disposition: PendingNavigationCommitDisposition;
   pending: PendingNavigationCommit;
 };
@@ -95,14 +95,14 @@ export function resolveInterceptionContextFromPreviousNextUrl(
   return stripBasePath(parsedUrl.pathname, basePath);
 }
 
-export type ResolveServerActionRequestStateOptions = {
+type ResolveServerActionRequestStateOptions = {
   actionId: string;
   basePath: string;
   elements: AppElements;
   previousNextUrl: string | null;
 };
 
-export type ResolveServerActionRequestStateResult = {
+type ResolveServerActionRequestStateResult = {
   headers: Headers;
 };
 

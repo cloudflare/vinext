@@ -46,7 +46,7 @@ export const CONTENT_TYPES: Record<string, string> = {
 const BUFFER_THRESHOLD = 64 * 1024;
 
 /** A servable file variant with pre-computed response headers. */
-export type FileVariant = {
+type FileVariant = {
   /** Absolute file path (used for streaming large files). */
   path: string;
   /** Uncompressed or encoded byte size for buffer-threshold decisions. */
@@ -57,7 +57,7 @@ export type FileVariant = {
   buffer?: Buffer;
 };
 
-export type StaticFileEntry = {
+type StaticFileEntry = {
   /** Weak ETag for conditional request matching. */
   etag: string;
   /** Pre-computed headers for 304 Not Modified response. */

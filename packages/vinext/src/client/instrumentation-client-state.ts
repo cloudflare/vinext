@@ -15,10 +15,6 @@ export function setClientInstrumentationHooks(
   return clientInstrumentationHooks;
 }
 
-export function getClientInstrumentationHooks(): ClientInstrumentationHooks | null {
-  return clientInstrumentationHooks;
-}
-
 export function notifyAppRouterTransitionStart(
   href: string,
   navigationType: "push" | "replace" | "traverse",

@@ -11,20 +11,20 @@ type AppPageCacheSetter = (
 ) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 
-export type AppPageCacheRenderResult = {
+type AppPageCacheRenderResult = {
   html: string;
   rscData: ArrayBuffer;
   tags: string[];
 };
 
-export type BuildAppPageCachedResponseOptions = {
+type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   isRscRequest: boolean;
   mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
 };
 
-export type ReadAppPageCacheResponseOptions = {
+type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   isRscRequest: boolean;
@@ -39,7 +39,7 @@ export type ReadAppPageCacheResponseOptions = {
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 };
 
-export type FinalizeAppPageHtmlCacheResponseOptions = {
+type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   getPageTags: () => string[];
@@ -51,7 +51,7 @@ export type FinalizeAppPageHtmlCacheResponseOptions = {
   waitUntil?: (promise: Promise<void>) => void;
 };
 
-export type ScheduleAppPageRscCacheWriteOptions = {
+type ScheduleAppPageRscCacheWriteOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;

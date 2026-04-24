@@ -1,6 +1,6 @@
 export type AppPageParams = Record<string, string | string[]>;
 
-export type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
+type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
   getDefaultExport: (module: TModule | null | undefined) => TComponent | null | undefined;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -11,19 +11,19 @@ export type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent
   statusCode: number;
 };
 
-export type ResolveAppPageErrorBoundaryOptions<TModule, TComponent> = {
+type ResolveAppPageErrorBoundaryOptions<TModule, TComponent> = {
   getDefaultExport: (module: TModule | null | undefined) => TComponent | null | undefined;
   globalErrorModule?: TModule | null;
   layoutErrorModules?: readonly (TModule | null | undefined)[] | null;
   pageErrorModule?: TModule | null;
 };
 
-export type ResolveAppPageErrorBoundaryResult<TComponent> = {
+type ResolveAppPageErrorBoundaryResult<TComponent> = {
   component: TComponent | null;
   isGlobalError: boolean;
 };
 
-export type WrapAppPageBoundaryElementOptions<
+type WrapAppPageBoundaryElementOptions<
   TElement,
   TLayoutModule,
   TLayoutComponent,
@@ -62,7 +62,7 @@ type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 
-export type RenderAppPageBoundaryResponseOptions<TElement> = {
+type RenderAppPageBoundaryResponseOptions<TElement> = {
   createHtmlResponse: (rscStream: ReadableStream<Uint8Array>, status: number) => Promise<Response>;
   createRscOnErrorHandler: () => AppPageBoundaryOnError;
   element: TElement;

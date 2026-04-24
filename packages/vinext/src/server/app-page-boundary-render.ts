@@ -51,7 +51,7 @@ type AppPageBoundaryRscPayloadOptions<TModule extends AppPageModule = AppPageMod
   route?: AppPageBoundaryRoute<TModule> | null;
 };
 
-export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
+type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
   error?: TModule | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
@@ -90,19 +90,18 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   scriptNonce?: string;
 };
 
-export type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> =
-  {
-    boundaryComponent?: AppPageComponent | null;
-    layoutModules?: readonly (TModule | null | undefined)[] | null;
-    matchedParams: AppPageParams;
-    rootForbiddenModule?: TModule | null;
-    rootNotFoundModule?: TModule | null;
-    rootUnauthorizedModule?: TModule | null;
-    route?: AppPageBoundaryRoute<TModule> | null;
-    statusCode: number;
-  } & AppPageBoundaryRenderCommonOptions<TModule>;
+type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
+  boundaryComponent?: AppPageComponent | null;
+  layoutModules?: readonly (TModule | null | undefined)[] | null;
+  matchedParams: AppPageParams;
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  route?: AppPageBoundaryRoute<TModule> | null;
+  statusCode: number;
+} & AppPageBoundaryRenderCommonOptions<TModule>;
 
-export type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
+type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
   error: unknown;
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;

@@ -6,7 +6,7 @@ export type AppPageFontData = {
   styles: string[];
 };
 
-export type CreateAppPageFontDataOptions = {
+type CreateAppPageFontDataOptions = {
   getLinks: () => string[];
   getPreloads: () => AppPageFontPreload[];
   getStyles: () => string[];
@@ -21,7 +21,7 @@ export type AppPageSsrHandler = {
   ) => Promise<ReadableStream<Uint8Array>>;
 };
 
-export type RenderAppPageHtmlStreamOptions = {
+type RenderAppPageHtmlStreamOptions = {
   fontData: AppPageFontData;
   navigationContext: unknown;
   rscStream: ReadableStream<Uint8Array>;
@@ -29,18 +29,18 @@ export type RenderAppPageHtmlStreamOptions = {
   ssrHandler: AppPageSsrHandler;
 };
 
-export type RenderAppPageHtmlResponseOptions = {
+type RenderAppPageHtmlResponseOptions = {
   clearRequestContext: () => void;
   fontLinkHeader?: string;
   status: number;
 } & RenderAppPageHtmlStreamOptions;
 
-export type AppPageHtmlStreamRecoveryResult = {
+type AppPageHtmlStreamRecoveryResult = {
   htmlStream: ReadableStream<Uint8Array> | null;
   response: Response | null;
 };
 
-export type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
+type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   onShellRendered?: () => void;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array>>;
@@ -48,12 +48,12 @@ export type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   resolveSpecialError: (error: unknown) => TSpecialError | null;
 };
 
-export type AppPageRscErrorTracker = {
+type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
 
-export type ShouldRerenderAppPageWithGlobalErrorOptions = {
+type ShouldRerenderAppPageWithGlobalErrorOptions = {
   capturedError: unknown;
   hasLocalBoundary: boolean;
 };

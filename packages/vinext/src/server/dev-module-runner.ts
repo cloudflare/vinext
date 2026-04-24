@@ -65,7 +65,7 @@ import type { DevEnvironment } from "vite";
  * environment types — including Cloudflare's custom environments that don't
  * support the hot-channel-based transport.
  */
-export type DevEnvironmentLike = {
+type DevEnvironmentLike = {
   fetchModule: (
     id: string,
     importer?: string,

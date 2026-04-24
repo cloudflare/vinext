@@ -66,7 +66,7 @@ export type PrerenderRouteResult =
     };
 
 /** Called after each route is resolved (rendered, skipped, or error). */
-export type PrerenderProgressCallback = (update: {
+type PrerenderProgressCallback = (update: {
   /** Routes completed so far (rendered + skipped + error). */
   completed: number;
   /** Total routes queued for rendering. */
@@ -77,7 +77,7 @@ export type PrerenderProgressCallback = (update: {
   status: PrerenderRouteResult["status"];
 }) => void;
 
-export type PrerenderOptions = {
+type PrerenderOptions = {
   /**
    * 'default' — prerender static/ISR routes; skip SSR routes
    * 'export'  — same as default but SSR routes are errors
@@ -112,7 +112,7 @@ export type PrerenderOptions = {
   skipManifest?: boolean;
 };
 
-export type PrerenderPagesOptions = {
+type PrerenderPagesOptions = {
   /** Discovered page routes (non-API). */
   routes: Route[];
   /** Discovered API routes. */
@@ -129,7 +129,7 @@ export type PrerenderPagesOptions = {
   pagesBundlePath?: string;
 } & PrerenderOptions;
 
-export type PrerenderAppOptions = {
+type PrerenderAppOptions = {
   /** Discovered app routes. */
   routes: AppRoute[];
   /**
@@ -200,10 +200,7 @@ function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): bo
  * "/posts/:id" + { id: "42" } → "/posts/42"
  * "/docs/:slug+" + { slug: ["a", "b"] } → "/docs/a/b"
  */
-export function buildUrlFromParams(
-  pattern: string,
-  params: Record<string, string | string[]>,
-): string {
+function buildUrlFromParams(pattern: string, params: Record<string, string | string[]>): string {
   const parts = pattern.split("/").filter(Boolean);
   const result: string[] = [];
 

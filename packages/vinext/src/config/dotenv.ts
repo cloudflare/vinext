@@ -2,15 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseEnv } from "node:util";
 
-export type VinextEnvMode = "development" | "production" | "test";
+type VinextEnvMode = "development" | "production" | "test";
 
-export type LoadDotenvOptions = {
+type LoadDotenvOptions = {
   root: string;
   mode: VinextEnvMode;
   processEnv?: NodeJS.ProcessEnv;
 };
 
-export type LoadDotenvResult = {
+type LoadDotenvResult = {
   mode: VinextEnvMode;
   loadedFiles: string[];
   loadedEnv: Record<string, string>;

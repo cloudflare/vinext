@@ -12,7 +12,7 @@ export type AppRouteHandlerModule = {
 
 type AppRouteHandlerFunction = (...args: unknown[]) => unknown;
 
-export type ResolvedAppRouteHandlerMethod = {
+type ResolvedAppRouteHandlerMethod = {
   allowHeaderForOptions: string;
   exportedMethods: RouteHandlerHttpMethod[];
   handlerFn: AppRouteHandlerFunction | undefined;
@@ -20,7 +20,7 @@ export type ResolvedAppRouteHandlerMethod = {
   shouldAutoRespondToOptions: boolean;
 };
 
-export type AppRouteHandlerCacheReadOptions = {
+type AppRouteHandlerCacheReadOptions = {
   dynamicConfig?: string;
   handlerFn: unknown;
   isAutoHead: boolean;
@@ -30,7 +30,7 @@ export type AppRouteHandlerCacheReadOptions = {
   revalidateSeconds: number | null;
 };
 
-export type AppRouteHandlerResponseCacheOptions = {
+type AppRouteHandlerResponseCacheOptions = {
   dynamicConfig?: string;
   dynamicUsedInHandler: boolean;
   handlerSetCacheControl: boolean;
@@ -40,7 +40,7 @@ export type AppRouteHandlerResponseCacheOptions = {
   revalidateSeconds: number | null;
 };
 
-export type AppRouteHandlerSpecialError =
+type AppRouteHandlerSpecialError =
   | {
       kind: "redirect";
       location: string;

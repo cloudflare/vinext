@@ -1,8 +1,8 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 
-export type AppPageParams = Record<string, string | string[]>;
+type AppPageParams = Record<string, string | string[]>;
 
-export type ValidateAppPageDynamicParamsOptions = {
+type ValidateAppPageDynamicParamsOptions = {
   clearRequestContext: () => void;
   enforceStaticParamsOnly: boolean;
   generateStaticParams?: ((args: { params: AppPageParams }) => unknown) | null;
@@ -11,26 +11,26 @@ export type ValidateAppPageDynamicParamsOptions = {
   params: AppPageParams;
 };
 
-export type BuildAppPageElementOptions<TElement> = {
+type BuildAppPageElementOptions<TElement> = {
   buildPageElement: () => Promise<TElement>;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
 };
 
-export type BuildAppPageElementResult<TElement> = {
+type BuildAppPageElementResult<TElement> = {
   element: TElement | null;
   response: Response | null;
 };
 
-export type AppPageInterceptMatch<TPage = unknown> = {
+type AppPageInterceptMatch<TPage = unknown> = {
   matchedParams: AppPageParams;
   page: TPage;
   slotKey: string;
   sourceRouteIndex: number;
 };
 
-export type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {
+type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
@@ -40,7 +40,7 @@ export type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> =
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
-export type ResolveAppPageInterceptMatchResult<TRoute, TInterceptOpts> = {
+type ResolveAppPageInterceptMatchResult<TRoute, TInterceptOpts> = {
   interceptOpts: TInterceptOpts;
   matchedParams: AppPageParams;
   sourceParams: AppPageParams;
@@ -52,7 +52,7 @@ type AppPageInterceptState<TRoute, TPage> =
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-export type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
+type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
   currentParams: AppPageParams;
   currentRoute: TRoute;
@@ -63,14 +63,14 @@ export type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptO
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
-export type ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> = {
+type ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
   navigationParams: AppPageParams;
   params: AppPageParams;
   route: TRoute;
 };
 
-export type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
+type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -93,7 +93,7 @@ export type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts> = {
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
-export type ResolveAppPageInterceptResult<TInterceptOpts> = {
+type ResolveAppPageInterceptResult<TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
   response: Response | null;
 };

@@ -1,6 +1,6 @@
 import { createInlineScriptTag, safeJsonStringify } from "./html.js";
 
-export type RscEmbedTransform = {
+type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
 };

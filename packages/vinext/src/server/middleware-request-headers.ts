@@ -1,5 +1,5 @@
-export const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
-export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
+const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
+const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
 
 type MiddlewareHeaderValue = string | string[];
 type MiddlewareHeaderSource = Headers | Record<string, MiddlewareHeaderValue>;

@@ -45,7 +45,7 @@ export type InitOptions = {
   _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
 };
 
-export type InitResult = {
+type InitResult = {
   /** Whether dependencies were installed */
   installedDeps: string[];
   /** Whether "type": "module" was added */

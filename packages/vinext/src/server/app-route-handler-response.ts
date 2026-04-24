@@ -6,13 +6,13 @@ export type RouteHandlerMiddlewareContext = {
   status: number | null;
 };
 
-export type BuildRouteHandlerCachedResponseOptions = {
+type BuildRouteHandlerCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   isHead: boolean;
   revalidateSeconds: number;
 };
 
-export type FinalizeRouteHandlerResponseOptions = {
+type FinalizeRouteHandlerResponseOptions = {
   pendingCookies: string[];
   draftCookie?: string | null;
   isHead: boolean;

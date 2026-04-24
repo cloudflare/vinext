@@ -33,7 +33,13 @@ export default {
       project: ["scripts/**/*.{js,ts}", "tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
-      entry: entriesFromPackageJson("packages/vinext/package.json"),
+      entry: [
+        ...entriesFromPackageJson("packages/vinext/package.json"),
+        // Build-time entries referenced by path constant (Vite reads them
+        // from disk via `fs`), so knip wouldn't otherwise trace them.
+        "src/server/app-browser-entry.ts",
+        "src/server/app-ssr-entry.ts",
+      ],
       project: ["src/**/*.{ts,tsx}"],
     },
   },
@@ -63,11 +69,13 @@ export default {
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
-    // files read via fs
-    "packages/vinext/src/server/app-browser-entry.ts",
-    "packages/vinext/src/server/app-ssr-entry.ts",
-    // stub module
+    // stub module loaded via `path.resolve()` as a Vite alias target
     "packages/vinext/src/client/empty-module.ts",
   ],
-  exclude: ["catalog"],
+  // Catalog check is noisy here (deps consumed from the workspace's own
+  // sub-packages or `examples/**` which we intentionally ignore).
+  // `duplicates` flags intentional compat aliases — see
+  // packages/vinext/src/shims/internal/work-unit-async-storage.ts where
+  // `requestAsyncStorage` is a legacy alias for `workUnitAsyncStorage`.
+  exclude: ["catalog", "duplicates"],
 } satisfies KnipConfig;

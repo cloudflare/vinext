@@ -11,7 +11,7 @@ export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
 
 export type AppElementValue = ReactNode | typeof UNMATCHED_SLOT | string | null;
-export type AppWireElementValue = ReactNode | string | null;
+type AppWireElementValue = ReactNode | string | null;
 
 export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
@@ -35,14 +35,14 @@ export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
  */
 export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 
-export type AppElementsMetadata = {
+type AppElementsMetadata = {
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
 };
 
-export function normalizeMountedSlotsHeader(header: string | null | undefined): string | null {
+function normalizeMountedSlotsHeader(header: string | null | undefined): string | null {
   if (!header) {
     return null;
   }

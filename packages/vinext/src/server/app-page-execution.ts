@@ -13,19 +13,19 @@ export type AppPageFontPreload = {
   type: string;
 };
 
-export type AppPageRscStreamCapture = {
+type AppPageRscStreamCapture = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   responseStream: ReadableStream<Uint8Array>;
 };
 
-export type BuildAppPageSpecialErrorResponseOptions = {
+type BuildAppPageSpecialErrorResponseOptions = {
   clearRequestContext: () => void;
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
   requestUrl: string;
   specialError: AppPageSpecialError;
 };
 
-export type ProbeAppPageLayoutsResult = {
+type ProbeAppPageLayoutsResult = {
   response: Response | null;
   layoutFlags: LayoutFlags;
 };
@@ -55,7 +55,7 @@ export type LayoutClassificationOptions = {
   runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
-export type ProbeAppPageLayoutsOptions = {
+type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
   onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
@@ -64,7 +64,7 @@ export type ProbeAppPageLayoutsOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-export type ProbeAppPageComponentOptions = {
+type ProbeAppPageComponentOptions = {
   awaitAsyncResult: boolean;
   onError: (error: unknown) => Promise<Response | null>;
   probePage: () => unknown;
@@ -259,9 +259,7 @@ export async function readAppPageTextStream(stream: ReadableStream<Uint8Array>):
   return chunks.join("");
 }
 
-export async function readAppPageBinaryStream(
-  stream: ReadableStream<Uint8Array>,
-): Promise<ArrayBuffer> {
+async function readAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<ArrayBuffer> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let totalLength = 0;

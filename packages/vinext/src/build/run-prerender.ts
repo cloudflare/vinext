@@ -42,7 +42,7 @@ import { startProdServer } from "../server/prod-server.js";
  * Writes a single updating line to stderr using \r so it doesn't interleave
  * with Vite's stdout output. Automatically clears on finish().
  */
-export class PrerenderProgress {
+class PrerenderProgress {
   private isTTY = process.stderr.isTTY;
   private lastLineLen = 0;
 
@@ -72,7 +72,7 @@ export class PrerenderProgress {
 
 // ─── Shared runner ────────────────────────────────────────────────────────────
 
-export type RunPrerenderOptions = {
+type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
   /**

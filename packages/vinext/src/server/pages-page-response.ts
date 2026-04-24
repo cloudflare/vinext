@@ -2,7 +2,7 @@ import React, { type ComponentType, type ReactNode } from "react";
 import { withScriptNonce } from "../shims/script-nonce-context.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 
-export type PagesFontPreload = {
+type PagesFontPreload = {
   href: string;
   type: string;
 };
@@ -23,7 +23,7 @@ type PagesStreamedHtmlResponse = {
   __vinextStreamedHtmlResponse?: boolean;
 } & Response;
 
-export type RenderPagesPageResponseOptions = {
+type RenderPagesPageResponseOptions = {
   assetTags: string;
   buildId: string | null;
   clearSsrContext: () => void;

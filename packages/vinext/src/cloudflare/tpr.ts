@@ -477,7 +477,7 @@ function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
  * Walk the ranked traffic list, accumulating request counts until the
  * coverage target is met or the hard cap is reached.
  */
-export function selectRoutes(
+function selectRoutes(
   traffic: TrafficEntry[],
   coverageTarget: number,
   limit: number,

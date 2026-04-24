@@ -2,7 +2,7 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { NextRequest, type NextURL } from "../shims/server.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 
-export const ROUTE_HANDLER_HTTP_METHODS = [
+const ROUTE_HANDLER_HTTP_METHODS = [
   "GET",
   "HEAD",
   "POST",
@@ -74,16 +74,16 @@ type NextUrlDynamicAccess =
   | "nextUrl.toString"
   | "nextUrl.origin";
 
-export type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
+type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
 
-export type TrackedAppRouteRequestOptions = {
+type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
 };
 
-export type TrackedAppRouteRequest = {
+type TrackedAppRouteRequest = {
   request: NextRequest;
   didAccessDynamicRequest(): boolean;
 };

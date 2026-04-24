@@ -41,7 +41,7 @@ type AppRouteErrorReporter = (
 ) => void;
 export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
-export type RunAppRouteHandlerOptions = {
+type RunAppRouteHandlerOptions = {
   basePath?: string;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
   handlerFn: AppRouteHandlerFunction;
@@ -52,12 +52,12 @@ export type RunAppRouteHandlerOptions = {
   request: Request;
 };
 
-export type RunAppRouteHandlerResult = {
+type RunAppRouteHandlerResult = {
   dynamicUsedInHandler: boolean;
   response: Response;
 };
 
-export type ExecuteAppRouteHandlerOptions = {
+type ExecuteAppRouteHandlerOptions = {
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   clearRequestContext: () => void;
   cleanPathname: string;

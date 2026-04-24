@@ -23,7 +23,7 @@ type LocaleRedirectOptions = {
   };
 };
 
-export type PagesI18nRequestInfo = {
+type PagesI18nRequestInfo = {
   locale: string;
   url: string;
   hadPrefix: boolean;
@@ -44,7 +44,7 @@ function readHeader(headers: HeaderBag, name: string): string | undefined {
   return direct;
 }
 
-export const normalizeHostname = normalizeDomainHostname;
+const normalizeHostname = normalizeDomainHostname;
 export { detectDomainLocale };
 
 /**

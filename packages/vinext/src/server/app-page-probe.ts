@@ -6,12 +6,12 @@ import {
   type LayoutFlags,
 } from "./app-page-execution.js";
 
-export type ProbeAppPageBeforeRenderResult = {
+type ProbeAppPageBeforeRenderResult = {
   response: Response | null;
   layoutFlags: LayoutFlags;
 };
 
-export type ProbeAppPageBeforeRenderOptions = {
+type ProbeAppPageBeforeRenderOptions = {
   hasLoadingBoundary: boolean;
   layoutCount: number;
   probeLayoutAt: (layoutIndex: number) => unknown;

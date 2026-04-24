@@ -10,7 +10,7 @@ type PackageJson = {
   optionalDependencies?: Record<string, string>;
 };
 
-export type StandaloneBuildOptions = {
+type StandaloneBuildOptions = {
   root: string;
   outDir: string;
   /**
@@ -19,7 +19,7 @@ export type StandaloneBuildOptions = {
   vinextPackageRoot?: string;
 };
 
-export type StandaloneBuildResult = {
+type StandaloneBuildResult = {
   standaloneDir: string;
   copiedPackages: string[];
 };

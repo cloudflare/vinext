@@ -1,15 +1,15 @@
-export type NavigationSnapshot = {
+type NavigationSnapshot = {
   pathname: string;
   searchParams: [string, string][];
 };
 
-export type LegacyRscEmbedData = {
+type LegacyRscEmbedData = {
   rsc: string[];
   params?: Record<string, string | string[]>;
   nav?: NavigationSnapshot;
 };
 
-export type VinextBrowserGlobals = {
+type VinextBrowserGlobals = {
   __VINEXT_RSC__?: LegacyRscEmbedData;
   __VINEXT_RSC_CHUNKS__?: string[];
   __VINEXT_RSC_DONE__?: boolean;

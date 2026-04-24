@@ -64,7 +64,7 @@ export type PagesPageModule = {
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
 };
 
-export type RenderPagesIsrHtmlOptions = {
+type RenderPagesIsrHtmlOptions = {
   buildId: string | null;
   cachedHtml: string;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
@@ -105,19 +105,19 @@ export type ResolvePagesPageDataOptions = {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
 };
 
-export type ResolvePagesPageDataRenderResult = {
+type ResolvePagesPageDataRenderResult = {
   kind: "render";
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
 };
 
-export type ResolvePagesPageDataResponseResult = {
+type ResolvePagesPageDataResponseResult = {
   kind: "response";
   response: Response;
 };
 
-export type ResolvePagesPageDataResult =
+type ResolvePagesPageDataResult =
   | ResolvePagesPageDataRenderResult
   | ResolvePagesPageDataResponseResult;
 

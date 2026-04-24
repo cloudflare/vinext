@@ -34,7 +34,7 @@ import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type DeployOptions = {
+type DeployOptions = {
   /** Project root directory */
   root: string;
   /** Deploy to preview environment (default: production) */
@@ -1200,7 +1200,7 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-export type WranglerDeployArgs = {
+type WranglerDeployArgs = {
   args: string[];
   env: string | undefined;
 };

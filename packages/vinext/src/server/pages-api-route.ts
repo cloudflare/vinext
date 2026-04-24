@@ -20,7 +20,7 @@ export type PagesApiRouteMatch = {
   };
 };
 
-export type HandlePagesApiRouteOptions = {
+type HandlePagesApiRouteOptions = {
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;

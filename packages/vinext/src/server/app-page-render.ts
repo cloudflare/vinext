@@ -49,7 +49,7 @@ type AppPageRequestCacheLife = {
   revalidate?: number;
 };
 
-export type RenderAppPageLifecycleOptions = {
+type RenderAppPageLifecycleOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;

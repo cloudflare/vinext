@@ -21,7 +21,7 @@ type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type RouteHandlerBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 type RouteHandlerRevalidationContextRunner = (renderFn: () => Promise<void>) => Promise<void>;
 
-export type ReadAppRouteHandlerCacheOptions = {
+type ReadAppRouteHandlerCacheOptions = {
   basePath?: string;
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   cleanPathname: string;

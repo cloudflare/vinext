@@ -12,7 +12,7 @@ export type AppPageResponseTiming = {
   responseKind: "html" | "rsc";
 };
 
-export type AppPageResponsePolicy = {
+type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
 };
@@ -25,20 +25,20 @@ type ResolveAppPageResponsePolicyBaseOptions = {
   revalidateSeconds: number | null;
 };
 
-export type ResolveAppPageRscResponsePolicyOptions = {
+type ResolveAppPageRscResponsePolicyOptions = {
   dynamicUsedDuringBuild: boolean;
 } & ResolveAppPageResponsePolicyBaseOptions;
 
-export type ResolveAppPageHtmlResponsePolicyOptions = {
+type ResolveAppPageHtmlResponsePolicyOptions = {
   dynamicUsedDuringRender: boolean;
   hasScriptNonce: boolean;
 } & ResolveAppPageResponsePolicyBaseOptions;
 
-export type AppPageHtmlResponsePolicy = {
+type AppPageHtmlResponsePolicy = {
   shouldWriteToCache: boolean;
 } & AppPageResponsePolicy;
 
-export type BuildAppPageRscResponseOptions = {
+type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
@@ -46,7 +46,7 @@ export type BuildAppPageRscResponseOptions = {
   timing?: AppPageResponseTiming;
 };
 
-export type BuildAppPageHtmlResponseOptions = {
+type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
   fontLinkHeader?: string;
   middlewareContext: AppPageMiddlewareContext;

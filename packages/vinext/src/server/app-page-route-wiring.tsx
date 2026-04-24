@@ -34,11 +34,11 @@ export type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
 };
 
-export type AppPageErrorModule = Record<string, unknown> & {
+type AppPageErrorModule = Record<string, unknown> & {
   default?: AppPageErrorComponent | null | undefined;
 };
 
-export type AppPageRouteWiringSlot<
+type AppPageRouteWiringSlot<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -53,7 +53,7 @@ export type AppPageRouteWiringSlot<
   routeSegments?: readonly string[] | null;
 };
 
-export type AppPageRouteWiringRoute<
+type AppPageRouteWiringRoute<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -80,7 +80,7 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   props?: Readonly<Record<string, unknown>>;
 };
 
-export type AppPageLayoutEntry<
+type AppPageLayoutEntry<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -92,7 +92,7 @@ export type AppPageLayoutEntry<
   treePosition: number;
 };
 
-export type BuildAppPageRouteElementOptions<
+type BuildAppPageRouteElementOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -107,7 +107,7 @@ export type BuildAppPageRouteElementOptions<
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
 
-export type BuildAppPageElementsOptions<
+type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
@@ -170,7 +170,7 @@ export function createAppPageLayoutEntries<
   });
 }
 
-export function createAppPageTemplateEntries<TModule extends AppPageModule>(
+function createAppPageTemplateEntries<TModule extends AppPageModule>(
   route: Pick<
     AppPageRouteWiringRoute<TModule>,
     "routeSegments" | "templateTreePositions" | "templates"

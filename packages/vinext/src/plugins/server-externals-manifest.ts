@@ -18,7 +18,7 @@ const BUILTIN_MODULES = new Set(
  *  - Node built-ins ("node:fs")
  *  - Package self-references ("#imports")
  */
-export function packageNameFromSpecifier(specifier: string): string | null {
+function packageNameFromSpecifier(specifier: string): string | null {
   if (
     !specifier ||
     specifier.startsWith(".") ||

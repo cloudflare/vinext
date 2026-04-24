@@ -63,7 +63,7 @@ export function getScriptNonceFromHeaders(headers: Headers | null | undefined): 
   return getScriptNonceFromHeader(csp);
 }
 
-export function getScriptNonceFromNodeHeaders(
+function getScriptNonceFromNodeHeaders(
   headers: NodeHeaders | null | undefined,
 ): string | undefined {
   const csp =

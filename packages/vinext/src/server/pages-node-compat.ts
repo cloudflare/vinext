@@ -2,7 +2,7 @@ import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
-export const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
+const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
 
 /**
  * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
@@ -39,14 +39,14 @@ export type PagesReqResResponse = {
   getHeaders: () => PagesReqResHeaders;
 };
 
-export type CreatePagesReqResOptions = {
+type CreatePagesReqResOptions = {
   body: unknown;
   query: PagesRequestQuery;
   request: Request;
   url: string;
 };
 
-export type CreatePagesReqResResult = {
+type CreatePagesReqResResult = {
   req: PagesReqResRequest;
   res: PagesReqResResponse;
   responsePromise: Promise<Response>;

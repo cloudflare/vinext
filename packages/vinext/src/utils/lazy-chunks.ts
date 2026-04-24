@@ -1,7 +1,7 @@
 /**
  * Build-manifest chunk metadata used to compute lazy chunks.
  */
-export type BuildManifestChunk = {
+type BuildManifestChunk = {
   file: string;
   isEntry?: boolean;
   isDynamicEntry?: boolean;
