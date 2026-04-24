@@ -8,6 +8,6 @@ export type ClientInstrumentationHooks = {
   onRouterTransitionStart?: (href: string, navigationType: "push" | "replace" | "traverse") => void;
 };
 
-setClientInstrumentationHooks(
+export const clientInstrumentationHooks = setClientInstrumentationHooks(
   normalizeClientInstrumentationHooks(instrumentationClientHooks as ClientInstrumentationHooks),
 );

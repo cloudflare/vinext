@@ -39,6 +39,12 @@ export default {
         // from disk via `fs`), so knip wouldn't otherwise trace them.
         "src/server/app-browser-entry.ts",
         "src/server/app-ssr-entry.ts",
+        // Client-side instrumentation bundle: loaded as a side-effect module
+        // by the generated hydration entries (import "vinext/instrumentation-client"),
+        // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
+        // is consumed by the user's app at runtime, not by imports knip can follow.
+        "src/client/instrumentation-client.ts",
+        "src/client/instrumentation-client-state.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },
