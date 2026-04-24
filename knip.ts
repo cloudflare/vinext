@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { KnipConfig } from "knip";
 
-function entriesFromPackageJson(path: string): string[] {
-  const pkg = JSON.parse(readFileSync(path, "utf8")) as {
+function entriesFromPackageJson(relativePath: string): string[] {
+  const pkg = JSON.parse(readFileSync(new URL(relativePath, import.meta.url), "utf8")) as {
     bin?: string | Record<string, string>;
     exports?: Record<string, unknown>;
   };
@@ -22,7 +22,7 @@ function entriesFromPackageJson(path: string): string[] {
       t
         .replace(/^\.\//, "")
         .replace(/^dist\//, "src/")
-        .replace(/\.js$/, ".ts"),
+        .replace(/\.js$/, ".{ts,tsx}"),
     );
 }
 
@@ -40,13 +40,21 @@ export default {
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [
     "@typescript/native-preview",
-    "@mdx-js/rollup",
+
+    // Declared at root package.json but imported from workspace/example code:
+    //   @mdx-js/react — no direct imports; retained for MDX runtime resolution.
+    //   @mdx-js/rollup — imported from examples/app-router-playground/vite.config.ts
+    //     which doesn't declare it locally and relies on root hoisting.
     "@mdx-js/react",
-    "@unpic/react",
-    // probe via require.resolve
+    "@mdx-js/rollup",
+
+    // probed via require.resolve
     "next-intl",
-    // false positive
+
+    // vitest reporter
     "agent",
+
+    // internal module name, not an actual dependency
     "private-next-instrumentation-client",
   ],
   ignoreBinaries: [
@@ -55,8 +63,10 @@ export default {
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
-    "packages/vinext/src/server/app-ssr-entry.ts",
+    // files read via fs
     "packages/vinext/src/server/app-browser-entry.ts",
+    "packages/vinext/src/server/app-ssr-entry.ts",
+    // stub module
     "packages/vinext/src/client/empty-module.ts",
   ],
   exclude: ["catalog"],

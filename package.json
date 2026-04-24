@@ -18,8 +18,7 @@
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",
-    "@mdx-js/rollup": "catalog:",
-    "@unpic/react": "catalog:"
+    "@mdx-js/rollup": "catalog:"
   },
   "devDependencies": {
     "@playwright/test": "catalog:",

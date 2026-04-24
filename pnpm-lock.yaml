@@ -215,9 +215,6 @@ importers:
       '@mdx-js/rollup':
         specifier: 'catalog:'
         version: 3.1.1
-      '@unpic/react':
-        specifier: 'catalog:'
-        version: 1.0.2(next@16.2.3(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
     devDependencies:
       '@playwright/test':
         specifier: 'catalog:'
