@@ -163,8 +163,29 @@ export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessor
 const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
 type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
 
+// Browser hydration has the same module-split shape as SSR in Vite dev:
+// the browser entry seeds the snapshot before hydrateRoot(), but client
+// components can import a different module instance of this shim.
+const GLOBAL_HYDRATION_CONTEXT_KEY = Symbol.for("vinext.navigation.clientHydrationContext");
+const _GLOBAL_HYDRATION_CONTEXT_KEY = GLOBAL_HYDRATION_CONTEXT_KEY;
+type _GlobalWithHydrationContext = typeof globalThis & {
+  [_GLOBAL_HYDRATION_CONTEXT_KEY]?: NavigationContext | null;
+};
+
 function _getGlobalAccessors(): _StateAccessors | undefined {
   return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
+}
+
+function _getClientHydrationContext(): NavigationContext | null | undefined {
+  const globalState = globalThis as _GlobalWithHydrationContext;
+  if (Object.prototype.hasOwnProperty.call(globalState, _GLOBAL_HYDRATION_CONTEXT_KEY)) {
+    return globalState[_GLOBAL_HYDRATION_CONTEXT_KEY] ?? null;
+  }
+  return undefined;
+}
+
+function _setClientHydrationContext(ctx: NavigationContext | null): void {
+  (globalThis as _GlobalWithHydrationContext)[_GLOBAL_HYDRATION_CONTEXT_KEY] = ctx;
 }
 
 let _serverContext: NavigationContext | null = null;
@@ -173,10 +194,19 @@ let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
 // These are overridden by navigation-state.ts on the server to use ALS.
 // The defaults check globalThis for cross-module-instance access (issue #688).
 let _getServerContext = (): NavigationContext | null => {
+  if (typeof window !== "undefined") {
+    const hydrationContext = _getClientHydrationContext();
+    return hydrationContext !== undefined ? hydrationContext : _serverContext;
+  }
   const g = _getGlobalAccessors();
   return g ? g.getServerContext() : _serverContext;
 };
 let _setServerContext = (ctx: NavigationContext | null): void => {
+  if (typeof window !== "undefined") {
+    _serverContext = ctx;
+    _setClientHydrationContext(ctx);
+    return;
+  }
   const g = _getGlobalAccessors();
   if (g) {
     g.setServerContext(ctx);

@@ -229,6 +229,90 @@ describe("next/navigation shim", () => {
     setNavigationContext(null);
   });
 
+  it("shares the hydrated navigation snapshot across browser module instances", async () => {
+    // Next.js derives usePathname/useSearchParams from PathnameContext in
+    // packages/next/src/client/components/app-router.tsx, so hydration does
+    // not have a per-module fallback to "/" for the first client snapshot.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const previousWindow = globalThis.window;
+    const accessorsKey = Symbol.for("vinext.navigation.globalAccessors");
+    const hydrationKey = Symbol.for("vinext.navigation.clientHydrationContext");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessors = globalRecord[accessorsKey];
+    const previousHydration = globalRecord[hydrationKey];
+
+    try {
+      delete globalRecord[accessorsKey];
+      delete globalRecord[hydrationKey];
+      (globalThis as any).window = {
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        history: {
+          pushState() {},
+          replaceState() {},
+        },
+        location: {
+          href: "http://localhost/split-hydration?q=hello",
+          origin: "http://localhost",
+          pathname: "/split-hydration",
+          search: "?q=hello",
+        },
+        removeEventListener() {},
+      };
+
+      const setterPath = "../packages/vinext/src/shims/navigation.js?hydration-setter=issue-871";
+      const hookPath = "../packages/vinext/src/shims/navigation.js?hydration-hook=issue-871";
+      const setterMod = (await import(
+        setterPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      const hookMod = (await import(
+        hookPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      setterMod.setNavigationContext({
+        pathname: "/split-hydration",
+        searchParams: new URLSearchParams("q=hello"),
+        params: { slug: "hello" },
+      });
+
+      function Probe() {
+        const pathname = hookMod.usePathname();
+        const searchParams = hookMod.useSearchParams();
+        const params = hookMod.useParams<{ slug: string }>();
+        return React.createElement(
+          "span",
+          null,
+          `${pathname}|${searchParams.get("q") ?? ""}|${params.slug ?? ""}`,
+        );
+      }
+
+      expect(renderToStaticMarkup(React.createElement(Probe))).toBe(
+        "<span>/split-hydration|hello|hello</span>",
+      );
+
+      setterMod.setNavigationContext(null);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousAccessors === undefined) {
+        delete globalRecord[accessorsKey];
+      } else {
+        globalRecord[accessorsKey] = previousAccessors;
+      }
+      if (previousHydration === undefined) {
+        delete globalRecord[hydrationKey];
+      } else {
+        globalRecord[hydrationKey] = previousHydration;
+      }
+    }
+  });
+
   it("setClientParams provides referential stability for identical params", async () => {
     const { setClientParams, getClientParams } =
       await import("../packages/vinext/src/shims/navigation.js");
