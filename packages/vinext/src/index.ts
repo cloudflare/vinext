@@ -46,6 +46,7 @@ import {
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
+import { isOpenRedirectShaped } from "./server/request-pipeline.js";
 import {
   findInstrumentationClientFile,
   findInstrumentationFile,
@@ -2293,15 +2294,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               // Guard against protocol-relative URL open redirects.
-              // Normalize backslashes first: browsers treat /\ as // in URL
-              // context. Check the RAW pathname before normalizePath so the
-              // guard fires before normalizePath collapses //.
-              pathname = pathname.replaceAll("\\", "/");
-              if (pathname.startsWith("//")) {
+              // Check the RAW pathname before decode/normalize so both literal
+              // (//, /\) and percent-encoded (%5C, %2F) leading delimiters are
+              // rejected. Encoded forms survive the segment-wise decode below
+              // and would otherwise reach trailing-slash redirect emitters.
+              if (isOpenRedirectShaped(pathname)) {
                 res.writeHead(404);
                 res.end("404 Not Found");
                 return;
               }
+              pathname = pathname.replaceAll("\\", "/");
 
               // Normalize the pathname to prevent path-confusion attacks.
               // decodeURIComponent prevents /%61dmin bypassing /admin matchers.

@@ -46,6 +46,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import { isOpenRedirectShaped } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
@@ -946,23 +947,27 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
+    const rawPathname = rawUrl.split("?")[0];
+
+    // Guard against protocol-relative URL open redirect attacks.
+    // Run BEFORE decoding so both literal (`//`, `/\`) and encoded (`%5C`, `%2F`)
+    // variants are rejected — the encoded forms survive segment-wise decoding
+    // below and would otherwise reach the trailing-slash redirect emitter.
+    if (isOpenRedirectShaped(rawPathname)) {
+      res.writeHead(404);
+      res.end("404 Not Found");
+      return;
+    }
+
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    const rawPathname = rawUrl.split("?")[0].replaceAll("\\", "/");
+    const normalizedRawPathname = rawPathname.replaceAll("\\", "/");
     let pathname: string;
     try {
-      pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPathname));
+      pathname = normalizePath(normalizePathnameForRouteMatchStrict(normalizedRawPathname));
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
       res.writeHead(400);
       res.end("Bad Request");
-      return;
-    }
-
-    // Guard against protocol-relative URL open redirect attacks.
-    // Check rawPathname before normalizePath collapses //.
-    if (rawPathname.startsWith("//")) {
-      res.writeHead(404);
-      res.end("404 Not Found");
       return;
     }
 
@@ -1208,11 +1213,23 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
+    const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
+
+    // Guard against protocol-relative URL open redirect attacks.
+    // Run BEFORE decoding so both literal (`//`, `/\`) and encoded (`%5C`, `%2F`)
+    // variants are rejected — the encoded forms survive segment-wise decoding
+    // below and would otherwise reach the trailing-slash redirect emitter.
+    if (isOpenRedirectShaped(rawPagesPathnameBeforeNormalize)) {
+      res.writeHead(404);
+      res.end("404 Not Found");
+      return;
+    }
+
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
     // Rebuild `url` from the decoded pathname + original query string so all
     // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
     // always work with the decoded, canonical path.
-    const rawPagesPathname = rawUrl.split("?")[0].replaceAll("\\", "/");
+    const rawPagesPathname = rawPagesPathnameBeforeNormalize.replaceAll("\\", "/");
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
     let pathname: string;
     try {
@@ -1224,14 +1241,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
     let url = pathname + rawQs;
-
-    // Guard against protocol-relative URL open redirect attacks.
-    // Check rawPagesPathname before normalizePath collapses //.
-    if (rawPagesPathname.startsWith("//")) {
-      res.writeHead(404);
-      res.end("404 Not Found");
-      return;
-    }
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.

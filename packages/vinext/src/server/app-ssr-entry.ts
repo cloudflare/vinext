@@ -14,6 +14,7 @@ import {
   useServerInsertedHTML,
 } from "../shims/navigation.js";
 import { runWithNavigationContext } from "../shims/navigation-state.js";
+import { isOpenRedirectShaped } from "./request-pipeline.js";
 import { withScriptNonce } from "../shims/script-nonce-context.js";
 import {
   createInlineScriptTag,
@@ -247,7 +248,9 @@ export async function handleSsr(
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("//")) {
+    // Block protocol-relative URL open redirects (including percent-encoded
+    // variants like /%5Cevil.com/). See request-pipeline.ts for details.
+    if (isOpenRedirectShaped(url.pathname)) {
       return new Response("404 Not Found", { status: 404 });
     }
 

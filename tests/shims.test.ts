@@ -3580,7 +3580,9 @@ describe("double-encoded path handling in middleware", () => {
     // (the RSC handler is the single decode point)
     expect(entryCode).not.toMatch(/normalizedRequest\s*=\s*new Request\(normalizedUrl/);
     // It should still validate malformed encoding (return 400)
-    expect(entryCode).toContain("decodeURIComponent(rawPathname)");
+    expect(entryCode).toMatch(
+      /decodeURIComponent\(\s*(?:raw)?[pP]athname|decodeURIComponent\(url\.pathname\)/,
+    );
     // The delegate call should pass the original request object through,
     // without reconstructing a normalized Request before delegation.
     expect(entryCode).toMatch(/rscHandler\(request(?:,\s*ctx)?\)/);

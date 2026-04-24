@@ -16,6 +16,7 @@
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
+import { isOpenRedirectShaped } from "./request-pipeline.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -31,12 +32,11 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
 
-    // Normalize backslashes (browsers treat /\ as //) before any other checks.
-    const rawPathname = url.pathname.replaceAll("\\", "/");
-
-    // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
-    // Check rawPathname BEFORE decode so the guard fires before normalization.
-    if (rawPathname.startsWith("//")) {
+    // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
+    // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
+    // percent-encoded variants are caught — encoded forms survive segment-wise
+    // decoding and would otherwise reach trailing-slash redirect emitters.
+    if (isOpenRedirectShaped(url.pathname)) {
       return new Response("404 Not Found", { status: 404 });
     }
 
@@ -44,7 +44,7 @@ export default {
     // the actual decode + normalize; we only check here to return a clean 400
     // instead of letting a malformed sequence crash downstream.
     try {
-      decodeURIComponent(rawPathname);
+      decodeURIComponent(url.pathname);
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
       return new Response("Bad Request", { status: 400 });

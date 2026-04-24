@@ -564,6 +564,20 @@ function stripBasePath(pathname: string, basePath: string): string {
   return pathname.slice(basePath.length) || "/";
 }
 
+// Mirror of isOpenRedirectShaped in server/request-pipeline.ts. Inlined here
+// because this worker runs in the Cloudflare Workers environment and can't
+// import from our local source at build time. Keep in sync.
+function isOpenRedirectShaped(rawPathname: string): boolean {
+  if (!rawPathname.startsWith("/")) return false;
+  const afterSlash = rawPathname.slice(1);
+  if (afterSlash.startsWith("/") || afterSlash.startsWith("\\")) return true;
+  if (afterSlash.length >= 3 && afterSlash[0] === "%") {
+    const encoded = afterSlash.slice(0, 3).toLowerCase();
+    if (encoded === "%5c" || encoded === "%2f") return true;
+  }
+  return false;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
@@ -571,10 +585,13 @@ export default {
       let pathname = url.pathname;
       let urlWithQuery = pathname + url.search;
 
-      // Block protocol-relative URL open redirects (//evil.com/ or /\\evil.com/).
-      // Normalize backslashes: browsers treat /\\ as // in URL context.
-      const safePath = pathname.replaceAll("\\\\", "/");
-      if (safePath.startsWith("//")) {
+      // Block protocol-relative URL open redirects in all shapes:
+      //   literal  //evil.com, /\\\\evil.com
+      //   encoded  /%5Cevil.com, /%2F/evil.com
+      // Browsers normalize backslash to forward slash, and they percent-decode
+      // Location headers, so an encoded backslash in a downstream 308 redirect
+      // would also navigate to the attacker's origin.
+      if (isOpenRedirectShaped(pathname)) {
         return new Response("404 Not Found", { status: 404 });
       }
 

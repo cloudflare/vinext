@@ -631,10 +631,15 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("ASSETS");
   });
 
-  it("includes backslash normalization in protocol-relative guard", () => {
+  it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
     const content = generatePagesRouterWorkerEntry();
-    // The generated code should normalize backslashes before the // check
-    expect(content).toContain('replaceAll("\\\\", "/")');
+    // The generated worker inlines isOpenRedirectShaped. Regression for
+    // VULN-126915 — the guard must handle both literal (\\, //) and
+    // percent-encoded (%5C, %2F) variants in the leading segment.
+    expect(content).toContain("function isOpenRedirectShaped");
+    expect(content).toContain('"%5c"');
+    expect(content).toContain('"%2f"');
+    expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
   it("passes image handlers inline to handleImageOptimization", () => {

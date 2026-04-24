@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   guardProtocolRelativeUrl,
+  isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
   normalizeTrailingSlash,
@@ -25,10 +26,88 @@ describe("guardProtocolRelativeUrl", () => {
     expect(res!.status).toBe(404);
   });
 
+  // Regression for VULN-126915 / H1 #3576997: encoded backslash in the
+  // leading segment survives segment-wise decoding (the decoder re-encodes
+  // `\` back to `%5C`) and is then echoed into a trailing-slash 308 Location
+  // header. Browsers percent-decode the Location, and WHATWG URL treats `\`
+  // as `/`, so `/\evil.com` resolves as protocol-relative → `http://evil.com/`.
+  it("returns 404 for encoded backslash (%5C) protocol-relative paths", () => {
+    const res = guardProtocolRelativeUrl("/%5Cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for lowercase encoded backslash (%5c) protocol-relative paths", () => {
+    const res = guardProtocolRelativeUrl("/%5cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for encoded forward slash (%2F) in leading segment", () => {
+    // /%2F/evil.com decodes to //evil.com which is protocol-relative.
+    const res = guardProtocolRelativeUrl("/%2Fevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for double-encoded backslash (%5C%5C)", () => {
+    const res = guardProtocolRelativeUrl("/%5C%5Cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
   it("returns null for normal paths", () => {
     expect(guardProtocolRelativeUrl("/about")).toBeNull();
     expect(guardProtocolRelativeUrl("/")).toBeNull();
     expect(guardProtocolRelativeUrl("/api/data")).toBeNull();
+  });
+
+  it("returns null when % appears after the leading slash but not as a delimiter", () => {
+    // /%E4%B8%AD is the UTF-8 encoding of a Chinese character — should pass.
+    expect(guardProtocolRelativeUrl("/%E4%B8%AD")).toBeNull();
+    // /%61dmin decodes to /admin — a single encoded ASCII char is fine.
+    expect(guardProtocolRelativeUrl("/%61dmin")).toBeNull();
+  });
+
+  it("returns null for encoded delimiters that appear after the first segment", () => {
+    // Only the leading-segment shape matters for open redirects. An encoded
+    // backslash elsewhere in the path is a legitimate (if unusual) route.
+    expect(guardProtocolRelativeUrl("/foo/%5Cbar")).toBeNull();
+    expect(guardProtocolRelativeUrl("/foo%5Cbar")).toBeNull();
+  });
+
+  it("returns null for malformed percent-encoding (defers to decode error path)", () => {
+    // `/%E0%A4%A` is malformed but the guard should not 404 it — the
+    // downstream decode will return 400 Bad Request, which is more accurate.
+    expect(guardProtocolRelativeUrl("/%E0%A4%A")).toBeNull();
+  });
+});
+
+// ── isOpenRedirectShaped ────────────────────────────────────────────────
+
+describe("isOpenRedirectShaped", () => {
+  it("detects literal protocol-relative forms", () => {
+    expect(isOpenRedirectShaped("//evil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/\\evil.com")).toBe(true);
+  });
+
+  it("detects percent-encoded delimiter forms", () => {
+    expect(isOpenRedirectShaped("/%5Cevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%5cevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%2Fevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%2fevil.com")).toBe(true);
+  });
+
+  it("returns false for paths that don't start with /", () => {
+    expect(isOpenRedirectShaped("evil.com")).toBe(false);
+    expect(isOpenRedirectShaped("")).toBe(false);
+  });
+
+  it("returns false for safe paths", () => {
+    expect(isOpenRedirectShaped("/")).toBe(false);
+    expect(isOpenRedirectShaped("/about")).toBe(false);
+    expect(isOpenRedirectShaped("/api/users")).toBe(false);
+    expect(isOpenRedirectShaped("/%61dmin")).toBe(false);
   });
 });
 
@@ -147,6 +226,35 @@ describe("normalizeTrailingSlash", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(308);
     expect(res!.headers.get("Location")).toBe("/api-docs");
+  });
+
+  // Defense-in-depth for VULN-126915: even if an upstream guard is bypassed,
+  // the trailing-slash emitter must refuse to echo a protocol-relative path
+  // back into a Location header. Returns 404 instead of 308.
+  it("returns 404 (not 308) for encoded-backslash paths when trailingSlash is false", () => {
+    const res = normalizeTrailingSlash("/%5Cevil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+    expect(res!.headers.get("Location")).toBeNull();
+  });
+
+  it("returns 404 (not 308) for encoded-backslash paths when trailingSlash is true", () => {
+    const res = normalizeTrailingSlash("/%5Cevil.com", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+    expect(res!.headers.get("Location")).toBeNull();
+  });
+
+  it("returns 404 for literal double-slash paths", () => {
+    const res = normalizeTrailingSlash("//evil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for encoded-forward-slash paths", () => {
+    const res = normalizeTrailingSlash("/%2Fevil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
   });
 });
 
