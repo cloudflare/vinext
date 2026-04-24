@@ -79,6 +79,7 @@ catalog:
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.17
   wrangler: ^4.80.0
   zod: 3.24.3
+  knip: ^6.6.2
 overrides:
   vite: "catalog:"
   vitest: "catalog:"

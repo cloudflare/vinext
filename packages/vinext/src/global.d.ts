@@ -30,8 +30,9 @@ declare global {
 
     /**
      * The React DOM root for Pages Router.
-     * Set by `client/entry.ts` after `hydrateRoot()`.
-     * Read by `shims/router.ts` to call `root.render()` during navigation.
+     * Set by the generated client entry (`entries/pages-client-entry.ts`) after
+     * `hydrateRoot()`. Read by `shims/router.ts` to call `root.render()` during
+     * navigation.
      */
     __VINEXT_ROOT__: Root | undefined;
 
@@ -126,8 +127,8 @@ declare global {
     // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as
     // `NEXT_DATA` from `next/dist/shared/lib/utils`. We intentionally do NOT
     // re-declare it here to avoid type conflicts. vinext-specific extensions
-    // (__vinext, __pageModule, __appModule) are accessed via the
-    // `VinextNextData` type in `client/vinext-next-data.ts`.
+    // (__vinext) are accessed via the `VinextNextData` type in
+    // `client/vinext-next-data.ts`.
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────

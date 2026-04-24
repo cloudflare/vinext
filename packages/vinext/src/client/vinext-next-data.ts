@@ -15,8 +15,4 @@ export type VinextNextData = {
     /** Absolute URL of the `_app` module for dynamic import. */
     appModuleUrl?: string;
   };
-  /** Serialised page module path (legacy — used by `client/entry.ts`). */
-  __pageModule?: string;
-  /** Serialised `_app` module path (legacy — used by `client/entry.ts`). */
-  __appModule?: string;
 } & NEXT_DATA;

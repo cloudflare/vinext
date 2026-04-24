@@ -13,6 +13,7 @@
     "fmt:check": "vp fmt --check",
     "lint": "vp lint",
     "test:e2e": "playwright test",
+    "knip": "knip",
     "prepare": "vp config"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@typescript/native-preview": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "image-size": "catalog:",
+    "knip": "catalog:",
     "next": "catalog:",
     "playwright": "catalog:",
     "react": "catalog:",
