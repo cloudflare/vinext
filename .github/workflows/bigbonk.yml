@@ -47,5 +47,5 @@ jobs:
           variant: "max"
           permissions: write
           opencode_dev: false
-          opencode_version: 1.14.22
+          opencode_version: 1.14.25
           agent: viguy
