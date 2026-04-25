@@ -11,7 +11,7 @@ import { googleFontsMetadata } from "./font-metadata.js";
 
 const ALLOWED_DISPLAY_VALUES = ["auto", "block", "swap", "fallback", "optional"];
 
-export type GoogleFontOptions = {
+type GoogleFontOptions = {
   weight?: string | string[];
   style?: string | string[];
   preload?: boolean;
@@ -23,7 +23,7 @@ export type GoogleFontOptions = {
   subsets?: string[];
 };
 
-export type ValidatedGoogleFontOptions = {
+type ValidatedGoogleFontOptions = {
   fontFamily: string;
   weights: string[];
   styles: string[];

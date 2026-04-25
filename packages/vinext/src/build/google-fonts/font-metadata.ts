@@ -1,20 +1,21 @@
 // Typed wrapper around the vendored Google Fonts metadata.
 //
-// `font-data.json` originates upstream in Next.js (see NOTICE.md). It is a
-// large object keyed by family name; the JSON itself stays as a sibling file
-// rather than an inline `as const` literal so that we can refresh it from
-// upstream with a single copy and keep the source diff legible.
+// `font-data.json` is vendored from vercel/next.js
+// (`packages/font/src/google/font-data.json`, MIT License,
+// Copyright (c) Vercel, Inc.). Refresh by re-copying that file. Both Next.js
+// and vinext are MIT licensed, so the file is redistributed under the same
+// terms.
 
 import rawFontData from "./font-data.json" with { type: "json" };
 
-export type VariableAxisDescriptor = {
+type VariableAxisDescriptor = {
   tag: string;
   min: number;
   max: number;
   defaultValue: number;
 };
 
-export type FontFamilyMetadata = {
+type FontFamilyMetadata = {
   /** Available weight values, plus the literal "variable" if a variable face exists. */
   weights: string[];
   /** Available styles, e.g. ["normal"], ["italic"], or both. */
