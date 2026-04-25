@@ -1,3 +1,5 @@
+import { buildGoogleFontsUrl as buildUrlFromAxes } from "../build/google-fonts/build-url.js";
+
 /**
  * next/font/google shim
  *
@@ -109,15 +111,24 @@ function toVarName(family: string): string {
 
 /**
  * Build a Google Fonts CSS URL.
+ *
+ * In production this code path is dead. The build plugin
+ * (`vinext:google-fonts` in `src/plugins/fonts.ts`) statically resolves
+ * each font call's axis values against the bundled metadata, fetches the
+ * Google Fonts CSS, and injects the resulting CSS as `_selfHostedCSS` so
+ * the runtime never queries Google. The shim only reaches this builder
+ * when the plugin's static parser bails (dynamic options, eval-only
+ * shapes), which is dev-only.
+ *
+ * The dev fallback intentionally has no metadata: shipping the 388 KB
+ * `font-data.json` to the Worker bundle would dwarf the rest of the shim,
+ * and the production path already has the metadata-aware variant. The
+ * tradeoff is that the dev fallback cannot resolve a variable font's
+ * actual `wght` axis range. It emits no axis segment when no `weight` is
+ * given, which makes Google return the default static face (200) instead
+ * of the broken `:wght@100..900` URL that issue #885 reports.
  */
 export function buildGoogleFontsUrl(family: string, options: FontOptions): string {
-  const params = new URLSearchParams();
-  // Don't pre-replace spaces with "+". URLSearchParams handles encoding:
-  // spaces become "+" in application/x-www-form-urlencoded format.
-  // Pre-replacing would cause double-encoding: "+" -> "%2B" (400 error).
-  let spec = family;
-
-  // Build weight/style specs
   const weights = options.weight
     ? Array.isArray(options.weight)
       ? options.weight
@@ -129,33 +140,21 @@ export function buildGoogleFontsUrl(family: string, options: FontOptions): strin
       : [options.style]
     : [];
 
-  if (weights.length > 0 || styles.length > 0) {
-    const hasItalic = styles.includes("italic");
-    if (weights.length > 0) {
-      if (hasItalic) {
-        // Use ital axis: ital,wght@0,400;0,700;1,400;1,700
-        const pairs: string[] = [];
-        for (const w of weights) {
-          pairs.push(`0,${w}`);
-          pairs.push(`1,${w}`);
-        }
-        spec += `:ital,wght@${pairs.join(";")}`;
-      } else {
-        spec += `:wght@${weights.join(";")}`;
-      }
-    }
-  } else {
-    // When no weight is specified, request the full variable weight range.
-    // Without this, Google Fonts returns only weight 400 (the default).
-    // Next.js loads the full variable font by default, so we match that
-    // behavior to ensure all font weights render correctly.
-    spec += `:wght@100..900`;
-  }
+  const hasItalic = styles.includes("italic");
+  const hasNormal = styles.includes("normal");
+  // Google treats omitted ital as ital=0, so italic-only requests emit
+  // ['1']; mixed requests emit ['0','1']; normal-only stays undefined so
+  // the URL has no ital axis at all.
+  const ital = hasItalic ? [...(hasNormal ? ["0"] : []), "1"] : undefined;
 
-  params.set("family", spec);
-  params.set("display", options.display ?? "swap");
+  // Italic-only with no explicit weight still needs a wght value or the
+  // ital axis has nowhere to attach in Google's URL grammar. Fall back to
+  // '400' because every Google Font has it and it is the visible default.
+  // The plugin's metadata-aware path covers the variable-font case in
+  // production.
+  const wght = weights.length > 0 ? weights : ital ? ["400"] : undefined;
 
-  return `https://fonts.googleapis.com/css2?${params.toString()}`;
+  return buildUrlFromAxes(family, { wght, ital }, options.display ?? "swap");
 }
 
 /**
