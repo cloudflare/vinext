@@ -27,6 +27,26 @@ import { parseAst } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import MagicString from "magic-string";
+import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
+import { getFontAxes } from "../build/google-fonts/get-axes.js";
+import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
+
+/**
+ * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
+ * `fetch` rejection (network error, DNS failure, AbortError) so the call
+ * site can decide whether to surface as a build error or fall through to
+ * the runtime CDN path.
+ */
+class GoogleFontsHttpError extends Error {
+  constructor(
+    public readonly url: string,
+    public readonly status: number,
+    public readonly responseBody: string,
+  ) {
+    super(`Google Fonts returned HTTP ${status} for ${url}`);
+    this.name = "GoogleFontsHttpError";
+  }
+}
 
 // ── Virtual module IDs ────────────────────────────────────────────────────────
 
@@ -409,7 +429,11 @@ async function fetchAndCacheFont(
     },
   });
   if (!cssResponse.ok) {
-    throw new Error(`Failed to fetch Google Fonts CSS: ${cssResponse.status}`);
+    // Include the response body when Google rejected the request so the
+    // caller can see why (the body usually contains a one-line CSS comment
+    // identifying the bad axis or family).
+    const body = await cssResponse.text().catch(() => "");
+    throw new GoogleFontsHttpError(cssUrl, cssResponse.status, body);
   }
   let css = await cssResponse.text();
 
@@ -753,41 +777,30 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             return; // Can't parse options statically, skip
           }
 
-          // Build the Google Fonts CSS URL
-          const weights = options.weight
-            ? Array.isArray(options.weight)
-              ? options.weight
-              : [options.weight]
-            : [];
-          const styles = options.style
-            ? Array.isArray(options.style)
-              ? options.style
-              : [options.style]
-            : [];
-          const display = options.display ?? "swap";
-
-          let spec = family.replace(/\s+/g, "+");
-          if (weights.length > 0) {
-            const hasItalic = styles.includes("italic");
-            if (hasItalic) {
-              const pairs: string[] = [];
-              for (const w of weights) {
-                pairs.push(`0,${w}`);
-                pairs.push(`1,${w}`);
-              }
-              spec += `:ital,wght@${pairs.join(";")}`;
-            } else {
-              spec += `:wght@${weights.join(";")}`;
-            }
-          } else if (styles.length === 0) {
-            // Request full variable weight range when no weight specified.
-            // Without this, Google Fonts returns only weight 400.
-            spec += `:wght@100..900`;
+          // Validate the call against the bundled Google Fonts metadata
+          // and resolve the actual axis values. This replaces an earlier
+          // inline URL builder that hardcoded `:wght@100..900` regardless
+          // of the font's real `wght` axis range, which produced HTTP 400
+          // for fonts whose axis is narrower (Sen 400..800, Anton 400).
+          // See issue #885.
+          let validated;
+          try {
+            validated = validateGoogleFontOptions(family, options);
+          } catch (err) {
+            // Validation errors are programmer errors (unknown family,
+            // missing required weight on a static font, etc.). Re-throw
+            // with the file path attached so Vite reports the offending
+            // call site instead of a generic plugin error.
+            const message = err instanceof Error ? err.message : String(err);
+            throw new Error(`[vinext:google-fonts] ${id}: ${message}`);
           }
-          const params = new URLSearchParams();
-          params.set("family", spec);
-          params.set("display", display);
-          const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
+          const axes = getFontAxes(
+            family,
+            validated.weights,
+            validated.styles,
+            validated.selectedVariableAxes,
+          );
+          const cssUrl = buildGoogleFontsUrl(family, axes, validated.display);
 
           // Check cache
           let localCSS = fontCache.get(cssUrl);
@@ -795,8 +808,20 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             try {
               localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
               fontCache.set(cssUrl, localCSS);
-            } catch {
-              // Fetch failed (offline?) — fall back to CDN mode
+            } catch (err) {
+              if (err instanceof GoogleFontsHttpError) {
+                // HTTP 4xx/5xx from Google means the URL is malformed or
+                // the family/axis combination is invalid. Surface as a
+                // build error so the user sees the failing URL plus
+                // Google's response body, rather than silently falling
+                // through to a CDN URL that ships the same bad request
+                // to the browser.
+                throw new Error(
+                  `[vinext:google-fonts] ${id}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${err.responseBody.trim() || "(empty response body)"}`,
+                );
+              }
+              // Network errors (offline, DNS, AbortError) are recoverable;
+              // skip self-hosting and let the runtime CDN path handle it.
               return;
             }
           }
