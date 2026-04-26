@@ -2005,6 +2005,32 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           socket.on("error", () => {});
         });
 
+        // Backstop for stream-pipe paths the connection-level guard misses.
+        // When a Readable is piped to a Writable that has no 'error' listener,
+        // Node's pipe() machinery re-emits the source's error onto the
+        // destination, which then throws (e.g. fromWeb(fetch().body).pipe(res)
+        // in proxyExternalRewriteNode, or any streaming surface inside
+        // @vitejs/plugin-rsc). Outbound sockets created by fetch() also never
+        // fire 'connection' on server.httpServer. Filtering by error code
+        // keeps real bugs surfacing — only peer-disconnect codes are dropped.
+        const isPeerDisconnect = (err: unknown): boolean => {
+          const code = (err as { code?: string } | null)?.code;
+          return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED";
+        };
+        const onUncaught = (err: Error) => {
+          if (isPeerDisconnect(err)) return;
+          // Re-throw on next tick so we don't shadow Node's default crash
+          // behavior for genuine errors — same shape as not having installed
+          // a handler at all.
+          process.nextTick(() => {
+            throw err;
+          });
+        };
+        process.on("uncaughtException", onUncaught);
+        server.httpServer?.once("close", () => {
+          process.removeListener("uncaughtException", onUncaught);
+        });
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
