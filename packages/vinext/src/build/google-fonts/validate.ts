@@ -68,6 +68,9 @@ export function validateGoogleFontOptions(
     // it rather than forcing the caller to opt out.
     preload = false;
   } else if (preload) {
+    // Deliberate parity gap: Next.js uses `if (!subsets)` so an explicit
+    // `subsets: []` passes silently. vinext rejects it as well, since an
+    // empty subsets array with preload enabled is always a caller mistake.
     if (subsets.length === 0) {
       throw new Error(
         `Preload is enabled but no subsets were specified for font \`${fontFamily}\`. Please specify subsets or disable preloading if your intended subset can't be preloaded.\nAvailable subsets: ${formatAvailableValues(availableSubsets)}`,

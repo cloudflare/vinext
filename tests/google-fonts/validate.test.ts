@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
+import { googleFontsMetadata } from "../../packages/vinext/src/build/google-fonts/font-metadata.js";
 import { validateGoogleFontOptions } from "../../packages/vinext/src/build/google-fonts/validate.js";
 
 // Ported from Next.js: packages/font/src/google/validate-google-font-function-call.ts.
@@ -111,8 +112,16 @@ describe("validateGoogleFontOptions", () => {
     // empty subsets array in upstream metadata. The contract is to silently
     // flip preload to false instead of throwing, matching Next.js behavior.
     // If upstream metadata ever adds a subset to this family this test will
-    // need a different fixture.
+    // need a different fixture; the sanity check below guards the branch
+    // independently of the specific family name.
     const opts = validateGoogleFontOptions("Playwrite AR Guides", { weight: "400" });
     expect(opts.preload).toBe(false);
+  });
+
+  it("metadata contains at least one family with no preloadable subsets", () => {
+    const familiesWithNoSubsets = Object.values(googleFontsMetadata).filter(
+      (meta) => meta.subsets.length === 0,
+    );
+    expect(familiesWithNoSubsets.length).toBeGreaterThan(0);
   });
 });
