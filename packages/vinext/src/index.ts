@@ -2013,23 +2013,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // @vitejs/plugin-rsc). Outbound sockets created by fetch() also never
         // fire 'connection' on server.httpServer. Filtering by error code
         // keeps real bugs surfacing — only peer-disconnect codes are dropped.
-        const isPeerDisconnect = (err: unknown): boolean => {
-          const code = (err as { code?: string } | null)?.code;
-          return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED";
-        };
-        const onUncaught = (err: Error) => {
-          if (isPeerDisconnect(err)) return;
-          // Re-throw on next tick so we don't shadow Node's default crash
-          // behavior for genuine errors — same shape as not having installed
-          // a handler at all.
-          process.nextTick(() => {
+        //
+        // Skipped in middleware mode (httpServer is null): the embedding host
+        // owns process-level handlers, and we have no reliable teardown hook
+        // to remove ours, so installation would leak.
+        if (server.httpServer) {
+          const isPeerDisconnect = (err: unknown): boolean => {
+            const code = (err as { code?: string } | null)?.code;
+            return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED";
+          };
+          // Synchronous throw inside an uncaughtException listener aborts
+          // the process the same way no listener would (stack to stderr,
+          // non-zero exit). Re-throwing on nextTick instead would re-enter
+          // this same listener and loop indefinitely, silently swallowing
+          // genuine errors.
+          const onUncaught = (err: Error) => {
+            if (isPeerDisconnect(err)) return;
             throw err;
+          };
+          const onUnhandledRejection = (reason: unknown) => {
+            if (isPeerDisconnect(reason)) return;
+            throw reason;
+          };
+          process.on("uncaughtException", onUncaught);
+          process.on("unhandledRejection", onUnhandledRejection);
+          server.httpServer.once("close", () => {
+            process.removeListener("uncaughtException", onUncaught);
+            process.removeListener("unhandledRejection", onUnhandledRejection);
           });
-        };
-        process.on("uncaughtException", onUncaught);
-        server.httpServer?.once("close", () => {
-          process.removeListener("uncaughtException", onUncaught);
-        });
+        }
 
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
