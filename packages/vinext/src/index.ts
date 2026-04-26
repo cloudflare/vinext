@@ -2145,34 +2145,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Intercept setHeader and writeHead so we can strip X-Vinext-Timing
               // before it reaches the client and capture the compile/render split.
               // The RSC plugin may set headers either way depending on its version.
-              // Parse the three-part X-Vinext-Timing header:
-              //   "handlerStart,inHandlerCompileMs,renderMs"
               //
-              // True compile time = time the RSC plugin spent loading/transforming
-              // modules before our handler code ran, plus any in-handler work before
-              // renderToReadableStream. Concretely:
-              //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
-              //   renderMs  = renderMs from header, or -1 for RSC-only (soft-nav)
-              //               responses where rendering is not measured in the handler.
-              //               In that case the middleware computes render time as
-              //               totalMs - compileMs.
-              //
-              // handlerStart is performance.now() recorded at the very top of
-              // _handleRequest in the generated RSC entry. _reqStart is recorded
-              // here in the Node middleware, one stack frame before the RSC plugin
-              // loads the module. The gap between them is exactly the Vite
-              // compile/transform cost.
+              // Header format: "compileMs,renderMs" — both deltas computed inside
+              // the worker. We don't try to add Vite transform overhead here:
+              // when the worker runs in workerd, performance.now() is wall-clock
+              // and can't be subtracted from the Node middleware's process-uptime
+              // clock. -1 is a sentinel meaning "not measured".
               function _parseTiming(raw: unknown) {
-                const [handlerStart, inHandlerCompileMs, renderMs] = String(raw)
+                const [compileMs, renderMs] = String(raw)
                   .split(",")
                   .map((v) => Number(v));
-                if (
-                  !Number.isNaN(handlerStart) &&
-                  !Number.isNaN(inHandlerCompileMs) &&
-                  inHandlerCompileMs !== -1
-                ) {
-                  _compileMs =
-                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                if (!Number.isNaN(compileMs) && compileMs !== -1) {
+                  _compileMs = compileMs;
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;

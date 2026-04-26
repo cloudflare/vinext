@@ -66,7 +66,11 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
     return;
   }
 
-  const handlerStart = Math.round(timing.handlerStart);
+  // Header format: "compileMs,renderMs" — both are deltas computed inside the
+  // worker using a single clock, so they're always sane regardless of whether
+  // the worker's performance.now() is process-uptime (Node) or wall-clock
+  // (workerd). Do NOT send absolute timestamps across the worker→Node boundary
+  // for subtraction: the two clocks may not share a time origin.
   const compileMs =
     timing.compileEnd !== undefined ? Math.round(timing.compileEnd - timing.handlerStart) : -1;
   const renderMs =
@@ -76,7 +80,7 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
       ? Math.round(timing.renderEnd - timing.compileEnd)
       : -1;
 
-  headers.set("x-vinext-timing", `${handlerStart},${compileMs},${renderMs}`);
+  headers.set("x-vinext-timing", `${compileMs},${renderMs}`);
 }
 
 export function resolveAppPageRscResponsePolicy(
