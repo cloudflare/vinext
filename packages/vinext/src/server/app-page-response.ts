@@ -66,13 +66,20 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
     return;
   }
 
-  // Header format: "compileMs,renderMs" — both are deltas computed inside the
-  // worker using a single clock, so they're always sane regardless of whether
-  // the worker's performance.now() is process-uptime (Node) or wall-clock
-  // (workerd). Do NOT send absolute timestamps across the worker→Node boundary
-  // for subtraction: the two clocks may not share a time origin.
-  const compileMs =
-    timing.compileEnd !== undefined ? Math.round(timing.compileEnd - timing.handlerStart) : -1;
+  // Header format: "renderMs" — a single delta computed inside the worker.
+  //
+  // We intentionally do NOT send a compileMs here. compileMs would require
+  // capturing handlerStart at the top of the request handler, but under
+  // @cloudflare/vite-plugin the handler runs in workerd, where both Date.now()
+  // and performance.now() are bounded by Spectre mitigation: they return a
+  // fixed value (~0) until the first real I/O event in the request, then
+  // jump to wall-clock. compileEnd is captured after dynamic imports (post-IO,
+  // wall-clock), so compileEnd - handlerStart yields ~Date.now() worth of
+  // milliseconds — surfaced previously as "compile: 1777235885.4s".
+  //
+  // renderMs (compileEnd → onShellRendered) is reliable: both samples happen
+  // after substantial I/O. The dev middleware computes compileMs as
+  // totalMs - renderMs using Node's monotonic clock, which is always sane.
   const renderMs =
     timing.responseKind === "html" &&
     timing.renderEnd !== undefined &&
@@ -80,7 +87,7 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
       ? Math.round(timing.renderEnd - timing.compileEnd)
       : -1;
 
-  headers.set("x-vinext-timing", `${compileMs},${renderMs}`);
+  headers.set("x-vinext-timing", `${renderMs}`);
 }
 
 export function resolveAppPageRscResponsePolicy(

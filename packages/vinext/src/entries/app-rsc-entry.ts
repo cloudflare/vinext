@@ -1355,22 +1355,14 @@ export default async function handler(request, ctx) {
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
-  // Use Date.now() rather than performance.now(): under @cloudflare/vite-plugin
-  // the RSC entry runs in workerd, where performance.now()'s time origin is
-  // per-request / wall-clock and doesn't match Node's process-uptime origin.
-  // Date.now() is unambiguous everywhere; sub-ms precision is irrelevant for
-  // the dev log.
-  //
-  // Capture unconditionally. Gating on process.env.NODE_ENV breaks here:
-  // this generated entry is Vite-transformed, so process.env.NODE_ENV becomes
-  // a string literal at build time based on the workerd environment's mode
-  // (production-like under @cloudflare/vite-plugin). compileEnd lives in
-  // app-page-render.ts, which is loaded from vinext's pre-built dist/ and
-  // reads process.env.NODE_ENV at runtime — so the two checks disagree:
-  // __reqStart fell to 0 while compileEnd was still captured as Date.now(),
-  // producing a delta of ~Date.now() ms (logged as "compile: 1777235584.9s").
-  // One Date.now() call per request in production is negligible.
-  const __reqStart = Date.now();
+  // handlerStart is no longer reported across the worker→Node boundary —
+  // under @cloudflare/vite-plugin the handler runs in workerd, where
+  // Date.now()/performance.now() are bounded by Spectre mitigation and
+  // return ~0 before the first I/O. The dev middleware now derives
+  // compileMs from totalMs - renderMs against Node's monotonic clock.
+  // Pass 0 to keep the lifecycle option shape stable; the response builder
+  // discards handlerStart anyway.
+  const __reqStart = 0;
   const url = new URL(request.url);
 
   // ── Cross-origin request protection (dev only) ─────────────────────

@@ -2139,25 +2139,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
               const _reqStart = now();
-              let _compileMs: number | undefined;
               let _renderMs: number | undefined;
 
               // Intercept setHeader and writeHead so we can strip X-Vinext-Timing
-              // before it reaches the client and capture the compile/render split.
-              // The RSC plugin may set headers either way depending on its version.
+              // before it reaches the client and capture the render delta.
               //
-              // Header format: "compileMs,renderMs" — both deltas computed inside
-              // the worker. We don't try to add Vite transform overhead here:
-              // when the worker runs in workerd, performance.now() is wall-clock
-              // and can't be subtracted from the Node middleware's process-uptime
-              // clock. -1 is a sentinel meaning "not measured".
+              // Header format: "renderMs" — a single post-IO delta from the
+              // worker (compileEnd → onShellRendered). We don't accept compileMs
+              // from the worker because under @cloudflare/vite-plugin the
+              // handler runs in workerd, where Date.now()/performance.now() are
+              // bounded by Spectre mitigation and return ~0 before the first
+              // I/O. compileMs is computed below as totalMs - renderMs against
+              // Node's monotonic clock, which is always reliable.
+              // -1 means "not measured" (e.g. RSC-only soft-nav responses).
               function _parseTiming(raw: unknown) {
-                const [compileMs, renderMs] = String(raw)
-                  .split(",")
-                  .map((v) => Number(v));
-                if (!Number.isNaN(compileMs) && compileMs !== -1) {
-                  _compileMs = compileMs;
-                }
+                const renderMs = Number(String(raw));
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;
                 }
@@ -2204,24 +2200,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
                 const totalMs = now() - _reqStart;
 
-                // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
-                // "not measured in the handler"). Compute it as totalMs - compileMs,
-                // which is how long the RSC stream took to fully flush to the client —
-                // matching what Next.js shows for soft navigations.
-                const resolvedRenderMs =
+                // compileMs is "everything except the shell render" — module
+                // loading, RSC streaming setup, etc. For RSC-only responses
+                // (soft nav, no shell render), _renderMs is undefined and we
+                // omit the breakdown rather than fabricate one.
+                const compileMs =
                   _renderMs !== undefined
-                    ? _renderMs
-                    : _compileMs !== undefined
-                      ? Math.max(0, Math.round(totalMs - _compileMs))
-                      : undefined;
+                    ? Math.max(0, Math.round(totalMs - _renderMs))
+                    : undefined;
 
                 logRequest({
                   method: req.method ?? "GET",
                   url: logUrl,
                   status: res.statusCode,
                   totalMs,
-                  compileMs: _compileMs,
-                  renderMs: resolvedRenderMs,
+                  compileMs,
+                  renderMs: _renderMs,
                 });
               });
 
