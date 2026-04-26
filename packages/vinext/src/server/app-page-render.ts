@@ -156,7 +156,8 @@ export async function renderAppPageLifecycle(
     layoutFlags,
   });
 
-  const compileEnd = options.isProduction ? undefined : performance.now();
+  // Date.now() (not performance.now()) — see app-rsc-entry.ts for rationale.
+  const compileEnd = options.isProduction ? undefined : Date.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
   const rscStream = options.renderToReadableStream(outgoingElement, {
@@ -230,7 +231,7 @@ export async function renderAppPageLifecycle(
   const htmlRender = await renderAppPageHtmlStreamWithRecovery({
     onShellRendered() {
       if (!options.isProduction) {
-        renderEnd = performance.now();
+        renderEnd = Date.now();
       }
     },
     renderErrorBoundaryResponse(error) {

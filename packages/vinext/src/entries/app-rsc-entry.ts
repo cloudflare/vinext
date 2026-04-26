@@ -1355,10 +1355,14 @@ export default async function handler(request, ctx) {
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
-  // __reqStart is included in the timing header so the Node logging middleware
-  // can compute true compile time as: handlerStart - middlewareStart.
-  // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+  // Use Date.now() rather than performance.now() so the value shares a clock
+  // domain with compileEnd/renderEnd captured in app-page-render.ts. Under
+  // @cloudflare/vite-plugin the RSC entry runs in workerd, where
+  // performance.now()'s time origin is per-request / wall-clock — subtracting
+  // it from a performance.now() captured in a differently-loaded module
+  // produces ~Date.now() worth of milliseconds. Date.now() is unambiguous
+  // across Node and workerd. Sub-ms precision is irrelevant for the dev log.
+  const __reqStart = process.env.NODE_ENV !== "production" ? Date.now() : 0;
   const url = new URL(request.url);
 
   // ── Cross-origin request protection (dev only) ─────────────────────
