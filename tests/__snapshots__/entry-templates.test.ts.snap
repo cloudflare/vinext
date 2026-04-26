@@ -1224,12 +1224,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.
@@ -3580,12 +3585,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.
@@ -5943,12 +5953,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.
@@ -8332,12 +8347,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.
@@ -10695,12 +10715,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.
@@ -13280,12 +13305,17 @@ export default async function handler(request, ctx) {
     try {
       response = await _handleRequest(request, __reqCtx, _mwCtx);
     } catch (err) {
-      // Embed err.cause chain into err.message/err.stack so single-pass
-      // formatters upstream (Vite's dev-server "Internal server error:" logger
-      // builds output from message + stack only) reveal the underlying root
-      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
-      // of dropping it. Idempotent and a no-op when cause is absent.
-      __flattenErrorCauses(err);
+      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
+      // dev-server "Internal server error:" logger (which builds output from
+      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
+      // role missing, workerd socket error, etc.) instead of dropping it.
+      // Skipped in production because Node's util.inspect / workerd's logger
+      // already render .cause natively, so flattening would double-print it.
+      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
+      // this branch out entirely.
+      if (process.env.NODE_ENV !== "production") {
+        __flattenErrorCauses(err);
+      }
       throw err;
     }
     // Apply custom headers from next.config.js to non-redirect responses.

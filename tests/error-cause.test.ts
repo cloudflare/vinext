@@ -14,6 +14,7 @@
  * surface the root cause.
  */
 import { describe, it, expect } from "vite-plus/test";
+import { inspect } from "node:util";
 import { flattenErrorCauses } from "../packages/vinext/src/utils/error-cause.js";
 
 // Mirror Vite's `cleanStack` from
@@ -135,19 +136,31 @@ describe("flattenErrorCauses", () => {
     expect(() => flattenErrorCauses({ message: "fake" })).not.toThrow();
   });
 
-  it("the flatten marker is non-enumerable so util.inspect output is unaffected", () => {
+  it("the flatten marker is invisible to util.inspect (no symbol leak in error output)", () => {
     const err = new Error("outer", { cause: new Error("inner") });
     flattenErrorCauses(err);
 
-    // The marker symbol must not appear in standard property enumeration —
-    // otherwise Node's util.inspect would render it alongside the error,
-    // polluting prod logs that already format causes correctly.
-    const ownKeys = Reflect.ownKeys(err);
-    const markerKeys = ownKeys.filter(
-      (k) => typeof k === "symbol" && k.description === "vinext.errorCausesFlattened",
-    );
-    expect(markerKeys).toHaveLength(1);
-    const desc = Object.getOwnPropertyDescriptor(err, markerKeys[0]);
-    expect(desc?.enumerable).toBe(false);
+    // util.inspect is what console.error uses to render Errors. The marker
+    // must not appear in its output — otherwise prod logs (which call this
+    // function via the gated dev-only branch is fine, but local repros and
+    // tests still inspect flattened errors) would gain a stray
+    // "[Symbol(vinext.errorCausesFlattened)]: true" line.
+    const rendered = inspect(err, { showHidden: false });
+    expect(rendered).not.toContain("vinext.errorCausesFlattened");
+    expect(rendered).not.toContain("Symbol(");
+  });
+
+  it("never throws on a frozen Error — leaves it unmodified rather than masking the original failure", () => {
+    // If user code throws Object.freeze(new Error(...)), defineProperty and
+    // err.message = ... would each throw TypeError. The catch block in the
+    // generated handler would then propagate that TypeError instead of the
+    // user's real error, masking the actual failure during debugging. The
+    // helper's contract is best-effort: never throw.
+    const cause = new Error("inner");
+    const wrapped = new Error("outer", { cause });
+    Object.freeze(wrapped);
+
+    expect(() => flattenErrorCauses(wrapped)).not.toThrow();
+    expect(wrapped.message).toBe("outer");
   });
 });

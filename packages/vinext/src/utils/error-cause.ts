@@ -8,14 +8,20 @@
  * shows up in the Vite dev console as just "Failed query" — the actual
  * ECONNREFUSED / role-missing / socket-error in `.cause` is lost.
  *
- * - Idempotent (marked via a non-enumerable symbol so repeat calls are no-ops,
- *   and so `util.inspect` output is unaffected — no doubled cause rendering
- *   in Node's default error logging).
+ * Intended for **dev-server use only**. Production loggers (Node's
+ * `console.error` → `util.inspect`, workerd's runtime logger) already render
+ * `.cause` natively, so calling this in prod would double-print the cause —
+ * once in the synthesized message, once in util.inspect's `[cause]:` block.
+ * Callers should gate on `process.env.NODE_ENV !== "production"` (Vite
+ * build-time-replaces this, so the prod bundle gets a no-op).
+ *
+ * - Best-effort: never throws. Frozen / non-extensible errors are left untouched.
+ * - Idempotent (repeat calls are no-ops via a non-enumerable module-private symbol).
  * - Cycle-safe and depth-capped (10) for pathological cause graphs.
  * - Cause stack frames are appended as `at` lines so stack-cleaning regexes
  *   like Vite's `/^\s*at/` filter preserve them.
  */
-const FLATTENED_MARKER = Symbol.for("vinext.errorCausesFlattened");
+const FLATTENED_MARKER = Symbol("vinext.errorCausesFlattened");
 const MAX_CAUSE_DEPTH = 10;
 
 function stringifyNonError(value: unknown): string {
@@ -35,12 +41,20 @@ export function flattenErrorCauses(err: unknown): void {
   if (!(err instanceof Error)) return;
   const marked = err as Error & { [FLATTENED_MARKER]?: true };
   if (marked[FLATTENED_MARKER]) return;
-  Object.defineProperty(marked, FLATTENED_MARKER, {
-    value: true,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
+  // defineProperty throws on frozen errors; mutations below also throw.
+  // Wrap each step so this function honours its "never throw" contract —
+  // a thrown TypeError here would propagate from the caller's catch block
+  // and replace the user's real error with our enrichment failure.
+  try {
+    Object.defineProperty(marked, FLATTENED_MARKER, {
+      value: true,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  } catch {
+    return;
+  }
 
   const seen = new WeakSet<object>([err]);
   const causes: Array<{ message: string; stack?: string }> = [];
@@ -63,7 +77,13 @@ export function flattenErrorCauses(err: unknown): void {
   if (causes.length === 0) return;
 
   const messageSuffix = causes.map((c) => `  [cause]: ${c.message}`).join("\n");
-  err.message = `${err.message}\n${messageSuffix}`;
+  try {
+    err.message = `${err.message}\n${messageSuffix}`;
+  } catch {
+    // Frozen / non-writable .message — leave the rest untouched too,
+    // since a partial write would be misleading.
+    return;
+  }
 
   if (typeof err.stack === "string") {
     let stackSuffix = "";
@@ -78,6 +98,10 @@ export function flattenErrorCauses(err: unknown): void {
         if (frames) stackSuffix += `\n${frames}`;
       }
     }
-    err.stack = `${err.stack}${stackSuffix}`;
+    try {
+      err.stack = `${err.stack}${stackSuffix}`;
+    } catch {
+      // Stack is read-only on some hosts; message enrichment still holds.
+    }
   }
 }
