@@ -493,62 +493,69 @@ type NitroSetupContext = {
 };
 
 /**
- * Dev-only diagnostic backstop for peer-disconnect errors.
+ * Dev-only backstop for peer-disconnect errors.
  *
- * Installed at module top-level (not inside configureServer) so it
- * predates any subsequent lifecycle teardown — dep re-optimization,
- * full reloads, server restarts can't remove it.
+ * Installed lazily from `configureServer` (dev only — never fires
+ * during `vinext build` or Vitest test workers that import this
+ * module), but **without** binding teardown to any server lifecycle
+ * event. The earlier version in PR #913 removed the listener on
+ * `httpServer` `'close'`, which Vite emits on dep re-optimization,
+ * full reloads, and other lifecycle events — leaving a window where
+ * the listener was absent when a stale stream errored. Symbol.for
+ * guard makes re-invocation (e.g. server restart) a no-op so the
+ * listener lives for the process.
  *
  * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
- * ECONNABORTED) and synchronously re-throws everything else, preserving
- * Node's default crash semantics for genuine bugs.
+ * ECONNABORTED) and synchronously re-throws everything else,
+ * preserving Node's default crash semantics for genuine bugs.
  *
- * Set `VINEXT_DEBUG_SOCKET_ERRORS=1` in the environment to log a
- * one-line marker each time the listener absorbs an error. Useful when
- * users still see `node:events:487 throw er; // Unhandled 'error'
- * event` in their dev output — the marker confirms whether the listener
- * never ran at all (handler not installed / removed) or was bypassed
- * by some other path.
+ * Skipped in middleware mode (httpServer is null): the embedding
+ * host (Express/Connect/etc.) owns process-level handlers.
  *
- * Symbol.for guard prevents double-install when vinext is loaded twice
- * (e.g. by both a project and a sibling workspace package).
+ * Listener ordering: because install happens during `configureServer`
+ * — after most user / tooling setup — vinext's listener registers
+ * late in the queue, so earlier observers (Sentry, structured logging,
+ * test runner hooks) still see non-peer-disconnect errors before the
+ * sync re-throw aborts further iteration.
  *
- * Dev-only by virtue of being unused by the production prod-server
- * entry, which runs as a Cloudflare Worker where socket lifecycle is
- * owned by the runtime.
+ * Set `VINEXT_DEBUG_SOCKET_ERRORS=1` to log a one-line marker each
+ * time the listener absorbs an error — useful for confirming the
+ * listener is in place when users still report `node:events:487
+ * throw er` crashes in the field.
+ *
+ * Symbol.for caveat: `Symbol.for("vinext.devSocketErrorBackstop")`
+ * is process-global, so if two different vinext versions are loaded
+ * in the same process the first to evaluate wins and the second's
+ * filter rules silently don't apply.
  */
 const DEV_SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.devSocketErrorBackstop");
-{
+function installDevSocketErrorBackstop(): void {
   const proc = process as typeof process & { [DEV_SOCKET_BACKSTOP_FLAG]?: true };
-  if (!proc[DEV_SOCKET_BACKSTOP_FLAG]) {
-    proc[DEV_SOCKET_BACKSTOP_FLAG] = true;
-    const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
-    const isPeerDisconnect = (err: unknown): boolean => {
-      const code = (err as { code?: string } | null)?.code;
-      return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED";
-    };
-    if (debug) console.warn("[vinext] dev socket-error backstop installed");
-    process.on("uncaughtException", (err: Error) => {
-      if (isPeerDisconnect(err)) {
-        if (debug) {
-          const code = (err as Error & { code?: string }).code;
-          console.warn(`[vinext] absorbed uncaughtException ${code}`);
-        }
-        return;
-      }
-      throw err;
-    });
-    process.on("unhandledRejection", (reason: unknown) => {
-      if (isPeerDisconnect(reason)) {
-        if (debug) {
-          const code = (reason as Error & { code?: string }).code;
-          console.warn(`[vinext] absorbed unhandledRejection ${code}`);
-        }
-        return;
-      }
-      throw reason;
-    });
-  }
+  if (proc[DEV_SOCKET_BACKSTOP_FLAG]) return;
+  proc[DEV_SOCKET_BACKSTOP_FLAG] = true;
+
+  const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
+  const peerDisconnectCode = (err: unknown): string | undefined => {
+    const code = (err as { code?: string } | null)?.code;
+    return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED" ? code : undefined;
+  };
+  if (debug) console.warn("[vinext] dev socket-error backstop installed");
+  process.on("uncaughtException", (err: Error) => {
+    const code = peerDisconnectCode(err);
+    if (code) {
+      if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
+      return;
+    }
+    throw err;
+  });
+  process.on("unhandledRejection", (reason: unknown) => {
+    const code = peerDisconnectCode(reason);
+    if (code) {
+      if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
+      return;
+    }
+    throw reason;
+  });
 }
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
@@ -2063,6 +2070,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         server.httpServer?.on("connection", (socket) => {
           socket.on("error", () => {});
         });
+
+        // Process-level peer-disconnect backstop. Skipped in middleware
+        // mode (httpServer null) — the embedding host owns its handlers.
+        if (server.httpServer) {
+          installDevSocketErrorBackstop();
+        }
 
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
