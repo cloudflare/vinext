@@ -1327,7 +1327,11 @@ export function useRouter() {
  */
 export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null {
   const segments = useSelectedLayoutSegments(parallelRoutesKey);
-  return segments.length > 0 ? segments[0] : null;
+  if (segments.length === 0) return null;
+
+  return parallelRoutesKey === undefined || parallelRoutesKey === "children"
+    ? segments[0]
+    : segments[segments.length - 1];
 }
 
 /**
