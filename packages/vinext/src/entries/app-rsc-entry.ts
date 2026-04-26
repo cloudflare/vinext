@@ -74,6 +74,7 @@ const appRouteHandlerResponsePath = resolveEntryPath(
 );
 const routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
 const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
+const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -430,6 +431,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { flattenErrorCauses as __flattenErrorCauses } from ${JSON.stringify(errorCausePath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -1305,7 +1307,18 @@ export default async function handler(request, ctx) {
     // _handleRequest which fills in .headers and .status;
     // avoids module-level variables that race on Workers.
     const _mwCtx = { headers: null, requestHeaders: null, status: null };
-    const response = await _handleRequest(request, __reqCtx, _mwCtx);
+    let response;
+    try {
+      response = await _handleRequest(request, __reqCtx, _mwCtx);
+    } catch (err) {
+      // Embed err.cause chain into err.message/err.stack so single-pass
+      // formatters upstream (Vite's dev-server "Internal server error:" logger
+      // builds output from message + stack only) reveal the underlying root
+      // cause (ECONNREFUSED, role missing, workerd socket error, etc.) instead
+      // of dropping it. Idempotent and a no-op when cause is absent.
+      __flattenErrorCauses(err);
+      throw err;
+    }
     // Apply custom headers from next.config.js to non-redirect responses.
     // Skip redirects (3xx) because Response.redirect() creates immutable headers,
     // and Next.js doesn't apply custom headers to redirects anyway.
