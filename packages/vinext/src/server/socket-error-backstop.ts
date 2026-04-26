@@ -29,28 +29,26 @@
  * the only place reliably observed to fire (verified via the
  * `VINEXT_DEBUG_SOCKET_ERRORS` marker).
  *
- * **Production / build / test skip.** Three exclusions are critical:
+ * **Prerender check is dynamic, not install-time.** Prerender (in
+ * `build/prerender.ts` and `build/run-prerender.ts`) calls
+ * `startProdServer()` from inside `vinext build` to render pages
+ * against a real HTTP server. User `fetch()` calls during prerender
+ * hit external APIs that can drop connections; absorbing those would
+ * silently produce corrupt prerendered output instead of crashing
+ * the build. Prerender already sets `VINEXT_PRERENDER=1` for its
+ * own purposes — the listener checks it at fire time and re-throws
+ * unconditionally when set, acting as if no listener were installed.
+ * Doing the check at install time wouldn't work: `index.ts` loads at
+ * Vite plugin import (well before prerender starts), so by the time
+ * `VINEXT_PRERENDER` is set the listener would already be installed
+ * via the Symbol.for guard.
  *
- *   - `NODE_ENV === "production"` — covers `vinext build`, including
- *     the prerender pass that calls `startProdServer()` from
- *     `build/run-prerender.ts` and `build/prerender.ts`. User
- *     `fetch()` calls during prerender hit external APIs that can
- *     drop connections; absorbing those silently produces corrupt
- *     prerendered output instead of a build crash. Also covers
- *     `vinext start` for self-hosted Node deploys (loses Next.js's
- *     "install everywhere" parity but acceptable — `pipeline()`
- *     callbacks in prod-server already handle the streaming case).
- *
- *   - `VITEST === "true"` — Vitest workers that import `index.ts`
- *     directly. Genuine peer-disconnect errors during test runs
- *     should surface normally.
- *
- *   - `NODE_ENV === "test"` — other test runners that follow the
- *     standard NODE_ENV convention.
- *
- * Vite sets `NODE_ENV=production` for the build command before
- * plugins load, so the gate fires correctly even when `vinext build`
- * is invoked through `vp build` / `vite build`.
+ * **Test skip is install-time.** Vitest workers that import
+ * `index.ts` directly should never have the listener installed —
+ * peer-disconnect errors during test runs should surface normally.
+ * `process.env.VITEST === "true"` is set by Vitest in every worker;
+ * `NODE_ENV === "test"` covers other test runners that follow the
+ * standard convention.
  *
  * **Listener ordering.** `index.ts` is imported synchronously at the
  * top of every user's `vite.config.ts`, so vinext's listener registers
@@ -75,9 +73,7 @@ const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
 export function installSocketErrorBackstop(): void {
   const proc = process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true };
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
-  const nodeEnv = process.env.NODE_ENV;
-  if (nodeEnv === "production" || nodeEnv === "test") return;
-  if (process.env.VITEST === "true") return;
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return;
   proc[SOCKET_BACKSTOP_FLAG] = true;
 
   const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
@@ -87,6 +83,7 @@ export function installSocketErrorBackstop(): void {
   };
   if (debug) console.warn("[vinext] socket-error backstop installed");
   process.on("uncaughtException", (err: Error) => {
+    if (process.env.VINEXT_PRERENDER === "1") throw err;
     const code = peerDisconnectCode(err);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
@@ -95,6 +92,7 @@ export function installSocketErrorBackstop(): void {
     throw err;
   });
   process.on("unhandledRejection", (reason: unknown) => {
+    if (process.env.VINEXT_PRERENDER === "1") throw reason;
     const code = peerDisconnectCode(reason);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);

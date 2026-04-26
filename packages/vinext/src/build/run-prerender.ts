@@ -124,6 +124,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
+  // Mark the entire prerender orchestration so the socket-error backstop
+  // re-throws peer-disconnect errors during user fetch() calls instead of
+  // silently absorbing them and producing corrupt output. prerender.ts
+  // sets and clears this var around its own render passes, but we widen
+  // the scope here to cover startProdServer / shared-server setup that
+  // happens before those phases run. See server/socket-error-backstop.ts.
+  process.env.VINEXT_PRERENDER = "1";
+
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned by Vite's emptyOutDir on rebuild and co-located with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
