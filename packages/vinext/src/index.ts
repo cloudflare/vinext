@@ -13,7 +13,9 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
-import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
+// Side-effect import: auto-installs a process-level peer-disconnect
+// backstop at module load. See socket-error-backstop.ts for rationale.
+import "./server/socket-error-backstop.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
@@ -726,15 +728,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
 
       async config(config, env) {
-        // Process-level peer-disconnect backstop. `command === "serve"`
-        // covers both `vite dev` and `vite preview`; `!isPreview`
-        // narrows to dev only. `vinext start` installs the same
-        // backstop from prod-server.ts directly, matching Next.js's
-        // pattern of guarding any Node HTTP-serving entry point.
-        if (env?.command === "serve" && !env.isPreview) {
-          installSocketErrorBackstop();
-        }
-
         root = config.root ?? process.cwd();
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
