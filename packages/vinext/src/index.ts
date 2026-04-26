@@ -800,10 +800,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         // Process-level peer-disconnect backstop. `command === "serve"`
-        // is Vite's canonical "we're in dev" signal — works identically
-        // across `vinext dev`, `vp dev`, `vite dev`, and library
-        // embedders that call createServer themselves.
-        if (env?.command === "serve") {
+        // covers both `vite dev` and `vite preview`; `!isPreview`
+        // narrows to dev only — preview is a static prod-build server
+        // that doesn't stream RSC and doesn't need this guard.
+        // `vinext start` runs prod-server.ts directly without Vite, so
+        // this hook never fires there.
+        if (env?.command === "serve" && !env.isPreview) {
           installDevSocketErrorBackstop();
         }
 
