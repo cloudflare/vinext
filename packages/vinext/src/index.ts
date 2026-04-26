@@ -494,103 +494,76 @@ type NitroSetupContext = {
 
 /**
  * Backstop for peer-disconnect errors that escape the per-connection
- * `socket.on("error")` guard above (pipe re-emission to non-socket
- * destinations, outbound `fetch()` sockets, etc.).
+ * `socket.on("error")` guard installed in `configureServer` (pipe
+ * re-emission to non-socket destinations, outbound `fetch()` sockets,
+ * streaming surfaces inside `@vitejs/plugin-rsc`, etc.).
  *
- * **Installed at module load — not in `configureServer`.** An earlier
- * iteration of this fix moved install into `configureServer` to make
- * it strictly dev-only, but in vite-plus's plugin lifecycle
- * `server.httpServer` is null at the time the hook runs, so the
- * `if (server.httpServer)` middleware-mode guard caused install to
- * be skipped entirely. Field reproducer confirmed: with install
- * gated inside `configureServer`, the listener never fires (no
- * startup marker, immediate ECONNRESET crash on first request);
- * hoisting back to module load fires it as expected.
+ * **Where this is invoked from matters.** Earlier iterations got this
+ * wrong twice:
+ *   - `configureServer` hook: in vite-plus's lifecycle `httpServer` is
+ *     null when the hook fires, so the middleware-mode guard caused
+ *     install to be skipped entirely.
+ *   - Module top-level: install ran in every context that imported
+ *     this module, including Vitest workers and `vinext build`,
+ *     swallowing genuine peer-disconnect errors during builds and
+ *     test runs. argv-sniffing was a flimsy mitigation.
  *
- * The earlier reason for hoisting still applies: the previous-prior
- * iteration tied teardown to `httpServer` `'close'`, which Vite emits
- * on dep re-optimization and full reloads, leaving a window where
- * the listener was absent when a stale stream errored. No teardown
- * here — listener lives for the process.
+ * Now invoked from Vite's `config()` hook, gated on `command ===
+ * "serve"`. Vite passes `command` directly, so the gate is the
+ * canonical "are we in dev?" signal — works identically for `vinext
+ * dev`, `vp dev`, `vite dev`, and library embedders that call
+ * `createServer` themselves. `config()` runs before `configureServer`
+ * (so before httpServer matters) and is called once per dev session,
+ * so the listener is in place before any I/O.
  *
  * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
  * ECONNABORTED) and synchronously re-throws everything else,
  * preserving Node's default crash semantics for genuine bugs.
  *
- * **Positive context gate.** Install only when `process.argv[2] ===
- * "dev"` — matches `vinext dev`, `vp dev`, `vite dev`, and any other
- * CLI that follows the standard `<bin> dev` convention. `vinext
- * build`, Vitest workers that import `index.ts` directly, and library
- * embedders with a custom runner all skip install, so genuine
- * peer-disconnect errors in those contexts surface normally. argv is
- * read directly because the CLI entry imports this module before it
- * has a chance to set an env var, and Vite plugin hooks like
- * `configResolved` run too late for module-load gating.
- *
- * **Listener ordering.** Because install runs at module load, vinext's
- * listener registers earlier than most user / tooling listeners
- * (Sentry, structured logging, test-runner hooks). For peer-disconnect
- * codes the early-return is fine. For non-peer-disconnect errors the
- * sync re-throw still crashes with the correct stack — Node's default
- * handler runs because no listener fully handled it — but later-
- * registered observers don't see the event. Acceptable trade-off in
- * dev: the alternative (deferred re-throw with re-entry guard) adds
- * complexity for an edge case that's rare in dev workflows.
- *
- * **Middleware-mode embedders** (Express/Connect hosting vinext) get
- * these process-level listeners installed too — there is no module-
- * load-time signal to detect middleware mode. Embedders that want to
- * own their own handlers can set the `VINEXT_DEBUG_SOCKET_ERRORS`
- * marker to verify whether vinext's listener is intercepting their
- * errors and import vinext lazily from inside their own configured
- * handler if so.
+ * **Listener ordering.** Vite calls plugin `config()` hooks during
+ * `createServer`, after most user setup. vinext's listener therefore
+ * registers late in the queue, so earlier observers (Sentry,
+ * structured logging) still see non-peer-disconnect errors before
+ * the sync re-throw aborts further iteration.
  *
  * **Symbol.for caveat.** `Symbol.for("vinext.devSocketErrorBackstop")`
  * is process-global, so if two different vinext versions are loaded
  * in the same process the first to evaluate wins and the second's
- * filter rules silently don't apply.
+ * filter rules silently don't apply. Idempotent across multiple
+ * `config()` invocations within a single process (e.g. server
+ * restarts within a dev session).
  *
  * Set `VINEXT_DEBUG_SOCKET_ERRORS=1` to log a one-line marker each
  * time the listener absorbs an error.
  */
 const DEV_SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.devSocketErrorBackstop");
-{
+function installDevSocketErrorBackstop(): void {
   const proc = process as typeof process & { [DEV_SOCKET_BACKSTOP_FLAG]?: true };
-  // Positive gate: install only when this looks like a dev-server
-  // invocation. `argv[2] === "dev"` matches `vinext dev`, `vp dev`,
-  // `vite dev`, and any other CLI that follows the "<bin> dev"
-  // convention. Anything else — `build`, Vitest workers that import
-  // index.ts directly, library embedders with a custom runner — gets
-  // no listener installed, so genuine peer-disconnect errors in those
-  // contexts surface normally.
-  const isDevCommand = process.argv[2] === "dev";
-  if (!proc[DEV_SOCKET_BACKSTOP_FLAG] && isDevCommand) {
-    proc[DEV_SOCKET_BACKSTOP_FLAG] = true;
-    const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
-    const peerDisconnectCode = (err: unknown): string | undefined => {
-      const code = (err as { code?: string } | null)?.code;
-      return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED"
-        ? code
-        : undefined;
-    };
-    if (debug) console.warn("[vinext] dev socket-error backstop installed");
-    process.on("uncaughtException", (err: Error) => {
-      const code = peerDisconnectCode(err);
-      if (code) {
-        if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
-        return;
-      }
-      throw err;
-    });
-    process.on("unhandledRejection", (reason: unknown) => {
-      const code = peerDisconnectCode(reason);
-      if (code) {
-        if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
-        return;
-      }
-      throw reason;
-    });
-  }
+  if (proc[DEV_SOCKET_BACKSTOP_FLAG]) return;
+  proc[DEV_SOCKET_BACKSTOP_FLAG] = true;
+
+  const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
+  const peerDisconnectCode = (err: unknown): string | undefined => {
+    const code = (err as { code?: string } | null)?.code;
+    return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED" ? code : undefined;
+  };
+  if (debug) console.warn("[vinext] dev socket-error backstop installed");
+  process.on("uncaughtException", (err: Error) => {
+    const code = peerDisconnectCode(err);
+    if (code) {
+      if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
+      return;
+    }
+    throw err;
+  });
+  process.on("unhandledRejection", (reason: unknown) => {
+    const code = peerDisconnectCode(reason);
+    if (code) {
+      if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
+      return;
+    }
+    throw reason;
+  });
 }
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
@@ -826,6 +799,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
 
       async config(config, env) {
+        // Process-level peer-disconnect backstop. `command === "serve"`
+        // is Vite's canonical "we're in dev" signal — works identically
+        // across `vinext dev`, `vp dev`, `vite dev`, and library
+        // embedders that call createServer themselves.
+        if (env?.command === "serve") {
+          installDevSocketErrorBackstop();
+        }
+
         root = config.root ?? process.cwd();
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
