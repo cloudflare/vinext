@@ -517,16 +517,15 @@ type NitroSetupContext = {
  * ECONNABORTED) and synchronously re-throws everything else,
  * preserving Node's default crash semantics for genuine bugs.
  *
- * **Context skips.** This module is also imported by Vitest workers
- * (`tests/shims.test.ts` etc.) and during `vinext build` — installing
- * in those contexts would silently swallow peer-disconnect errors
- * during builds and test runs. Skip both:
- *   - `process.env.VITEST === "true"` covers Vitest workers.
- *   - `process.argv` containing `build` covers `vinext build` and
- *     `vp build`; we read argv directly because the CLI entry imports
- *     this module before it has a chance to set an env var, and Vite
- *     plugin hooks like `configResolved` run too late for module-load
- *     gating.
+ * **Positive context gate.** Install only when `process.argv[2] ===
+ * "dev"` — matches `vinext dev`, `vp dev`, `vite dev`, and any other
+ * CLI that follows the standard `<bin> dev` convention. `vinext
+ * build`, Vitest workers that import `index.ts` directly, and library
+ * embedders with a custom runner all skip install, so genuine
+ * peer-disconnect errors in those contexts surface normally. argv is
+ * read directly because the CLI entry imports this module before it
+ * has a chance to set an env var, and Vite plugin hooks like
+ * `configResolved` run too late for module-load gating.
  *
  * **Listener ordering.** Because install runs at module load, vinext's
  * listener registers earlier than most user / tooling listeners
@@ -557,14 +556,15 @@ type NitroSetupContext = {
 const DEV_SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.devSocketErrorBackstop");
 {
   const proc = process as typeof process & { [DEV_SOCKET_BACKSTOP_FLAG]?: true };
-  // Skip contexts where this module is loaded but isn't the dev server:
-  //   - VITEST=true → Vitest workers that import index.ts directly
-  //   - argv build  → `vinext build` / `vp build` CLI invocations
-  // Genuine peer-disconnect errors during builds / test runs should not
-  // be silently swallowed.
-  const isVitest = process.env.VITEST === "true";
-  const isBuild = process.argv.slice(2).some((a) => a === "build");
-  if (!proc[DEV_SOCKET_BACKSTOP_FLAG] && !isVitest && !isBuild) {
+  // Positive gate: install only when this looks like a dev-server
+  // invocation. `argv[2] === "dev"` matches `vinext dev`, `vp dev`,
+  // `vite dev`, and any other CLI that follows the "<bin> dev"
+  // convention. Anything else — `build`, Vitest workers that import
+  // index.ts directly, library embedders with a custom runner — gets
+  // no listener installed, so genuine peer-disconnect errors in those
+  // contexts surface normally.
+  const isDevCommand = process.argv[2] === "dev";
+  if (!proc[DEV_SOCKET_BACKSTOP_FLAG] && isDevCommand) {
     proc[DEV_SOCKET_BACKSTOP_FLAG] = true;
     const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
     const peerDisconnectCode = (err: unknown): string | undefined => {
