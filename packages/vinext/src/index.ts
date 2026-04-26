@@ -1993,6 +1993,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
+        // Node throws on unhandled 'error' events on sockets. When a browser
+        // drops the connection mid-response (common in dev: HMR triggers a
+        // reload while an RSC stream is still flushing), the next res.write
+        // surfaces ECONNRESET on res.socket with no listener attached and
+        // takes down the process. A no-op listener on every connection
+        // neutralises the throw without hiding write failures from callers.
+        // Matches the guard Vite's HMR server and Next.js install for the
+        // same reason. See cloudflare/vinext#905.
+        server.httpServer?.on("connection", (socket) => {
+          socket.on("error", () => {});
+        });
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
