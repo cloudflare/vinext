@@ -370,6 +370,7 @@ export async function prerenderPages({
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
   process.env.VINEXT_PRERENDER = "1";
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
@@ -642,7 +643,8 @@ export async function prerenderPages({
     return { routes: results };
   } finally {
     setCacheHandler(previousHandler);
-    delete process.env.VINEXT_PRERENDER;
+    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
     if (ownedProdServerHandle) {
       await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
     }
@@ -685,8 +687,12 @@ export async function prerenderApp({
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
   // VINEXT_PRERENDER=1 tells the prod server to skip instrumentation.register()
-  // and enable prerender-only endpoints (/__vinext/prerender/*).
-  // The set/delete is wrapped in try/finally so it is always restored.
+  // and enable prerender-only endpoints (/__vinext/prerender/*). It also makes
+  // the socket-error backstop (server/socket-error-backstop.ts) re-throw
+  // peer-disconnect errors during prerender. Save the prior value so callers
+  // that already set the flag (run-prerender.ts) aren't clobbered when this
+  // function's finally block restores.
+  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
   process.env.VINEXT_PRERENDER = "1";
 
   const serverDir = path.dirname(rscBundlePath);
@@ -1113,7 +1119,8 @@ export async function prerenderApp({
     return { routes: results };
   } finally {
     setCacheHandler(previousHandler);
-    delete process.env.VINEXT_PRERENDER;
+    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
     if (ownedProdServerHandle) {
       await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
     }

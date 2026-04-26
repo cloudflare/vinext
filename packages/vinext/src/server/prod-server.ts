@@ -813,11 +813,13 @@ async function sendWebResponse(
  * Pages Router (dist/server/entry.js) and configures the appropriate handler.
  */
 export async function startProdServer(options: ProdServerOptions = {}) {
-  // Process-level peer-disconnect backstop. installSocketErrorBackstop
-  // self-gates on NODE_ENV: this call is a no-op during prerender
-  // (NODE_ENV=production) so user fetch() calls hit by ECONNRESET
-  // still crash the build instead of producing corrupt output. Fires
-  // for vinext start only when NODE_ENV is unset.
+  // Process-level peer-disconnect backstop. Idempotent via the
+  // Symbol.for guard inside installSocketErrorBackstop, so this call
+  // is a no-op when index.ts has already installed it. Kept here so
+  // entry points that load prod-server without going through index.ts
+  // (none today, but preserves Next.js's "install everywhere a Node
+  // HTTP server runs" parity) still get the backstop. Prerender
+  // bypass is fire-time via VINEXT_PRERENDER, not install-time.
   installSocketErrorBackstop();
 
   const {

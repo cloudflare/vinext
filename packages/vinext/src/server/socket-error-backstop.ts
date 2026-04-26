@@ -39,9 +39,19 @@
  * own purposes — the listener checks it at fire time and re-throws
  * unconditionally when set, acting as if no listener were installed.
  * Doing the check at install time wouldn't work: `index.ts` loads at
- * Vite plugin import (well before prerender starts), so by the time
- * `VINEXT_PRERENDER` is set the listener would already be installed
- * via the Symbol.for guard.
+ * Vite plugin import, well before prerender starts, so by the time
+ * `VINEXT_PRERENDER` is set the listener has already been installed
+ * (we cannot uninstall and re-install per phase).
+ *
+ * Side-effect of the unconditional re-throw during prerender: an
+ * orchestrator-induced ECONNRESET (e.g. the prerender's own HTTP
+ * client aborting a stuck route fetch) will surface the build crash
+ * as `Error: read ECONNRESET` rather than the underlying route
+ * failure. Acceptable trade-off — a hung prerender route is itself
+ * a build problem worth surfacing — but the resulting stack will
+ * point at the disconnect, not the cause. Set
+ * `VINEXT_DEBUG_SOCKET_ERRORS=1` to log peer-disconnect codes if
+ * you need to disambiguate.
  *
  * **Test skip is install-time.** Vitest workers that import
  * `index.ts` directly should never have the listener installed —
