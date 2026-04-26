@@ -83,10 +83,3 @@ export function installSocketErrorBackstop(): void {
     throw reason;
   });
 }
-
-// Auto-install at module load. The Vite plugin lifecycle hooks proved
-// timing-fragile in vite-plus, so we install eagerly. The Vitest skip
-// inside installSocketErrorBackstop() is the only context-specific
-// guard. Idempotent — prod-server.ts's explicit call is a no-op when
-// loaded in the same process.
-installSocketErrorBackstop();

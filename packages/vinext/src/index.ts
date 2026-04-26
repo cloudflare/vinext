@@ -13,9 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
-// Side-effect import: auto-installs a process-level peer-disconnect
-// backstop at module load. See socket-error-backstop.ts for rationale.
-import "./server/socket-error-backstop.js";
+import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
@@ -116,6 +114,14 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+
+// Install the process-level peer-disconnect backstop as soon as this
+// module loads. Vite plugin lifecycle hooks (config / configureServer)
+// proved timing-fragile in vite-plus — install was silently skipped,
+// confirmed via the VINEXT_DEBUG_SOCKET_ERRORS=1 marker. Module-load
+// is the only spot reliably observed to fire. Idempotent and skips in
+// Vitest workers (see socket-error-backstop.ts for full rationale).
+installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
