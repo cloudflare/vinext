@@ -26,23 +26,41 @@
  * vite-plus's lifecycle — install was silently skipped. The
  * connection-level guard from #911 confirms `configureServer`-tied
  * lifecycle hooks are timing-fragile too. Module-load install is
- * the only place that's been reliably observed to fire (verified
- * via the `VINEXT_DEBUG_SOCKET_ERRORS` marker).
+ * the only place reliably observed to fire (verified via the
+ * `VINEXT_DEBUG_SOCKET_ERRORS` marker).
  *
- * The earlier reason for hoisting still applies: prior versions tied
- * teardown to `httpServer` `'close'`, which Vite emits on dep
- * re-optimization and full reloads, leaving a window where the
- * listener was absent when a stale stream errored. No teardown here.
+ * **Production / build / test skip.** Three exclusions are critical:
  *
- * **Vitest skip.** Vitest workers import this module via test files
- * that depend on `index.ts`. Skip install in those contexts so
- * genuine peer-disconnect errors during test runs surface normally.
- * `process.env.VITEST === "true"` is set by Vitest in every worker.
+ *   - `NODE_ENV === "production"` — covers `vinext build`, including
+ *     the prerender pass that calls `startProdServer()` from
+ *     `build/run-prerender.ts` and `build/prerender.ts`. User
+ *     `fetch()` calls during prerender hit external APIs that can
+ *     drop connections; absorbing those silently produces corrupt
+ *     prerendered output instead of a build crash. Also covers
+ *     `vinext start` for self-hosted Node deploys (loses Next.js's
+ *     "install everywhere" parity but acceptable — `pipeline()`
+ *     callbacks in prod-server already handle the streaming case).
  *
- * Build runs (`vinext build`) also import index.ts but the listener
- * is harmless there — the build process is short-lived and doesn't
- * stream peer-disconnect-prone responses. Matches Next.js's pattern
- * of installing in any HTTP-serving entry without further gating.
+ *   - `VITEST === "true"` — Vitest workers that import `index.ts`
+ *     directly. Genuine peer-disconnect errors during test runs
+ *     should surface normally.
+ *
+ *   - `NODE_ENV === "test"` — other test runners that follow the
+ *     standard NODE_ENV convention.
+ *
+ * Vite sets `NODE_ENV=production` for the build command before
+ * plugins load, so the gate fires correctly even when `vinext build`
+ * is invoked through `vp build` / `vite build`.
+ *
+ * **Listener ordering.** `index.ts` is imported synchronously at the
+ * top of every user's `vite.config.ts`, so vinext's listener registers
+ * before most user / tooling listeners (Sentry, OpenTelemetry,
+ * structured logging). For peer-disconnect codes the early-return is
+ * fine. For non-peer-disconnect errors the synchronous re-throw still
+ * crashes the process with the original stack, but listeners
+ * registered after vinext don't observe the event. Users who need
+ * crash-reporter visibility for non-peer-disconnect errors must
+ * register their handler before importing vinext.
  *
  * **Symbol.for caveat.** `Symbol.for("vinext.socketErrorBackstop")`
  * is process-global, so if two different vinext versions are loaded
@@ -57,6 +75,8 @@ const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
 export function installSocketErrorBackstop(): void {
   const proc = process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true };
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
+  const nodeEnv = process.env.NODE_ENV;
+  if (nodeEnv === "production" || nodeEnv === "test") return;
   if (process.env.VITEST === "true") return;
   proc[SOCKET_BACKSTOP_FLAG] = true;
 

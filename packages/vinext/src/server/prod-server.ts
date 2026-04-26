@@ -813,9 +813,11 @@ async function sendWebResponse(
  * Pages Router (dist/server/entry.js) and configures the appropriate handler.
  */
 export async function startProdServer(options: ProdServerOptions = {}) {
-  // Process-level peer-disconnect backstop. Matches the install from
-  // vinext's Vite plugin config() hook for dev — covers any Node
-  // HTTP-serving entry, mirroring Next.js's router-server pattern.
+  // Process-level peer-disconnect backstop. installSocketErrorBackstop
+  // self-gates on NODE_ENV: this call is a no-op during prerender
+  // (NODE_ENV=production) so user fetch() calls hit by ECONNRESET
+  // still crash the build instead of producing corrupt output. Fires
+  // for vinext start only when NODE_ENV is unset.
   installSocketErrorBackstop();
 
   const {

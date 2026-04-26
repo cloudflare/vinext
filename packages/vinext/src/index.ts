@@ -118,9 +118,10 @@ import commonjs from "vite-plugin-commonjs";
 // Install the process-level peer-disconnect backstop as soon as this
 // module loads. Vite plugin lifecycle hooks (config / configureServer)
 // proved timing-fragile in vite-plus — install was silently skipped,
-// confirmed via the VINEXT_DEBUG_SOCKET_ERRORS=1 marker. Module-load
-// is the only spot reliably observed to fire. Idempotent and skips in
-// Vitest workers (see socket-error-backstop.ts for full rationale).
+// confirmed via VINEXT_DEBUG_SOCKET_ERRORS=1. Module-load is the only
+// spot reliably observed to fire. Self-gates on NODE_ENV / VITEST so
+// build (incl. prerender) and tests skip cleanly. See
+// socket-error-backstop.ts for full rationale.
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
