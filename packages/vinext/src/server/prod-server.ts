@@ -54,6 +54,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
+import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -812,6 +813,11 @@ async function sendWebResponse(
  * Pages Router (dist/server/entry.js) and configures the appropriate handler.
  */
 export async function startProdServer(options: ProdServerOptions = {}) {
+  // Process-level peer-disconnect backstop. Matches the install from
+  // vinext's Vite plugin config() hook for dev — covers any Node
+  // HTTP-serving entry, mirroring Next.js's router-server pattern.
+  installSocketErrorBackstop();
+
   const {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
