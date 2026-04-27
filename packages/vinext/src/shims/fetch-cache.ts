@@ -468,6 +468,7 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // ---------------------------------------------------------------------------
 export type FetchCacheState = {
   currentRequestTags: string[];
+  currentFetchSoftTags: string[];
 };
 
 const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
@@ -478,6 +479,7 @@ const _als = (_g[_ALS_KEY] ??=
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
+  currentFetchSoftTags: [],
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
@@ -493,6 +495,7 @@ function _getState(): FetchCacheState {
  */
 function _resetFallbackState(): void {
   _fallbackState.currentRequestTags = [];
+  _fallbackState.currentFetchSoftTags = [];
 }
 
 /**
@@ -502,6 +505,17 @@ function _resetFallbackState(): void {
  */
 export function getCollectedFetchTags(): string[] {
   return [..._getState().currentRequestTags];
+}
+
+/**
+ * Set path-derived implicit tags for fetch cache reads in the current render.
+ *
+ * These are intentionally not persisted on fetch entries. They mirror Next.js
+ * `softTags`: `revalidatePath()` should make a fetch miss while rendering the
+ * affected route, without permanently coupling a shared fetch entry to one path.
+ */
+export function setCurrentFetchSoftTags(tags: string[]): void {
+  _getState().currentFetchSoftTags = [...tags];
 }
 
 /**
@@ -586,6 +600,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const tags = nextOpts?.tags ?? [];
+    const softTags = _getState().currentFetchSoftTags;
     let cacheKey: string;
     try {
       cacheKey = await buildFetchCacheKey(input, init);
@@ -613,7 +628,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags });
+      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         const cachedData = cached.value.data;
         // Reconstruct a Response from the cached data
@@ -826,9 +841,10 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return await runWithUnifiedStateMutation((uCtx) => {
       uCtx.currentRequestTags = [];
+      uCtx.currentFetchSoftTags = [];
     }, fn);
   }
-  return _als.run({ currentRequestTags: [] }, fn);
+  return _als.run({ currentRequestTags: [], currentFetchSoftTags: [] }, fn);
 }
 
 /**

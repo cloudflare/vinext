@@ -452,6 +452,62 @@ describe("KVCacheHandler", () => {
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
     });
+
+    it("softTags invalidate FETCH reads without deleting the shared entry", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:_N_T_/posts/hello", "2000");
+
+      const withoutSoftTags = await handler.get("fetch-entry", { kind: "FETCH", tags: [] });
+      const withSoftTags = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        tags: [],
+        softTags: ["_N_T_/posts/hello"],
+      });
+
+      expect(withoutSoftTags).not.toBeNull();
+      expect(withSoftTags).toBeNull();
+      expect(kv.delete).not.toHaveBeenCalledWith("cache:fetch-entry");
+    });
+
+    it("validates and dedupes softTags before reading KV tag markers", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+
+      const result = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        softTags: ["_N_T_/posts/hello", "_N_T_/posts/hello", "bad:tag", ""],
+      });
+
+      expect(result).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith("cache:fetch-entry");
+      expect(kv.get).toHaveBeenCalledWith("__tag:_N_T_/posts/hello");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:bad:tag");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:");
+      expect(kv.get).toHaveBeenCalledTimes(2);
+    });
   });
 
   // -------------------------------------------------------------------------

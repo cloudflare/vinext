@@ -425,7 +425,7 @@ import {
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
-import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags } from "vinext/fetch-cache";
+import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(routeTriePath)};
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
@@ -2092,6 +2092,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  setCurrentFetchSoftTags(__pageCacheTags(cleanPathname, []));
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -2178,6 +2179,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
+            setCurrentFetchSoftTags(__pageCacheTags(cleanPathname, []));
             await renderFn();
           });
         },
@@ -2328,6 +2330,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
         return _runWithUnifiedCtx(__revalUCtx, async () => {
           _ensureFetchPatch();
+          setCurrentFetchSoftTags(__pageCacheTags(cleanPathname, []));
           setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
           // Slot context (X-Vinext-Mounted-Slots) is inherited from the
           // triggering request so the regen result is cached under the

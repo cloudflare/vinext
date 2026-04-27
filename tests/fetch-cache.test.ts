@@ -37,10 +37,11 @@ const {
   withFetchCache,
   runWithFetchCache,
   getCollectedFetchTags,
+  setCurrentFetchSoftTags,
   getOriginalFetch,
   _resetPendingRefetches,
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } =
+const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
@@ -770,6 +771,26 @@ describe("fetch cache shim", () => {
 
     const tags = getCollectedFetchTags();
     expect(tags.filter((t) => t === "data")).toHaveLength(1);
+  });
+
+  it("revalidatePath invalidates fetch cache through current render soft tags", async () => {
+    setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
+
+    const res1 = await fetch("https://api.example.com/path-soft-tag", {
+      next: { revalidate: 3600 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    await revalidatePath("/posts/hello");
+
+    const res2 = await fetch("https://api.example.com/path-soft-tag", {
+      next: { revalidate: 3600 },
+    });
+    const data2 = await res2.json();
+
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   // ── Only caches successful responses ────────────────────────────────

@@ -118,6 +118,24 @@ function validateTag(tag: string): string | null {
   return tag;
 }
 
+function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
+  const value = ctx?.[field];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function validUniqueTags(tags: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    const validTag = validateTag(tag);
+    if (!validTag || seen.has(validTag)) continue;
+    seen.add(validTag);
+    result.push(validTag);
+  }
+  return result;
+}
+
 /**
  * Segment-aware path prefix check. Returns true if `path` is equal to
  * `prefix` or is a child route (next char after prefix is `/`).
@@ -192,59 +210,14 @@ export class KVCacheHandler implements CacheHandler {
       }
     }
 
-    // Check tag-based invalidation.
-    // Uses a local in-memory cache to avoid redundant KV reads for recently-seen tags.
-    if (entry.tags.length > 0) {
-      const now = Date.now();
-      const uncachedTags: string[] = [];
+    if (await this._hasRevalidatedTag(validUniqueTags(entry.tags), entry.lastModified)) {
+      this._deleteInBackground(kvKey);
+      return null;
+    }
 
-      // First pass: check local cache for each tag.
-      // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
-      for (const tag of entry.tags) {
-        const cached = this._tagCache.get(tag);
-        if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
-          // Local cache hit — check invalidation inline
-          if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
-            this._deleteInBackground(kvKey);
-            return null;
-          }
-        } else {
-          // Expired or absent — evict stale entry and re-fetch from KV
-          if (cached) this._tagCache.delete(tag);
-          uncachedTags.push(tag);
-        }
-      }
-
-      // Second pass: fetch uncached tags from KV in parallel.
-      // Populate the local cache for ALL fetched tags before checking invalidation,
-      // so that KV round-trips are not wasted when an earlier tag triggers an
-      // early return — subsequent get() calls benefit from the already-fetched results.
-      if (uncachedTags.length > 0) {
-        const tagResults = await Promise.all(
-          uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
-        );
-
-        // Populate cache for all results first, then check for invalidation.
-        // Two-loop structure ensures all tag results are cached even when an
-        // earlier tag would cause an early return — so subsequent get() calls
-        // for entries sharing those tags don't redundantly re-fetch from KV.
-        for (let i = 0; i < uncachedTags.length; i++) {
-          const tagTime = tagResults[i];
-          const tagTimestamp = tagTime ? Number(tagTime) : 0;
-          this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
-        }
-
-        // Then check for invalidation using the now-cached timestamps
-        for (const tag of uncachedTags) {
-          const cached = this._tagCache.get(tag)!;
-          if (cached.timestamp !== 0) {
-            if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
-              this._deleteInBackground(kvKey);
-              return null;
-            }
-          }
-        }
-      }
+    const softTags = validUniqueTags(readStringArrayField(_ctx, "softTags"));
+    if (await this._hasRevalidatedTag(softTags, entry.lastModified)) {
+      return null;
     }
 
     // Check time-based expiry — return stale with cacheState
@@ -260,6 +233,58 @@ export class KVCacheHandler implements CacheHandler {
       lastModified: entry.lastModified,
       value: restoredValue,
     };
+  }
+
+  /**
+   * Check tag invalidation markers for stored tags or read-time soft tags.
+   * Uses a local in-memory cache to avoid redundant KV reads for recently-seen tags.
+   */
+  private async _hasRevalidatedTag(tags: string[], lastModified: number): Promise<boolean> {
+    if (tags.length === 0) return false;
+
+    const now = Date.now();
+    const uncachedTags: string[] = [];
+
+    // First pass: check local cache for each tag.
+    // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
+    for (const tag of tags) {
+      const cached = this._tagCache.get(tag);
+      if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
+        // Local cache hit — check invalidation inline
+        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
+          return true;
+        }
+      } else {
+        // Expired or absent — evict stale entry and re-fetch from KV
+        if (cached) this._tagCache.delete(tag);
+        uncachedTags.push(tag);
+      }
+    }
+
+    // Second pass: fetch uncached tags from KV in parallel.
+    // Populate the local cache for ALL fetched tags before checking invalidation,
+    // so subsequent get() calls benefit from the already-fetched results.
+    if (uncachedTags.length > 0) {
+      const tagResults = await Promise.all(
+        uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
+      );
+
+      for (let i = 0; i < uncachedTags.length; i++) {
+        const tagTime = tagResults[i];
+        const tagTimestamp = tagTime ? Number(tagTime) : 0;
+        this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
+      }
+
+      for (const tag of uncachedTags) {
+        const cached = this._tagCache.get(tag);
+        if (!cached || cached.timestamp === 0) continue;
+        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   set(

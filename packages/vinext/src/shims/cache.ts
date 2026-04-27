@@ -176,6 +176,12 @@ type MemoryEntry = {
   revalidateAt: number | null;
 };
 
+function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
+  const value = ctx?.[field];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
 /**
  * Shape of the optional `ctx` argument passed to `CacheHandler.set()`.
  * Covers both the older `{ revalidate: number }` shape and the newer
@@ -204,6 +210,13 @@ export class MemoryCacheHandler implements CacheHandler {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
         this.store.delete(key);
+        return null;
+      }
+    }
+
+    for (const tag of readStringArrayField(_ctx, "softTags")) {
+      const revalidatedAt = this.tagRevalidatedAt.get(tag);
+      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
         return null;
       }
     }
