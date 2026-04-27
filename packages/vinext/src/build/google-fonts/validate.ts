@@ -62,6 +62,12 @@ export function validateGoogleFontOptions(
     throw new Error(`Unknown font \`${fontFamily}\``);
   }
 
+  if (axes !== undefined && !Array.isArray(axes)) {
+    throw new Error(
+      `Invalid axes value for font \`${fontFamily}\`, expected an array of axis names.`,
+    );
+  }
+
   const availableSubsets = fontFamilyData.subsets;
   if (availableSubsets.length === 0) {
     // No preloadable subsets means preload is meaningless. Silently disable

@@ -163,7 +163,20 @@ describe("next/font/google shim", () => {
     // dropped. Italic-only must now leave a visible ital axis in the URL.
     const { buildGoogleFontsUrl } = await import("../packages/vinext/src/shims/font-google.js");
     const url = buildGoogleFontsUrl("Inter", { style: ["italic"] });
-    expect(url).toContain("ital");
+    const decoded = decodeURIComponent(url);
+    expect(decoded).toContain(":ital,wght@1,400");
+    expect(decoded).not.toContain("ital,wght@0,");
+  });
+
+  it("buildGoogleFontsUrl drops the unresolved variable sentinel in the dev fallback", async () => {
+    // The shim has no metadata, so it cannot resolve "variable" to the
+    // font's real min..max range. Production resolves this in the plugin;
+    // dev fallback should avoid emitting Google's invalid `wght@variable`.
+    const { buildGoogleFontsUrl } = await import("../packages/vinext/src/shims/font-google.js");
+    const url = buildGoogleFontsUrl("Inter", { weight: "variable" });
+    const decoded = decodeURIComponent(url);
+    expect(decoded).not.toContain("wght@variable");
+    expect(decoded).not.toContain("wght@");
   });
 
   it("getSSRFontLinks returns collected URLs without clearing", async () => {
@@ -753,6 +766,44 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("self-hosts variable font axes through the plugin pipeline", async () => {
+    // Covers the documented `axes` option end-to-end: static parsing,
+    // validation, metadata axis resolution, and URL assembly.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-axes");
+    initPlugin(plugin, { command: "build", root });
+
+    const originalFetch = globalThis.fetch;
+    const fetchedUrls: string[] = [];
+    globalThis.fetch = async (input: any) => {
+      fetchedUrls.push(String(input));
+      return new Response("@font-face { font-family: 'Roboto Flex'; src: url(/flex.woff2); }", {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+    };
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Roboto_Flex } from 'next/font/google';`,
+        `const flex = Roboto_Flex({ weight: 'variable', axes: ['opsz'], subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS");
+
+      const cssFetch = fetchedUrls.find((u) => u.includes("fonts.googleapis.com/css2"));
+      expect(cssFetch).toBeDefined();
+      const decoded = decodeURIComponent(cssFetch!);
+      expect(decoded).toContain("Roboto+Flex:opsz,wght@8..144,100..1000");
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("throws a build error on unknown font families (regression for #885)", async () => {
     // Pre-port vinext built a URL for any property name on the proxy and
     // only discovered the family was unknown when Google returned 400.
@@ -786,7 +837,7 @@ describe("vinext:google-fonts plugin", () => {
     );
   });
 
-  it("surfaces HTTP errors from Google Fonts as build errors with response body", async () => {
+  it("surfaces HTTP errors from Google Fonts as build errors with a bounded response body", async () => {
     // If Google returns 4xx/5xx the plugin must not silently fall through
     // to the runtime CDN path; the same broken URL would just 400 in the
     // browser. Throw a build error containing the URL and Google's body
@@ -794,10 +845,12 @@ describe("vinext:google-fonts plugin", () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-http-error");
     initPlugin(plugin, { command: "build", root });
+    const longBody = `/* axis range out of bounds */${"x".repeat(600)}`;
+    const truncatedLength = longBody.length - 500;
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () =>
-      new Response("/* axis range out of bounds */", {
+      new Response(longBody, {
         status: 400,
         headers: { "content-type": "text/html" },
       });
@@ -808,8 +861,10 @@ describe("vinext:google-fonts plugin", () => {
         `import { Inter } from 'next/font/google';`,
         `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
       ].join("\n");
-      await expect(transform.call(plugin, code, "/app/layout.tsx")).rejects.toThrow(
-        /Google Fonts returned HTTP 400/,
+      await expect(transform.call(plugin, code, "/app/layout.tsx")).rejects.toThrowError(
+        new RegExp(
+          `Google Fonts returned HTTP 400[\\s\\S]*truncated ${truncatedLength} characters`,
+        ),
       );
     } finally {
       globalThis.fetch = originalFetch;

@@ -147,12 +147,17 @@ export function buildGoogleFontsUrl(family: string, options: FontOptions): strin
   // the URL has no ital axis at all.
   const ital = hasItalic ? [...(hasNormal ? ["0"] : []), "1"] : undefined;
 
+  // The dev fallback has no metadata, so the variable sentinel cannot be
+  // resolved to the font's real axis range here. Drop it like empty options
+  // instead of emitting the invalid Google Fonts URL `:wght@variable`.
+  const normalizedWeights = weights.length === 1 && weights[0] === "variable" ? [] : weights;
+
   // Italic-only with no explicit weight still needs a wght value or the
   // ital axis has nowhere to attach in Google's URL grammar. Fall back to
   // '400' because every Google Font has it and it is the visible default.
   // The plugin's metadata-aware path covers the variable-font case in
   // production.
-  const wght = weights.length > 0 ? weights : ital ? ["400"] : undefined;
+  const wght = normalizedWeights.length > 0 ? normalizedWeights : ital ? ["400"] : undefined;
 
   return buildUrlFromAxes(family, { wght, ital }, options.display ?? "swap");
 }

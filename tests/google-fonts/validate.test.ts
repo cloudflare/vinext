@@ -78,6 +78,16 @@ describe("validateGoogleFontOptions", () => {
     ).toThrow(/Axes can only be defined for variable fonts/);
   });
 
+  it("rejects non-array axes before font capability checks", () => {
+    expect(() =>
+      validateGoogleFontOptions("Anton", {
+        weight: "400",
+        axes: { wght: 400 } as any,
+        subsets: ["latin"],
+      }),
+    ).toThrow(/Invalid axes value for font `Anton`, expected an array of axis names/);
+  });
+
   it("rejects axes when an explicit (non-variable) weight is set on a variable font", () => {
     expect(() =>
       validateGoogleFontOptions("Inter", { weight: "400", axes: ["opsz"], subsets: ["latin"] }),

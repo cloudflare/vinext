@@ -83,6 +83,15 @@ const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
  * user-provided public files.
  */
 const VINEXT_FONT_URL_NAMESPACE = "_vinext_fonts";
+const MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH = 500;
+
+function formatGoogleFontsErrorBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "(empty response body)";
+  if (trimmed.length <= MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH) return trimmed;
+  const omitted = trimmed.length - MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH;
+  return `${trimmed.slice(0, MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH)}\n... (truncated ${omitted} characters)`;
+}
 
 /**
  * Rewrite absolute filesystem paths in cached Google Fonts CSS so the
@@ -817,7 +826,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
                 // through to a CDN URL that ships the same bad request
                 // to the browser.
                 throw new Error(
-                  `[vinext:google-fonts] ${id}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${err.responseBody.trim() || "(empty response body)"}`,
+                  `[vinext:google-fonts] ${id}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${formatGoogleFontsErrorBody(err.responseBody)}`,
                 );
               }
               // Network errors (offline, DNS, AbortError) are recoverable;
