@@ -364,6 +364,28 @@ describe("vinext:google-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("rewrites the named import even when a preceding line lacks a semicolon", async () => {
+    // Repro: source files written without trailing semicolons (Prettier
+    // default, ASI). The lazy `[^;]+?` clause used to roll across `\n`
+    // and swallow the previous import, leaving the font import as a
+    // mangled half-clause — so the rewrite was silently skipped and
+    // rolldown later failed with MISSING_EXPORT against the shim.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "serve" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import type { Metadata } from 'next'`,
+      `import { Inter } from 'next/font/google'`,
+      `const inter = Inter({ subsets: ['latin'] })`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+    // The semicolon-less Metadata import must remain untouched (only the
+    // font import is rewritten).
+    expect(result.code).toContain(`import type { Metadata } from 'next'`);
+  });
+
   it("returns null for non-script files", async () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build" });
