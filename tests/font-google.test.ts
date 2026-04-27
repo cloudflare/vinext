@@ -415,12 +415,7 @@ describe("vinext:google-fonts plugin", () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
-    const code = [
-      `export {`,
-      `  Inter,`,
-      `  Roboto,`,
-      `} from 'next/font/google'`,
-    ].join("\n");
+    const code = [`export {`, `  Inter,`, `  Roboto,`, `} from 'next/font/google'`].join("\n");
     const result = await transform.call(plugin, code, "/app/fonts.ts");
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
