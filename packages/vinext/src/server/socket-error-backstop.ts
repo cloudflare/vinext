@@ -80,6 +80,27 @@
  */
 const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
 
+/**
+ * Pure predicate: returns the peer-disconnect code when `err` carries
+ * one of `ECONNRESET` / `EPIPE` / `ECONNABORTED`, otherwise `undefined`.
+ * Exported for unit testing in isolation (no process-state mutation).
+ */
+export function peerDisconnectCode(err: unknown): string | undefined {
+  const code = (err as { code?: string } | null)?.code;
+  return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED" ? code : undefined;
+}
+
+/**
+ * Test-only: returns whether the backstop has been installed in this
+ * process. Used by the unit test to assert idempotent install via the
+ * Symbol.for guard. Not part of the public API.
+ */
+export function isSocketErrorBackstopInstalled(): boolean {
+  return Boolean(
+    (process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true })[SOCKET_BACKSTOP_FLAG],
+  );
+}
+
 export function installSocketErrorBackstop(): void {
   const proc = process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true };
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
@@ -87,10 +108,6 @@ export function installSocketErrorBackstop(): void {
   proc[SOCKET_BACKSTOP_FLAG] = true;
 
   const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
-  const peerDisconnectCode = (err: unknown): string | undefined => {
-    const code = (err as { code?: string } | null)?.code;
-    return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED" ? code : undefined;
-  };
   if (debug) console.warn("[vinext] socket-error backstop installed");
   process.on("uncaughtException", (err: Error) => {
     if (process.env.VINEXT_PRERENDER === "1") throw err;
