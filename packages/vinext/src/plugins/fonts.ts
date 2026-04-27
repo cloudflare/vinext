@@ -686,13 +686,17 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const fontLocals = new Map<string, string>();
         const proxyObjectLocals = new Set<string>();
 
-        // Negate `\n` along with `;` so the lazy clause doesn't roll across
-        // line breaks. Without it, a preceding semicolon-less import line
-        // (e.g. Prettier's `import type { Metadata } from 'next'`) is
-        // greedily swallowed into the clause until the regex finally hits
-        // 'next/font/google' on the next line — which then fails to parse
-        // as a single import clause and the rewrite is silently skipped.
-        const importRe = /^[ \t]*import\s+([^;\n]+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
+        // The clause is a sequence of either a brace block (`\{[^}]*?\}` —
+        // newlines allowed inside, but `[^}]` keeps it from spanning past
+        // the matching close brace) or a single non-`;` non-`\n` char.
+        // Effect: multi-line bracket imports (Prettier wraps past
+        // `printWidth`) match, but a preceding semicolon-less line
+        // (e.g. `import type { Metadata } from 'next'`) can't be swallowed
+        // into the clause via newline crossings. Both shapes used to fail
+        // silently — the rewrite was skipped because the resulting clause
+        // wasn't a valid single import.
+        const importRe =
+          /^[ \t]*import\s+((?:\{[^}]*?\}|[^;\n])+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
         let importMatch;
         while ((importMatch = importRe.exec(code)) !== null) {
           const [fullMatch, clause] = importMatch;
@@ -745,7 +749,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           }
         }
 
-        const exportRe = /^[ \t]*export\s*\{([^}\n]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
+        const exportRe = /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
         let exportMatch;
         while ((exportMatch = exportRe.exec(code)) !== null) {
           const [fullMatch, specifiers] = exportMatch;

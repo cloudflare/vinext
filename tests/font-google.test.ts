@@ -386,6 +386,46 @@ describe("vinext:google-fonts plugin", () => {
     expect(result.code).toContain(`import type { Metadata } from 'next'`);
   });
 
+  it("rewrites multi-line bracket imports (Prettier wraps past printWidth)", async () => {
+    // Repro: `import { A, B, C, D } from 'next/font/google'` exceeds the
+    // default 80-char printWidth once 4+ fonts are imported, so Prettier
+    // wraps the named specifiers across multiple lines. The clause must
+    // tolerate `\n` inside the `{...}` block while still refusing to
+    // cross newlines outside it.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "serve" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import {`,
+      `  Inter,`,
+      `  Roboto,`,
+      `  Architects_Daughter,`,
+      `} from 'next/font/google'`,
+      `const inter = Inter({ subsets: ['latin'] })`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+  });
+
+  it("rewrites multi-line bracket re-exports", async () => {
+    // Same wrap logic applies to `export { ... } from 'next/font/google'`
+    // when the specifier list crosses printWidth. Less common in user code
+    // than the import case but kept for parity.
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "build" });
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `export {`,
+      `  Inter,`,
+      `  Roboto,`,
+      `} from 'next/font/google'`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/fonts.ts");
+    expect(result).not.toBeNull();
+    expect(result.code).toContain("virtual:vinext-google-fonts?");
+  });
+
   it("returns null for non-script files", async () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "build" });
