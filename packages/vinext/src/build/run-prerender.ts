@@ -130,6 +130,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // sets and clears this var around its own render passes, but we widen
   // the scope here to cover startProdServer / shared-server setup that
   // happens before those phases run. See server/socket-error-backstop.ts.
+  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
   process.env.VINEXT_PRERENDER = "1";
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
@@ -270,6 +271,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     if (sharedProdServer) {
       await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
     }
+    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
   }
 
   if (allRoutes.length === 0) {

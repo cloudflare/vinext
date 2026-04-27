@@ -115,13 +115,12 @@ import fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
-// Install the process-level peer-disconnect backstop as soon as this
-// module loads. Vite plugin lifecycle hooks (config / configureServer)
-// proved timing-fragile in vite-plus — install was silently skipped,
-// confirmed via VINEXT_DEBUG_SOCKET_ERRORS=1. Module-load is the only
-// spot reliably observed to fire. Self-gates on NODE_ENV / VITEST so
-// build (incl. prerender) and tests skip cleanly. See
-// socket-error-backstop.ts for full rationale.
+// Install the process-level peer-disconnect backstop at module load.
+// Vite plugin lifecycle hooks (config / configureServer) proved
+// timing-fragile in vite-plus — install was silently skipped,
+// confirmed via VINEXT_DEBUG_SOCKET_ERRORS=1. Skips Vitest workers
+// via env-var gate; bypasses during prerender via fire-time
+// VINEXT_PRERENDER check. See socket-error-backstop.ts.
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
