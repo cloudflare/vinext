@@ -459,7 +459,7 @@ async function resolveBuildId(
  * @param filePath - Absolute path, relative path, or file:// URL (e.g. from import.meta.resolve)
  * @returns A filesystem path suitable for path operations
  */
-export function resolveCacheHandlerPathToFilesystem(filePath: string): string {
+function resolveCacheHandlerPathToFilesystem(filePath: string): string {
   if (filePath.startsWith("file://")) {
     return fileURLToPath(filePath);
   }
