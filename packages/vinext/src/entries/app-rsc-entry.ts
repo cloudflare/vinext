@@ -476,7 +476,7 @@ function setNavigationContext(ctx) {
 function __clearRequestContext() {
   setHeadersContext(null);
   setNavigationContext(null);
-  __setRootParams(null);
+  // setNavigationContext(null) already clears root params internally
 }
 
 // ISR cache is disabled in dev mode — every request re-renders fresh,
