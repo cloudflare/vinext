@@ -18,8 +18,7 @@ jobs:
       (
         github.event.comment.author_association == 'MEMBER' ||
         github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.comment.author_association == 'OWNER' ||
-        github.event.sender.login == 'NathanDrake2406'
+        github.event.comment.author_association == 'OWNER'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -46,7 +45,7 @@ jobs:
           model: "cloudflare-ai-gateway/anthropic/claude-opus-4-6"
           mentions: "/bigbonk"
           variant: "max"
-          permissions: any
+          permissions: write
           opencode_dev: false
           opencode_version: 1.14.22
           agent: viguy
