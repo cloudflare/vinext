@@ -8,3 +8,4 @@ export type { FetchCacheState } from "./fetch-cache.js";
 export type { ExecutionContextLike } from "./request-context.js";
 export type { SSRContext, RouterState } from "./router-state.js";
 export type { HeadState } from "./head-state.js";
+export type { RootParamsState } from "./root-params.js";

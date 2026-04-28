@@ -367,6 +367,8 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
+const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
@@ -374,6 +376,21 @@ const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 /** Absolute path to vinext's shims directory, used by clientManualChunks. */
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+
+function isValidExportIdentifier(name: string): boolean {
+  return /^[$A-Z_a-z][$\w]*$/.test(name);
+}
+
+function generateRootParamsModule(rootParamNames: Iterable<string>): string {
+  const names = Array.from(new Set(rootParamNames)).filter(isValidExportIdentifier).sort();
+  if (names.length === 0) return "export {};\n";
+
+  const rootParamsShimPath = resolveShimModulePath(_shimsDir, "root-params");
+  const exports = names
+    .map((name) => `export function ${name}() { return getRootParam(${JSON.stringify(name)}); }`)
+    .join("\n");
+  return `import { getRootParam } from ${JSON.stringify(rootParamsShimPath)};\n${exports}\n`;
+}
 
 /**
  * Shims with a `.react-server.ts` variant for the RSC environment.
@@ -957,6 +974,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "internal",
               "work-unit-async-storage",
             ),
+            "next/dist/server/request/root-params": path.join(shimsDir, "root-params"),
             // Re-export public modules for internal path imports
             // "next/dist/client/components/navigation" in _reactServerShims (#834).
             "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
@@ -1574,6 +1592,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
+            return RESOLVED_ROOT_PARAMS;
+          }
           if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
             return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
           }
@@ -1664,6 +1685,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             instrumentationPath,
           );
+        }
+        if (id === RESOLVED_ROOT_PARAMS) {
+          const routes = hasAppDir
+            ? await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
+            : [];
+          return generateRootParamsModule(routes.flatMap((route) => route.rootParamNames ?? []));
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry(hasPagesDir);

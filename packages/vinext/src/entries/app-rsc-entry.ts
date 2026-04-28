@@ -78,6 +78,7 @@ const appRouteHandlerResponsePath = resolveEntryPath(
 );
 const routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
 const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
+const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 
 /**
@@ -229,6 +230,7 @@ ${interceptEntries.join(",\n")}
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
     params: ${JSON.stringify(route.params)},
+    rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
     page: ${route.pagePath ? getImportVar(route.pagePath) : "null"},
     routeHandler: ${route.routePath ? getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
@@ -433,6 +435,7 @@ import {
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
+import { setRootParams as __setRootParams } from ${JSON.stringify(rootParamsShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(routeTriePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -610,6 +613,14 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
 }
 
 // djb2 hash — matches Next.js's stringHash for digest generation.
@@ -2130,6 +2141,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {

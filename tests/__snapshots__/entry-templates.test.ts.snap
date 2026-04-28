@@ -109,6 +109,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -288,6 +289,14 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -448,6 +457,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -473,6 +483,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -498,6 +509,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -523,6 +535,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -1804,6 +1817,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
@@ -2501,6 +2515,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -2680,6 +2695,14 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -2840,6 +2863,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -2865,6 +2889,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -2890,6 +2915,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -2915,6 +2941,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -4202,6 +4229,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
@@ -4899,6 +4927,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -5078,6 +5107,14 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -5239,6 +5276,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -5264,6 +5302,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -5289,6 +5328,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -5314,6 +5354,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -6595,6 +6636,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
@@ -7292,6 +7334,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -7469,6 +7512,14 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
 }
 
 // djb2 hash — matches Next.js's stringHash for digest generation.
@@ -7661,6 +7712,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -7686,6 +7738,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -7711,6 +7764,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -7736,6 +7790,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -9020,6 +9075,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
@@ -9717,6 +9773,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -9896,6 +9953,14 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -10057,6 +10122,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -10082,6 +10148,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -10107,6 +10174,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -10132,6 +10200,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -11419,6 +11488,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
@@ -12116,6 +12186,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-response.js";
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { setRootParams as __setRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 // Import server-only state module to register ALS-backed accessors.
@@ -12295,6 +12366,14 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+function __pickRootParams(params, rootParamNames) {
+  const picked = {};
+  for (const name of rootParamNames || []) {
+    picked[name] = params[name];
+  }
+  return picked;
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -12455,6 +12534,7 @@ const routes = [
     patternParts: [],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_0,
     routeHandler: null,
     layouts: [mod_1],
@@ -12480,6 +12560,7 @@ const routes = [
     patternParts: ["about"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_2,
     routeHandler: null,
     layouts: [mod_1],
@@ -12505,6 +12586,7 @@ const routes = [
     patternParts: ["blog",":slug"],
     isDynamic: true,
     params: ["slug"],
+    rootParamNames: [],
     page: mod_3,
     routeHandler: null,
     layouts: [mod_1, mod_4],
@@ -12530,6 +12612,7 @@ const routes = [
     patternParts: ["dashboard"],
     isDynamic: false,
     params: [],
+    rootParamNames: [],
     page: mod_5,
     routeHandler: null,
     layouts: [mod_1, mod_6],
@@ -14178,6 +14261,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     searchParams: url.searchParams,
     params,
   });
+  __setRootParams(__pickRootParams(params, route.rootParamNames));
 
   // Handle route.ts API handlers
   if (route.routeHandler) {

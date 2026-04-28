@@ -10,6 +10,7 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
   appRouter,
+  computeRootParamNames,
   matchAppRoute,
   invalidateAppRouteCache,
   type AppRoute,
@@ -51,6 +52,7 @@ function makeTestAppRoute(
     layoutTreePositions: [],
     isDynamic: pattern.includes(":"),
     params: [],
+    rootParamNames: [],
   };
 }
 
@@ -361,6 +363,33 @@ describe("appRouter - route discovery", () => {
     expect(blogRoute).toBeDefined();
     expect(blogRoute!.isDynamic).toBe(true);
     expect(blogRoute!.params).toEqual(["slug"]);
+  });
+
+  it("discovers dynamic params captured by a nested root layout", async () => {
+    await withTempDir("vinext-app-root-params-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[lang]", "[locale]", "other", "[slug]"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "[lang]", "[locale]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "[lang]", "[locale]", "other", "[slug]", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/:lang/:locale/other/:slug");
+
+      expect(route).toBeDefined();
+      expect(route!.params).toEqual(["lang", "locale", "slug"]);
+      expect(route!.rootParamNames).toEqual(["lang", "locale"]);
+    });
+  });
+
+  it("computes root layout params for dynamic and catch-all segments", () => {
+    expect(computeRootParamNames(["[lang]", "[...slug]", "page"], [2])).toEqual(["lang", "slug"]);
+    expect(computeRootParamNames(["[[...rest]]"], [1])).toEqual(["rest"]);
   });
 
   it("sorts static routes before dynamic routes at the same depth", async () => {

@@ -4394,6 +4394,39 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('"next/cache"');
   });
 
+  it("generated code stores root layout params separately from leaf params", () => {
+    const routes = [
+      {
+        ...minimalRoutes[0],
+        pattern: "/[lang]/[locale]/other/[slug]",
+        patternParts: [":lang", ":locale", "other", ":slug"],
+        params: ["lang", "locale", "slug"],
+        rootParamNames: ["lang", "locale"],
+        routeSegments: ["[lang]", "[locale]", "other", "[slug]"],
+        layoutTreePositions: [2],
+      },
+    ] as any[];
+
+    const code = generateRscEntry("/tmp/test/app", routes);
+
+    expect(code).toContain("setRootParams as __setRootParams");
+    expect(code).toContain('rootParamNames: ["lang","locale"]');
+    expect(code).toContain("__setRootParams(__pickRootParams(params, route.rootParamNames));");
+  });
+
+  it("root params runtime getter returns current request values", async () => {
+    const { getRootParam, setRootParams } =
+      await import("../packages/vinext/src/shims/root-params.js");
+
+    setRootParams({ lang: "en", locale: "us" });
+
+    await expect(getRootParam("lang")).resolves.toBe("en");
+    await expect(getRootParam("locale")).resolves.toBe("us");
+    await expect(getRootParam("slug")).resolves.toBeUndefined();
+
+    setRootParams(null);
+  });
+
   it("generated code delegates page response policy to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderAppPageLifecycle as __renderAppPageLifecycle");

@@ -130,6 +130,8 @@ export type AppRoute = {
   isDynamic: boolean;
   /** Parameter names for dynamic segments */
   params: string[];
+  /** Dynamic parameter names captured by the route's root layout. */
+  rootParamNames?: string[];
   /** Pre-split pattern segments (computed once at scan time, reused per request) */
   patternParts: string[];
 };
@@ -576,8 +578,31 @@ function directoryToAppRoute(
     layoutTreePositions,
     isDynamic,
     params,
+    rootParamNames: computeRootParamNames(segments, layoutTreePositions),
     patternParts: urlSegments,
   };
+}
+
+function dynamicParamNameFromSegment(segment: string): string | null {
+  if (segment.startsWith("[[...") && segment.endsWith("]]")) return segment.slice(5, -2);
+  if (segment.startsWith("[...") && segment.endsWith("]")) return segment.slice(4, -1);
+  if (segment.startsWith("[") && segment.endsWith("]")) return segment.slice(1, -1);
+  return null;
+}
+
+export function computeRootParamNames(
+  routeSegments: readonly string[],
+  layoutTreePositions: readonly number[],
+): string[] {
+  const rootLayoutPosition = layoutTreePositions[0];
+  if (rootLayoutPosition == null || rootLayoutPosition <= 0) return [];
+
+  const names: string[] = [];
+  for (const segment of routeSegments.slice(0, rootLayoutPosition)) {
+    const name = dynamicParamNameFromSegment(segment);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 /**
