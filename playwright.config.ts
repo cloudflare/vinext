@@ -133,6 +133,20 @@ const projectServers = {
       timeout: 30_000,
     },
   },
+  "standalone-output": {
+    testDir: "./tests/e2e/standalone-output",
+    use: { baseURL: "http://localhost:4182" },
+    server: {
+      // Build vinext CLI, then build the fixture, then start the standalone
+      // server. The standalone server.js reads PORT from the environment.
+      command:
+        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
+      cwd: "./tests/fixtures/standalone-output",
+      port: 4182,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

@@ -147,7 +147,8 @@ function copyPackageAndRuntimeDeps(
       );
     }
 
-    const packageRoot = path.dirname(packageJsonPath);
+    const realPackageJsonPath = fs.realpathSync(packageJsonPath);
+    const packageRoot = path.dirname(realPackageJsonPath);
     const packageTarget = path.join(targetNodeModulesDir, entry.packageName);
     fs.mkdirSync(path.dirname(packageTarget), { recursive: true });
     fs.cpSync(packageRoot, packageTarget, {
@@ -166,8 +167,8 @@ function copyPackageAndRuntimeDeps(
 
     copied.add(entry.packageName);
 
-    const packageResolver = createRequire(packageJsonPath);
-    const pkg = readPackageJson(packageJsonPath);
+    const packageResolver = createRequire(realPackageJsonPath);
+    const pkg = readPackageJson(realPackageJsonPath);
     const optionalDeps = new Set(Object.keys(pkg.optionalDependencies ?? {}));
     for (const depName of runtimeDeps(pkg)) {
       if (!copied.has(depName)) {

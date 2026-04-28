@@ -1190,6 +1190,25 @@ importers:
         specifier: 'catalog:'
         version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3)
 
+  tests/fixtures/standalone-output:
+    dependencies:
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.5(react@19.2.5)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+    devDependencies:
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.1.17
+        version: '@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3)'
+      vite-plus:
+        specifier: 'catalog:'
+        version: 0.1.17(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3)
+
   tests/fixtures/static-export:
     dependencies:
       '@vitejs/plugin-rsc':
