@@ -141,6 +141,7 @@ jobs:
           - cloudflare-pages-router-dev
           - static-export
           - app-with-src
+          - standalone-output
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup

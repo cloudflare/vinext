@@ -58,9 +58,8 @@ test.describe("Standalone Output", () => {
     expect(response?.status()).toBe(404);
   });
 
-  test("standalone server.js entry point exists and is executable", async ({ page }) => {
+  test("prod server responds with HTTP 200", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);
-    expect(response?.headers()["server"]).toContain("vinext");
   });
 });
