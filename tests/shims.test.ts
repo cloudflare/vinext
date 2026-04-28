@@ -12703,3 +12703,18 @@ describe("isOriginAllowed", () => {
     expect(isOriginAllowed("evil.example.com.attacker.com", ["**.example.com"])).toBe(false);
   });
 });
+
+// Ported from Next.js: packages/next/src/client/components/offline.ts
+// https://github.com/vercel/next.js/pull/92012 — useOffline() hook
+describe("next/offline shim", () => {
+  it("exports useOffline", async () => {
+    const offline = await import("../packages/vinext/src/shims/offline.js");
+    expect(offline.useOffline).toBeDefined();
+    expect(typeof offline.useOffline).toBe("function");
+  });
+
+  it("useOffline returns false (no-op stub)", async () => {
+    const offline = await import("../packages/vinext/src/shims/offline.js");
+    expect(offline.useOffline()).toBe(false);
+  });
+});

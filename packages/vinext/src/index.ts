@@ -927,6 +927,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "next/og": path.join(shimsDir, "og"),
             "next/web-vitals": path.join(shimsDir, "web-vitals"),
             "next/amp": path.join(shimsDir, "amp"),
+            "next/offline": path.join(shimsDir, "offline"),
             "next/error": path.join(shimsDir, "error"),
             "next/constants": path.join(shimsDir, "constants"),
             // Internal next/dist/* paths used by popular libraries

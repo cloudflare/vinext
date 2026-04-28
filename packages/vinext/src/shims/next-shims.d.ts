@@ -543,6 +543,10 @@ declare module "next/amp" {
   export function isInAmpMode(): boolean;
 }
 
+declare module "next/offline" {
+  export function useOffline(): boolean;
+}
+
 declare module "next/og" {
   import { ReactElement } from "react";
 

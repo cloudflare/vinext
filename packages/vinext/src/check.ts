@@ -70,6 +70,10 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
   "next/config": { status: "supported" },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
+  "next/offline": {
+    status: "supported",
+    detail: "useOffline() hook available; offline retry behavior deferred",
+  },
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
