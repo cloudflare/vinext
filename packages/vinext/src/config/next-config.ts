@@ -7,6 +7,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
@@ -196,6 +197,18 @@ export type NextConfig = {
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
+   * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
+   * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
+   * When "type": "module" is set in package.json, use import.meta.resolve() instead of
+   * require.resolve() to get a valid path.
+   */
+  cacheHandler?: string;
+  /**
+   * Maximum memory size (bytes) for the default in-memory cache handler.
+   * Set to 0 to disable in-memory caching entirely.
+   */
+  cacheMaxMemorySize?: number;
+  /**
    * Custom build ID generator. If provided, called once at build/dev start.
    * Must return a non-empty string, or null to use the default random ID.
    */
@@ -250,6 +263,11 @@ export type ResolvedNextConfig = {
   serverExternalPackages: string[];
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
+  /**
+   * Path to a custom cache handler module. file:// URLs are resolved to
+   * filesystem paths via fileURLToPath() during config resolution.
+   */
+  cacheHandler: string | undefined;
 };
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
@@ -435,6 +453,20 @@ async function resolveBuildId(
 }
 
 /**
+ * Converts a cache handler path to a filesystem path.
+ * ESM's import.meta.resolve() returns file:// URLs which break when concatenated
+ * with path operations like path.join or path.relative.
+ * @param filePath - Absolute path, relative path, or file:// URL (e.g. from import.meta.resolve)
+ * @returns A filesystem path suitable for path operations
+ */
+export function resolveCacheHandlerPathToFilesystem(filePath: string): string {
+  if (filePath.startsWith("file://")) {
+    return fileURLToPath(filePath);
+  }
+  return filePath;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -463,6 +495,7 @@ export async function resolveNextConfig(
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverExternalPackages: [],
+      cacheHandler: undefined,
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -595,6 +628,12 @@ export async function resolveNextConfig(
     config.generateBuildId as (() => string | null | Promise<string | null>) | undefined,
   );
 
+  // Resolve cacheHandler path — handle file:// URLs from import.meta.resolve()
+  const cacheHandler: string | undefined =
+    typeof config.cacheHandler === "string"
+      ? resolveCacheHandlerPathToFilesystem(config.cacheHandler)
+      : undefined;
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -614,6 +653,7 @@ export async function resolveNextConfig(
     optimizePackageImports,
     serverActionsBodySizeLimit,
     serverExternalPackages,
+    cacheHandler,
     buildId,
   };
 

@@ -427,6 +427,7 @@ describe("detectNextIntlConfig", () => {
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverExternalPackages: [],
+      cacheHandler: undefined,
       buildId: "test-build-id",
       ...overrides,
     };
