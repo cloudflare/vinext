@@ -24,6 +24,7 @@ import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
+  execPackageManagerCommand,
   findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
@@ -544,6 +545,7 @@ interface ExecutionContext {
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
+const assetPrefix: string = vinextConfig?.assetPrefix ?? "";
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
@@ -562,6 +564,35 @@ function hasBasePath(pathname: string, basePath: string): boolean {
 function stripBasePath(pathname: string, basePath: string): string {
   if (!hasBasePath(pathname, basePath)) return pathname;
   return pathname.slice(basePath.length) || "/";
+}
+
+function isNextStaticAssetPath(pathname: string): boolean {
+  return pathname === "/_next/static" || pathname.startsWith("/_next/static/");
+}
+
+function normalizeAssetPrefixPath(assetPrefix?: string | null): string {
+  if (!assetPrefix) return "";
+
+  let pathname = assetPrefix;
+  try {
+    pathname = new URL(assetPrefix).pathname;
+  } catch {
+    // Path-style asset prefixes are already pathnames.
+  }
+
+  if (!pathname.startsWith("/")) return "";
+  return pathname.replace(//+$/, "");
+}
+
+function getNextStaticAssetLookupPath(pathname: string, assetPrefix?: string | null): string {
+  if (isNextStaticAssetPath(pathname)) return pathname;
+
+  const prefixPath = normalizeAssetPrefixPath(assetPrefix);
+  if (!prefixPath || prefixPath === "/") return pathname;
+  if (pathname !== prefixPath && !pathname.startsWith(prefixPath + "/")) return pathname;
+
+  const stripped = pathname.slice(prefixPath.length) || "/";
+  return isNextStaticAssetPath(stripped) ? stripped : pathname;
 }
 
 // Mirror of isOpenRedirectShaped in server/request-pipeline.ts. Inlined here
@@ -584,6 +615,7 @@ export default {
       const url = new URL(request.url);
       let pathname = url.pathname;
       let urlWithQuery = pathname + url.search;
+      const requestHadBasePath = !basePath || hasBasePath(pathname, basePath);
 
       // Block protocol-relative URL open redirects in all shapes:
       //   literal  //evil.com, /\\\\evil.com
@@ -617,18 +649,60 @@ export default {
         }, allowedWidths, imageConfig);
       }
 
+      // Vite build output is emitted under /assets/. When basePath is configured,
+      // HTML points at /<basePath>/assets/*; after stripping basePath above, serve
+      // the normalized /assets/* file directly before middleware.
+      if (pathname.startsWith("/assets/")) {
+        const assetResponse = await env.ASSETS.fetch(
+          new Request(new URL(pathname + url.search, request.url), request),
+        );
+        if (assetResponse.status !== 404) {
+          return assetResponse;
+        }
+        return new Response("Not Found", {
+          status: 404,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      // Next static assets should behave like immutable filesystem assets:
+      // serve valid files directly and return a plain 404 for misses instead
+      // of falling through to the custom Pages 404 route.
+      const nextStaticLookupPath = getNextStaticAssetLookupPath(pathname, assetPrefix);
+      if (isNextStaticAssetPath(nextStaticLookupPath)) {
+        const assetResponse = await env.ASSETS.fetch(
+          new Request(new URL(nextStaticLookupPath + url.search, request.url), request),
+        );
+        if (assetResponse.status !== 404) {
+          return assetResponse;
+        }
+        return new Response("Not Found", {
+          status: 404,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
       // ── 2. Trailing slash normalization ────────────────────────────
       if (pathname !== "/" && pathname !== "/api" && !pathname.startsWith("/api/")) {
         const hasTrailing = pathname.endsWith("/");
-        if (trailingSlash && !hasTrailing) {
+        const pathWithoutTrailing = pathname.replace(//+$/, "");
+        const lastSegment = pathWithoutTrailing.slice(pathWithoutTrailing.lastIndexOf("/") + 1);
+        const isFileLike = lastSegment.includes(".");
+        if (isFileLike && hasTrailing) {
+          return new Response(null, {
+            status: 308,
+            headers: { Location: basePath + pathWithoutTrailing + url.search },
+          });
+        }
+        if (trailingSlash && !hasTrailing && !isFileLike) {
           return new Response(null, {
             status: 308,
             headers: { Location: basePath + pathname + "/" + url.search },
           });
-        } else if (!trailingSlash && hasTrailing) {
+        } else if (!trailingSlash && hasTrailing && !isFileLike) {
           return new Response(null, {
             status: 308,
-            headers: { Location: basePath + pathname.replace(/\\/+$/, "") + url.search },
+            headers: { Location: basePath + pathname.replace(//+$/, "") + url.search },
           });
         }
       }
@@ -640,7 +714,14 @@ export default {
       if (basePath) {
         const strippedUrl = new URL(request.url);
         strippedUrl.pathname = pathname;
-        request = new Request(strippedUrl, request);
+        const strippedHeaders = new Headers(request.headers);
+        strippedHeaders.set("x-vinext-request-had-base-path", requestHadBasePath ? "1" : "0");
+        request = new Request(strippedUrl, {
+          method: request.method,
+          headers: strippedHeaders,
+          body: request.body,
+          redirect: request.redirect,
+        });
       }
 
       // Build request context for pre-middleware config matching. Redirects
@@ -674,7 +755,7 @@ export default {
       let resolvedUrl = urlWithQuery;
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
-      if (typeof runMiddleware === "function") {
+      if (typeof runMiddleware === "function" && (!basePath || requestHadBasePath)) {
         const result = await runMiddleware(request, ctx);
 
         // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
@@ -791,6 +872,22 @@ export default {
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
 
+      // ── 7b. Public/static asset routes after beforeFiles rewrites ──
+      // Cloudflare Assets serves public/ files outside the Pages server entry.
+      // When beforeFiles rewrites target a public file, the Worker must probe
+      // the asset binding after applying the rewrite before falling through to
+      // Pages rendering.
+      if (
+        resolvedPathname !== "/" &&
+        !resolvedPathname.startsWith("/assets/") &&
+        request.method !== "POST"
+      ) {
+        const assetResponse = await env.ASSETS.fetch(new Request(new URL(resolvedUrl, request.url), request));
+        if (assetResponse.status !== 404) {
+          return mergeHeaders(assetResponse, middlewareHeaders, middlewareRewriteStatus);
+        }
+      }
+
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       if (configRewrites.afterFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
@@ -801,6 +898,10 @@ export default {
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
         }
+      }
+
+      if (basePath && !requestHadBasePath && resolvedUrl === urlWithQuery) {
+        return new Response("404 - Not found", { status: 404 });
       }
 
       // ── 9. Page routes ────────────────────────────────────────────
@@ -1073,7 +1174,7 @@ function installDeps(root: string, deps: MissingDep[]): void {
   const [pm, ...pmArgs] = installCmd.split(" ");
 
   console.log(`  Installing: ${deps.map((d) => d.name).join(", ")}`);
-  execFileSync(pm, [...pmArgs, ...depSpecs], {
+  execPackageManagerCommand(pm, [...pmArgs, ...depSpecs], {
     cwd: root,
     stdio: "inherit",
   });
@@ -1292,7 +1393,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log(
         `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
       );
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
+      execPackageManagerCommand(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
     }
   }
   const missingDeps = getMissingDeps(info);

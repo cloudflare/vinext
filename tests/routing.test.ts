@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -98,6 +98,28 @@ describe("pagesRouter - route discovery", () => {
     expect(patterns).not.toContain("/_app");
     expect(patterns).not.toContain("/_document");
     expect(patterns).not.toContain("/_error");
+  });
+
+  it("logs Next-compatible errors for literal Link hrefs with repeated slashes", async () => {
+    // Ported from Next.js: test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+    await withTempDir("vinext-pages-invalid-link-href-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "my", "path"), { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "my", "path", "[name].jsx"),
+        `import Link from "next/link";\nexport default function Page() { return <Link href="/hello//world">Hello</Link>; }\n`,
+      );
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await pagesRouter(pagesDir);
+        expect(error).toHaveBeenCalledWith(
+          "Invalid href '/hello//world' passed to next/router in page: '/my/path/[name]'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+        );
+      } finally {
+        error.mockRestore();
+      }
+    });
   });
 
   it("rejects non-terminal catch-all routes during discovery", async () => {

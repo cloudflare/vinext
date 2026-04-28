@@ -231,6 +231,32 @@ function buildUrlFromParams(pattern: string, params: Record<string, string | str
   return "/" + result.join("/");
 }
 
+type PagesStaticPathEntry =
+  | string
+  | {
+      params: Record<string, string | string[]>;
+      locale?: string;
+    };
+
+export function normalizePagesStaticPathEntry(
+  pattern: string,
+  pathEntry: PagesStaticPathEntry,
+): { urlPath: string; params: Record<string, string | string[]> } {
+  if (typeof pathEntry === "string") {
+    const pathname = pathEntry.split("?")[0] || "/";
+    return {
+      urlPath: pathname.startsWith("/") ? pathname : `/${pathname}`,
+      params: {},
+    };
+  }
+
+  const params = pathEntry.params ?? {};
+  return {
+    urlPath: buildUrlFromParams(pattern, params),
+    params,
+  };
+}
+
 /**
  * Determine the HTML output file path for a URL.
  * Respects trailingSlash config.
@@ -419,7 +445,7 @@ export async function prerenderPages({
       params: Record<string, string>;
       module: {
         getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<{
-          paths: Array<{ params: Record<string, string | string[]> }>;
+          paths: PagesStaticPathEntry[];
           fallback: unknown;
         }>;
         getStaticProps?: unknown;
@@ -458,7 +484,7 @@ export async function prerenderPages({
               }
               if (text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
-                paths: Array<{ params: Record<string, string | string[]> }>;
+                paths: PagesStaticPathEntry[];
                 fallback: unknown;
               };
             }
@@ -539,10 +565,9 @@ export async function prerenderPages({
           continue;
         }
 
-        const paths: Array<{ params: Record<string, string | string[]> }> =
-          pathsResult?.paths ?? [];
-        for (const { params } of paths) {
-          const urlPath = buildUrlFromParams(route.pattern, params);
+        const paths: PagesStaticPathEntry[] = pathsResult?.paths ?? [];
+        for (const pathEntry of paths) {
+          const { urlPath, params } = normalizePagesStaticPathEntry(route.pattern, pathEntry);
           pagesToRender.push({ route, urlPath, params, revalidate });
         }
       } else {

@@ -93,11 +93,22 @@ function renderClientForm(props: Record<string, unknown>) {
   };
 }
 
-function createWindowStub() {
+function createWindowStub(
+  location: Partial<{
+    origin: string;
+    href: string;
+    pathname: string;
+    search: string;
+    hash: string;
+    hostname: string;
+  }> = {},
+) {
   const navigate = vi.fn(async () => {});
   const pushState = vi.fn();
   const replaceState = vi.fn();
   const scrollTo = vi.fn();
+  const href = location.href ?? "http://localhost:3000/current";
+  const url = new URL(href);
 
   return {
     navigate,
@@ -112,12 +123,12 @@ function createWindowStub() {
         state: null,
       },
       location: {
-        origin: "http://localhost:3000",
-        href: "http://localhost:3000/current",
-        pathname: "/current",
-        search: "",
-        hash: "",
-        hostname: "localhost",
+        origin: location.origin ?? url.origin,
+        href,
+        pathname: location.pathname ?? url.pathname,
+        search: location.search ?? url.search,
+        hash: location.hash ?? url.hash,
+        hostname: location.hostname ?? url.hostname,
       },
       scrollTo,
       scrollX: 0,
@@ -147,8 +158,14 @@ function createSubmitEvent({
   return event;
 }
 
-function installClientGlobals({ supportsSubmitter }: { supportsSubmitter: boolean }) {
-  const windowStub = createWindowStub();
+function installClientGlobals({
+  location,
+  supportsSubmitter,
+}: {
+  location?: Parameters<typeof createWindowStub>[0];
+  supportsSubmitter: boolean;
+}) {
+  const windowStub = createWindowStub(location);
   vi.stubGlobal("window", windowStub.window);
   vi.stubGlobal("Element", FakeElement);
   vi.stubGlobal("HTMLButtonElement", FakeButtonElement);
@@ -236,6 +253,29 @@ describe("Form SSR rendering", () => {
     // No explicit method attribute in HTML — browser defaults to GET
     expect(html).toContain('action="/search"');
   });
+
+  it("adds basePath to the rendered action", () => {
+    // Based on Next.js: test/e2e/next-form/basepath/next-form-basepath.test.ts
+    const originalBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/base";
+
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          Form,
+          { action: "/search" },
+          React.createElement("input", { name: "q", type: "text" }),
+        ),
+      );
+      expect(html).toContain('action="/base/search"');
+    } finally {
+      if (originalBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = originalBasePath;
+      }
+    }
+  });
 });
 
 // ─── useActionState re-export ───────────────────────────────────────────
@@ -262,7 +302,30 @@ describe("Form client GET interception", () => {
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    // navigateClientSide delegates URL push to __VINEXT_RSC_NAVIGATE__ (two-phase commit)
+    // Ported from Next.js: test/e2e/next-form/default/next-form-prefetch.test.ts
+    // Default App Router forms use the prefetched loading-state transition.
+    expect(navigate).toHaveBeenCalledWith(
+      "/search?q=react",
+      0,
+      "navigate",
+      "push",
+      undefined,
+      true,
+      false,
+    );
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("preserves non-prefetched navigation when prefetch is false", async () => {
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const { onSubmit } = renderClientForm({ action: "/search", prefetch: false });
+    const event = createSubmitEvent({
+      entries: [["q", "react"]],
+    });
+
+    await onSubmit(event);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(navigate).toHaveBeenCalledWith(
       "/search?q=react",
       0,
@@ -270,8 +333,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      true,
     );
-    expect(scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("honors submitter formAction, formMethod, and submitter name/value", async () => {
@@ -302,8 +365,51 @@ describe("Form client GET interception", () => {
       "navigate",
       "push",
       undefined,
+      true,
       false,
     );
+  });
+
+  it("does not double-prefix a basePath included in submitter formAction", async () => {
+    // Based on Next.js: test/e2e/next-form/basepath/next-form-basepath.test.ts
+    const originalBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/base";
+    const { navigate } = installClientGlobals({
+      location: { href: "http://localhost:3000/base/forms/button-formaction" },
+      supportsSubmitter: true,
+    });
+
+    try {
+      const { onSubmit } = renderClientForm({ action: "/" });
+      const submitter = new FakeButtonElement({
+        attributes: {
+          formaction: "/base/search",
+        },
+      });
+      const event = createSubmitEvent({
+        entries: [["query", "my search"]],
+        submitter,
+      });
+
+      await onSubmit(event);
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(navigate).toHaveBeenCalledWith(
+        "/base/search?query=my+search",
+        0,
+        "navigate",
+        "push",
+        undefined,
+        true,
+        false,
+      );
+    } finally {
+      if (originalBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = originalBasePath;
+      }
+    }
   });
 
   it("falls back to appending submitter name/value when FormData submitter overload is unavailable", async () => {
@@ -332,6 +438,7 @@ describe("Form client GET interception", () => {
       "navigate",
       "push",
       undefined,
+      true,
       false,
     );
   });
@@ -376,6 +483,7 @@ describe("Form client GET interception", () => {
       "navigate",
       "push",
       undefined,
+      true,
       false,
     );
   });

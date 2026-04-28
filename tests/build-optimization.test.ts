@@ -352,6 +352,72 @@ describe("process.env.NODE_ENV define", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("maps compiler.define to all environments and compiler.defineServer to server environments", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      await fsp.rm(path.join(tmpDir, "pages"), { recursive: true, force: true });
+      await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default {
+          compiler: {
+            define: { MY_MAGIC_VARIABLE: "foobar", "process.env.MY_MAGIC_EXPR": "barbaz" },
+            defineServer: { MY_SERVER_VARIABLE: "server" }
+          }
+        };`,
+      );
+
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+
+      expect(result.define?.MY_MAGIC_VARIABLE).toBe(JSON.stringify("foobar"));
+      expect(result.environments.client.define?.MY_MAGIC_VARIABLE).toBe(JSON.stringify("foobar"));
+      expect(result.environments.client.define?.MY_SERVER_VARIABLE).toBeUndefined();
+      expect(result.environments.rsc.define?.MY_SERVER_VARIABLE).toBe(JSON.stringify("server"));
+      expect(result.environments.ssr.define?.MY_SERVER_VARIABLE).toBe(JSON.stringify("server"));
+      expect(result.environments.rsc.define?.["process.env.MY_MAGIC_EXPR"]).toBe(
+        JSON.stringify("barbaz"),
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("defines process.browser only as true in browser builds", async () => {
+    // Ported from Next.js: test/e2e/esm-externals/esm-externals.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/esm-externals/esm-externals.test.ts
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      await fsp.rm(path.join(tmpDir, "pages"), { recursive: true, force: true });
+      await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+
+      expect(result.environments.client.define?.["process.browser"]).toBe("true");
+      expect(result.environments.rsc.define?.["process.browser"]).toBe("false");
+      expect(result.environments.ssr.define?.["process.browser"]).toBe("false");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });
 
 // ─── Treeshake config applied to Vite builds ──────────────────────────────────
@@ -1074,7 +1140,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
       } else if (tf.endsWith(".js")) {
         if (lazySet.has(tf)) continue;
         tags.push(`<link rel="modulepreload" href="/${tf}" />`);
-        tags.push(`<script type="module" src="/${tf}" crossorigin></script>`);
+        tags.push(`<script type="module" defer src="/${tf}" crossorigin></script>`);
       }
     }
     return tags;
@@ -1116,7 +1182,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // Entry and framework should have modulepreload + script tags
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" defer src="/assets/entry.js" crossorigin></script>',
+    );
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
 
     // Page chunk and mermaid are lazy — should have NO tags at all
@@ -1171,8 +1239,12 @@ describe("collectAssetTags lazy chunk filtering", () => {
     // Both should be present
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
     expect(tags).toContain('<link rel="modulepreload" href="/assets/utils.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
-    expect(tags).toContain('<script type="module" src="/assets/utils.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" defer src="/assets/entry.js" crossorigin></script>',
+    );
+    expect(tags).toContain(
+      '<script type="module" defer src="/assets/utils.js" crossorigin></script>',
+    );
   });
 
   it("normalizes leading slashes from SSR manifest values", () => {
@@ -1215,7 +1287,9 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // Entry and framework should be present with correct single-slash paths
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
-    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain(
+      '<script type="module" defer src="/assets/entry.js" crossorigin></script>',
+    );
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
 
     // Page chunk is lazy — should be excluded even with leading-slash input
@@ -1249,7 +1323,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     expect(tags).toContain('<link rel="modulepreload" href="/docs/assets/entry.js" />');
     expect(tags).toContain(
-      '<script type="module" src="/docs/assets/entry.js" crossorigin></script>',
+      '<script type="module" defer src="/docs/assets/entry.js" crossorigin></script>',
     );
     expect(tags).toContain('<link rel="modulepreload" href="/docs/assets/framework.js" />');
     expect(tags.join("\n")).not.toContain("page-index.js");
@@ -1559,9 +1633,9 @@ export { getServerSideProps };
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
     // The original local declaration remains (dead code, tree-shaken later)
     expect(result).not.toContain("export { getServerSideProps }");
+    expect(result).not.toContain("export const getServerSideProps = undefined;");
   });
 
   it("handles export { name } with other specifiers", () => {
@@ -1581,7 +1655,26 @@ export { getServerSideProps, config };
     expect(result).not.toBeNull();
     // config should be preserved
     expect(result).toContain("export { config }");
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("export const getServerSideProps = undefined;");
+  });
+
+  it("does not redeclare a local binding when stripping export specifiers", () => {
+    const code = `
+const getServerSideProps = async () => {
+  return { props: {} };
+};
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("const getServerSideProps = async");
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(result).not.toContain("export { getServerSideProps }");
   });
 
   it("handles strings containing braces", () => {

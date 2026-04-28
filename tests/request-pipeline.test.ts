@@ -228,6 +228,13 @@ describe("normalizeTrailingSlash", () => {
     expect(res!.headers.get("Location")).toBe("/api-docs");
   });
 
+  it("strips trailing slash from file-like paths when trailingSlash is true", () => {
+    const res = normalizeTrailingSlash("/catch-all/hello.world/", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/catch-all/hello.world");
+  });
+
   // Defense-in-depth for VULN-126915: even if an upstream guard is bypassed,
   // the trailing-slash emitter must refuse to echo a protocol-relative path
   // back into a Location header. Returns 404 instead of 308.

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
 import {
   createValidFileMatcher,
@@ -23,6 +24,7 @@ export type Route = {
 
 // Route cache — invalidated when pages directory changes
 const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
+const warnedInvalidStaticLinkHrefs = new Set<string>();
 
 /**
  * Invalidate cached routes for a given pages directory.
@@ -76,7 +78,10 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
     (name: string) => name === "api" || name.startsWith("_"),
   )) {
     const route = fileToRoute(file, pagesDir, matcher);
-    if (route) routes.push(route);
+    if (route) {
+      routes.push(route);
+      await warnInvalidStaticLinkHrefs(route);
+    }
   }
 
   validateRoutePatterns(routes.map((route) => route.pattern));
@@ -85,6 +90,44 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   routes.sort(compareRoutes);
 
   return routes;
+}
+
+function hasRepeatedForwardSlashOrBackslash(href: string): boolean {
+  if (href.includes("\\")) return true;
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(href) || href.startsWith("//")) {
+    try {
+      return new URL(href, "http://vinext.local").pathname.includes("//");
+    } catch {
+      return false;
+    }
+  }
+
+  const pathname = href.split(/[?#]/, 1)[0] ?? "";
+  return pathname.includes("//");
+}
+
+async function warnInvalidStaticLinkHrefs(route: Route): Promise<void> {
+  let source: string;
+  try {
+    source = await readFile(route.filePath, "utf8");
+  } catch {
+    return;
+  }
+
+  const linkHrefPattern = /<Link\b[^>]*\bhref=(["'])(.*?)\1/g;
+  for (const match of source.matchAll(linkHrefPattern)) {
+    const href = match[2] ?? "";
+    if (!hasRepeatedForwardSlashOrBackslash(href)) continue;
+
+    const page = patternToNextFormat(route.pattern);
+    const warningKey = `${route.filePath}:${href}`;
+    if (warnedInvalidStaticLinkHrefs.has(warningKey)) continue;
+    warnedInvalidStaticLinkHrefs.add(warningKey);
+    console.error(
+      `Invalid href '${href}' passed to next/router in page: '${page}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
+    );
+  }
 }
 
 /**

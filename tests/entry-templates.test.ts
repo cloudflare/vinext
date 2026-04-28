@@ -332,7 +332,7 @@ describe("Pages Router entry templates", () => {
   it("server entry seeds the main Pages Router unified context with executionContext", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
     const renderPageIndex = code.indexOf(
-      "async function _renderPage(request, url, manifest, middlewareHeaders) {",
+      "async function _renderPage(request, url, manifest, middlewareHeaders",
     );
     const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
 
@@ -361,7 +361,7 @@ describe("Pages Router entry templates", () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 
     expect(code).toContain("renderPagesPageResponse as __renderPagesPageResponse");
-    expect(code).toContain("return __renderPagesPageResponse({");
+    expect(code).toContain("__renderPagesPageResponse({");
     expect(code).not.toContain('var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";');
     expect(code).not.toContain("var compositeStream = new ReadableStream({");
   });

@@ -42,6 +42,7 @@ function createOptions(
     pageModule: {},
     params: { slug: "post" },
     query: { slug: "post" },
+    resolvedUrl: "/posts/post",
     renderIsrPassToStringAsync: vi.fn(async () => "<div>fresh-body</div>"),
     route: { isDynamic: false },
     routePattern: "/posts/[slug]",
@@ -114,7 +115,71 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("404 - Page not found");
+    const html = await result.response.text();
+    expect(html).toContain("404 - Page not found");
+    expect(html).toContain("This page could not be found.");
+  });
+
+  it("matches string paths returned from getStaticPaths", async () => {
+    // Ported from Next.js deploy fixture:
+    // test/e2e/middleware-general/app/pages/ssg-fallback-false/[slug].js
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: ["/ssg-fallback-false/first", "/ssg-fallback-false/hello"],
+            };
+          },
+          async getStaticProps({ params }) {
+            return { props: { params } };
+          },
+        },
+        params: { slug: "hello" },
+        query: { slug: "hello" },
+        route: { isDynamic: true },
+        routePattern: "/ssg-fallback-false/[slug]",
+        routeUrl: "/ssg-fallback-false/hello",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { params: { slug: "hello" } },
+    });
+  });
+
+  it("returns a notFound signal for HTML when getStaticProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("notFound");
+  });
+
+  it("returns Next-compatible 404 HTML for data requests when getStaticProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataRequest: true,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.status).toBe(404);
+    await expect(result.response.text()).resolves.toContain("This page could not be found.");
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {
@@ -158,10 +223,65 @@ describe("pages page data", () => {
     await expect(result.response.text()).resolves.toBe('{"ok":true}');
   });
 
+  it("passes undefined params to getServerSideProps for non-dynamic pages", async () => {
+    // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps({ params }) {
+            return {
+              props: {
+                params: params ?? null,
+              },
+            };
+          },
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: false },
+        routePattern: "/",
+        routeUrl: "/",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { params: null },
+    });
+  });
+
+  it("awaits promise-valued getServerSideProps props", async () => {
+    // Ported from Next.js: test/e2e/getserversideprops/app/pages/promise/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/app/pages/promise/index.js
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps() {
+            return {
+              props: Promise.resolve({
+                text: "promise",
+              }),
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { text: "promise" },
+    });
+  });
+
   it("serves stale ISR entries immediately and regenerates them through typed helpers", async () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
     const isrSet = vi.fn(async () => {});
+    const getStaticProps = vi.fn(async () => ({
+      props: { title: "fresh" },
+      revalidate: 15,
+    }));
     const runInFreshUnifiedContext = vi.fn(
       async <T>(callback: () => Promise<T>): Promise<T> => callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
@@ -188,12 +308,7 @@ describe("pages page data", () => {
         }),
         isrSet,
         pageModule: {
-          async getStaticProps() {
-            return {
-              props: { title: "fresh" },
-              revalidate: 15,
-            };
-          },
+          getStaticProps,
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
@@ -222,6 +337,9 @@ describe("pages page data", () => {
     await pendingRegen;
 
     expect(runInFreshUnifiedContext).toHaveBeenCalledOnce();
+    expect(getStaticProps).toHaveBeenCalledWith(
+      expect.objectContaining({ revalidateReason: "stale" }),
+    );
     expect(applyRequestContexts).toHaveBeenCalledOnce();
     expect(isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -232,6 +350,176 @@ describe("pages page data", () => {
       }),
       15,
     );
+  });
+
+  it("passes build revalidateReason to getStaticProps on prerender cache misses", async () => {
+    const getStaticProps = vi.fn(async ({ revalidateReason }) => ({
+      props: { reason: revalidateReason },
+      revalidate: 30,
+    }));
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          getStaticProps,
+        },
+        revalidateReason: "build",
+      }),
+    );
+
+    expect(getStaticProps).toHaveBeenCalledWith(
+      expect.objectContaining({ revalidateReason: "build" }),
+    );
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { reason: "build" },
+    });
+  });
+
+  it("bypasses a fresh ISR hit for on-demand revalidation", async () => {
+    const getStaticProps = vi.fn(async ({ revalidateReason }) => ({
+      props: { reason: revalidateReason },
+      revalidate: 30,
+    }));
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "hit",
+            value: {
+              kind: "PAGES",
+              html: "<!DOCTYPE html><html><body>cached html</body></html>",
+              pageData: { reason: "cached" },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          getStaticProps,
+        },
+        revalidateReason: "on-demand",
+      }),
+    );
+
+    expect(getStaticProps).toHaveBeenCalledWith(
+      expect.objectContaining({ revalidateReason: "on-demand" }),
+    );
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: 30,
+      pageProps: { reason: "on-demand" },
+    });
+  });
+
+  it("returns cached page data instead of cached HTML for Pages data requests", async () => {
+    // Ported from Next.js: test/e2e/prerender.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataRequest: true,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "hit",
+            value: {
+              kind: "PAGES",
+              html: "<!DOCTYPE html><html><body>cached html</body></html>",
+              pageData: { post: "post-1" },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps() {
+            return {
+              props: { post: "fresh" },
+              revalidate: 10,
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: null,
+      pageProps: { post: "post-1" },
+    });
+  });
+
+  it("returns a fallback shell result for missing fallback true HTML paths", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: true,
+              paths: [{ params: { slug: "seeded" } }],
+            };
+          },
+          async getStaticProps() {
+            throw new Error("fallback shell should not call getStaticProps");
+          },
+        },
+        params: { slug: "lazy" },
+        query: { slug: "lazy" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/lazy",
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "render",
+      gsspRes: null,
+      isFallback: true,
+      isrRevalidateSeconds: null,
+      pageProps: {},
+    });
+  });
+
+  it("blocks fallback true HTML paths for crawler requests", async () => {
+    // Ported from Next.js: test/e2e/prerender-crawler.test.ts
+    const getStaticProps = vi.fn(async ({ params }) => ({
+      props: { slug: params.slug },
+    }));
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isCrawlerRequest: true,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: true,
+              paths: [{ params: { slug: "seeded" } }],
+            };
+          },
+          getStaticProps,
+        },
+        params: { slug: "bot-slug" },
+        query: { slug: "bot-slug" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/bot-slug",
+      }),
+    );
+
+    expect(getStaticProps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: { slug: "bot-slug" },
+      }),
+    );
+    expect(result).toEqual({
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: null,
+      pageProps: { slug: "bot-slug" },
+    });
   });
 
   it("returns normalized render data for cache misses", async () => {
@@ -253,6 +541,86 @@ describe("pages page data", () => {
       gsspRes: null,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
+    });
+  });
+
+  it("runs page getInitialProps for Pages SSR routes", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr-edge/pages/err/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr-edge/pages/err/index.js
+    function Page() {
+      return "page";
+    }
+    Page.getInitialProps = vi.fn(({ pathname, query }) => ({
+      pathname,
+      slug: query.slug,
+    }));
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          default: Page,
+        },
+      }),
+    );
+
+    expect(Page.getInitialProps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asPath: "/posts/post",
+        pathname: "/posts/[slug]",
+        query: { slug: "post" },
+      }),
+    );
+    expect(result).toEqual({
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: null,
+      pageProps: {
+        pathname: "/posts/[slug]",
+        slug: "post",
+      },
+    });
+  });
+
+  it("surfaces page getInitialProps errors to the Pages error renderer", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
+    function Page() {
+      return "page";
+    }
+    Page.getInitialProps = () => {
+      throw new Error("gip-oops");
+    };
+
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            default: Page,
+          },
+        }),
+      ),
+    ).rejects.toThrow("gip-oops");
+  });
+
+  it("treats getStaticProps revalidate false as indefinitely cacheable", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return {
+              props: { title: "static" },
+              revalidate: false,
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: 31536000,
+      pageProps: { title: "static" },
     });
   });
 });

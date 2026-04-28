@@ -17,8 +17,10 @@
  */
 
 import type { Root } from "react-dom/client";
+import type { VinextNextData } from "./client/vinext-next-data";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { CachedRscResponse, PrefetchCacheEntry } from "./shims/navigation";
+import type { NextRouterSingleton } from "./shims/router";
 
 // ---------------------------------------------------------------------------
 // Window globals — browser-side state shared across module boundaries
@@ -41,6 +43,14 @@ declare global {
      * Used by instrumentation-client compatibility tests.
      */
     __VINEXT_HYDRATED_AT: number | undefined;
+
+    /**
+     * Next.js conventional hydration markers used by upstream test helpers and
+     * compatibility suites.
+     */
+    __NEXT_HYDRATED: boolean | undefined;
+    __NEXT_HYDRATED_AT: number | undefined;
+    __NEXT_HYDRATED_CB: (() => void) | undefined;
 
     /**
      * The cached `_app` component for Pages Router.
@@ -69,6 +79,27 @@ declare global {
      */
     __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
+    /**
+     * Legacy Next.js browser global used by parts of the upstream Pages Router
+     * test suite and by older integrations that reach for the Router singleton
+     * outside the module system.
+     */
+    next: { router?: NextRouterSingleton } | undefined;
+
+    /**
+     * Suppresses hard navigations when a fallback shell's automatic data fetch
+     * fails. Next keeps the fallback page mounted for failed fallback data
+     * loads instead of blowing away page globals with a reload.
+     */
+    __VINEXT_SUPPRESS_DATA_NAVIGATION_FAILURE: boolean | undefined;
+
+    /**
+     * Pages Router route patterns that are known to use getStaticProps.
+     * The generated client entry sets this so Link prefetching can avoid
+     * executing request-specific getServerSideProps routes in the background.
+     */
+    __VINEXT_PAGES_SSG_ROUTES__: Set<string> | undefined;
+
     // ── App Router ──────────────────────────────────────────────────────────
 
     /**
@@ -96,8 +127,11 @@ declare global {
           historyUpdateMode?: "push" | "replace",
           previousNextUrlOverride?: string | null,
           programmaticTransition?: boolean,
+          deferredLoadingTransition?: boolean,
         ) => Promise<void>)
       | undefined;
+
+    __VINEXT_RSC_PREFETCH_LOADING__: ((href: string) => Promise<void>) | undefined;
 
     /**
      * A Promise that resolves when the current in-flight popstate RSC navigation
@@ -124,11 +158,7 @@ declare global {
 
     // ── Next.js conventional globals ────────────────────────────────────────
     //
-    // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as
-    // `NEXT_DATA` from `next/dist/shared/lib/utils`. We intentionally do NOT
-    // re-declare it here to avoid type conflicts. vinext-specific extensions
-    // (__vinext) are accessed via the `VinextNextData` type in
-    // `client/vinext-next-data.ts`.
+    __NEXT_DATA__: VinextNextData | undefined;
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────

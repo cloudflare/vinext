@@ -100,6 +100,8 @@ export type AppRouterConfig = {
   bodySizeLimit?: number;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
+  /** Path or URL prefix for immutable Next/Vite assets. */
+  assetPrefix?: string;
   /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
@@ -111,6 +113,8 @@ export type AppRouterConfig = {
   hasPagesDir?: boolean;
   /** Exact public/ file routes, using normalized leading-slash pathnames. */
   publicFiles?: string[];
+  /** OpenTelemetry propagation keys exposed as client trace metadata. */
+  clientTraceMetadata?: string[];
 };
 
 /**
@@ -139,8 +143,10 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const i18nConfig = config?.i18n ?? null;
+  const assetPrefix = config?.assetPrefix ?? "";
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
+  const clientTraceMetadata = config?.clientTraceMetadata ?? [];
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -412,6 +418,7 @@ import {
 } from ${JSON.stringify(appElementsPath)};
 import {
   buildAppPageElements as __buildAppPageElements,
+  buildAppPageLoadingElements as __buildAppPageLoadingElements,
   createAppPageTreePath as __createAppPageTreePath,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
@@ -752,7 +759,17 @@ async function __ensureInstrumentation() {
   if (__instrumentationInitPromise) return __instrumentationInitPromise;
   __instrumentationInitPromise = (async () => {
     if (typeof _instrumentation.register === "function") {
-      await _instrumentation.register();
+      const __previousNextRuntime = process.env.NEXT_RUNTIME;
+      process.env.NEXT_RUNTIME = "nodejs";
+      try {
+        await _instrumentation.register();
+      } finally {
+        if (__previousNextRuntime === undefined) {
+          delete process.env.NEXT_RUNTIME;
+        } else {
+          process.env.NEXT_RUNTIME = __previousNextRuntime;
+        }
+      }
     }
     // Store the onRequestError handler on globalThis so it is visible to
     // reportRequestError() (imported as _reportRequestError above) regardless
@@ -1162,6 +1179,8 @@ ${middlewarePath ? generateMiddlewareMatcherCode("modern") : ""}
 
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
+const __assetPrefix = ${JSON.stringify(assetPrefix)};
+export const vinextConfig = { basePath: __basePath, assetPrefix: __assetPrefix };
 const __i18nConfig = ${JSON.stringify(i18nConfig)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
@@ -1574,14 +1593,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     throw new Error("The " + _fileType + " file must export a function named \`" + _expectedExport + "\` or a \`default\` function.");
   }
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (matchesMiddleware(cleanPathname, middlewareMatcher, request, __i18nConfig)) {
+  const __skipBasePathScopedMiddleware =
+    __basePath &&
+    middlewareMatcher !== undefined &&
+    request.headers.get("x-vinext-request-had-base-path") === "0";
+  if (!__skipBasePathScopedMiddleware && matchesMiddleware(cleanPathname, middlewareMatcher, request, __i18nConfig)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
        // Always construct a new Request with the fully decoded + normalized pathname
-       // so middleware and the router see the same canonical path.
+      // so middleware and the router see the same canonical path.
       const mwUrl = new URL(request.url);
       mwUrl.pathname = cleanPathname;
-      const mwRequest = new Request(mwUrl, request);
+      const mwRequest = new Request(mwUrl, request.clone());
       const __mwNextConfig = (__basePath || __i18nConfig) ? { basePath: __basePath, i18n: __i18nConfig ?? undefined } : undefined;
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
@@ -2104,6 +2127,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         if (__pagesRes.status !== 404) {
           setHeadersContext(null);
           setNavigationContext(null);
+          if (_mwCtx.headers) {
+            const __headers = new Headers(__pagesRes.headers);
+            for (const [key, value] of _mwCtx.headers) {
+              if (key.toLowerCase() === "set-cookie") {
+                __headers.append(key, value);
+              } else {
+                __headers.set(key, value);
+              }
+            }
+            return new Response(__pagesRes.body, {
+              status: __pagesRes.status,
+              statusText: __pagesRes.statusText,
+              headers: __headers,
+            });
+          }
           return __pagesRes;
         }
       }
@@ -2111,14 +2149,17 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     `
         : ""
     }
-    // Render custom not-found page if available, otherwise plain 404
+    // Render custom not-found page if available, otherwise Next-compatible default 404 HTML.
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
     if (notFoundResponse) return notFoundResponse;
     setHeadersContext(null);
     setNavigationContext(null);
-    const notFoundHeaders = new Headers();
+    const notFoundHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
     __mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers);
-    return new Response("Not Found", { status: 404, headers: notFoundHeaders });
+    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1><p>This page could not be found.</p></body></html>", {
+      status: 404,
+      headers: notFoundHeaders,
+    });
   }
 
   const { route, params } = match;
@@ -2315,6 +2356,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  if (isRscRequest && request.headers.get("x-vinext-loading-payload") === "1") {
+    const __loadingElement = __buildAppPageLoadingElements({
+      interceptionContext: interceptionContextHeader,
+      route,
+      routePath: cleanPathname,
+    });
+    if (__loadingElement) {
+      const __loadingOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
+      const __loadingStream = renderToReadableStream(__loadingElement, {
+        onError: __loadingOnError,
+      });
+      const __loadingHeaders = new Headers({
+        "Content-Type": "text/x-component; charset=utf-8",
+        "Vary": "RSC, Accept",
+      });
+      __mergeMiddlewareResponseHeaders(__loadingHeaders, _mwCtx.headers);
+      return new Response(__loadingStream, {
+        status: _mwCtx.status ?? 200,
+        headers: __loadingHeaders,
+      });
+    }
+    return new Response(null, { status: 204 });
+  }
+
   // ── ISR cache read (production only) ─────────────────────────────────────
   // Read from cache BEFORE generateStaticParams and all rendering work.
   // This is the critical performance optimization: on a cache hit we skip
@@ -2400,6 +2465,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
     if (__cachedPageResponse) {
+      if (isRscRequest && route.loading && route.loading.default) {
+        __cachedPageResponse.headers.set("X-Vinext-Route-Loading", "1");
+      }
       return __cachedPageResponse;
     }
   }
@@ -2546,6 +2614,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   const _asyncLayoutParams = makeThenableParams(params);
   return __renderAppPageLifecycle({
     cleanPathname,
+    clientTraceMetadata: ${JSON.stringify(clientTraceMetadata)},
     clearRequestContext() {
       setHeadersContext(null);
       setNavigationContext(null);

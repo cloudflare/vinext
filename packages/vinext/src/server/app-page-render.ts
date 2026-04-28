@@ -31,6 +31,7 @@ import {
   shouldRerenderAppPageWithGlobalError,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
+import { getClientTraceMetadataHtml, injectHtmlBeforeHeadClose } from "./trace-metadata.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -50,6 +51,7 @@ type AppPageRequestCacheLife = {
 };
 
 type RenderAppPageLifecycleOptions = {
+  clientTraceMetadata?: readonly string[];
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
@@ -307,9 +309,19 @@ export async function renderAppPageLifecycle(
     renderEnd,
     responseKind: "html",
   });
+  const shouldInjectTraceMetadata =
+    options.isProduction &&
+    !htmlResponsePolicy.shouldWriteToCache &&
+    (options.isForceDynamic || dynamicUsedDuringRender || revalidateSeconds === 0);
+  const traceMetadataHtml = shouldInjectTraceMetadata
+    ? await getClientTraceMetadataHtml(options.clientTraceMetadata)
+    : "";
+  const responseHtmlStream = traceMetadataHtml
+    ? injectHtmlBeforeHeadClose(safeHtmlStream, traceMetadataHtml)
+    : safeHtmlStream;
 
   if (htmlResponsePolicy.shouldWriteToCache) {
-    const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
+    const isrResponse = buildAppPageHtmlResponse(responseHtmlStream, {
       draftCookie,
       fontLinkHeader,
       middlewareContext: options.middlewareContext,
@@ -333,7 +345,7 @@ export async function renderAppPageLifecycle(
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  return buildAppPageHtmlResponse(responseHtmlStream, {
     draftCookie,
     fontLinkHeader,
     middlewareContext: options.middlewareContext,

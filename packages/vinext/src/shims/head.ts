@@ -44,7 +44,12 @@ export function resetSSRHead(): void {
 
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
-  return reduceHeadChildren(_getSSRHeadChildren())
+  return renderHeadNodesToHTML(_getSSRHeadChildren());
+}
+
+/** Serialize React head nodes using the same reduction rules as next/head. */
+export function renderHeadNodesToHTML(headChildren: React.ReactNode[]): string {
+  return reduceHeadChildren(headChildren)
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("\n  ");
@@ -237,7 +242,7 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
   const attrStr = attrs.length ? " " + attrs.join(" ") : "";
 
   if (SELF_CLOSING_HEAD_TAGS.has(tag)) {
-    return `<${tag}${attrStr} data-vinext-head="true" />`;
+    return `<${tag}${attrStr} data-next-head="" />`;
   }
 
   // For raw-content tags (script, style), escape closing-tag sequences so the
@@ -246,7 +251,7 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
     innerHTML = escapeInlineContent(innerHTML, tag);
   }
 
-  return `<${tag}${attrStr} data-vinext-head="true">${innerHTML}</${tag}>`;
+  return `<${tag}${attrStr} data-next-head="">${innerHTML}</${tag}>`;
 }
 
 function escapeHTML(s: string): string {
@@ -280,7 +285,18 @@ export function escapeInlineContent(content: string, tag: string): string {
 }
 
 function syncClientHead(): void {
-  document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
+  document.querySelectorAll("[data-vinext-head], [data-next-head]").forEach((el) => {
+    // Preserve the document defaults from next/document; page-level head tags
+    // are re-projected from the currently mounted <Head> instances below.
+    if (el.matches("meta[charset], meta[name='viewport']")) return;
+    el.remove();
+  });
+
+  const defaultHeadTags = Array.from(
+    document.head.querySelectorAll("meta[charset], meta[name='viewport']"),
+  );
+  const lastDefaultHeadTag = defaultHeadTags[defaultHeadTags.length - 1];
+  const insertionAnchor = lastDefaultHeadTag?.nextSibling ?? document.head.firstChild;
 
   for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
     if (typeof child.type !== "string") continue;
@@ -304,8 +320,8 @@ function syncClientHead(): void {
       }
     }
 
-    domEl.setAttribute("data-vinext-head", "true");
-    document.head.appendChild(domEl);
+    domEl.setAttribute("data-next-head", "");
+    document.head.insertBefore(domEl, insertionAnchor);
   }
 }
 

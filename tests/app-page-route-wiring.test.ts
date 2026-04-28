@@ -6,6 +6,7 @@ import {
   type AppPageModule,
   type AppPageSlotOverride,
   buildAppPageElements,
+  buildAppPageLoadingElements,
   createAppPageLayoutEntries,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
@@ -167,6 +168,10 @@ function PageProbe() {
   return createElement("main", { "data-page-segments": segments.join("|") }, "Page");
 }
 
+function LoadingProbe() {
+  return createElement("div", { id: "loading" }, "Loading...");
+}
+
 function LayoutWithoutChildren() {
   return createElement("div", { "data-layout": "without-children" }, "Layout only");
 }
@@ -191,6 +196,25 @@ describe("app page route wiring helpers", () => {
 
     expect(entries.map((entry) => entry.id)).toEqual(["layout:/", "layout:/(marketing)"]);
     expect(entries.map((entry) => entry.treePath)).toEqual(["/", "/(marketing)"]);
+  });
+
+  it("builds a route loading payload without rendering the async page", async () => {
+    // Ported from Next.js: test/e2e/next-form/default/next-form-prefetch.test.ts
+    // Client navigations need a target loading.tsx shell before the full RSC payload resolves.
+    const elements = buildAppPageLoadingElements({
+      route: {
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: LoadingProbe },
+        routeSegments: ["search"],
+      },
+      routePath: "/search",
+    });
+
+    expect(elements).not.toBeNull();
+    const html = await renderRouteEntry(elements!, "route:/search");
+    expect(html).toContain('id="loading"');
+    expect(html).toContain("Loading...");
   });
 
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {

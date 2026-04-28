@@ -13,6 +13,7 @@ import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-hea
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { URLPattern as URLPatternPolyfill } from "urlpattern-polyfill/urlpattern";
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -32,6 +33,25 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function validateAbsoluteURL(url: string | URL): string {
+  try {
+    return String(new URL(String(url)));
+  } catch (cause) {
+    throw Object.defineProperty(
+      new Error(
+        `URL is malformed "${String(url)}". Please use only absolute URLs - https://nextjs.org/docs/messages/middleware-relative-urls`,
+        { cause },
+      ),
+      "__NEXT_ERROR_CODE",
+      {
+        value: "E61",
+        enumerable: false,
+        configurable: true,
+      },
+    );
+  }
+}
 
 function _throwIfInsideCacheScope(apiName: string): void {
   const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
@@ -73,11 +93,12 @@ export class NextRequest extends Request {
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
     const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
+    const url = input instanceof Request ? input.url : validateAbsoluteURL(input);
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
-      const req = input;
-      super(req.url, {
+      const req = input.clone();
+      super(url, {
         method: req.method,
         headers: req.headers,
         body: req.body,
@@ -86,14 +107,8 @@ export class NextRequest extends Request {
         ...requestInit,
       });
     } else {
-      super(input, requestInit);
+      super(url, requestInit);
     }
-    const url =
-      typeof input === "string"
-        ? new URL(input, "http://localhost")
-        : input instanceof URL
-          ? input
-          : new URL(input.url, "http://localhost");
     const urlConfig: NextURLConfig | undefined = _nextConfig
       ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
       : undefined;
@@ -175,16 +190,18 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 function validateURL(url: string | URL): string {
   assertSafeNavigationUrl(String(url));
-  try {
-    return String(new URL(String(url)));
-  } catch (error) {
-    throw new Error(
-      `URL is malformed "${String(
-        url,
-      )}". Please use only absolute URLs - https://nextjs.org/docs/messages/middleware-relative-urls`,
-      { cause: error },
-    );
+  return validateAbsoluteURL(url);
+}
+
+function headersFromMiddlewareInit(init: MiddlewareResponseInit | undefined): Headers {
+  const headers = new Headers(init?.headers);
+  if (init && !("headers" in init)) {
+    for (const [key, value] of Object.entries(init)) {
+      if (key === "request" || key === "status" || key === "statusText") continue;
+      if (value !== undefined) headers.set(key, String(value));
+    }
   }
+  return headers;
 }
 
 export class NextResponse<_Body = unknown> extends Response {
@@ -231,7 +248,7 @@ export class NextResponse<_Body = unknown> extends Response {
    * Sets the x-middleware-rewrite header.
    */
   static rewrite(destination: string | URL, init?: MiddlewareResponseInit): NextResponse {
-    const headers = new Headers(init?.headers);
+    const headers = headersFromMiddlewareInit(init);
     headers.set("x-middleware-rewrite", validateURL(destination));
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
@@ -244,7 +261,7 @@ export class NextResponse<_Body = unknown> extends Response {
    * Sets the x-middleware-next header.
    */
   static next(init?: MiddlewareResponseInit): NextResponse {
-    const headers = new Headers(init?.headers);
+    const headers = headersFromMiddlewareInit(init);
     headers.set("x-middleware-next", "1");
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
@@ -855,10 +872,4 @@ export async function connection(): Promise<void> {
  * Falls back to urlpattern-polyfill if the global is not available.
  */
 export const URLPattern: typeof globalThis.URLPattern =
-  globalThis.URLPattern ??
-  (() => {
-    throw new Error(
-      "URLPattern is not available in this runtime. " +
-        "Install the `urlpattern-polyfill` package or upgrade to Node 20+.",
-    );
-  });
+  globalThis.URLPattern ?? (URLPatternPolyfill as typeof globalThis.URLPattern);

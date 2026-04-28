@@ -24,10 +24,11 @@ describe("Main", () => {
 });
 
 describe("NextScript", () => {
-  it("renders the __NEXT_SCRIPTS__ comment that dev-server replaces with hydration scripts", () => {
+  it("renders the __NEXT_SCRIPTS__ marker that the server replaces with hydration scripts", () => {
     const html = render(React.createElement(NextScript));
-    // Dev-server replaces this HTML comment with __NEXT_DATA__ + module script tags
-    expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
+    // The server replaces this marker with __NEXT_DATA__ + module script tags.
+    expect(html).toContain("<vinext-next-scripts");
+    expect(html).toContain("__NEXT_SCRIPTS__");
   });
 });
 
@@ -35,7 +36,8 @@ describe("Head", () => {
   it("injects default charset and viewport meta tags", () => {
     const html = render(React.createElement(Head));
     expect(html).toContain('charSet="utf-8"');
-    expect(html).toContain('content="width=device-width, initial-scale=1"');
+    expect(html).toContain('content="width=device-width"');
+    expect(html).toContain('data-next-head=""');
   });
 
   it("preserves custom children alongside defaults", () => {

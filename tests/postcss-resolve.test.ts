@@ -78,8 +78,9 @@ module.exports.postcss = true;
       const result = await resolvePostcssStringPlugins(dir);
       expect(result).toBeDefined();
       expect(result!.plugins).toHaveLength(1);
+      const plugins = result!.plugins as unknown[];
       // The resolved plugin should be an object (PostCSS plugin instance)
-      const plugin = result!.plugins[0];
+      const plugin = plugins[0];
       expect(plugin).toBeDefined();
       expect(typeof plugin === "object" || typeof plugin === "function").toBe(true);
     } finally {
@@ -187,8 +188,9 @@ module.exports.postcss = true;
       const result = await resolvePostcssStringPlugins(dir);
       expect(result).toBeDefined();
       expect(result!.plugins).toHaveLength(1);
+      const plugins = result!.plugins as unknown[];
       // Should be the result of calling the function (a plugin object)
-      expect(result!.plugins[0]).toHaveProperty("postcssPlugin", "mock-plugin");
+      expect(plugins[0]).toHaveProperty("postcssPlugin", "mock-plugin");
     } finally {
       await cleanupDir(dir);
     }

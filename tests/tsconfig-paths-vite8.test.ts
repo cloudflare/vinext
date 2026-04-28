@@ -172,6 +172,55 @@ describe("Vite tsconfig paths support", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("materializes aliases from next.config typescript.tsconfigPath on Vite 8", async () => {
+    const root = setupProject({ name: "vite", version: "8.0.0" });
+    process.chdir(root);
+    fs.writeFileSync(path.join(root, "bar.ts"), "export default 'bar123';\n");
+    fs.writeFileSync(
+      path.join(root, "web.tsconfig.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            paths: {
+              foo: ["./bar.ts"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const plugins = vinext({
+      appDir: root,
+      nextConfig: {
+        typescript: {
+          tsconfigPath: "web.tsconfig.json",
+        },
+      },
+    });
+    const configPlugin = findNamedPlugin(plugins, "vinext:config") as {
+      config?: (
+        config: { root: string },
+        env: { command: "serve"; mode: string },
+      ) => Promise<{
+        resolve?: Record<string, unknown>;
+      }>;
+    };
+    const resolvedConfig = await configPlugin.config?.(
+      { root },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(resolvedConfig?.resolve?.alias).toEqual(
+      expect.objectContaining({
+        foo: "/bar.ts",
+      }),
+    );
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("does not override user-defined resolve.tsconfigPaths on Vite 8", async () => {
     const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);

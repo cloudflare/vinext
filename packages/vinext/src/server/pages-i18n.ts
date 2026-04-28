@@ -31,6 +31,10 @@ type PagesI18nRequestInfo = {
   redirectUrl?: string;
 };
 
+type ResolvePagesI18nRequestOptions = {
+  skipLocaleRedirect?: boolean;
+};
+
 function readHeader(headers: HeaderBag, name: string): string | undefined {
   if (!headers) return undefined;
   if (headers instanceof Headers) {
@@ -201,13 +205,14 @@ export function resolvePagesI18nRequest(
   hostname?: string | null,
   basePath = "",
   trailingSlash = false,
+  options: ResolvePagesI18nRequestOptions = {},
 ): PagesI18nRequestInfo {
   const domainLocale = detectDomainLocale(i18nConfig.domains, hostname ?? undefined);
   const defaultLocale = domainLocale?.defaultLocale || i18nConfig.defaultLocale;
   const localeInfo = extractLocaleFromUrl(url, i18nConfig, defaultLocale);
 
   let redirectUrl: string | undefined;
-  if (!localeInfo.hadPrefix) {
+  if (!localeInfo.hadPrefix && !options.skipLocaleRedirect) {
     redirectUrl = getLocaleRedirect({
       headers,
       nextConfig: {

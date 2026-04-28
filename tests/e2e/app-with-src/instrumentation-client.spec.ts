@@ -10,10 +10,12 @@ test("executes src/instrumentation-client before hydration", async ({ page }) =>
     const win = window as Window & {
       __INSTRUMENTATION_CLIENT_EXECUTED_AT?: number;
       __VINEXT_HYDRATED_AT?: number;
+      __NEXT_HYDRATED_AT?: number;
     };
     return (
       win.__INSTRUMENTATION_CLIENT_EXECUTED_AT !== undefined &&
-      win.__VINEXT_HYDRATED_AT !== undefined
+      win.__VINEXT_HYDRATED_AT !== undefined &&
+      win.__NEXT_HYDRATED_AT !== undefined
     );
   });
 
@@ -21,18 +23,26 @@ test("executes src/instrumentation-client before hydration", async ({ page }) =>
     const win = window as Window & {
       __INSTRUMENTATION_CLIENT_EXECUTED_AT?: number;
       __VINEXT_HYDRATED_AT?: number;
+      __NEXT_HYDRATED_AT?: number;
     };
     return {
       instrumentation: win.__INSTRUMENTATION_CLIENT_EXECUTED_AT,
       hydration: win.__VINEXT_HYDRATED_AT,
+      nextHydration: win.__NEXT_HYDRATED_AT,
     };
   });
 
   expect(timing.instrumentation).toBeDefined();
   expect(timing.hydration).toBeDefined();
-  if (timing.instrumentation === undefined || timing.hydration === undefined) {
+  expect(timing.nextHydration).toBeDefined();
+  if (
+    timing.instrumentation === undefined ||
+    timing.hydration === undefined ||
+    timing.nextHydration === undefined
+  ) {
     throw new Error("Instrumentation or hydration timing marker was not recorded");
   }
   expect(timing.instrumentation).toBeLessThan(timing.hydration);
+  expect(timing.nextHydration).toBe(timing.hydration);
   await expect(page.locator("#app-with-src-home")).toBeVisible();
 });

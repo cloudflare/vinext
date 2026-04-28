@@ -1414,6 +1414,87 @@ describe("Plugin config", () => {
     ).toThrow("Duplicate @vitejs/plugin-react detected");
   });
 
+  it("uses project Babel config for JSX in .js before OXC parses Flow syntax", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-babel-js-"));
+    try {
+      await fsp.mkdir(path.join(tmpDir, "node_modules", "@babel", "core"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpDir, "package.json"),
+        JSON.stringify({ type: "module" }, null, 2),
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, ".babelrc"),
+        JSON.stringify({ presets: ["next/babel", "@babel/preset-flow"] }, null, 2),
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "node_modules", "@babel", "core", "package.json"),
+        JSON.stringify({ type: "commonjs", main: "index.cjs" }, null, 2),
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "node_modules", "@babel", "core", "index.cjs"),
+        `exports.transformAsync = async function(code, options) {
+          if (
+            !options.babelrc ||
+            !options.filename.endsWith('mycomponent.js') ||
+            options.caller.name !== 'next-babel-turbo-loader' ||
+            options.caller.supportsStaticESM !== true
+          ) {
+            throw new Error('expected project Babel options')
+          }
+          return {
+            code: code
+              .replace('// @flow\\n', '')
+              .replace('type Props = {}\\n\\n', '')
+              .replace('React.Component<Props>', 'React.Component'),
+            map: null,
+          }
+        }`,
+      );
+
+      const plugins = vinext() as any[];
+      const resolvedPlugins = (
+        await Promise.all(
+          plugins.map(async (plugin) => {
+            if (plugin && typeof plugin.then === "function") {
+              return await plugin;
+            }
+            return plugin;
+          }),
+        )
+      ).flat();
+      const configPlugin = resolvedPlugins.find((plugin) => plugin.name === "vinext:config");
+      const jsxPlugin = resolvedPlugins.find((plugin) => plugin.name === "vinext:jsx-in-js");
+      expect(configPlugin).toBeDefined();
+      expect(jsxPlugin).toBeDefined();
+
+      await configPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+
+      const result = await jsxPlugin.transform.call(
+        {},
+        `// @flow
+import { React } from './namespace-exported-react'
+type Props = {}
+
+export default class MyComponent extends React.Component<Props> {
+  render() {
+    return <div id="text">Test Babel</div>
+  }
+}
+`,
+        path.join(tmpDir, "lib", "mycomponent.js"),
+      );
+
+      expect(result.code).not.toContain("@flow");
+      expect(result.code).not.toContain("type Props");
+      expect(result.code).toContain("React.Component");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("adds resolve.dedupe for React packages to prevent dual instance errors", async () => {
     const plugins = vinext() as any[];
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
@@ -1731,6 +1812,60 @@ describe("Production build", () => {
     // Should contain route patterns from our fixture pages
     expect(entryContent).toContain("/about");
     expect(entryContent).toContain("/ssr");
+  });
+
+  it("builds Pages Router .js route files that contain JSX", async () => {
+    // Ported from Next.js deploy fixture:
+    // test/e2e/middleware-general/test/index.test.ts
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-jsx-js-"));
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages", "blog"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.js"),
+        `export default function Page() {
+  return <main>jsx in js pages route works</main>;
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "blog", "[slug].js"),
+        `export default function BlogPage({ slug }) {
+  return <article>post: {slug}</article>;
+}
+export function getServerSideProps({ params }) {
+  return { props: { slug: params.slug } };
+}
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      expect(fs.existsSync(path.join(fixtureOutDir, "server", "entry.js"))).toBe(true);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("runMiddleware in generated pages prod entry executes named proxy export", async () => {
@@ -2326,6 +2461,244 @@ export default function CounterPage() {
     }
   });
 
+  it("does not require runtime CSS files for server dynamic URL imports", async () => {
+    // Ported from Next.js: test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-css-url-import-"));
+    const tmpOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-css-url-import-out-"));
+    let prodServer: import("node:http").Server | undefined;
+
+    try {
+      const apiDir = path.join(tmpRoot, "pages", "api");
+      fs.mkdirSync(apiDir, { recursive: true });
+      const nmLink = path.join(tmpRoot, "node_modules");
+      if (!fs.existsSync(nmLink)) {
+        fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+      }
+      fs.writeFileSync(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <main>home</main>; }\n",
+      );
+      fs.writeFileSync(path.join(apiDir, "style.css"), "body { color: red; }\n");
+      fs.writeFileSync(
+        path.join(apiDir, "url-dep.ts"),
+        `console.log("TEST_URL_DEPENDENCY", import(new URL("./style.css", import.meta.url).href));
+export default function handler(_req, res) {
+  res.json({ ok: true });
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, tmpOutDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: tmpOutDir,
+          noCompression: true,
+        }),
+      );
+      const addr = prodServer.address() as { port: number };
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/url-dep`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+    } finally {
+      if (prodServer) {
+        await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      }
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpOutDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders async custom 404 and _error pages in production", async () => {
+    // Ported from Next.js: test/e2e/async-modules/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-async-status-"));
+    const tmpOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-async-status-out-"));
+    let prodServer: import("node:http").Server | undefined;
+
+    try {
+      const pagesDir = path.join(tmpRoot, "pages");
+      fs.mkdirSync(pagesDir, { recursive: true });
+      const nmLink = path.join(tmpRoot, "node_modules");
+      if (!fs.existsSync(nmLink)) {
+        fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+      }
+
+      fs.writeFileSync(
+        path.join(pagesDir, "_app.jsx"),
+        `const appValue = await Promise.resolve("hello");
+export default function MyApp({ Component, pageProps }) {
+  return <Component {...pageProps} appValue={appValue} />;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "_document.jsx"),
+        `import Document, { Html, Head, Main, NextScript } from "next/document";
+const docValue = await Promise.resolve("doc value");
+export default class MyDocument extends Document {
+  static async getInitialProps(ctx) {
+    const initialProps = await Document.getInitialProps(ctx);
+    return { ...initialProps, docValue };
+  }
+  render() {
+    return <Html><Head /><body><div id="doc-value">{this.props.docValue}</div><Main /><NextScript /></body></Html>;
+  }
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "404.jsx"),
+        `const content = await Promise.resolve("hi y'all");
+export default function Custom404({ appValue }) {
+  return <main><h1 id="content-404">{content}</h1><div id="app-value">{appValue}</div></main>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "_error.jsx"),
+        `const errorContent = await Promise.resolve("hello error");
+export default function Error() {
+  return <p id="content-error">{errorContent}</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "make-error.jsx"),
+        `export async function getServerSideProps() {
+  throw new Error("BOOM");
+}
+export default function Page() {
+  return <div>hello</div>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "index.jsx"),
+        `export default function Index() {
+  return <main>home</main>;
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, tmpOutDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: tmpOutDir,
+          noCompression: true,
+        }),
+      );
+      const addr = prodServer.address() as { port: number };
+      const prodUrl = `http://127.0.0.1:${addr.port}`;
+
+      const notFoundRes = await fetch(`${prodUrl}/missing`);
+      expect(notFoundRes.status).toBe(404);
+      const notFoundHtml = await notFoundRes.text();
+      expect(notFoundHtml).toContain('id="content-404"');
+      expect(notFoundHtml).toContain("hi y&#x27;all");
+      expect(notFoundHtml).toContain('id="app-value"');
+      expect(notFoundHtml).toContain('id="doc-value"');
+      expect(notFoundHtml).toContain("doc value");
+
+      const errorRes = await fetch(`${prodUrl}/make-error`);
+      expect(errorRes.status).toBe(500);
+      const errorHtml = await errorRes.text();
+      expect(errorHtml).toContain('id="content-error"');
+      expect(errorHtml).toContain("hello error");
+    } finally {
+      if (prodServer) {
+        await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      }
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpOutDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders _error getInitialProps with original req.url and asPath for SSG notFound", async () => {
+    // Ported from Next.js: test/e2e/error-handler-not-found-req-url/error-handler-not-found-req-url.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/error-handler-not-found-req-url/error-handler-not-found-req-url.test.ts
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-error-not-found-url-"));
+    const tmpOutDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "vinext-pages-error-not-found-url-out-"),
+    );
+    let prodServer: import("node:http").Server | undefined;
+
+    try {
+      const pagesDir = path.join(tmpRoot, "pages");
+      fs.mkdirSync(pagesDir, { recursive: true });
+      const nmLink = path.join(tmpRoot, "node_modules");
+      if (!fs.existsSync(nmLink)) {
+        fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+      }
+
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        `export default function Page() {
+  return <p>hello world</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "[slug].tsx"),
+        `export default function Page() {
+  return <p>hello world</p>;
+}
+
+export async function getStaticProps() {
+  return { notFound: true };
+}
+
+export async function getStaticPaths() {
+  return { paths: [], fallback: "blocking" };
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "_error.tsx"),
+        `Error.getInitialProps = (ctx) => {
+  return {
+    reqUrl: ctx.req?.url,
+    asPath: ctx.asPath,
+  };
+};
+
+export default function Error({ reqUrl, asPath }) {
+  return <p>reqUrl: {reqUrl}, asPath: {asPath}</p>;
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, tmpOutDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: tmpOutDir,
+          noCompression: true,
+        }),
+      );
+      const addr = prodServer.address() as { port: number };
+      const res = await fetch(`http://127.0.0.1:${addr.port}/3`);
+
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("reqUrl: <!-- -->/3<!-- -->, asPath: <!-- -->/3");
+    } finally {
+      if (prodServer) {
+        await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      }
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(tmpOutDir, { recursive: true, force: true });
+    }
+  });
+
   it("server entry exports runMiddleware function", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);
@@ -2427,6 +2800,71 @@ export default function CounterPage() {
     expect(result.continue).toBe(false);
     expect(result.response).toBeInstanceOf(Response);
     expect(result.response.status).toBe(500);
+  });
+
+  it("runMiddleware in generated pages prod entry exposes __isData on data requests", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-data-middleware-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "middleware.js"),
+        `import { NextResponse } from "next/server";
+export function middleware(request) {
+  if (new URL(request.url).pathname === "/data-only" && request.__isData) {
+    throw new Error("data request crash");
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ["/data-only"] };
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const nonDataResult = await entryModule.runMiddleware(
+        new Request("http://localhost/data-only"),
+      );
+      expect(nonDataResult.continue).toBe(true);
+
+      const dataResult = await entryModule.runMiddleware(
+        new Request("http://localhost/data-only", {
+          headers: { "x-vinext-data-request": "1" },
+        }),
+      );
+      expect(dataResult.continue).toBe(false);
+      expect(dataResult.response).toBeInstanceOf(Response);
+      expect(dataResult.response.status).toBe(500);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2566,7 +3004,13 @@ describe("Production server middleware (Pages Router)", () => {
 
     const html = await res.text();
     expect(html).toContain('<script nonce="pages-prod">window.__NEXT_DATA__ = ');
-    expect(html).toMatch(/<script type="module" nonce="pages-prod" src="\/[^"]+"/);
+    expect(html).toMatch(
+      /<script type="module" nonce="pages-prod" defer src="\/assets\/(?:index|_virtual_vinext-client-entry)-[^"]+\.js" crossorigin><\/script>/,
+    );
+    expect(html).toMatch(
+      /<link rel="modulepreload" nonce="pages-prod" href="\/assets\/(?:index|_virtual_vinext-client-entry)-[^"]+\.js" \/>/,
+    );
+    expect(html).toMatch(/<script type="module" nonce="pages-prod" defer src="\/[^"]+"/);
     expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
   });
 
@@ -2586,6 +3030,31 @@ describe("Production server middleware (Pages Router)", () => {
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
     expect(secondHtml).toContain('<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ');
+  });
+
+  it("adds the deployment id header to Pages data route responses", async () => {
+    // Ported from Next.js: test/e2e/pages-ssg-data-deployment-skew/pages-ssg-data-deployment-skew.test.ts
+    const previousDeploymentId = process.env.NEXT_DEPLOYMENT_ID;
+    process.env.NEXT_DEPLOYMENT_ID = "test-deployment-id";
+    try {
+      const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim();
+
+      for (const route of ["/isr-test", "/ssr"]) {
+        const pageRes = await fetch(`${prodUrl}${route}`);
+        expect(pageRes.status).toBe(200);
+
+        const dataRes = await fetch(`${prodUrl}/_next/data/${buildId}${route}.json`);
+        expect(dataRes.status).toBe(200);
+        expect(dataRes.headers.get("content-type")).toContain("application/json");
+        expect(dataRes.headers.get("x-nextjs-deployment-id")).toBe("test-deployment-id");
+      }
+    } finally {
+      if (previousDeploymentId === undefined) {
+        delete process.env.NEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.NEXT_DEPLOYMENT_ID = previousDeploymentId;
+      }
+    }
   });
 
   it("rewrites /rewritten to render /ssr content", async () => {
@@ -2852,6 +3321,20 @@ describe("Production server middleware (Pages Router)", () => {
     // Ensure encoded variants like /%2Evite/ are also blocked
     const res = await fetch(`${prodUrl}/%2Evite/ssr-manifest.json`);
     expect(res.status).toBe(404);
+  });
+
+  it("serves valid Next static build manifests and plain-text 404s invalid Next static assets", async () => {
+    // Ported from Next.js: test/e2e/invalid-static-asset-404-pages/invalid-static-asset-404-pages.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/invalid-static-asset-404-pages/invalid-static-asset-404-pages.test.ts
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim();
+
+    const manifestRes = await fetch(`${prodUrl}/_next/static/${buildId}/_buildManifest.js`);
+    expect(manifestRes.status).toBe(200);
+    expect(await manifestRes.text()).toContain("__BUILD_MANIFEST");
+
+    const missingAssetRes = await fetch(`${prodUrl}/_next/static/invalid-path`);
+    expect(missingAssetRes.status).toBe(404);
+    expect(await missingAssetRes.text()).toBe("Not Found");
   });
 });
 
@@ -3663,6 +4146,15 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
     const nextData = JSON.parse(match![1]);
     expect(nextData.page).toBe("/about");
+  });
+
+  it("non-data static page __NEXT_DATA__.query includes request search params", async () => {
+    const res = await fetch(`${routerBaseUrl}/about?attribute=formEncType&tag=a&tag=b`);
+    const html = await res.text();
+    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.page).toBe("/about");
+    expect(nextData.query).toEqual({ attribute: "formEncType", tag: ["a", "b"] });
   });
 
   it("shallow-test page returns correct __NEXT_DATA__ with GSSP props", async () => {

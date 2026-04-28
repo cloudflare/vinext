@@ -31,10 +31,15 @@ function createOgInlinePlugin(command: "serve" | "build" = "serve"): Plugin {
 let tmpDir: string;
 const fontContent = Buffer.from("fake-font-data-for-testing");
 const fontBase64 = fontContent.toString("base64");
+const nestedFontContent = Buffer.from("fake-nested-font-data");
+const nestedFontBase64 = nestedFontContent.toString("base64");
 
 beforeAll(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "og-inline-test-"));
   await fsp.writeFile(path.join(tmpDir, "noto-sans.ttf"), fontContent);
+  await fsp.mkdir(path.join(tmpDir, "assets"), { recursive: true });
+  await fsp.mkdir(path.join(tmpDir, "app", "app", "og"), { recursive: true });
+  await fsp.writeFile(path.join(tmpDir, "assets", "typewr__.ttf"), nestedFontContent);
 });
 
 afterAll(async () => {
@@ -73,6 +78,20 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(JSON.stringify(fontBase64));
+    expect(result.code).toContain("Promise.resolve(a.buffer)");
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("transforms parent-directory fetch asset references", async () => {
+    // Ported from Next.js: test/e2e/og-routes-custom-font/app/app/og/route.js
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = `const font = fetch(new URL("../../../assets/typewr__.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const moduleId = path.join(tmpDir, "app", "app", "og", "route.js");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(JSON.stringify(nestedFontBase64));
     expect(result.code).toContain("Promise.resolve(a.buffer)");
     expect(result.code).not.toContain("fetch(");
   });

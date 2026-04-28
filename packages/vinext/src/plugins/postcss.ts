@@ -2,6 +2,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { createJiti } from "jiti";
+
+type PostCSSConfig = {
+  plugins?: unknown[] | Record<string, unknown>;
+  [key: string]: unknown;
+};
 
 /**
  * PostCSS config file names to search for, in priority order.
@@ -31,7 +37,7 @@ const POSTCSS_CONFIG_FILES = [
  * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
  * parallel) all await the same in-flight scan rather than each starting their own.
  */
-export const postcssCache = new Map<string, Promise<{ plugins: unknown[] } | undefined>>();
+export const postcssCache = new Map<string, Promise<PostCSSConfig | undefined>>();
 
 /**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
@@ -47,7 +53,7 @@ export const postcssCache = new Map<string, Promise<{ plugins: unknown[] } | und
  */
 export function resolvePostcssStringPlugins(
   projectRoot: string,
-): Promise<{ plugins: unknown[] } | undefined> {
+): Promise<PostCSSConfig | undefined> {
   if (postcssCache.has(projectRoot)) return postcssCache.get(projectRoot)!;
 
   const promise = resolvePostcssStringPluginsUncached(projectRoot);
@@ -57,7 +63,7 @@ export function resolvePostcssStringPlugins(
 
 async function resolvePostcssStringPluginsUncached(
   projectRoot: string,
-): Promise<{ plugins: unknown[] } | undefined> {
+): Promise<PostCSSConfig | undefined> {
   // Find the PostCSS config file
   let configPath: string | null = null;
   for (const name of POSTCSS_CONFIG_FILES) {
@@ -91,22 +97,29 @@ async function resolvePostcssStringPluginsUncached(
         return undefined;
       }
     }
-    const mod = await import(pathToFileURL(configPath).href);
-    config = mod.default ?? mod;
+    config = await loadPostcssConfig(configPath);
   } catch {
     // If we can't load the config, let Vite/postcss-load-config handle it
     return undefined;
   }
 
-  // Only process array-form plugins that contain string entries
+  // Process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
   if (!config || !Array.isArray(config.plugins)) {
+    // Vite needs tsx or jiti installed in the app to load TypeScript PostCSS
+    // configs. vinext ships jiti, so pass loaded object configs through directly.
+    if (isTypeScriptConfig(configPath) && config && typeof config === "object") {
+      return config;
+    }
     return undefined;
   }
   const hasStringPlugins = config.plugins.some(
     (p: unknown) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
   if (!hasStringPlugins) {
+    if (isTypeScriptConfig(configPath)) {
+      return config;
+    }
     return undefined;
   }
 
@@ -134,5 +147,19 @@ async function resolvePostcssStringPluginsUncached(
     }),
   );
 
-  return { plugins: resolved };
+  return { ...config, plugins: resolved };
+}
+
+async function loadPostcssConfig(configPath: string): Promise<PostCSSConfig> {
+  if (isTypeScriptConfig(configPath)) {
+    const jiti = createJiti(configPath);
+    return await jiti.import(configPath, { default: true });
+  }
+
+  const mod = await import(pathToFileURL(configPath).href);
+  return mod.default ?? mod;
+}
+
+function isTypeScriptConfig(configPath: string): boolean {
+  return /\.(?:c|m)?ts$/.test(configPath);
 }

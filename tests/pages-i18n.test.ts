@@ -120,4 +120,25 @@ describe("Pages i18n domain helpers", () => {
       ).redirectUrl,
     ).toBe("http://example.fr/?utm=campaign&next=%2Fcheckout");
   });
+
+  it("can skip preferred-locale redirects for Pages data requests", () => {
+    // Ported from Next.js: test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    expect(
+      resolvePagesI18nRequest(
+        "/",
+        i18n,
+        { "accept-language": "fr-FR,fr;q=0.9,en;q=0.8" },
+        "example.com",
+        "",
+        false,
+        { skipLocaleRedirect: true },
+      ),
+    ).toMatchObject({
+      locale: "en",
+      url: "/",
+      hadPrefix: false,
+      redirectUrl: undefined,
+    });
+  });
 });

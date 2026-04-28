@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 
 // ─── CJS Config Handling ─────────────────────────────────────────────────────
 
@@ -233,6 +234,28 @@ export function detectPackageManager(root: string): string {
   const pm = detectPackageManagerName(root);
   if (pm === "npm") return "npm install -D";
   return `${pm} add -D`;
+}
+
+export function execPackageManagerCommand(
+  pm: string,
+  args: string[],
+  options: ExecFileSyncOptions,
+): void {
+  try {
+    execFileSync(pm, args, options);
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT" &&
+      (pm === "pnpm" || pm === "yarn")
+    ) {
+      execFileSync("corepack", [pm, ...args], options);
+      return;
+    }
+    throw error;
+  }
 }
 
 // ─── Node Modules Resolution ─────────────────────────────────────────────────

@@ -40,6 +40,7 @@ import {
   parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
+import "./edge-runtime-globals.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -71,6 +72,50 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+
+type PagesDevDataRequestInfo = {
+  pageUrl: string;
+};
+
+function parsePagesDevDataRequest(
+  url: string,
+  basePath: string,
+  buildId: string | undefined,
+  i18nConfig?: Pick<NextI18nConfig, "locales"> | null,
+): PagesDevDataRequestInfo | null {
+  const parsed = new URL(url, "http://vinext.local");
+  let pathname = parsed.pathname;
+  if (basePath && (pathname === basePath || pathname.startsWith(`${basePath}/`))) {
+    pathname = pathname.slice(basePath.length) || "/";
+  }
+
+  const prefix = "/_next/data/";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(".json")) return null;
+
+  const rest = pathname.slice(prefix.length);
+  const firstSlash = rest.indexOf("/");
+  if (firstSlash < 0) return null;
+
+  const requestBuildId = rest.slice(0, firstSlash);
+  if (buildId && requestBuildId !== buildId) return null;
+
+  const rawPagePath = rest.slice(firstSlash).slice(0, -".json".length);
+  const pagePath = rawPagePath === "/index" ? "/" : rawPagePath;
+  const segments = pagePath.split("/").filter(Boolean);
+  const firstSegment = segments[0];
+  const locales = i18nConfig?.locales ?? [];
+  const locale = locales.find(
+    (candidate) => candidate.toLowerCase() === firstSegment?.toLowerCase(),
+  );
+  const localePrefix = locale ? `/${locale}` : "";
+  const pathWithoutLocale = locale ? "/" + segments.slice(1).join("/") : pagePath;
+  const normalizedPath =
+    pathWithoutLocale === "/" || pathWithoutLocale === "" ? "/" : pathWithoutLocale;
+
+  return {
+    pageUrl: `${localePrefix}${normalizedPath}${parsed.search}`,
+  };
+}
 
 /**
  * Stream a Pages Router page response using progressive SSR.
@@ -131,7 +176,12 @@ async function streamPageToResponse(
     if (headHTML || fontHeadHTML) {
       docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
     }
-    // Inject scripts: replace placeholder or append before </body>
+    // Inject scripts: replace the current NextScript marker, with the legacy
+    // comment marker kept for compatibility with older rendered output.
+    docHtml = docHtml.replace(
+      /<vinext-next-scripts\b[^>]*>__NEXT_SCRIPTS__<\/vinext-next-scripts>/i,
+      scripts,
+    );
     docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
     if (!docHtml.includes("__NEXT_DATA__")) {
       docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
@@ -277,6 +327,17 @@ export function createSSRHandler(
     const _reqStart = now();
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
+    const originalUrl = url;
+    const dataRequestInfo = parsePagesDevDataRequest(
+      url,
+      basePath,
+      process.env.__VINEXT_BUILD_ID,
+      i18nConfig,
+    );
+    const isDataRequest = dataRequestInfo !== null;
+    if (dataRequestInfo) {
+      url = dataRequestInfo.pageUrl;
+    }
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
@@ -289,7 +350,7 @@ export function createSSRHandler(
           : undefined;
       logRequest({
         method: req.method ?? "GET",
-        url,
+        url: originalUrl,
         status: res.statusCode,
         totalMs,
         compileMs,
@@ -311,6 +372,7 @@ export function createSSRHandler(
         req.headers.host,
         basePath,
         trailingSlash,
+        { skipLocaleRedirect: isDataRequest },
       );
       locale = resolved.locale;
       localeStrippedUrl = resolved.url;
@@ -901,7 +963,10 @@ hydrate();
           `window.__NEXT_DATA__ = ${safeJsonStringify({
             props: { pageProps },
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query:
+              typeof pageModule.getStaticProps === "function"
+                ? params
+                : { ...params, ...parseQuery(url) },
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: false,
             locale: locale ?? currentDefaultLocale,
@@ -931,6 +996,49 @@ hydrate();
         }
 
         const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
+
+        if (isDataRequest) {
+          const dataHeaders: Record<string, string | string[]> = {
+            ...gsspExtraHeaders,
+            "Content-Type": "application/json",
+          };
+          if (
+            typeof pageModule.getServerSideProps === "function" &&
+            !dataHeaders["Cache-Control"]
+          ) {
+            dataHeaders["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
+          }
+          if (isrRevalidateSeconds && !dataHeaders["Cache-Control"]) {
+            dataHeaders["Cache-Control"] =
+              `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
+          }
+
+          res.writeHead(statusCode ?? 200, dataHeaders);
+          res.end(
+            safeJsonStringify({
+              pageProps,
+              page: patternToNextFormat(route.pattern),
+              query:
+                typeof pageModule.getStaticProps === "function"
+                  ? params
+                  : { ...params, ...parseQuery(url) },
+              buildId: process.env.__VINEXT_BUILD_ID,
+              isFallback: false,
+              locale: locale ?? currentDefaultLocale,
+              locales: i18nConfig?.locales,
+              defaultLocale: currentDefaultLocale,
+              domainLocales,
+              ...(typeof pageModule.getStaticProps === "function" ? { gsp: true } : {}),
+              ...(typeof pageModule.getServerSideProps === "function" ? { gssp: true } : {}),
+              __vinext: {
+                pageModuleUrl,
+                appModuleUrl,
+              },
+            }),
+          );
+          return;
+        }
 
         // Build response headers: start with gSSP headers, then layer on
         // ISR and font preload headers (which take precedence).
@@ -1143,6 +1251,10 @@ async function renderErrorPage(
         const docElement = createElement(DocumentComponent);
         let docHtml = await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+        docHtml = docHtml.replace(
+          /<vinext-next-scripts\b[^>]*>__NEXT_SCRIPTS__<\/vinext-next-scripts>/i,
+          "",
+        );
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
         html = docHtml;
       } else {

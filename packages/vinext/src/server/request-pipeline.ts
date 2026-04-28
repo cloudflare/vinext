@@ -130,6 +130,18 @@ export function normalizeTrailingSlash(
     return new Response("404 Not Found", { status: 404 });
   }
   const hasTrailing = pathname.endsWith("/");
+  const pathWithoutTrailing = pathname.replace(/\/+$/, "");
+  const lastSegment = pathWithoutTrailing.slice(pathWithoutTrailing.lastIndexOf("/") + 1);
+  const isFileLike = lastSegment.includes(".");
+  if (isFileLike && hasTrailing) {
+    return new Response(null, {
+      status: 308,
+      headers: { Location: basePath + pathWithoutTrailing + search },
+    });
+  }
+  if (isFileLike) {
+    return null;
+  }
   // RSC (client-side navigation) requests arrive as /path.rsc — don't
   // redirect those to /path.rsc/ when trailingSlash is enabled.
   if (trailingSlash && !hasTrailing && !pathname.endsWith(".rsc")) {

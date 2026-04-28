@@ -18,7 +18,12 @@ import ReactDOMServer from "react-dom/server";
 import Link, { useLinkStatus } from "../packages/vinext/src/shims/link.js";
 
 // Internal helpers re-exported or accessible via the router shim
-import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
+import {
+  isExternalUrl,
+  isHashOnlyChange,
+  setSSRContext,
+  wrapWithRouterContext,
+} from "../packages/vinext/src/shims/router.js";
 
 // Import server-only i18n state to register ALS-backed accessors before any
 // rendering occurs (same as dev-server.ts and pages-server-entry.ts do).
@@ -26,6 +31,7 @@ import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
 
 import {
+  normalizeLocalTrailingSlashHref,
   resolveRelativeHref,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -68,6 +74,31 @@ describe("Link rendering", () => {
       React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
     expect(html).toContain('href="/?tab=settings"');
+  });
+
+  it("resolves object href with only query against the current router path", () => {
+    // Based on Next.js: test/e2e/middleware-shallow-link/index.test.ts
+    setSSRContext({
+      pathname: "/page2",
+      query: {},
+      asPath: "/page2",
+    });
+
+    try {
+      const html = ReactDOMServer.renderToString(
+        wrapWithRouterContext(
+          React.createElement(
+            Link,
+            { href: { query: { params: "testParams" } }, shallow: true },
+            "Shallow replace",
+          ),
+        ),
+      );
+
+      expect(html).toContain('href="/page2?params=testParams"');
+    } finally {
+      setSSRContext(null);
+    }
   });
 
   it("renders with as prop overriding href", () => {
@@ -116,6 +147,73 @@ describe("Link rendering", () => {
     );
     expect(html).toContain("<span>Nested child</span>");
     expect(html).toContain('href="/nested"');
+  });
+
+  it("legacyBehavior wraps primitive children in an anchor", () => {
+    const textHtml = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, "About"),
+    );
+    expect(textHtml).toContain('<a href="/about">About</a>');
+
+    const numberHtml = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, 1000),
+    );
+    expect(numberHtml).toContain('<a href="/about">1000</a>');
+  });
+
+  it("legacyBehavior clones anchor children instead of nesting anchors", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", null, "About"),
+      ),
+    );
+
+    expect(html).toContain('<a href="/about">About</a>');
+    expect(html).not.toContain("<a><a");
+  });
+
+  it("legacyBehavior passHref forwards href to custom children without rendering a wrapper", () => {
+    function CustomComponent(props: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+      return React.createElement("a", props);
+    }
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true, passHref: true } as any,
+        React.createElement(CustomComponent, null, "About"),
+      ),
+    );
+
+    expect(html).toContain('<a href="/about">About</a>');
+    expect(html.match(/<a/g)?.length).toBe(1);
+  });
+
+  it("logs Next-compatible invalid href errors for repeated slashes", () => {
+    // Ported from Next.js: test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    setSSRContext({
+      pathname: "/my/path/[name]",
+      query: { name: "name" },
+      asPath: "/my/path/name",
+    });
+
+    try {
+      ReactDOMServer.renderToString(
+        wrapWithRouterContext(React.createElement(Link, { href: "/hello//world" }, "Hello")),
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "Invalid href '/hello//world' passed to next/router in page: '/my/path/[name]'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+      );
+    } finally {
+      setSSRContext(null);
+      errorSpy.mockRestore();
+    }
   });
 });
 
@@ -290,9 +388,93 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/about"');
   });
 
-  it("locale=undefined keeps href as-is", () => {
+  it("locale=undefined keeps href as-is without active i18n locale", () => {
     const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
     expect(html).toContain('href="/about"');
+  });
+
+  // Ported from Next.js: test/e2e/i18n-navigations-middleware/i18n-navigations-middleware.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-navigations-middleware/i18n-navigations-middleware.test.ts
+  it("locale=undefined uses the active i18n locale", async () => {
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "de",
+        defaultLocale: "default",
+        locales: ["default", "en", "de"],
+      });
+
+      return ReactDOMServer.renderToString(
+        React.createElement(Link, { href: "/dynamic/1" }, "Dynamic 1"),
+      );
+    });
+
+    expect(html).toContain('href="/de/dynamic/1"');
+  });
+
+  it("locale=undefined keeps default-locale links unprefixed from non-locale-prefixed i18n paths", async () => {
+    // Ported from Next.js: test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "id",
+        defaultLocale: "en",
+        locales: ["en", "id"],
+      });
+      setSSRContext({
+        pathname: "/new",
+        query: {},
+        asPath: "/new",
+        locale: "id",
+        defaultLocale: "en",
+        locales: ["en", "id"],
+      });
+
+      try {
+        return ReactDOMServer.renderToString(
+          wrapWithRouterContext(React.createElement(Link, { href: "/" }, "Index")),
+        );
+      } finally {
+        setSSRContext(null);
+      }
+    });
+
+    expect(html).toContain('href="/"');
+  });
+
+  it("locale=undefined keeps active locale links prefixed from locale-prefixed i18n paths", async () => {
+    // Ported from Next.js: test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "id",
+        defaultLocale: "en",
+        locales: ["en", "id"],
+      });
+      setSSRContext({
+        pathname: "/new",
+        query: {},
+        asPath: "/id/new",
+        locale: "id",
+        defaultLocale: "en",
+        locales: ["en", "id"],
+      });
+
+      try {
+        return ReactDOMServer.renderToString(
+          wrapWithRouterContext(React.createElement(Link, { href: "/" }, "Index")),
+        );
+      } finally {
+        setSSRContext(null);
+      }
+    });
+
+    expect(html).toContain('href="/id"');
   });
 
   it("locale string prepends locale prefix", () => {
@@ -652,6 +834,24 @@ describe("toBrowserNavigationHref", () => {
     expect(
       toBrowserNavigationHref("/docs/getting-started", "http://localhost:3000/docs", "/docs"),
     ).toBe("/docs/docs/getting-started");
+  });
+});
+
+describe("normalizeLocalTrailingSlashHref", () => {
+  it("strips trailing slash before query when trailingSlash is false", () => {
+    expect(normalizeLocalTrailingSlashHref("/about/?hello=world", false)).toBe(
+      "/about?hello=world",
+    );
+  });
+
+  it("adds trailing slash before query when trailingSlash is true", () => {
+    expect(normalizeLocalTrailingSlashHref("/about?hello=world", true)).toBe("/about/?hello=world");
+  });
+
+  it("strips trailing slash for file-like paths even when trailingSlash is true", () => {
+    expect(normalizeLocalTrailingSlashHref("/catch-all/hello.world/", true)).toBe(
+      "/catch-all/hello.world",
+    );
   });
 });
 

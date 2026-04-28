@@ -1412,6 +1412,28 @@ describe("next/server shim", () => {
     expect(req.cookies.has("missing")).toBe(false);
   });
 
+  it("NextRequest clones a standard Request body so middleware reads do not consume downstream handlers", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const request = new Request("https://example.com/api/nothing", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hello: "world" }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const nextRequest = new NextRequest(request);
+
+    await expect(nextRequest.json()).resolves.toEqual({ hello: "world" });
+    await expect(request.text()).resolves.toBe('{"hello":"world"}');
+  });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("NextRequest rejects relative URLs with Next.js middleware error text", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+
+    expect(() => new NextRequest("/relative")).toThrow("Please use only absolute URLs");
+  });
+
   it("NextResponse.json() creates a JSON response", async () => {
     const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
     const res = NextResponse.json({ message: "hello" }, { status: 201 });
@@ -1450,7 +1472,7 @@ describe("next/server shim", () => {
   it("NextResponse.rewrite() throws when using a relative URL", async () => {
     const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
 
-    expect(() => NextResponse.rewrite("/urls-b")).toThrow("URL is malformed");
+    expect(() => NextResponse.rewrite("/urls-b")).toThrow("Please use only absolute URLs");
   });
 
   it("NextResponse.rewrite() forwards request header overrides", async () => {
@@ -1617,19 +1639,17 @@ describe("next/server shim", () => {
     await expect(result).resolves.toBeUndefined();
   });
 
-  it("URLPattern is exported and available in Node 20+", async () => {
+  it("URLPattern is exported and usable with a native or polyfilled implementation", async () => {
     const { URLPattern } = await import("../packages/vinext/src/shims/server.js");
-    // Node 22+ has URLPattern globally; if available, test it works
+
     if (globalThis.URLPattern) {
       expect(URLPattern).toBe(globalThis.URLPattern);
-      const pattern = new URLPattern({ pathname: "/blog/:slug" });
-      const match = pattern.exec({ pathname: "/blog/hello-world" });
-      expect(match).toBeTruthy();
-      expect(match!.pathname.groups.slug).toBe("hello-world");
-    } else {
-      // URLPattern not available — our export should be a fallback that throws
-      expect(typeof URLPattern).toBe("function");
     }
+
+    const pattern = new URLPattern({ pathname: "/blog/:slug" });
+    const match = pattern.exec({ pathname: "/blog/hello-world" });
+    expect(match).toBeTruthy();
+    expect(match!.pathname.groups.slug).toBe("hello-world");
   });
 });
 
@@ -3622,6 +3642,39 @@ describe("middleware bypass prevention", () => {
     expect(rawResult).toBeNull();
   });
 
+  it("config route matchers are case-insensitive by default", async () => {
+    const { matchHeaders, matchRedirect, matchRewrite } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const reqCtx = {
+      headers: new Headers(),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    };
+
+    expect(
+      matchRewrite(
+        "/rewrite-no-basePath",
+        [{ source: "/rewrite-no-basepath", destination: "https://example.vercel.sh" }],
+        reqCtx,
+      ),
+    ).toBe("https://example.vercel.sh");
+    expect(
+      matchRedirect(
+        "/REDIRECT-no-basepath",
+        [{ source: "/redirect-no-basepath", destination: "/target", permanent: false }],
+        reqCtx,
+      ),
+    ).toEqual({ destination: "/target", permanent: false });
+    expect(
+      matchHeaders(
+        "/ADD-header",
+        [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }],
+        reqCtx,
+      ),
+    ).toEqual([{ key: "x-hello", value: "world" }]);
+  });
+
   it("double-encoded paths are decoded only once", async () => {
     const { normalizePath } = await import("../packages/vinext/src/server/normalize-path.js");
     // %2561dmin → first decode → %61dmin (literal text, not /admin)
@@ -3735,7 +3788,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(code).not.toMatch(/let mwRequest = request;/);
     expect(code).toContain("const mwUrl = new URL(request.url)");
     expect(code).toContain("mwUrl.pathname = cleanPathname");
-    expect(code).toContain("const mwRequest = new Request(mwUrl, request)");
+    expect(code).toContain("const mwRequest = new Request(mwUrl, request.clone())");
   });
 
   it("Pages Router runMiddleware passes decoded pathname to middleware function", async () => {
@@ -6148,6 +6201,27 @@ describe("matchRedirect locale-static index", () => {
     expect(result!.destination).toBe("/other-dest");
     expect(result!.permanent).toBe(true);
   });
+
+  it("matches locale:false redirects when the leading locale segment is omitted", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/:locale/to-same",
+        destination: "/:locale/newpage",
+        permanent: false as const,
+        locale: false as const,
+      },
+    ];
+
+    expect(matchRedirect("/en/to-same", redirects, emptyCtx)).toEqual({
+      destination: "/en/newpage",
+      permanent: false,
+    });
+    expect(matchRedirect("/to-same", redirects, emptyCtx)).toEqual({
+      destination: "/newpage",
+      permanent: false,
+    });
+  });
 });
 
 describe("matchConfigPattern handles parameterized suffix patterns", () => {
@@ -7037,6 +7111,21 @@ describe("matchRewrite with external URLs", () => {
     expect(isExternalUrl(result!)).toBe(false);
   });
 
+  it("matches locale:false rewrites when the leading locale segment is omitted", async () => {
+    // Ported from Next.js: test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/:locale/rewrite-api/:path*",
+        destination: "/api/:path*",
+        locale: false as const,
+      },
+    ];
+    expect(matchRewrite("/rewrite-api/hello", rewrites, emptyCtx)).toBe("/api/hello");
+    expect(matchRewrite("/sv/rewrite-api/hello", rewrites, emptyCtx)).toBe("/api/hello");
+  });
+
   it("replaces repeated params in rewrite destinations", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const rewrites = [{ source: "/post/:id", destination: "/api/:id/:id" }];
@@ -7065,6 +7154,15 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/dest/123-bar");
   });
 
+  it("appends source params unused by rewrite destinations as query params", async () => {
+    // Ported from Next.js: test/e2e/getserversideprops/app/next.config.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/app/next.config.js
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/blog-:param", destination: "/blog/post-3" }];
+    const result = matchRewrite("/blog-post-3", rewrites, emptyCtx);
+    expect(result).toBe("/blog/post-3?param=post-3");
+  });
+
   it("substitutes named captures from has conditions into rewrite destinations", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     // Ported from documented Next.js behavior:
@@ -7081,6 +7179,24 @@ describe("matchRewrite with external URLs", () => {
       headers: new Headers({ "x-authorized": "yes" }),
     });
     expect(result).toBe("/home?authorized=yes&path=docs/intro");
+  });
+
+  it("preserves existing query params when applying a chained internal rewrite", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-general/test/index.test.ts
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      { source: "/rewrite-3", destination: "/blog/middleware-rewrite?hello=config" },
+    ];
+
+    const result = matchRewrite(
+      "/rewrite-3",
+      rewrites,
+      emptyCtx,
+      "/rewrite-3?some=middleware&hello=source",
+    );
+
+    expect(result).toBe("/blog/middleware-rewrite?hello=config&some=middleware");
   });
 });
 
@@ -8606,15 +8722,16 @@ describe("next/compat/router shim", () => {
         pathname: "/docs/a/b",
         search: "?tag=a&tag=b",
         hash: "#section",
+        href: "http://localhost/docs/a/b?tag=a&tag=b#section",
       },
       __NEXT_DATA__: {
         page: "/docs/[...slug]",
         query: { slug: ["a", "b"] },
         isFallback: false,
       },
-      __VINEXT_LOCALE__: undefined,
-      __VINEXT_LOCALES__: undefined,
-      __VINEXT_DEFAULT_LOCALE__: undefined,
+      __VINEXT_LOCALE__: undefined as string | undefined,
+      __VINEXT_LOCALES__: undefined as string[] | undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined as string | undefined,
     };
 
     try {
@@ -8640,6 +8757,53 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  it("preserves non-visible rewrite query params from __NEXT_DATA__", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter: useCompatRouter } =
+      await import("../packages/vinext/src/shims/compat-router.js");
+    const { wrapWithRouterContext } = await import("../packages/vinext/src/shims/router.js");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/to-ssg",
+        search: "",
+        hash: "",
+        href: "http://localhost/to-ssg",
+      },
+      __NEXT_DATA__: {
+        page: "/ssg/[slug]",
+        query: { from: "middleware", slug: "hello" },
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      let captured: unknown = "NOT_SET";
+      function Probe() {
+        captured = useCompatRouter();
+        return React.createElement("div", null, "probe");
+      }
+
+      const element = wrapWithRouterContext(React.createElement(Probe));
+      renderToStaticMarkup(element);
+
+      expect(captured).not.toBeNull();
+      expect((captured as any).query).toEqual({ from: "middleware", slug: "hello" });
+      expect((captured as any).asPath).toBe("/to-ssg");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("prefers dynamic route params over same-key search params in client router state", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -8653,6 +8817,7 @@ describe("next/compat/router shim", () => {
         pathname: "/docs/a/b",
         search: "?slug=c",
         hash: "",
+        href: "http://localhost/docs/a/b?slug=c",
       },
       __NEXT_DATA__: {
         page: "/docs/[...slug]",
@@ -8699,6 +8864,7 @@ describe("next/compat/router shim", () => {
         pathname: "/shallow-test",
         search: "?toString=a&constructor=b&__proto__=c",
         hash: "",
+        href: "http://localhost/shallow-test?toString=a&constructor=b&__proto__=c",
       },
       __NEXT_DATA__: {
         page: "/shallow-test",
@@ -8733,12 +8899,184 @@ describe("next/compat/router shim", () => {
       }
     }
   });
+
+  it("URL search params override stale __NEXT_DATA__ query values for shallow navigation", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter: useCompatRouter } =
+      await import("../packages/vinext/src/shims/compat-router.js");
+    const { wrapWithRouterContext } = await import("../packages/vinext/src/shims/router.js");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/sha",
+        search: "?hello=world",
+        hash: "",
+        href: "http://localhost/sha?hello=world",
+      },
+      __NEXT_DATA__: {
+        page: "/shallow",
+        query: { hello: "goodbye" },
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      let captured: unknown = "NOT_SET";
+      function Probe() {
+        captured = useCompatRouter();
+        return React.createElement("div", null, "probe");
+      }
+
+      const element = wrapWithRouterContext(React.createElement(Probe));
+      renderToStaticMarkup(element);
+
+      expect((captured as any).query.hello).toBe("world");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("uses serialized Pages query for the initial client router snapshot", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/",
+        search: "?query=true",
+        hash: "",
+        href: "http://localhost/?query=true",
+      },
+      history: {
+        state: null,
+        replaceState() {},
+      },
+      addEventListener() {},
+      __NEXT_DATA__: {
+        page: "/",
+        query: {},
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      vi.resetModules();
+      const { useRouter: usePagesRouter } = await import("../packages/vinext/src/shims/router.js");
+      let captured: unknown = "NOT_SET";
+      function Probe() {
+        captured = usePagesRouter();
+        return React.createElement("div", null, "probe");
+      }
+
+      renderToStaticMarkup(React.createElement(Probe));
+
+      expect((captured as any).query).toEqual({});
+      expect((captured as any).asPath).toBe("/?query=true");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
 });
 
 describe("Pages Router router helpers", () => {
   it("exports wrapWithRouterContext function", async () => {
     const mod = await import("../packages/vinext/src/shims/router.js");
     expect(typeof mod.wrapWithRouterContext).toBe("function");
+  });
+
+  it("withRouter injects the Pages Router context and preserves getInitialProps", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { RouterContext } =
+      await import("../packages/vinext/src/shims/internal/router-context.js");
+    const { withRouter } = await import("../packages/vinext/src/shims/router.js");
+
+    const router = {
+      pathname: "/a",
+      route: "/a",
+      query: {},
+      asPath: "/a",
+      basePath: "",
+      isReady: true,
+      isPreview: false,
+      isFallback: false,
+      push: vi.fn(async () => true),
+      replace: vi.fn(async () => true),
+      back: vi.fn(),
+      reload: vi.fn(),
+      prefetch: vi.fn(async () => {}),
+      beforePopState: vi.fn(),
+      sdc: {},
+      events: { on: vi.fn(), off: vi.fn(), emit: vi.fn() },
+    };
+
+    class Page extends React.Component<{ label: string; router: typeof router }> {
+      render() {
+        return React.createElement("span", null, `${this.props.label}:${this.props.router.asPath}`);
+      }
+    }
+    const getInitialProps = vi.fn();
+    (Page as any).getInitialProps = getInitialProps;
+
+    const Wrapped = withRouter(Page);
+    const html = renderToStaticMarkup(
+      React.createElement(
+        RouterContext.Provider,
+        { value: router },
+        React.createElement(Wrapped, { label: "Foo" }),
+      ),
+    );
+
+    expect(html).toBe("<span>Foo:/a</span>");
+    expect((Wrapped as any).getInitialProps).toBe(getInitialProps);
+  });
+
+  it("supports deprecated top-level Router route change handlers", async () => {
+    const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+    const previousHandler = Router.onRouteChangeComplete;
+    const handler = vi.fn();
+
+    try {
+      Router.onRouteChangeComplete = handler;
+      Router.events.emit("routeChangeComplete", "/b", { shallow: false });
+      expect(handler).toHaveBeenCalledWith("/b", { shallow: false });
+    } finally {
+      Router.onRouteChangeComplete = previousHandler;
+    }
+  });
+
+  it("throws synchronously when singleton router methods are called during SSR", async () => {
+    const previousWindow = (globalThis as any).window;
+    delete (globalThis as any).window;
+
+    try {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      expect(() => Router.push("/a")).toThrow(
+        /No router instance found\. you should only use "next\/router" inside the client side of your app\./,
+      );
+    } finally {
+      if (previousWindow !== undefined) {
+        (globalThis as any).window = previousWindow;
+      }
+    }
   });
 
   it("serializes array query values as repeated params for object-form router URLs", async () => {
@@ -8783,7 +9121,15 @@ describe("Pages Router router helpers", () => {
         { shallow: true },
       );
 
-      expect(pushState).toHaveBeenCalledWith({}, "", "/search?tag=a&tag=b&q=x");
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/search?tag=a&tag=b&q=x",
+          as: "/search?tag=a&tag=b&q=x",
+          __N: true,
+        }),
+        "",
+        "/search?tag=a&tag=b&q=x",
+      );
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -8839,9 +9185,133 @@ describe("Pages Router router helpers", () => {
       );
 
       expect(pushState).toHaveBeenCalledWith(
-        {},
+        expect.objectContaining({
+          url: "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
+          as: "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
+          __N: true,
+        }),
         "",
         "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
+      );
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("preserves the visible pathname for pathname-less object router URLs on rewritten pages", async () => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    const previousWindow = (globalThis as any).window;
+    const pushState = vi.fn();
+
+    (globalThis as any).window = {
+      location: {
+        pathname: "/rewrite-to-another-segment/0",
+        search: "",
+        hash: "",
+        href: "http://localhost/rewrite-to-another-segment/0",
+        origin: "http://localhost",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState,
+        replaceState: vi.fn(),
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      __NEXT_DATA__: {
+        page: "/rewrite-to-another-segment/[id]/foo",
+        query: { id: "0" },
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push({ query: { id: 1 } }, undefined, { shallow: true });
+
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/rewrite-to-another-segment/0?id=1",
+          as: "/rewrite-to-another-segment/0?id=1",
+          __N: true,
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=1",
+      );
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("interpolates visible dynamic params for query-only router navigations on same-segment rewrites", async () => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    const previousWindow = (globalThis as any).window;
+    const pushState = vi.fn();
+
+    (globalThis as any).window = {
+      location: {
+        pathname: "/rewrite-to-same-segment/0",
+        search: "",
+        hash: "",
+        href: "http://localhost/rewrite-to-same-segment/0",
+        origin: "http://localhost",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState,
+        replaceState: vi.fn(),
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      __NEXT_DATA__: {
+        page: "/rewrite-to-same-segment/[id]",
+        query: { id: "0" },
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("?id=1", undefined, { shallow: true });
+
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/rewrite-to-same-segment/1",
+          as: "/rewrite-to-same-segment/1",
+          __N: true,
+        }),
+        "",
+        "/rewrite-to-same-segment/1",
       );
     } finally {
       if (previousWindow === undefined) {
@@ -9099,6 +9569,298 @@ describe("Pages Router concurrent navigation", () => {
     return assignments;
   }
 
+  it("exposes the Router singleton on window.next.router", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+      expect((win as any).next?.router).toBe(routerModule.default);
+      expect(typeof (win as any).next?.router?.push).toBe("function");
+      expect((win as any).next?.router?.isReady).toBe(true);
+      expect((win as any).next?.router?.pathname).toBe("/");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("uses href for /404 data while keeping the as URL visible under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const { win, pushState } = createNavWindow();
+    win.location.pathname = "/docs/slug-1";
+    win.location.href = "http://localhost/docs/slug-1";
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const result = await routerModule.default.push("/404", "/slug-2");
+
+      expect(result).toBe(false);
+      expect(pushState).not.toHaveBeenCalled();
+      expect(fetchUrls[0]).toBe("http://localhost/docs/_next/data/build-123/404.json");
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("uses href for Pages data and replaces history when asPath is unchanged", async () => {
+    // Ported from Next.js: test/e2e/basepath/trailing-slash.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/trailing-slash.test.ts
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const previousTrailingSlash = process.env.__NEXT_ROUTER_TRAILING_SLASH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    process.env.__NEXT_ROUTER_TRAILING_SLASH = "true";
+
+    const { win, pushState, replaceState } = createNavWindow();
+    win.location.pathname = "/docs/hello/";
+    win.location.href = "http://localhost/docs/hello/";
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/something-else", "/hello");
+
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({ as: "/hello/", __N: true }),
+        "",
+      );
+      expect(fetchUrls[0]).toBe("http://localhost/docs/_next/data/build-123/something-else.json");
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousTrailingSlash === undefined) {
+        delete process.env.__NEXT_ROUTER_TRAILING_SLASH;
+      } else {
+        process.env.__NEXT_ROUTER_TRAILING_SLASH = previousTrailingSlash;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("uses the visible as path for dynamic Pages data when href params are not provided", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+
+    const { win } = createNavWindow();
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/blog/[post]", "/blog/post-1");
+
+      expect(fetchUrls[0]).toBe("http://localhost/_next/data/build-123/blog/post-1.json");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("interpolates dynamic Pages data href params before falling back to as", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+
+    const { win } = createNavWindow();
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/lang/[lang]/about?lang=en", "/about");
+
+      expect(fetchUrls[0]).toBe("http://localhost/_next/data/build-123/lang/en/about.json");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("uses the visible as path for optional catch-all Pages data without href params", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+
+    const { win } = createNavWindow();
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/catchall-optional/[[...slug]]", "/catchall-optional/value");
+
+      expect(fetchUrls[0]).toBe(
+        "http://localhost/_next/data/build-123/catchall-optional/value.json",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("uses default-locale data route for non-prefixed i18n navigation targets", async () => {
+    // Ported from Next.js: test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    const previousWindow = (globalThis as any).window;
+    const previousFetch = globalThis.fetch;
+
+    const { win, pushState } = createNavWindow();
+    win.location.pathname = "/new";
+    win.location.href = "http://localhost/new";
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    const i18nWindow = win as unknown as {
+      __VINEXT_LOCALE__?: string;
+      __VINEXT_LOCALES__?: string[];
+      __VINEXT_DEFAULT_LOCALE__?: string;
+    };
+    i18nWindow.__VINEXT_LOCALE__ = "id";
+    i18nWindow.__VINEXT_LOCALES__ = ["en", "id"];
+    i18nWindow.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const result = await routerModule.default.push("/");
+
+      expect(result).toBe(false);
+      expect(pushState).not.toHaveBeenCalled();
+      expect(fetchUrls[0]).toBe("http://localhost/_next/data/build-123/en.json");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("hard-navigates when Pages Router code manually includes the configured basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const { win, pushState } = createNavWindow();
+    win.location.pathname = "/docs/hello";
+    win.location.href = "http://localhost/docs/hello";
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/docs/other-page");
+
+      expect(pushState).not.toHaveBeenCalled();
+      expect(hrefAssignments).toContain("/docs/docs/other-page");
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -9261,6 +10023,85 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("probes Pages Router data URL before HTML navigation when buildId is available", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    (win as any).__VINEXT_LOCALE__ = "en";
+    (win as any).__VINEXT_LOCALES__ = ["en"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      if (String(url).includes("/_next/data/")) {
+        return new Response(JSON.stringify({ pageProps: { ok: true } }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js"));
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push("/page-a?hello=1");
+
+      expect(fetchUrls[0]).toBe("http://localhost/_next/data/build-123/en/page-a.json?hello=1");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("schedules hard navigation when Pages Router data request fails", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    vi.useFakeTimers();
+    const { win, pushState } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    (win.__NEXT_DATA__ as any).buildId = "build-123";
+    pushState.mockImplementation((_state: unknown, _title: string, url: string) => {
+      const parsed = new URL(url, "http://localhost");
+      win.location.pathname = parsed.pathname;
+      win.location.search = parsed.search;
+      win.location.hash = parsed.hash;
+    });
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (url: any) => {
+      expect(String(url)).toBe("http://localhost/_next/data/build-123/error-throw.json");
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const result = await routerModule.default.push("/error-throw");
+
+      expect(result).toBe(false);
+      expect(pushState).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1500);
+      expect(hrefAssignments).toEqual(["/error-throw"]);
+    } finally {
+      vi.useRealTimers();
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("failed navigation (non-OK response) does not emit routeChangeComplete", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -9326,15 +10167,10 @@ describe("Pages Router concurrent navigation", () => {
       // writes the raw app-relative URL. The guard is correct only if each
       // happens exactly once.
       const fallbackAssignments = hrefAssignments.filter((value) => value === "/failing-page");
-      const pushStateAssignments = hrefAssignments.filter(
-        (value) => value === "http://localhost/failing-page",
-      );
 
       expect(result).toBe(false);
       expect(fallbackAssignments).toHaveLength(1);
-      expect(pushStateAssignments).toHaveLength(1);
-      // Catch-all: exactly one history write plus exactly one hard-nav fallback.
-      expect(hrefAssignments).toHaveLength(2);
+      expect(hrefAssignments).toHaveLength(1);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -9390,6 +10226,244 @@ describe("Pages Router concurrent navigation", () => {
       }
       globalThis.fetch = originalFetch;
       (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  it("ignores the first stale same-locale Pages history state, then navigates", async () => {
+    // Ported from Next.js: test/e2e/ignore-invalid-popstateevent/without-i18n.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/ignore-invalid-popstateevent/without-i18n.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.location.pathname = "/static";
+    win.location.href = "http://localhost/static";
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const staleState = {
+        url: "/[dynamic]?",
+        as: "/static",
+        options: {},
+        __N: true,
+        key: "",
+      };
+
+      popstateHandler!({ state: staleState });
+      await Promise.resolve();
+      expect(fetchUrls).toHaveLength(0);
+
+      popstateHandler!({ state: staleState });
+      await Promise.resolve();
+      expect(fetchUrls).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not treat basePath-stripped Pages history state as stale", async () => {
+    // Ported from Next.js: test/e2e/basepath/trailing-slash.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/trailing-slash.test.ts
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.location.pathname = "/docs/hello/";
+    win.location.href = "http://localhost/docs/hello/";
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/docs/";
+      win.location.href = "http://localhost/docs/";
+
+      popstateHandler!({
+        state: {
+          url: "/",
+          as: "/",
+          options: {},
+          __N: true,
+          key: "",
+        },
+      });
+      await Promise.resolve();
+
+      expect(fetchUrls).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not ignore aliased Pages history entries after the first popstate", async () => {
+    // Ported from Next.js: test/e2e/basepath/trailing-slash.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/trailing-slash.test.ts
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.location.pathname = "/docs/hello/";
+    win.location.href = "http://localhost/docs/hello/";
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/docs/";
+      win.location.href = "http://localhost/docs/";
+      popstateHandler!({
+        state: {
+          url: "/",
+          as: "/",
+          options: {},
+          __N: true,
+          key: "index",
+        },
+      });
+      await Promise.resolve();
+      fetchUrls.length = 0;
+
+      win.location.pathname = "/docs/hello/";
+      win.location.href = "http://localhost/docs/hello/";
+      popstateHandler!({
+        state: {
+          url: "/something-else/",
+          as: "/hello/",
+          options: {},
+          __N: true,
+          key: "alias",
+        },
+      });
+      await Promise.resolve();
+
+      expect(fetchUrls).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not ignore stale Pages history state for a different locale", async () => {
+    // Ported from Next.js: test/e2e/ignore-invalid-popstateevent/with-i18n.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/ignore-invalid-popstateevent/with-i18n.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.location.pathname = "/sv/static";
+    win.location.href = "http://localhost/sv/static";
+    (win as any).__VINEXT_LOCALE__ = "sv";
+    (win as any).__VINEXT_LOCALES__ = ["en", "sv"];
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+
+    const fetchUrls: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      fetchUrls.push(String(url));
+      return new Response("boom", { status: 500 });
+    };
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      popstateHandler!({
+        state: {
+          url: "/[dynamic]?",
+          as: "/static",
+          options: { locale: "en" },
+          __N: true,
+          key: "",
+        },
+      });
+      await Promise.resolve();
+
+      expect(fetchUrls).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
     }
   });
 
@@ -11796,6 +12870,21 @@ describe("next/link onNavigate / NavigateEvent", () => {
   });
 });
 
+describe("next/app shim", () => {
+  it("exports a default App class with getInitialProps", async () => {
+    const { default: App } = await import("../packages/vinext/src/shims/app.js");
+
+    function Page(props: { message?: string }) {
+      return props.message ?? null;
+    }
+    Page.getInitialProps = async () => ({ message: "hello" });
+
+    const result = await App.getInitialProps({ Component: Page, ctx: {} });
+    expect(result).toEqual({ pageProps: { message: "hello" } });
+    expect(typeof App.prototype.render).toBe("function");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // vinext:react-canary — ViewTransition & addTransitionType polyfills (Issue #42)
 // ---------------------------------------------------------------------------
@@ -12096,7 +13185,7 @@ describe("next/head SSR security", () => {
       const html = await collectHeadHTML([el]);
 
       expect(html).toContain(`<${tag}`);
-      expect(html).toContain('data-vinext-head="true"');
+      expect(html).toContain('data-next-head=""');
     }
   });
 });
@@ -12154,6 +13243,7 @@ describe("isValidModulePath", () => {
     expect(isValidModulePath("/src/pages/index.tsx")).toBe(true);
     expect(isValidModulePath("/pages/about.js")).toBe(true);
     expect(isValidModulePath("/src/pages/posts/[id].tsx")).toBe(true);
+    expect(isValidModulePath("/assets/__...slug__-hash.js")).toBe(true);
   });
 
   it("accepts valid relative paths starting with ./", () => {

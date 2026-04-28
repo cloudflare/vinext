@@ -32,6 +32,10 @@ const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", 
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
+const _edgeRuntimeGlobalsPath = resolveEntryPath(
+  "../server/edge-runtime-globals.js",
+  import.meta.url,
+);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -43,9 +47,12 @@ export async function generateServerEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   middlewarePath: string | null,
   instrumentationPath: string | null,
+  includeApiRoutes = true,
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-  const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const apiRoutes = includeApiRoutes
+    ? await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)
+    : [];
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
@@ -70,9 +77,10 @@ export async function generateServerEntry(
       `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
   );
 
-  // Check for _app and _document
+  // Check for special Pages Router files.
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   const appImportCode =
     appFilePath !== null
       ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
@@ -82,6 +90,11 @@ export async function generateServerEntry(
     docFilePath !== null
       ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
       : `const DocumentComponent = null;`;
+
+  const errorImportCode =
+    errorFilePath !== null
+      ? `import { default as ErrorComponent } from ${JSON.stringify(errorFilePath.replace(/\\/g, "/"))};`
+      : `const ErrorComponent = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -100,11 +113,15 @@ export async function generateServerEntry(
   // This embeds redirects, rewrites, headers, basePath, trailingSlash
   // so prod-server.ts can apply them without loading next.config.js at runtime.
   const vinextConfigJson = JSON.stringify({
+    buildId: nextConfig?.buildId ?? null,
     basePath: nextConfig?.basePath ?? "",
+    assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
+    crossOrigin: nextConfig?.crossOrigin ?? null,
+    clientTraceMetadata: nextConfig?.clientTraceMetadata,
     i18n: nextConfig?.i18n ?? null,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
@@ -133,7 +150,17 @@ export async function generateServerEntry(
 // requests are handled. Matches Next.js semantics: register() is called once
 // on startup in the process that handles requests.
 if (typeof _instrumentation.register === "function") {
-  await _instrumentation.register();
+  const __previousNextRuntime = process.env.NEXT_RUNTIME;
+  process.env.NEXT_RUNTIME = "nodejs";
+  try {
+    await _instrumentation.register();
+  } finally {
+    if (__previousNextRuntime === undefined) {
+      delete process.env.NEXT_RUNTIME;
+    } else {
+      process.env.NEXT_RUNTIME = __previousNextRuntime;
+    }
+  }
 }
 // Store the onRequestError handler on globalThis so it is visible to all
 // code within the Worker (same global scope).
@@ -178,6 +205,10 @@ async function _runMiddleware(request) {
   var matcher = config && config.matcher;
   var url = new URL(request.url);
 
+  if (vinextConfig.basePath && matcher !== undefined && request.headers.get("x-vinext-request-had-base-path") === "0") {
+    return { continue: true };
+  }
+
   // Normalize pathname before matching to prevent path-confusion bypasses
   // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
   var decodedPathname;
@@ -194,10 +225,18 @@ async function _runMiddleware(request) {
   if (normalizedPathname !== url.pathname) {
     var mwUrl = new URL(url);
     mwUrl.pathname = normalizedPathname;
-    mwRequest = new Request(mwUrl, request);
+    mwRequest = new Request(mwUrl, request.clone());
   }
-  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
+  var __mwBasePath = vinextConfig.basePath && request.headers.get("x-vinext-request-had-base-path") !== "0" ? vinextConfig.basePath : "";
+  var __mwNextConfig = (__mwBasePath || i18nConfig) ? { basePath: __mwBasePath, i18n: i18nConfig || undefined } : undefined;
   var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
+  if (mwRequest.headers.get("x-vinext-data-request") === "1") {
+    Object.defineProperty(nextRequest, "__isData", {
+      value: true,
+      enumerable: false,
+      configurable: true,
+    });
+  }
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
   var response;
   try { response = await middlewareFn(nextRequest, fetchEvent); }
@@ -245,7 +284,19 @@ async function _runMiddleware(request) {
       if (!k.startsWith("x-middleware-") || k === "x-middleware-override-headers" || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
     }
     var rewritePath;
-    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
+    try {
+      var parsed = new URL(rewriteUrl, request.url);
+      var current = new URL(request.url);
+      if (parsed.origin !== current.origin) {
+        rewritePath = parsed.toString();
+      } else {
+        var parsedPathname = parsed.pathname;
+        if (__mwBasePath && (parsedPathname === __mwBasePath || parsedPathname.startsWith(__mwBasePath + "/"))) {
+          parsedPathname = parsedPathname.slice(__mwBasePath.length) || "/";
+        }
+        rewritePath = parsedPathname + parsed.search;
+      }
+    }
     catch { rewritePath = rewriteUrl; }
     return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
   }
@@ -260,6 +311,7 @@ export async function runMiddleware() { return { continue: true }; }
   // The server entry is a self-contained module that uses Web-standard APIs
   // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
   return `
+import ${JSON.stringify(_edgeRuntimeGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
@@ -292,7 +344,7 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
-import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
+import { buildPagesIsrCacheControl as __buildPagesIsrCacheControl, isPagesHtmlBotUserAgent as __isPagesHtmlBotUserAgent, renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -302,7 +354,9 @@ ${instrumentationInitCode}
 const i18nConfig = ${i18nConfigJson};
 
 // Build ID (embedded at build time)
-const buildId = ${buildIdJson};
+const buildId = process.env.__VINEXT_BUILD_ID || ${buildIdJson};
+const __generatedFallbackPaths = new Set();
+const __onDemandRevalidatePaths = new Set();
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -320,10 +374,35 @@ function isrCacheKey(router, pathname) {
   return __sharedIsrCacheKey(router, pathname, buildId || undefined);
 }
 
+function normalizeRevalidatePath(urlPath) {
+  try {
+    const parsed = new URL(urlPath, "http://vinext.local");
+    const pathname = parsed.pathname || "/";
+    return pathname !== "/" && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  } catch (_error) {
+    const pathname = String(urlPath || "/").split("?")[0] || "/";
+    return pathname !== "/" && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  }
+}
+
 async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+async function renderHeadPrepassAsync(element) {
+  const stream = await renderToReadableStream(element, {
+    onError() {
+      // The prepass is intentionally aborted after synchronous next/head tags render.
+    },
+  });
+  try {
+    await stream.cancel();
+  } catch (_error) {
+    // The prepass only exists to collect synchronously rendered next/head tags.
+  }
+  return "";
 }
 
 async function renderIsrPassToStringAsync(element) {
@@ -346,6 +425,10 @@ ${apiImports.join("\n")}
 
 ${appImportCode}
 ${docImportCode}
+${errorImportCode}
+
+const appModuleFilePath = ${JSON.stringify(appFilePath?.replace(/\\/g, "/") ?? null)};
+const errorModuleFilePath = ${JSON.stringify(errorFilePath?.replace(/\\/g, "/") ?? null)};
 
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
@@ -368,7 +451,8 @@ function matchRoute(url, routes) {
 }
 
 function parseQuery(url) {
-  const qs = url.split("?")[1];
+  const queryIndex = url.indexOf("?");
+  const qs = queryIndex === -1 ? "" : url.slice(queryIndex + 1);
   if (!qs) return {};
   const p = new URLSearchParams(qs);
   const q = {};
@@ -382,11 +466,45 @@ function parseQuery(url) {
   return q;
 }
 
+function mergeRouteQuery(params, url) {
+  return { ...parseQuery(url), ...params };
+}
+
+function requestPathAndSearch(request) {
+  const url = new URL(request.url);
+  return url.pathname + url.search;
+}
+
 function patternToNextFormat(pattern) {
   return pattern
     .replace(/:([\\w]+)\\*/g, "[[...$1]]")
     .replace(/:([\\w]+)\\+/g, "[...$1]")
     .replace(/:([\\w]+)/g, "[$1]");
+}
+
+function findModuleJsAsset(manifest, moduleId) {
+  const m = (manifest && Object.keys(manifest).length > 0)
+    ? manifest
+    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+  if (!m || !moduleId) return undefined;
+
+  var files = m[moduleId];
+  if (!files) {
+    for (var mk in m) {
+      if (moduleId.endsWith("/" + mk) || moduleId === mk) {
+        files = m[mk];
+        break;
+      }
+    }
+  }
+  if (!files) return undefined;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file || !file.endsWith(".js")) continue;
+    if (file.charAt(0) !== "/") file = "/" + file;
+    return file;
+  }
+  return undefined;
 }
 
 function collectAssetTags(manifest, moduleIds, scriptNonce) {
@@ -397,6 +515,9 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
+  const crossOriginAttr = vinextConfig.crossOrigin
+    ? ' crossorigin="' + vinextConfig.crossOrigin + '"'
+    : " crossorigin";
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
@@ -410,7 +531,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
     tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
-    tags.push('<script type="module"' + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
+    tags.push('<script type="module"' + nonceAttr + ' defer src="/' + entry + '"' + crossOriginAttr + '></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -491,7 +612,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
         tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
-        tags.push('<script type="module"' + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
+        tags.push('<script type="module"' + nonceAttr + ' defer src="/' + tf + '"' + crossOriginAttr + '></script>');
       }
     }
   }
@@ -545,12 +666,211 @@ function parseCookieLocaleFromHeader(cookieHeader) {
   return null;
 }
 
-export async function renderPage(request, url, manifest, ctx, middlewareHeaders) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders));
-  return _renderPage(request, url, manifest, middlewareHeaders);
+export async function renderPage(request, url, manifest, ctx, middlewareHeaders, isDataRequest) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, isDataRequest));
+  return _renderPage(request, url, manifest, middlewareHeaders, isDataRequest);
 }
 
-async function _renderPage(request, url, manifest, middlewareHeaders) {
+async function renderStatusPage(options) {
+  const statusCode = options.statusCode;
+  const statusRoutePattern = statusCode === 404 ? "/404" : "/500";
+  const statusRoute = pageRoutes.find(function(route) {
+    return route.pattern === statusRoutePattern;
+  });
+  const route = statusRoute || null;
+  const PageComponent = route && route.module && route.module.default
+    ? route.module.default
+    : ErrorComponent;
+
+  if (!PageComponent) return null;
+
+  const routePattern = route ? patternToNextFormat(route.pattern) : "/_error";
+  const routeUrl = route ? route.pattern : "/_error";
+  const requestUrl = requestPathAndSearch(options.request);
+  let pageProps = { statusCode };
+  const query = {};
+  const scriptNonce = __getScriptNonceFromHeaderSources(options.request.headers, options.middlewareHeaders);
+  const shouldBufferResponse = true;
+
+  if (typeof setSSRContext === "function") {
+    setSSRContext({
+      pathname: routePattern,
+      query,
+      asPath: requestUrl,
+      isFallback: false,
+      locale: options.locale,
+      locales: i18nConfig ? i18nConfig.locales : undefined,
+      defaultLocale: options.defaultLocale,
+      domainLocales: options.domainLocales,
+    });
+  }
+
+  if (i18nConfig) {
+    setI18nContext({
+      locale: options.locale,
+      locales: i18nConfig.locales,
+      defaultLocale: options.defaultLocale,
+      domainLocales: options.domainLocales,
+      hostname: new URL(options.request.url).hostname,
+    });
+  }
+
+  if (PageComponent && typeof PageComponent.getInitialProps === "function") {
+    const errorReqRes = __createPagesReqRes({
+      body: undefined,
+      query,
+      request: options.request,
+      url: requestUrl,
+    });
+    errorReqRes.res.statusCode = statusCode;
+    const nextErrorProps = await PageComponent.getInitialProps({
+      pathname: routePattern,
+      query,
+      asPath: requestUrl,
+      locale: options.locale,
+      locales: i18nConfig ? i18nConfig.locales : undefined,
+      defaultLocale: options.defaultLocale,
+      req: errorReqRes.req,
+      res: errorReqRes.res,
+      err: options.err,
+    });
+    if (errorReqRes.res.headersSent) {
+      return await errorReqRes.responsePromise;
+    }
+    if (nextErrorProps && typeof nextErrorProps === "object") {
+      pageProps = { ...pageProps, ...nextErrorProps };
+    }
+  }
+
+  function createPageElement(currentPageProps) {
+    var currentElement = AppComponent
+      ? React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps })
+      : React.createElement(PageComponent, currentPageProps);
+    return wrapWithRouterContext(currentElement);
+  }
+
+  let documentInitialProps = {};
+  if (DocumentComponent && typeof DocumentComponent.getInitialProps === "function") {
+    const documentReqRes = __createPagesReqRes({
+      body: undefined,
+      query,
+      request: options.request,
+      url: requestUrl,
+    });
+    const documentCtx = {
+      pathname: routePattern,
+      query,
+      asPath: requestUrl,
+      locale: options.locale,
+      locales: i18nConfig ? i18nConfig.locales : undefined,
+      defaultLocale: options.defaultLocale,
+      req: documentReqRes.req,
+      res: documentReqRes.res,
+      renderPage: async function renderDocumentPage() {
+        const html = await renderToStringAsync(createPageElement(pageProps));
+        return { html, head: [], styles: [] };
+      },
+    };
+    const nextDocumentProps = await DocumentComponent.getInitialProps(documentCtx);
+    if (documentReqRes.res.headersSent) {
+      return await documentReqRes.responsePromise;
+    }
+    if (nextDocumentProps && typeof nextDocumentProps === "object") {
+      documentInitialProps = nextDocumentProps;
+    }
+  }
+
+  var _fontLinkHeader = "";
+  var _allFp = [];
+  try {
+    var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
+    var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
+    _allFp = _fpGoogle.concat(_fpLocal);
+    if (_allFp.length > 0) {
+      _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
+    }
+  } catch (e) { /* font preloads not available */ }
+
+  const pageModuleFilePath = route ? route.filePath : errorModuleFilePath;
+  const pageModuleUrl = pageModuleFilePath ? findModuleJsAsset(options.manifest, pageModuleFilePath) : null;
+  const appModuleUrl = findModuleJsAsset(options.manifest, appModuleFilePath);
+  const pageModuleIds = pageModuleFilePath ? [pageModuleFilePath] : [];
+  const assetTags = collectAssetTags(options.manifest, pageModuleIds, scriptNonce);
+  const response = await __renderPagesPageResponse({
+    assetTags,
+    appProps: {},
+    buildId,
+    clientTraceMetadata: vinextConfig.clientTraceMetadata,
+    clearSsrContext() {
+      if (typeof setSSRContext === "function") setSSRContext(null);
+    },
+    createPageElement,
+    crossOrigin: vinextConfig.crossOrigin,
+    DocumentComponent,
+    documentProps: documentInitialProps,
+    documentRenderPageOptions: null,
+    flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+    fontLinkHeader: _fontLinkHeader,
+    fontPreloads: _allFp,
+    getFontLinks() {
+      try {
+        return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+      } catch (e) {
+        return [];
+      }
+    },
+    getFontStyles() {
+      try {
+        var allFontStyles = [];
+        if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+        if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+        return allFontStyles;
+      } catch (e) {
+        return [];
+      }
+    },
+    getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+    gsspRes: null,
+    isFallback: false,
+    isGsp: false,
+    isrCacheKey,
+    isrRevalidateSeconds: null,
+    isrSet,
+    i18n: {
+      locale: options.locale,
+      locales: i18nConfig ? i18nConfig.locales : undefined,
+      defaultLocale: options.defaultLocale,
+      domainLocales: options.domainLocales,
+    },
+    pageProps,
+    pageModuleUrl,
+    appModuleUrl,
+    params: query,
+    renderDocumentToString(element) {
+      return renderToStringAsync(element);
+    },
+    renderHeadPrepassToStringAsync(element) {
+      return renderHeadPrepassAsync(element);
+    },
+    renderIsrPassToStringAsync,
+    renderToReadableStream(element) {
+      return renderToReadableStream(element);
+    },
+    resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+    routePattern,
+    routeUrl,
+    safeJsonStringify,
+    scriptNonce,
+    shouldBufferResponse,
+  });
+
+  return new Response(response.body, {
+    status: statusCode,
+    headers: response.headers,
+  });
+}
+
+async function _renderPage(request, url, manifest, middlewareHeaders, isDataRequest) {
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -559,6 +879,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         new URL(request.url).hostname,
         vinextConfig.basePath,
         vinextConfig.trailingSlash,
+        { skipLocaleRedirect: isDataRequest },
       )
     : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
   const locale = localeInfo.locale;
@@ -574,7 +895,17 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
 
   const match = matchRoute(routeUrl, pageRoutes);
   if (!match) {
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+    const notFoundResponse = await renderStatusPage({
+      request,
+      manifest,
+      middlewareHeaders,
+      statusCode: 404,
+      locale,
+      defaultLocale: currentDefaultLocale,
+      domainLocales,
+    });
+    if (notFoundResponse) return notFoundResponse;
+    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1><p>This page could not be found.</p></body></html>",
       { status: 404, headers: { "Content-Type": "text/html" } });
   }
 
@@ -586,11 +917,45 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
+      const requestUrl = request.headers.get("x-vinext-original-url") || requestPathAndSearch(request);
+      const asPath = isDataRequest ? routeUrl : requestUrl;
+      const routeUrlObject = new URL(routeUrl, "http://vinext.local");
+      const requestUrlObject = new URL(requestUrl, "http://vinext.local");
+      const routePathname = normalizeRevalidatePath(routeUrlObject.pathname);
+      const hasOnDemandRevalidate = __onDemandRevalidatePaths.delete(routePathname);
+      const revalidateReason = hasOnDemandRevalidate
+        ? "on-demand"
+        : process.env.VINEXT_PRERENDER === "1"
+          ? "build"
+          : undefined;
+      const resolvedUrl = isDataRequest
+        ? routeUrl
+        : routeUrlObject.pathname + requestUrlObject.search;
+      const pageModule = route.module;
+      const isGsspPage = typeof pageModule.getServerSideProps === "function";
+      const isGspPage = typeof pageModule.getStaticProps === "function";
+      const routeSearchWasRewritten =
+        routeUrlObject.search !== "" && routeUrlObject.search !== requestUrlObject.search;
+      const query = isGsspPage
+        ? mergeRouteQuery(params, routeUrl)
+        : isGspPage
+          ? routeSearchWasRewritten
+            ? mergeRouteQuery(params, routeUrl)
+            : { ...params }
+          : mergeRouteQuery(params, requestUrl);
+      if (!isGsspPage && request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method Not Allowed", {
+          status: 405,
+          headers: { Allow: "GET, HEAD" },
+        });
+      }
+
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
-          query: { ...params, ...parseQuery(routeUrl) },
-          asPath: routeUrl,
+          query,
+          asPath,
+          isFallback: false,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -608,12 +973,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         });
       }
 
-      const pageModule = route.module;
       const PageComponent = pageModule.default;
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
+      const isCrawlerRequest = __isPagesHtmlBotUserAgent(request.headers.get("user-agent") || "");
+      const shouldBufferResponse = isCrawlerRequest;
       // Build font Link header early so it's available for ISR cached responses too.
       // Font preloads are module-level state populated at import time and persist across requests.
       var _fontLinkHeader = "";
@@ -626,14 +992,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
           _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
         }
       } catch (e) { /* font preloads not available */ }
-      const query = parseQuery(routeUrl);
       const pageDataResult = await __resolvePagesPageData({
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
               pathname: routePattern,
-              query: { ...params, ...query },
-              asPath: routeUrl,
+              query,
+              asPath,
+              isFallback: false,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -652,7 +1018,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         },
         buildId,
         createGsspReqRes() {
-          return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
+          return __createPagesReqRes({ body: undefined, query, request, url: requestUrl });
         },
         createPageElement(currentPageProps) {
           var currentElement = AppComponent
@@ -673,6 +1039,11 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         pageModule,
         params,
         query,
+        hasGeneratedFallbackPath: __generatedFallbackPaths.has(routeUrlObject.pathname),
+        isCrawlerRequest,
+        isDataRequest,
+        revalidateReason,
+        resolvedUrl,
         renderIsrPassToStringAsync,
         route: {
           isDynamic: route.isDynamic,
@@ -696,29 +1067,208 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
       }
+      if (pageDataResult.kind === "notFound") {
+        const notFoundResponse = await renderStatusPage({
+          request,
+          manifest,
+          middlewareHeaders,
+          statusCode: 404,
+          locale,
+          defaultLocale: currentDefaultLocale,
+          domainLocales,
+        });
+        if (notFoundResponse) return notFoundResponse;
+        return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1><p>This page could not be found.</p></body></html>",
+          { status: 404, headers: { "Content-Type": "text/html" } });
+      }
       let pageProps = pageDataResult.pageProps;
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+      const isFallback = pageDataResult.isFallback === true;
+      if (typeof setSSRContext === "function") {
+        setSSRContext({
+          pathname: routePattern,
+          query,
+          asPath,
+          isFallback,
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+        });
+      }
+      let appInitialProps = {};
+      const documentQuery = query;
+      if (AppComponent && typeof AppComponent.getInitialProps === "function") {
+        const appReqRes = __createPagesReqRes({ body: undefined, query: documentQuery, request, url: requestUrl });
+        const appCtx = {
+          Component: PageComponent,
+          router: {
+            pathname: routePattern,
+            route: routePattern,
+            query: documentQuery,
+            asPath,
+          },
+          ctx: {
+            req: appReqRes.req,
+            res: appReqRes.res,
+            pathname: routePattern,
+            query: documentQuery,
+            asPath,
+            locale: locale,
+            locales: i18nConfig ? i18nConfig.locales : undefined,
+            defaultLocale: currentDefaultLocale,
+          },
+        };
+        const nextAppProps = await AppComponent.getInitialProps(appCtx);
+        if (appReqRes.res.headersSent) {
+          return await appReqRes.responsePromise;
+        }
+        if (nextAppProps && typeof nextAppProps === "object") {
+          const { pageProps: appPageProps, ...restAppProps } = nextAppProps;
+          appInitialProps = restAppProps;
+          if (appPageProps && typeof appPageProps === "object") {
+            pageProps = { ...appPageProps, ...pageProps };
+          }
+        }
+      }
+
+      function normalizeDocumentRenderPageOptions(renderOptions) {
+        if (!renderOptions) return null;
+        if (typeof renderOptions === "function") {
+          return { enhanceComponent: renderOptions };
+        }
+        return renderOptions;
+      }
+
+      function createPageElementWithOptions(currentPageProps, renderOptions) {
+        var normalizedRenderOptions = normalizeDocumentRenderPageOptions(renderOptions);
+        var RenderPageComponent = PageComponent;
+        var RenderAppComponent = AppComponent;
+        if (normalizedRenderOptions && typeof normalizedRenderOptions.enhanceComponent === "function") {
+          RenderPageComponent = normalizedRenderOptions.enhanceComponent(RenderPageComponent);
+        }
+
+        var currentElement;
+        if (RenderAppComponent) {
+          if (normalizedRenderOptions && typeof normalizedRenderOptions.enhanceApp === "function") {
+            RenderAppComponent = normalizedRenderOptions.enhanceApp(RenderAppComponent);
+          }
+          currentElement = React.createElement(RenderAppComponent, { Component: RenderPageComponent, pageProps: currentPageProps, ...appInitialProps });
+        } else if (normalizedRenderOptions && typeof normalizedRenderOptions.enhanceApp === "function") {
+          var DefaultApp = function DefaultApp(props) {
+            return React.createElement(props.Component, props.pageProps);
+          };
+          RenderAppComponent = normalizedRenderOptions.enhanceApp(DefaultApp);
+          currentElement = React.createElement(RenderAppComponent, { Component: RenderPageComponent, pageProps: currentPageProps });
+        } else {
+          currentElement = React.createElement(RenderPageComponent, currentPageProps);
+        }
+        return wrapWithRouterContext(currentElement);
+      }
+
+      let documentInitialProps = {};
+      let documentRenderPageOptions = null;
+      if (DocumentComponent && typeof DocumentComponent.getInitialProps === "function") {
+        const documentReqRes = __createPagesReqRes({ body: undefined, query: documentQuery, request, url: requestUrl });
+        const documentCtx = {
+          pathname: routePattern,
+          query: documentQuery,
+          asPath,
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          req: documentReqRes.req,
+          res: documentReqRes.res,
+          renderPage: async function renderDocumentPage(renderOptions) {
+            documentRenderPageOptions = normalizeDocumentRenderPageOptions(renderOptions);
+            const html = await renderToStringAsync(
+              createPageElementWithOptions(pageProps, documentRenderPageOptions),
+            );
+            return { html, head: [], styles: [] };
+          },
+        };
+        const nextDocumentProps = await DocumentComponent.getInitialProps(documentCtx);
+        if (documentReqRes.res.headersSent) {
+          return await documentReqRes.responsePromise;
+        }
+        if (nextDocumentProps && typeof nextDocumentProps === "object") {
+          documentInitialProps = nextDocumentProps;
+        }
+      }
+
+      const pageModuleUrl = findModuleJsAsset(manifest, route.filePath);
+      const appModuleUrl = findModuleJsAsset(manifest, appModuleFilePath);
+
+      if (isDataRequest) {
+        var dataHeaders = new Headers({ "Content-Type": "application/json" });
+        if (process.env.NEXT_DEPLOYMENT_ID) {
+          dataHeaders.set("x-nextjs-deployment-id", process.env.NEXT_DEPLOYMENT_ID);
+        }
+        if (gsspRes && typeof gsspRes.getHeaders === "function") {
+          var gsspHeaders = gsspRes.getHeaders();
+          for (var hk in gsspHeaders) {
+            var hv = gsspHeaders[hk];
+            if (Array.isArray(hv)) {
+              for (var hi = 0; hi < hv.length; hi++) dataHeaders.append(hk, String(hv[hi]));
+            } else if (hv !== undefined) {
+              dataHeaders.set(hk, String(hv));
+            }
+          }
+          dataHeaders.set("Content-Type", "application/json");
+        }
+        if (gsspRes && !dataHeaders.has("Cache-Control")) {
+          dataHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+        }
+        if (isGspPage && !dataHeaders.has("Cache-Control")) {
+          dataHeaders.set("Cache-Control", __buildPagesIsrCacheControl(isrRevalidateSeconds || undefined, "MISS"));
+        }
+        if (isGspPage) {
+          __generatedFallbackPaths.add(routeUrlObject.pathname);
+        }
+        return new Response(safeJsonStringify({
+          ...appInitialProps,
+          pageProps,
+          page: routePattern,
+          query,
+          buildId,
+          isFallback,
+          ...(i18nConfig ? {
+            locale,
+            locales: i18nConfig.locales,
+            defaultLocale: currentDefaultLocale,
+            domainLocales,
+          } : {}),
+          ...(isGspPage ? { gsp: true } : {}),
+          ...(gsspRes ? { gssp: true } : {}),
+          __vinext: {
+            ...(pageModuleUrl ? { pageModuleUrl } : {}),
+            ...(appModuleUrl ? { appModuleUrl } : {}),
+          },
+        }), {
+          status: gsspRes ? gsspRes.statusCode : 200,
+          headers: dataHeaders,
+        });
+      }
 
       const pageModuleIds = route.filePath ? [route.filePath] : [];
       const assetTags = collectAssetTags(manifest, pageModuleIds, scriptNonce);
 
-      return __renderPagesPageResponse({
+      return await __renderPagesPageResponse({
         assetTags,
+        appProps: appInitialProps,
         buildId,
+        clientTraceMetadata: vinextConfig.clientTraceMetadata,
         clearSsrContext() {
           if (typeof setSSRContext === "function") setSSRContext(null);
         },
         createPageElement(currentPageProps) {
-          var currentElement;
-          if (AppComponent) {
-            currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
-          } else {
-            currentElement = React.createElement(PageComponent, currentPageProps);
-          }
-          return wrapWithRouterContext(currentElement);
+          return createPageElementWithOptions(currentPageProps, documentRenderPageOptions);
         },
+        crossOrigin: vinextConfig.crossOrigin,
         DocumentComponent,
+        documentProps: documentInitialProps,
+        documentRenderPageOptions,
         flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
         fontLinkHeader: _fontLinkHeader,
         fontPreloads: _allFp,
@@ -741,6 +1291,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         },
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         gsspRes,
+        isFallback,
+        isGsp: isGspPage,
         isrCacheKey,
         isrRevalidateSeconds,
         isrSet,
@@ -751,9 +1303,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
           domainLocales: domainLocales,
         },
         pageProps,
-        params,
+        pageModuleUrl,
+        appModuleUrl,
+        params: query,
         renderDocumentToString(element) {
           return renderToStringAsync(element);
+        },
+        renderHeadPrepassToStringAsync(element) {
+          return renderHeadPrepassAsync(element);
         },
         renderIsrPassToStringAsync,
         renderToReadableStream(element) {
@@ -764,6 +1321,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         routeUrl,
         safeJsonStringify,
         scriptNonce,
+        shouldBufferResponse,
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);
@@ -772,6 +1330,20 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
       ).catch(() => { /* ignore reporting errors */ });
+      try {
+        const errorResponse = await renderStatusPage({
+          request,
+          manifest,
+          middlewareHeaders,
+          statusCode: 500,
+          locale,
+          defaultLocale: currentDefaultLocale,
+          domainLocales,
+        });
+        if (errorResponse) return errorResponse;
+      } catch (_render500Error) {
+        // Fall through to the generic 500 below.
+      }
       return new Response("Internal Server Error", { status: 500 });
     }
   });
@@ -781,6 +1353,9 @@ export async function handleApiRoute(request, url) {
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     match,
+    onRevalidate(urlPath) {
+      __onDemandRevalidatePaths.add(normalizeRevalidatePath(urlPath));
+    },
     request,
     url,
     reportRequestError(error, routePattern) {

@@ -72,6 +72,8 @@ export type NextRedirect = {
   source: string;
   destination: string;
   permanent: boolean;
+  basePath?: false;
+  locale?: false;
   has?: HasCondition[];
   missing?: HasCondition[];
 };
@@ -79,12 +81,16 @@ export type NextRedirect = {
 export type NextRewrite = {
   source: string;
   destination: string;
+  basePath?: false;
+  locale?: false;
   has?: HasCondition[];
   missing?: HasCondition[];
 };
 
 export type NextHeader = {
   source: string;
+  basePath?: false;
+  locale?: false;
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
@@ -127,6 +133,8 @@ export type NextConfig = {
   env?: Record<string, string>;
   /** Base URL path prefix */
   basePath?: string;
+  /** URL or path prefix for generated static assets */
+  assetPrefix?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
   /** Internationalization routing config */
@@ -179,6 +187,10 @@ export type NextConfig = {
   pageExtensions?: string[];
   /** Extra origins allowed to access the dev server. */
   allowedDevOrigins?: string[];
+  /** TypeScript configuration options. */
+  typescript?: {
+    tsconfigPath?: string;
+  };
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -195,6 +207,14 @@ export type NextConfig = {
   serverExternalPackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
+  /**
+   * Compiler-level constants replaced during compilation.
+   * Matches Next.js `compiler.define` and `compiler.defineServer`.
+   */
+  compiler?: {
+    define?: Record<string, unknown>;
+    defineServer?: Record<string, unknown>;
+  };
   /**
    * Custom build ID generator. If provided, called once at build/dev start.
    * Must return a non-empty string, or null to use the default random ID.
@@ -217,6 +237,7 @@ export type NextConfigInput = NextConfig | NextConfigFactory;
 export type ResolvedNextConfig = {
   env: Record<string, string>;
   basePath: string;
+  assetPrefix: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -230,6 +251,7 @@ export type ResolvedNextConfig = {
   headers: NextHeader[];
   images: NextConfig["images"];
   i18n: NextI18nConfig | null;
+  crossOrigin: string | null;
   /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
   mdx: MdxOptions | null;
   /** Explicit module aliases preserved from wrapped next.config plugins. */
@@ -238,16 +260,26 @@ export type ResolvedNextConfig = {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** User-specified TypeScript config path from `typescript.tsconfigPath`. */
+  typescriptTsconfigPath: string | null;
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Whether experimental.scrollRestoration is enabled. */
+  experimentalScrollRestoration: boolean;
+  /** Allowed OpenTelemetry propagation keys to expose as client trace metadata. */
+  clientTraceMetadata: string[] | undefined;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
    * `experimental.serverComponentsExternalPackages` in next.config.
    */
   serverExternalPackages: string[];
+  compiler: {
+    define: Record<string, unknown>;
+    defineServer: Record<string, unknown>;
+  };
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
 };
@@ -372,7 +404,9 @@ export async function loadNextConfig(
       logLevel: "error",
       clearScreen: false,
     });
-    return await unwrapConfig(mod, phase);
+    const config = await unwrapConfig(mod, phase);
+    emitDeprecatedConfigWarnings(config);
+    return config;
   } catch (e) {
     // If the error indicates a CJS file loaded in ESM context, retry with
     // createRequire which provides a proper CommonJS environment.
@@ -380,7 +414,9 @@ export async function loadNextConfig(
       try {
         const require = createRequire(path.join(root, "package.json"));
         const mod = require(configPath);
-        return await unwrapConfig(mod, phase);
+        const config = await unwrapConfig(mod, phase);
+        emitDeprecatedConfigWarnings(config);
+        return config;
       } catch (e2) {
         warnConfigLoadFailure(filename, e2 as Error);
         throw e2;
@@ -389,6 +425,40 @@ export async function loadNextConfig(
 
     warnConfigLoadFailure(filename, e as Error);
     throw e;
+  }
+}
+
+function emitDeprecatedConfigWarnings(config: NextConfig): void {
+  const experimental = config.experimental as Record<string, unknown> | undefined;
+
+  if (experimental && Object.hasOwn(experimental, "instrumentationHook")) {
+    console.warn(
+      "[vinext] next.config experimental.instrumentationHook is no longer needed and can be removed.",
+    );
+  }
+
+  if (experimental && Object.hasOwn(experimental, "middlewarePrefetch")) {
+    console.warn(
+      "[vinext] next.config experimental.middlewarePrefetch has been renamed. Please use `experimental.proxyPrefetch` instead.",
+    );
+  }
+
+  if (experimental && Object.hasOwn(experimental, "middlewareClientMaxBodySize")) {
+    console.warn(
+      "[vinext] next.config experimental.middlewareClientMaxBodySize has been renamed. Please use `experimental.proxyClientMaxBodySize` instead.",
+    );
+  }
+
+  if (experimental && Object.hasOwn(experimental, "externalMiddlewareRewritesResolve")) {
+    console.warn(
+      "[vinext] next.config experimental.externalMiddlewareRewritesResolve has been renamed. Please use `experimental.externalProxyRewritesResolve` instead.",
+    );
+  }
+
+  if (Object.hasOwn(config, "skipMiddlewareUrlNormalize")) {
+    console.warn(
+      "[vinext] next.config skipMiddlewareUrlNormalize has been renamed. Please use `skipProxyUrlNormalize` instead.",
+    );
   }
 }
 
@@ -447,6 +517,7 @@ export async function resolveNextConfig(
     const resolved: ResolvedNextConfig = {
       env: {},
       basePath: "",
+      assetPrefix: "",
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -456,13 +527,21 @@ export async function resolveNextConfig(
       headers: [],
       images: undefined,
       i18n: null,
+      crossOrigin: null,
       mdx: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      typescriptTsconfigPath: null,
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      experimentalScrollRestoration: false,
+      clientTraceMetadata: undefined,
       serverExternalPackages: [],
+      compiler: {
+        define: {},
+        defineServer: {},
+      },
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -531,6 +610,8 @@ export async function resolveNextConfig(
   };
 
   const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
+  const typescriptTsconfigPath =
+    typeof config.typescript?.tsconfigPath === "string" ? config.typescript.tsconfigPath : null;
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = config.experimental as Record<string, unknown> | undefined;
@@ -541,6 +622,10 @@ export async function resolveNextConfig(
   const serverActionsBodySizeLimit = parseBodySizeLimit(
     serverActionsConfig?.bodySizeLimit as string | number | undefined,
   );
+  const experimentalScrollRestoration = experimental?.scrollRestoration === true;
+  const clientTraceMetadata = Array.isArray(experimental?.clientTraceMetadata)
+    ? experimental.clientTraceMetadata.filter((value): value is string => typeof value === "string")
+    : undefined;
 
   // Resolve optimizePackageImports from experimental config
   const rawOptimize = experimental?.optimizePackageImports;
@@ -598,6 +683,7 @@ export async function resolveNextConfig(
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
+    assetPrefix: typeof config.assetPrefix === "string" ? config.assetPrefix : "",
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
@@ -607,13 +693,21 @@ export async function resolveNextConfig(
     headers,
     images: config.images,
     i18n,
+    crossOrigin: typeof config.crossOrigin === "string" ? config.crossOrigin : null,
     mdx,
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    typescriptTsconfigPath,
     optimizePackageImports,
     serverActionsBodySizeLimit,
+    experimentalScrollRestoration,
+    clientTraceMetadata,
     serverExternalPackages,
+    compiler: {
+      define: config.compiler?.define ?? {},
+      defineServer: config.compiler?.defineServer ?? {},
+    },
     buildId,
   };
 
@@ -633,7 +727,8 @@ function normalizeAliasEntries(
   const normalized: Record<string, string> = {};
   for (const [key, value] of Object.entries(aliases)) {
     if (typeof value !== "string") continue;
-    normalized[key] = path.isAbsolute(value) ? value : path.resolve(root, value);
+    normalized[key] =
+      path.isAbsolute(value) || value.startsWith(".") ? path.resolve(root, value) : value;
   }
   return normalized;
 }

@@ -1894,6 +1894,24 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("cache-control")).toContain("immutable");
   });
 
+  it("serves valid Next static build manifests and plain-text 404s invalid Next static assets", async () => {
+    // Ported from Next.js: test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app.test.ts
+    const nextStaticDir = path.join(outDir, "client", "_next", "static");
+    const buildId = fs
+      .readdirSync(nextStaticDir)
+      .find((entry) => fs.existsSync(path.join(nextStaticDir, entry, "_buildManifest.js")));
+    expect(buildId).toBeDefined();
+
+    const manifestRes = await fetch(`${baseUrl}/_next/static/${buildId}/_buildManifest.js`);
+    expect(manifestRes.status).toBe(200);
+    expect(await manifestRes.text()).toContain("__BUILD_MANIFEST");
+
+    const missingAssetRes = await fetch(`${baseUrl}/_next/static/invalid-path`);
+    expect(missingAssetRes.status).toBe(404);
+    expect(await missingAssetRes.text()).toBe("Not Found");
+  });
+
   it("serves public files from the build output", async () => {
     // Ported from Next.js: test/production/export/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/production/export/index.test.ts
@@ -1955,6 +1973,14 @@ describe("App Router Production server (startProdServer)", () => {
 
       const withoutBasePathRes = await fetch(`${tmpBaseUrl}/logo/logo.svg`);
       expect(withoutBasePathRes.status).toBe(404);
+
+      const assetsDir = path.join(fixtureRoot, "dist", "client", "assets");
+      const jsFile = fs.readdirSync(assetsDir).find((f: string) => f.endsWith(".js"));
+      expect(jsFile).toBeDefined();
+
+      const assetRes = await fetch(`${tmpBaseUrl}/app/assets/${jsFile}`);
+      expect(assetRes.status).toBe(200);
+      expect(assetRes.headers.get("content-type")).toContain("javascript");
     } finally {
       basePathServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3190,6 +3216,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     },
   ] as any[];
 
+  it("generates Next-compatible default 404 HTML for unmatched routes without not-found.tsx", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("This page could not be found.");
+    expect(code).toContain('"Content-Type": "text/html; charset=utf-8"');
+  });
+
   it("generates redirect handling code when redirects are provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [
@@ -3242,9 +3274,14 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
   it("embeds basePath and trailingSlash alongside config", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", true, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
+      assetPrefix: "/assets",
     });
     expect(code).toContain('__basePath = "/app"');
     expect(code).toContain("__trailingSlash = true");
+    expect(code).toContain('__assetPrefix = "/assets"');
+    expect(code).toContain(
+      "export const vinextConfig = { basePath: __basePath, assetPrefix: __assetPrefix }",
+    );
     expect(code).toContain("/old");
   });
 

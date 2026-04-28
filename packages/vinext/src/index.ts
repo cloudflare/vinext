@@ -1,5 +1,5 @@
-import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
-import { loadEnv, parseAst } from "vite";
+import type { Plugin, PluginOption, TransformResult, UserConfig, ViteDevServer } from "vite";
+import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -73,6 +73,8 @@ import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-pa
 import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { createEdgeBlobAssetsPlugin } from "./plugins/edge-blob-assets.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
@@ -88,6 +90,7 @@ import {
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
+import { createWasmModulePlugin } from "./plugins/wasm-module.js";
 import {
   createClientManualChunks,
   createClientOutputConfig,
@@ -103,8 +106,15 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { createCssDataUrlPlugin } from "./plugins/css-data-url.js";
+import { createSwcHelpersResolverPlugin } from "./plugins/swc-helpers.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
+import { writeNextStaticCompatAssets } from "./server/next-static-compat.js";
+import {
+  mergeServerExternalPackages,
+  resolveServerExternalPackageImport,
+} from "./utils/server-externals.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -127,6 +137,61 @@ type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
+type BabelTransformResult = {
+  code?: string | null;
+  map?: unknown;
+};
+type BabelCoreModule = {
+  default?: {
+    transformAsync?: (
+      code: string,
+      options: Record<string, unknown>,
+    ) => Promise<BabelTransformResult | null>;
+  };
+  transformAsync?: (
+    code: string,
+    options: Record<string, unknown>,
+  ) => Promise<BabelTransformResult | null>;
+};
+
+const BABEL_CONFIG_FILES = [
+  ".babelrc",
+  ".babelrc.json",
+  ".babelrc.js",
+  ".babelrc.mjs",
+  ".babelrc.cjs",
+  "babel.config.js",
+  "babel.config.mjs",
+  "babel.config.cjs",
+  "babel.config.json",
+];
+
+const projectBabelConfigCache = new Map<string, boolean>();
+
+function hasProjectBabelConfig(projectRoot: string): boolean {
+  const cached = projectBabelConfigCache.get(projectRoot);
+  if (cached !== undefined) return cached;
+
+  for (const fileName of BABEL_CONFIG_FILES) {
+    if (fs.existsSync(path.join(projectRoot, fileName))) {
+      projectBabelConfigCache.set(projectRoot, true);
+      return true;
+    }
+  }
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")) as {
+      babel?: unknown;
+    };
+    if (pkg.babel && typeof pkg.babel === "object") {
+      projectBabelConfigCache.set(projectRoot, true);
+      return true;
+    }
+  } catch {}
+
+  projectBabelConfigCache.set(projectRoot, false);
+  return false;
+}
 
 function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
   try {
@@ -140,6 +205,189 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
   } catch {}
 
   return null;
+}
+
+async function transformWithProjectBabel(
+  code: string,
+  filepath: string,
+  projectRoot: string,
+): Promise<BabelTransformResult | null> {
+  const babelCorePath = resolveOptionalDependency(projectRoot, "@babel/core");
+  if (!babelCorePath) {
+    throw new Error(
+      "[vinext] A Babel config was found, but @babel/core could not be resolved from the project.",
+    );
+  }
+
+  const babel = (await import(pathToFileURL(babelCorePath).href)) as BabelCoreModule;
+  const transformAsync = babel.transformAsync ?? babel.default?.transformAsync;
+  if (!transformAsync) {
+    throw new Error("[vinext] @babel/core does not expose transformAsync().");
+  }
+
+  return transformAsync(code, {
+    babelrc: true,
+    caller: {
+      name: "next-babel-turbo-loader",
+      supportsStaticESM: true,
+      supportsDynamicImport: true,
+      supportsTopLevelAwait: true,
+      isDev: false,
+      isServer: false,
+      target: "web",
+    },
+    configFile: true,
+    cwd: projectRoot,
+    filename: filepath,
+    root: projectRoot,
+    sourceFileName: path.relative(projectRoot, filepath),
+    sourceMaps: true,
+  });
+}
+
+type PackageExportsValue =
+  | string
+  | string[]
+  | {
+      [conditionOrSubpath: string]: PackageExportsValue | undefined;
+    };
+
+function parseBarePackageSpecifier(
+  specifier: string,
+): { packageName: string; exportKey: string } | null {
+  if (
+    !specifier ||
+    specifier.startsWith(".") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("\\") ||
+    specifier.startsWith("\0") ||
+    specifier.includes(":")
+  ) {
+    return null;
+  }
+
+  const parts = specifier.split("/");
+  const packageName = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  if (!packageName || (specifier.startsWith("@") && parts.length < 2)) return null;
+
+  const subpath = specifier.slice(packageName.length);
+  return {
+    packageName,
+    exportKey: subpath ? `.${subpath}` : ".",
+  };
+}
+
+function findPackageJsonPath(
+  projectRoot: string,
+  packageName: string,
+  fromSpecifier: string,
+): string | null {
+  const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+
+  try {
+    return projectRequire.resolve(`${packageName}/package.json`);
+  } catch {}
+
+  try {
+    let dir = path.dirname(projectRequire.resolve(fromSpecifier));
+    for (;;) {
+      const packageJsonPath = path.join(dir, "package.json");
+      if (fs.existsSync(packageJsonPath)) {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+          name?: string;
+        };
+        if (packageJson.name === packageName) return packageJsonPath;
+      }
+
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function pickConditionalExportTarget(
+  value: PackageExportsValue | undefined,
+  activeConditions: Set<string>,
+): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const resolved = pickConditionalExportTarget(item, activeConditions);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  for (const [condition, target] of Object.entries(value)) {
+    if (condition === "types") continue;
+    if (condition === "default" || activeConditions.has(condition)) {
+      const resolved = pickConditionalExportTarget(target, activeConditions);
+      if (resolved) return resolved;
+    }
+  }
+
+  return null;
+}
+
+function resolveConditionalPackageExport(
+  projectRoot: string,
+  specifier: string,
+  conditions: string[],
+): string | null {
+  const parsed = parseBarePackageSpecifier(specifier);
+  if (!parsed) return null;
+  if (
+    (parsed.packageName === "react" || parsed.packageName === "react-dom") &&
+    !conditions.includes("react-server")
+  ) {
+    return null;
+  }
+
+  try {
+    const packageJsonPath = findPackageJsonPath(projectRoot, parsed.packageName, specifier);
+    if (!packageJsonPath) return null;
+
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+      exports?: PackageExportsValue;
+    };
+    const exportsValue = packageJson.exports;
+    if (!exportsValue) return null;
+
+    const activeConditions = new Set(conditions);
+    const exportValue =
+      typeof exportsValue === "object" &&
+      !Array.isArray(exportsValue) &&
+      Object.keys(exportsValue).some((key) => key.startsWith("."))
+        ? exportsValue[parsed.exportKey]
+        : parsed.exportKey === "."
+          ? exportsValue
+          : undefined;
+    const target = pickConditionalExportTarget(exportValue, activeConditions);
+    if (!target || !target.startsWith(".")) return null;
+
+    return path.resolve(path.dirname(packageJsonPath), target);
+  } catch {
+    return null;
+  }
+}
+
+function fileDeclaresEdgeRuntime(filePath: string): boolean {
+  try {
+    if (!/\.[cm]?[jt]sx?$/.test(filePath) || filePath.includes("/node_modules/")) return false;
+    const source = fs.readFileSync(filePath, "utf-8");
+    return (
+      /\bexport\s+const\s+runtime\s*=\s*["']edge["']/.test(source) ||
+      /\bexport\s+const\s+config\s*=\s*\{[\s\S]*?\bruntime\s*:\s*["'](?:edge|experimental-edge)["']/.test(
+        source,
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 function resolveShimModulePath(shimsDir: string, moduleName: string): string {
@@ -337,20 +585,33 @@ type UserResolveConfigWithTsconfigPaths = NonNullable<UserConfig["resolve"]> & {
 // transforms can see them via resolve.alias without re-reading config files per env.
 const _tsconfigAliasCache = new Map<string, Record<string, string>>();
 
-function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
-  if (_tsconfigAliasCache.has(projectRoot)) {
-    return _tsconfigAliasCache.get(projectRoot)!;
+function resolveTsconfigAliases(
+  projectRoot: string,
+  tsconfigPath?: string | null,
+): Record<string, string> {
+  const cacheKey = `${projectRoot}\0${tsconfigPath ?? ""}`;
+  if (_tsconfigAliasCache.has(cacheKey)) {
+    return _tsconfigAliasCache.get(cacheKey)!;
   }
 
   let aliases: Record<string, string> = {};
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
-    if (!fs.existsSync(candidate)) continue;
-    aliases = loadTsconfigPathAliases(candidate, projectRoot);
-    break;
+  if (tsconfigPath) {
+    const candidate = path.isAbsolute(tsconfigPath)
+      ? tsconfigPath
+      : path.resolve(projectRoot, tsconfigPath);
+    if (fs.existsSync(candidate)) {
+      aliases = loadTsconfigPathAliases(candidate, projectRoot);
+    }
+  } else {
+    for (const name of TSCONFIG_FILES) {
+      const candidate = path.join(projectRoot, name);
+      if (!fs.existsSync(candidate)) continue;
+      aliases = loadTsconfigPathAliases(candidate, projectRoot);
+      break;
+    }
   }
 
-  _tsconfigAliasCache.set(projectRoot, aliases);
+  _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
 }
 
@@ -402,6 +663,28 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 function getClientOutputConfigForVite(viteMajorVersion: number) {
   return viteMajorVersion >= 8 ? { codeSplitting: clientCodeSplittingConfig } : clientOutputConfig;
 }
+
+const optionalNodeModuleDependencyPlugin: Plugin = {
+  name: "vinext:optional-node-module-dependency",
+  enforce: "pre",
+  resolveId(id, importer) {
+    if (!importer || !importer.includes(`${path.sep}node_modules${path.sep}`)) {
+      return null;
+    }
+    if (!parseBarePackageSpecifier(id)) {
+      return null;
+    }
+    try {
+      createRequire(importer).resolve(id);
+      return null;
+    } catch {
+      return { id, external: true };
+    }
+  },
+};
+
+const DYNAMIC_CSS_URL_IMPORT_RE =
+  /\bimport\(\s*new\s+URL\(\s*(["'])(\.\/[^"']+\.css)\1\s*,\s*import\.meta\.url\s*\)\.href\s*\)/g;
 
 export type VinextOptions = {
   /**
@@ -531,6 +814,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module graph for. The shim files exist in the vinext package before plugin
   // init, so realpath is safe to evaluate eagerly.
   const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  const moduleIdKey = (id: string): string => {
+    const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+    const queryIndex = cleanId.search(/[?#]/);
+    const pathOnly = queryIndex === -1 ? cleanId : cleanId.slice(0, queryIndex);
+    return path.isAbsolute(pathOnly) ? canonicalize(pathOnly) : pathOnly;
+  };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
       resolveShimModulePath(shimsDir, "headers"),
@@ -541,18 +830,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
+  let serverExternalPackages: string[] | true = [];
+  const middlewareLayerModuleIds = new Set<string>();
+  const edgeRuntimeModuleIds = new Set<string>();
 
   /**
    * Generate the virtual SSR server entry module.
    * This is the entry point for `vite build --ssr`.
    */
   async function generateServerEntry(): Promise<string> {
+    // In hybrid App + Pages builds, the App SSR environment imports this
+    // virtual module only to access Pages render metadata/fallback rendering.
+    // Middleware already runs from the App RSC entry for those requests; keeping
+    // it out of this SSR graph prevents server-only middleware imports from
+    // being validated as client/SSR imports by @vitejs/plugin-rsc. The separate
+    // Pages Router server build (disableAppRouter: true) still includes it.
     return _generateServerEntry(
       pagesDir,
       nextConfig,
       fileMatcher,
-      middlewarePath,
+      hasAppDir ? null : middlewarePath,
       instrumentationPath,
+      !hasAppDir,
     );
   }
 
@@ -720,15 +1019,52 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   const plugins: PluginOption[] = [
+    optionalNodeModuleDependencyPlugin,
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
     // React Fast Refresh + JSX transform for client components.
-    reactPluginPromise,
+    reactPluginPromise as unknown as PluginOption,
+    // Next.js treats page and app `.js` files as JSX-capable. Vite's parser
+    // still keys JSX mode off the file extension, so compile these before the
+    // builtin transform sees them.
+    {
+      name: "vinext:jsx-in-js",
+      enforce: "pre",
+      async transform(code, id) {
+        const [filepath] = id.split("?");
+        if (!filepath.endsWith(".js")) return null;
+        if (filepath.includes("/node_modules/")) return null;
+        if (!code.includes("<")) return null;
+
+        if (hasProjectBabelConfig(root)) {
+          const result = await transformWithProjectBabel(code, filepath, root);
+          if (!result?.code) return null;
+          return {
+            code: result.code,
+            map: (result.map ?? null) as TransformResult["map"],
+          };
+        }
+
+        const result = await transformWithOxc(code, id, {
+          lang: "jsx",
+          jsx: { runtime: "automatic", development: false },
+        });
+
+        return {
+          code: result.code,
+          map: result.map,
+        };
+      },
+    },
+    createCssDataUrlPlugin(),
+    createSwcHelpersResolverPlugin(() => root),
+    createImportMetaUrlPlugin(() => root),
+    createWasmModulePlugin(() => root),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
-    commonjs(),
+    commonjs() as PluginOption,
     {
       name: "vinext:config",
       enforce: "pre",
@@ -738,7 +1074,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
-        const tsconfigPathAliases = resolveTsconfigAliases(root);
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -824,10 +1159,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           nextConfig = await resolveNextConfig(rawConfig, root);
         }
+        const tsconfigPathAliases = resolveTsconfigAliases(root, nextConfig.typescriptTsconfigPath);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
+        middlewareLayerModuleIds.clear();
+        edgeRuntimeModuleIds.clear();
+        if (middlewarePath) {
+          middlewareLayerModuleIds.add(moduleIdKey(middlewarePath));
+        }
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
@@ -846,6 +1187,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        defines["process.env.__NEXT_ROUTER_TRAILING_SLASH"] = JSON.stringify(
+          String(nextConfig.trailingSlash),
+        );
+        defines["process.env.__NEXT_SCROLL_RESTORATION"] = JSON.stringify(
+          String(nextConfig.experimentalScrollRestoration),
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -880,6 +1227,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
+        defines["process.browser"] = "true";
+        applyCompilerDefines(defines, nextConfig.compiler?.define ?? {}, "compiler.define");
+        const serverDefines = { ...defines };
+        serverDefines["process.browser"] = "false";
+        applyCompilerDefines(
+          serverDefines,
+          nextConfig.compiler?.defineServer ?? {},
+          "compiler.defineServer",
+        );
 
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
@@ -1029,9 +1385,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // inject via css.postcss so Vite uses the resolved plugins.
         // Only do this if the user hasn't already set css.postcss inline.
         // oxlint-disable-next-line typescript/no-explicit-any
-        let postcssOverride: { plugins: any[] } | undefined;
+        let postcssOverride: { plugins: unknown[] } | undefined;
         if (!config.css?.postcss || typeof config.css.postcss === "string") {
-          postcssOverride = await resolvePostcssStringPlugins(root);
+          postcssOverride = (await resolvePostcssStringPlugins(root)) as
+            | { plugins: unknown[] }
+            | undefined;
         }
 
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
@@ -1060,8 +1418,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
         const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
-
-        const viteConfig: UserConfig = {
+        const viteConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
@@ -1110,6 +1467,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ) {
                     return;
                   }
+                  if (
+                    warning.code === "UNRESOLVED_IMPORT" &&
+                    warning.message?.includes("/node_modules/")
+                  ) {
+                    return;
+                  }
                   if (userOnwarn) {
                     userOnwarn(warning, defaultHandler);
                   } else {
@@ -1154,8 +1517,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
           },
           // Configure SSR transform behaviour for Node targets.
-          // - `external`: React packages are loaded natively by Node (CJS)
-          //   rather than through Vite's ESM evaluator.
+          // - `external`: Pages-only apps can load React packages natively by
+          //   Node (CJS). App Router builds must not externalize React here:
+          //   the RSC environment needs to bundle React with the react-server
+          //   export condition.
           // - `noExternal: true`: force everything else through Vite's
           //   transform pipeline so non-JS imports (CSS, images) from
           //   node_modules don't hit Node's native ESM loader.
@@ -1168,7 +1533,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? {}
             : {
                 ssr: {
-                  external: ["react", "react-dom", "react-dom/server"],
+                  external: hasAppDir ? [] : ["react", "react-dom", "react-dom/server"],
                   noExternal: true,
                 },
               }),
@@ -1187,10 +1552,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // NOTE: top-level optimizeDeps is now set below (after capturing
           // incoming values from earlier plugins) so both Pages Router and
           // App Router builds merge correctly.
-          // Enable JSX in .tsx/.jsx files
-          // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
+          // Enable JSX transforms for Next.js route files. Next.js allows JSX in
+          // plain .js pages, while Vite 8's default OXC include skips them.
           ...(viteMajorVersion >= 8
-            ? { oxc: { jsx: { runtime: "automatic" } } }
+            ? {
+                oxc: {
+                  ...(typeof config.oxc === "object" && config.oxc ? config.oxc : {}),
+                  include: reactOptions?.include ?? /\.(js|jsx|ts|tsx|mjs|mts|cjs|cts)$/,
+                  exclude: reactOptions?.exclude ?? /\/node_modules\//,
+                  jsx:
+                    typeof config.oxc === "object" && config.oxc && "jsx" in config.oxc
+                      ? config.oxc.jsx
+                      : { runtime: "automatic" },
+                },
+              }
             : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
           define: defines,
@@ -1198,7 +1573,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
-        };
+        } as UserConfig;
+        const oxcConfig =
+          viteMajorVersion >= 8
+            ? {
+                ...(typeof config.oxc === "object" && config.oxc ? config.oxc : {}),
+                include: reactOptions?.include ?? /\.(js|jsx|ts|tsx|mjs|mts|cjs|cts)$/,
+                exclude: reactOptions?.exclude ?? /\/node_modules\//,
+                jsx:
+                  typeof config.oxc === "object" && config.oxc && "jsx" in config.oxc
+                    ? config.oxc.jsx
+                    : { runtime: "automatic" },
+              }
+            : null;
 
         // Collect user-provided ssr.external so we can propagate it into
         // both the RSC and SSR environment configs. Vite's `ssr.*` config
@@ -1216,11 +1603,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Without externalizing them, Vite's optimizer picks the wrong export
         // condition and the build fails with MISSING_EXPORT errors.
         const nextServerExternal: string[] = nextConfig?.serverExternalPackages ?? [];
-        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
-          ? [...config.ssr.external, ...nextServerExternal]
-          : config.ssr?.external === true
-            ? true
-            : nextServerExternal;
+        const userSsrExternal: string[] | true = mergeServerExternalPackages(
+          config.ssr?.external,
+          nextServerExternal,
+        );
+        serverExternalPackages = userSsrExternal;
 
         // Capture top-level optimizeDeps populated by earlier plugins
         // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
@@ -1282,6 +1669,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           viteConfig.environments = {
             rsc: {
+              define: serverDefines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               ...(hasCloudflarePlugin || hasNitroPlugin
                 ? {}
                 : {
@@ -1317,11 +1706,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
             ssr: {
+              define: serverDefines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               ...(hasCloudflarePlugin || hasNitroPlugin
                 ? {}
                 : {
                     resolve: {
-                      external: userSsrExternal === true ? true : [...userSsrExternal],
+                      external:
+                        userSsrExternal === true
+                          ? true
+                          : [
+                              "react",
+                              "react-dom",
+                              "react-dom/server",
+                              "react-dom/server.edge",
+                              ...userSsrExternal,
+                            ],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -1331,17 +1731,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+                exclude: [
+                  ...new Set([
+                    ...incomingExclude,
+                    "vinext",
+                    "@vercel/og",
+                    ...(hasCloudflarePlugin || hasNitroPlugin
+                      ? []
+                      : ["react", "react/jsx-runtime", "react/jsx-dev-runtime"]),
+                  ]),
+                ],
                 entries: optimizeEntries,
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
+                  output: {
+                    entryFileNames: "index.js",
+                  },
                 }),
               },
             },
             client: {
+              define: defines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               // Explicitly mark as client consumer so other plugins (e.g. Nitro)
               // can detect this during configEnvironment hooks — before Vite
               // applies the default consumer based on environment name.
@@ -1386,9 +1800,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // the worker entry. Without this, all chunks are modulepreloaded
                 // on every page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
-                ...(hasCloudflarePlugin ? { manifest: true } : {}),
+                ...(hasCloudflarePlugin || hasPagesDir ? { manifest: true } : {}),
+                ...(hasPagesDir ? { ssrManifest: true } : {}),
                 ...withBuildBundlerOptions(viteMajorVersion, {
-                  input: { index: VIRTUAL_APP_BROWSER_ENTRY },
+                  input: hasPagesDir
+                    ? { index: VIRTUAL_APP_BROWSER_ENTRY, pages: VIRTUAL_CLIENT_ENTRY }
+                    : { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
@@ -1402,6 +1819,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // and there's no client-side hydration.
           viteConfig.environments = {
             client: {
+              define: defines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               consumer: "client",
               optimizeDeps:
                 pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
@@ -1427,6 +1846,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // alongside an explicit build input conflicts with the caller's intent.
           viteConfig.environments = {
             client: {
+              define: defines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               consumer: "client",
               optimizeDeps:
                 pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
@@ -1442,8 +1863,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
             ssr: {
+              define: serverDefines,
+              ...(oxcConfig ? { oxc: oxcConfig } : {}),
               resolve: {
-                external: ["react", "react-dom", "react-dom/server"],
+                external:
+                  userSsrExternal === true
+                    ? true
+                    : ["react", "react-dom", "react-dom/server", ...userSsrExternal],
                 noExternal: true as const,
               },
               build: {
@@ -1541,84 +1967,149 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
-      resolveId: {
-        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
-        // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
-        filter: {
-          id: /(?:next\/|virtual:vinext-)/,
-        },
-        handler(id) {
-          // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
-          // browser entry imports our virtual module using the already-resolved
-          // ID (with \0 prefix). We need to re-resolve it so the client
-          // environment's import-analysis can find it.
-          const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+      async resolveId(id, importer) {
+        // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
+        // browser entry imports our virtual module using the already-resolved
+        // ID (with \0 prefix). We need to re-resolve it so the client
+        // environment's import-analysis can find it.
+        const cleanId = id.startsWith("\0") ? id.slice(1) : id;
 
-          // Pages Router virtual modules
-          if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
-          if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-          if (
-            cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
-          ) {
-            return RESOLVED_SERVER_ENTRY;
+        // Pages Router virtual modules
+        if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+        if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+        if (
+          cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
+        ) {
+          return RESOLVED_SERVER_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)
+        ) {
+          return RESOLVED_CLIENT_ENTRY;
+        }
+        // App Router virtual modules
+        if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+        if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
+        if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+        if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
+          return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
+        ) {
+          return RESOLVED_RSC_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)
+        ) {
+          return RESOLVED_APP_SSR_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
+        ) {
+          return RESOLVED_APP_BROWSER_ENTRY;
+        }
+        if (
+          cleanId.includes("/" + VIRTUAL_GOOGLE_FONTS + "?") ||
+          cleanId.includes("\\" + VIRTUAL_GOOGLE_FONTS + "?")
+        ) {
+          const queryIndex = cleanId.indexOf(VIRTUAL_GOOGLE_FONTS + "?");
+          return (
+            RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(queryIndex + VIRTUAL_GOOGLE_FONTS.length)
+          );
+        }
+
+        if (
+          this.environment?.name !== "client" &&
+          serverExternalPackages !== true &&
+          serverExternalPackages.length > 0
+        ) {
+          const resolvedExternal = resolveServerExternalPackageImport(
+            cleanId,
+            importer,
+            serverExternalPackages,
+            root,
+          );
+          if (resolvedExternal) {
+            return { id: resolvedExternal, external: true };
           }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)
-          ) {
-            return RESOLVED_CLIENT_ENTRY;
-          }
-          // App Router virtual modules
-          if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
-          if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
-          if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
-          if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
-            return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
-          ) {
-            return RESOLVED_RSC_ENTRY;
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)
-          ) {
-            return RESOLVED_APP_SSR_ENTRY;
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
-          ) {
-            return RESOLVED_APP_BROWSER_ENTRY;
-          }
-          if (
-            cleanId.includes("/" + VIRTUAL_GOOGLE_FONTS + "?") ||
-            cleanId.includes("\\" + VIRTUAL_GOOGLE_FONTS + "?")
-          ) {
-            const queryIndex = cleanId.indexOf(VIRTUAL_GOOGLE_FONTS + "?");
-            return (
-              RESOLVED_VIRTUAL_GOOGLE_FONTS +
-              cleanId.slice(queryIndex + VIRTUAL_GOOGLE_FONTS.length)
-            );
+        }
+
+        // Middleware/proxy runs in an edge-like server layer. Its whole import
+        // graph should resolve with Next's middleware conditions, independent
+        // of the page/API/runtime that the middleware eventually hands off to.
+        if (importer && middlewareLayerModuleIds.has(moduleIdKey(importer))) {
+          const isBareImport =
+            !cleanId.startsWith(".") &&
+            !path.isAbsolute(cleanId) &&
+            !cleanId.startsWith("/") &&
+            !cleanId.startsWith("\0") &&
+            !cleanId.includes(":");
+          if (isBareImport) {
+            const parsedBareImport = parseBarePackageSpecifier(cleanId);
+            const isNonRscReactJsxRuntime =
+              this.environment?.name !== "rsc" &&
+              parsedBareImport?.packageName === "react" &&
+              (parsedBareImport.exportKey === "./jsx-runtime" ||
+                parsedBareImport.exportKey === "./jsx-dev-runtime");
+            if (!isNonRscReactJsxRuntime) {
+              const middlewareExport = resolveConditionalPackageExport(root, cleanId, [
+                "react-server",
+                "browser",
+                "edge-light",
+                "import",
+                "module",
+                "default",
+              ]);
+              if (middlewareExport) {
+                return middlewareExport;
+              }
+            }
           }
 
-          // Shims with react-server variants — resolve per-environment.
-          // These are NOT in resolve.alias (Vite's alias plugin runs
-          // before enforce:"pre" plugins and can't be overridden).
-          // See https://github.com/cloudflare/vinext/issues/834
-          const reactServerShim = _reactServerShims.get(cleanId);
-          if (reactServerShim !== undefined) {
-            const shimName =
+          return this.resolve(id, importer, { skipSelf: true });
+        }
+
+        if (importer) {
+          const importerKey = moduleIdKey(importer);
+          if (
+            this.environment?.name !== "client" &&
+            (edgeRuntimeModuleIds.has(importerKey) || fileDeclaresEdgeRuntime(importerKey))
+          ) {
+            edgeRuntimeModuleIds.add(importerKey);
+            const edgeConditions =
               this.environment?.name === "rsc"
-                ? `${reactServerShim}.react-server`
-                : reactServerShim;
-            return resolveShimModulePath(_shimsDir, shimName);
+                ? ["react-server", "browser", "edge-light", "import", "module", "default"]
+                : ["browser", "edge-light", "import", "module", "default"];
+            const edgeExport = resolveConditionalPackageExport(root, cleanId, edgeConditions);
+            if (edgeExport) {
+              edgeRuntimeModuleIds.add(moduleIdKey(edgeExport));
+              return edgeExport;
+            }
+
+            const resolved = await this.resolve(id, importer, { skipSelf: true });
+            if (resolved && !resolved.external) {
+              edgeRuntimeModuleIds.add(moduleIdKey(resolved.id));
+            }
+            return resolved;
           }
-        },
+        }
+
+        // Shims with react-server variants — resolve per-environment.
+        // These are NOT in resolve.alias (Vite's alias plugin runs
+        // before enforce:"pre" plugins and can't be overridden).
+        // See https://github.com/cloudflare/vinext/issues/834
+        const reactServerShim = _reactServerShims.get(cleanId);
+        if (reactServerShim !== undefined) {
+          const shimName =
+            this.environment?.name === "rsc" ? `${reactServerShim}.react-server` : reactServerShim;
+          return resolveShimModulePath(_shimsDir, shimName);
+        }
       },
 
       async load(id) {
@@ -1659,8 +2150,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               i18n: nextConfig?.i18n,
+              assetPrefix: nextConfig?.assetPrefix,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
+              clientTraceMetadata: nextConfig?.clientTraceMetadata,
             },
             instrumentationPath,
           );
@@ -2310,7 +2803,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // Skip requests for files with extensions (static assets)
               let pathname = url.split("?")[0];
-              if (pathname.includes(".") && !pathname.endsWith(".html")) {
+              const isPagesDataRequest =
+                pathname.startsWith("/_next/data/") ||
+                (nextConfig?.basePath
+                  ? pathname.startsWith(`${nextConfig.basePath}/_next/data/`)
+                  : false);
+              if (pathname.includes(".") && !pathname.endsWith(".html") && !isPagesDataRequest) {
                 return next();
               }
 
@@ -2348,7 +2846,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // strip it (for robustness) but don't reject paths that don't start
               // with basePath — Vite has already done the filtering.
               const bp = nextConfig?.basePath ?? "";
-              if (bp && pathname.startsWith(bp)) {
+              const requestHadBasePath = !bp || hasBasePath(pathname, bp);
+              if (bp && hasBasePath(pathname, bp)) {
                 const stripped = pathname.slice(bp.length) || "/";
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = stripped + qs;
@@ -2364,14 +2863,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 !pathname.startsWith("/api/")
               ) {
                 const hasTrailing = pathname.endsWith("/");
-                if (nextConfig.trailingSlash && !hasTrailing) {
+                const pathWithoutTrailing = pathname.replace(/\/+$/, "");
+                const lastSegment = pathWithoutTrailing.slice(
+                  pathWithoutTrailing.lastIndexOf("/") + 1,
+                );
+                const isFileLike = lastSegment.includes(".");
+                if (isFileLike && hasTrailing) {
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  const dest = bp + pathWithoutTrailing + qs;
+                  res.writeHead(308, { Location: dest });
+                  res.end();
+                  return;
+                }
+                if (nextConfig.trailingSlash && !hasTrailing && !isFileLike) {
                   // trailingSlash: true — redirect /about → /about/
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   const dest = bp + pathname + "/" + qs;
                   res.writeHead(308, { Location: dest });
                   res.end();
                   return;
-                } else if (!nextConfig.trailingSlash && hasTrailing) {
+                } else if (!nextConfig.trailingSlash && hasTrailing && !isFileLike) {
                   // trailingSlash: false (default) — redirect /about/ → /about
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   const dest = bp + pathname.replace(/\/+$/, "") + qs;
@@ -2461,7 +2972,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewarePath,
                   middlewareRequest,
                   nextConfig?.i18n,
-                  nextConfig?.basePath,
+                  requestHadBasePath ? nextConfig?.basePath : "",
                 );
 
                 // Settle waitUntil promises — no ctx.waitUntil() in dev, but
@@ -2759,6 +3270,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const result = stripServerExports(code);
           if (!result) return null;
           return { code: result, map: null };
+        },
+      },
+    },
+    {
+      name: "vinext:server-css-url-imports",
+      transform: {
+        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        handler(code) {
+          if (this.environment?.name === "client") return null;
+          if (!code.includes("new URL") || !code.includes(".css")) return null;
+          const transformed = code.replace(
+            DYNAMIC_CSS_URL_IMPORT_RE,
+            'Promise.resolve({ default: "" })',
+          );
+          if (transformed === code) return null;
+          return { code: transformed, map: null };
         },
       },
     },
@@ -3099,6 +3626,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
+    // Match Next edge compiler behavior for `fetch(new URL(asset, import.meta.url))`
+    // by making local asset URLs fetchable in the best-effort Pages edge runtime.
+    createEdgeBlobAssetsPlugin(),
     // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
     ogAssetsPlugin,
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
@@ -3160,6 +3690,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       };
     })(),
+    {
+      name: "vinext:next-static-compat-assets",
+      apply: "build" as const,
+      enforce: "post" as const,
+      writeBundle: {
+        sequential: true,
+        order: "post" as const,
+        handler(outputOptions: { dir?: string }) {
+          if (this.environment?.name !== "client") return;
+          const outDir = outputOptions.dir;
+          if (!outDir) return;
+          writeNextStaticCompatAssets(outDir, nextConfig!.buildId);
+        },
+      },
+    },
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
     // The prerender secret is used by prod-server.ts to authenticate requests to
     // the internal /__vinext/prerender/* endpoints, which are only reachable during
@@ -3648,6 +4193,21 @@ function getNextPublicEnvDefines(): Record<string, string> {
     }
   }
   return defines;
+}
+
+function applyCompilerDefines(
+  defines: Record<string, string>,
+  userDefines: Record<string, unknown>,
+  optionName: "compiler.define" | "compiler.defineServer",
+) {
+  for (const [key, value] of Object.entries(userDefines)) {
+    if (Object.hasOwn(defines, key)) {
+      throw new Error(
+        `The \`${optionName}\` option is configured to replace the \`${key}\` variable. This variable is either part of a Next.js built-in or is already configured.`,
+      );
+    }
+    defines[key] = JSON.stringify(value);
+  }
 }
 
 // matchConfigPattern is imported from config-matchers.ts and re-exported

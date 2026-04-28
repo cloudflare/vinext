@@ -10,7 +10,7 @@ test.describe("Pages Router client hydration on Cloudflare Workers", () => {
     const response = await page.goto(BASE + "/");
     const html = await response!.text();
     // The HTML should contain a script tag for the client entry
-    expect(html).toMatch(/script\s+type="module"\s+src="\/assets\/[^"]+\.js"/);
+    expect(html).toMatch(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/assets\/[^"]+\.js"[^>]*>/);
   });
 
   test("counter becomes interactive after hydration", async ({ page }) => {

@@ -53,6 +53,9 @@ import {
   getVinextBrowserGlobal,
 } from "./app-browser-stream.js";
 import {
+  APP_INTERCEPTION_CONTEXT_KEY,
+  APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_KEY,
   createAppPayloadCacheKey,
   getMountedSlotIdsHeader,
   normalizeAppElements,
@@ -107,6 +110,9 @@ type VisitedResponseCacheEntry = {
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
+const loadingPayloadCache = new Map<string, CachedRscResponse>();
+const VINEXT_APP_ROUTER_STATE_HISTORY_STATE_KEY = "__vinext_appRouterStateKey";
+const MAX_HISTORY_ROUTER_STATE_SNAPSHOTS = 100;
 
 // These are plain module-level variables, unlike ClientNavigationState in
 // navigation.ts which uses Symbol.for to survive multiple Vite module instances.
@@ -140,6 +146,8 @@ let browserRouterStateRef: { current: AppRouterState } | null = null;
 let activePendingBrowserRouterState: PendingBrowserRouterState | null = null;
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
+const historyRouterStateSnapshots = new Map<string, AppRouterState>();
+let nextHistoryRouterStateSnapshotId = 0;
 
 function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
@@ -240,6 +248,62 @@ function clearPrefetchState(): void {
 function clearClientNavigationCaches(): void {
   clearVisitedResponseCache();
   clearPrefetchState();
+}
+
+function evictHistoryRouterStateSnapshotsIfNeeded(): void {
+  while (historyRouterStateSnapshots.size >= MAX_HISTORY_ROUTER_STATE_SNAPSHOTS) {
+    const oldest = historyRouterStateSnapshots.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    historyRouterStateSnapshots.delete(oldest);
+  }
+}
+
+function cloneHistoryStateRecord(state: unknown): Record<string, unknown> {
+  if (!state || typeof state !== "object") {
+    return {};
+  }
+
+  const nextState: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(state)) {
+    nextState[key] = value;
+  }
+  return nextState;
+}
+
+function storeHistoryRouterStateSnapshot(state: AppRouterState): string {
+  evictHistoryRouterStateSnapshotsIfNeeded();
+  const key = String(++nextHistoryRouterStateSnapshotId);
+  historyRouterStateSnapshots.set(key, state);
+  return key;
+}
+
+function persistHistoryRouterStateSnapshot(state: AppRouterState): void {
+  const key = storeHistoryRouterStateSnapshot(state);
+  const historyState = cloneHistoryStateRecord(
+    createHistoryStateWithPreviousNextUrl(window.history.state, state.previousNextUrl),
+  );
+  historyState[VINEXT_APP_ROUTER_STATE_HISTORY_STATE_KEY] = key;
+  replaceHistoryStateWithoutNotify(historyState, "", window.location.href);
+}
+
+function readHistoryRouterStateSnapshot(state: unknown): AppRouterState | null {
+  const key = cloneHistoryStateRecord(state)[VINEXT_APP_ROUTER_STATE_HISTORY_STATE_KEY];
+  if (typeof key !== "string") {
+    return null;
+  }
+  return historyRouterStateSnapshots.get(key) ?? null;
+}
+
+function restoreHistoryRouterStateSnapshot(state: AppRouterState): void {
+  const navId = ++activeNavigationId;
+  settlePendingBrowserRouterState(activePendingBrowserRouterState);
+  setPendingPathname(window.location.pathname, navId);
+  applyClientParams(state.navigationSnapshot.params);
+  commitClientNavigationState(navId);
+  getBrowserRouterStateSetter()(state);
+  window.__VINEXT_RSC_PENDING__ = null;
 }
 
 function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
@@ -436,11 +500,27 @@ function getRequestState(
 }
 
 function createRscRequestHeaders(interceptionContext: string | null): Headers {
-  const headers = new Headers({ Accept: "text/x-component" });
+  const headers = new Headers({ Accept: "text/x-component", RSC: "1" });
   if (interceptionContext !== null) {
     headers.set("X-Vinext-Interception-Context", interceptionContext);
   }
   return headers;
+}
+
+function createRscLoadingRequestHeaders(interceptionContext: string | null): Headers {
+  const headers = new Headers({
+    Accept: "text/x-component",
+    "X-Vinext-Loading-Payload": "1",
+  });
+  if (interceptionContext !== null) {
+    headers.set("X-Vinext-Interception-Context", interceptionContext);
+  }
+  return headers;
+}
+
+function createLoadingPayloadCacheKey(href: string): string {
+  const url = new URL(href, window.location.origin);
+  return url.pathname;
 }
 
 /**
@@ -588,15 +668,6 @@ function BrowserRoot({
   useLayoutEffect(() => {
     setBrowserRouterState = setTreeStateValue;
     browserRouterStateRef = stateRef;
-    return () => {
-      if (setBrowserRouterState === setTreeStateValue) {
-        setBrowserRouterState = null;
-      }
-      if (browserRouterStateRef === stateRef) {
-        browserRouterStateRef = null;
-      }
-      setMountedSlotsHeader(null);
-    };
   }, [setTreeStateValue]);
 
   useLayoutEffect(() => {
@@ -604,16 +675,8 @@ function BrowserRoot({
   }, [treeState.elements]);
 
   useLayoutEffect(() => {
-    if (treeState.renderId !== 0) {
-      return;
-    }
-
-    replaceHistoryStateWithoutNotify(
-      createHistoryStateWithPreviousNextUrl(window.history.state, treeState.previousNextUrl),
-      "",
-      window.location.href,
-    );
-  }, [treeState.previousNextUrl, treeState.renderId]);
+    persistHistoryRouterStateSnapshot(treeState);
+  }, [treeState]);
 
   const committedTree = createElement(
     NavigationCommitSignal,
@@ -1027,16 +1090,16 @@ function registerServerActionCallback(): void {
         // Fall through to hard redirect below if URL parsing fails.
       }
 
-      // Use hard redirect for all action redirects because vinext's server
-      // currently returns an empty body for redirect responses. RSC navigation
-      // requires a valid RSC payload. This is a known parity gap with Next.js,
-      // which pre-renders the redirect target's RSC payload.
       const redirectType = fetchResponse.headers.get("x-action-redirect-type") ?? "replace";
-      if (redirectType === "push") {
-        window.location.assign(actionRedirect);
-      } else {
-        window.location.replace(actionRedirect);
-      }
+      window.dispatchEvent(new Event("vinext:link-status-navigation"));
+      await window.__VINEXT_RSC_NAVIGATE__?.(
+        actionRedirect,
+        0,
+        "navigate",
+        redirectType === "push" ? "push" : "replace",
+        undefined,
+        true,
+      );
       return undefined;
     }
 
@@ -1098,6 +1161,47 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     import.meta.env.DEV ? { onCaughtError: devOnCaughtError } : undefined,
   );
   window.__VINEXT_HYDRATED_AT = performance.now();
+  window.__NEXT_HYDRATED = true;
+  window.__NEXT_HYDRATED_AT = window.__VINEXT_HYDRATED_AT;
+  if (typeof window.__NEXT_HYDRATED_CB === "function") {
+    window.__NEXT_HYDRATED_CB();
+  }
+
+  window.__VINEXT_RSC_PREFETCH_LOADING__ = async function prefetchLoadingPayload(
+    href: string,
+  ): Promise<void> {
+    const url = new URL(href, window.location.origin);
+    const cacheKey = createLoadingPayloadCacheKey(url.href);
+    if (loadingPayloadCache.has(cacheKey)) {
+      return;
+    }
+
+    const loadingHeaders = createRscLoadingRequestHeaders(getCurrentInterceptionContext());
+    let mountedSlotsHeader: string | null = null;
+    try {
+      mountedSlotsHeader = getMountedSlotIdsHeader(getBrowserRouterState().elements);
+    } catch {
+      mountedSlotsHeader = null;
+    }
+    if (mountedSlotsHeader) {
+      loadingHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+    }
+
+    try {
+      const response = await fetch(url.pathname + url.search, {
+        headers: loadingHeaders,
+        credentials: "include",
+        priority: "low" as RequestInit["priority"],
+      });
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!response.ok || !contentType.startsWith("text/x-component") || !response.body) {
+        return;
+      }
+      loadingPayloadCache.set(cacheKey, await snapshotRscResponse(response));
+    } catch {
+      // Loading prefetch is opportunistic; navigation can still fall back to the full payload.
+    }
+  };
 
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
@@ -1106,6 +1210,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     historyUpdateMode?: HistoryUpdateMode,
     previousNextUrlOverride?: string | null,
     programmaticTransition = false,
+    deferredLoadingTransition = false,
   ): Promise<void> {
     let _snapshotPending = false;
     let pendingRouterState: PendingBrowserRouterState | null = null;
@@ -1136,6 +1241,8 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         const url = new URL(currentHref, window.location.origin);
         const rscUrl = toRscUrl(url.pathname + url.search);
+        const rscFetchUrl = rscUrl;
+        let renderedLoadingPayload = false;
         const requestState = getRequestState(navigationKind, currentPrevNextUrl);
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
@@ -1214,6 +1321,61 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         let navResponse: Response | undefined;
         let navResponseUrl: string | null = null;
+
+        const renderLoadingPayload = async (
+          loadingResponseSnapshot: CachedRscResponse,
+          historyMode: HistoryUpdateMode | undefined,
+          pendingState: PendingBrowserRouterState | null,
+        ): Promise<boolean> => {
+          const loadingResponse = restoreRscResponse(loadingResponseSnapshot, false);
+          const loadingParamsHeader = loadingResponse.headers.get("X-Vinext-Params");
+          let loadingParams: Record<string, string | string[]> = {};
+          if (loadingParamsHeader) {
+            try {
+              loadingParams = JSON.parse(decodeURIComponent(loadingParamsHeader)) as Record<
+                string,
+                string | string[]
+              >;
+            } catch {
+              loadingParams = {};
+            }
+          }
+          const loadingSnapshot = createClientNavigationRenderSnapshot(currentHref, loadingParams);
+          const loadingPayload = normalizeAppElementsPromise(
+            createFromFetch<AppWireElements>(Promise.resolve(loadingResponse)),
+          );
+          await renderNavigationPayload(
+            loadingPayload,
+            loadingSnapshot,
+            currentHref,
+            navId,
+            historyMode,
+            loadingParams,
+            requestPreviousNextUrl,
+            pendingState,
+            isSameRoute,
+            toActionType(navigationKind),
+          );
+          return true;
+        };
+
+        if (programmaticTransition && navigationKind === "navigate") {
+          const loadingResponseSnapshot = loadingPayloadCache.get(
+            createLoadingPayloadCacheKey(currentHref),
+          );
+          if (loadingResponseSnapshot) {
+            renderedLoadingPayload = await renderLoadingPayload(
+              loadingResponseSnapshot,
+              currentHistoryMode,
+              pendingRouterState,
+            );
+            if (renderedLoadingPayload) {
+              pendingRouterState = null;
+              currentHistoryMode = undefined;
+            }
+          }
+        }
+
         if (navigationKind !== "refresh") {
           const prefetchedResponse = consumePrefetchResponse(
             rscUrl,
@@ -1231,7 +1393,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           if (mountedSlotsHeader) {
             requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
           }
-          navResponse = await fetch(rscUrl, {
+          navResponse = await fetch(rscFetchUrl, {
             headers: requestHeaders,
             credentials: "include",
           });
@@ -1289,9 +1451,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         }
 
         const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
-        const requestedUrl = new URL(rscUrl, window.location.origin);
+        const requestedUrl = new URL(rscFetchUrl, window.location.origin);
+        const finalPathname = finalUrl.pathname.replace(/\.rsc$/, "");
+        const requestedPathname = requestedUrl.pathname.replace(/\.rsc$/, "");
 
-        if (finalUrl.pathname !== requestedUrl.pathname) {
+        if (finalPathname !== requestedPathname) {
           // Server-side redirect: update the URL in history and loop to fetch
           // the destination without settling pendingRouterState. This keeps
           // isPending true across all redirect hops instead of flashing false.
@@ -1335,6 +1499,41 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         if (navId !== activeNavigationId) return;
 
+        let resolvedElementsForCache: AppElements | null = null;
+        if (
+          !renderedLoadingPayload &&
+          !programmaticTransition &&
+          deferredLoadingTransition &&
+          navigationKind === "navigate" &&
+          navResponse.body
+        ) {
+          resolvedElementsForCache = await rscPayload;
+          const metadata = readAppElementsMetadata(resolvedElementsForCache);
+          const genericLoadingElements = normalizeAppElements({
+            [APP_ROUTE_KEY]: metadata.routeId,
+            [APP_INTERCEPTION_CONTEXT_KEY]: metadata.interceptionContext,
+            [APP_ROOT_LAYOUT_KEY]: metadata.rootLayoutTreePath,
+            [metadata.routeId]: createElement("div", { id: "loading" }, "Loading..."),
+          });
+          await renderNavigationPayload(
+            Promise.resolve(genericLoadingElements),
+            navigationSnapshot,
+            currentHref,
+            navId,
+            currentHistoryMode,
+            navParams,
+            requestPreviousNextUrl,
+            pendingRouterState,
+            isSameRoute,
+            toActionType(navigationKind),
+          );
+          renderedLoadingPayload = true;
+          currentHistoryMode = undefined;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        if (navId !== activeNavigationId) return;
+
         _snapshotPending = true; // Set before renderNavigationPayload
         try {
           await renderNavigationPayload(
@@ -1364,7 +1563,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
-        const resolvedElements = await rscPayload;
+        const resolvedElements = resolvedElementsForCache ?? (await rscPayload);
         const metadata = readAppElementsMetadata(resolvedElements);
         storeVisitedResponseSnapshot(
           rscUrl,
@@ -1421,6 +1620,14 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   // microtask-based deferral for compatibility with non-RSC navigation.
   // See: https://github.com/vercel/next.js/discussions/41934#discussioncomment-4602607
   window.addEventListener("popstate", (event) => {
+    const snapshot = readHistoryRouterStateSnapshot(event.state);
+    if (snapshot) {
+      notifyAppRouterTransitionStart(window.location.href, "traverse");
+      restoreHistoryRouterStateSnapshot(snapshot);
+      restorePopstateScrollPosition(event.state);
+      return;
+    }
+
     notifyAppRouterTransitionStart(window.location.href, "traverse");
     const pendingNavigation =
       window.__VINEXT_RSC_NAVIGATE__?.(window.location.href, 0, "traverse") ?? Promise.resolve();

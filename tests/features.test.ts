@@ -3703,6 +3703,39 @@ describe("host header poisoning prevention", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Pages Router data request normalization
+// ---------------------------------------------------------------------------
+
+describe("Pages Router data request normalization", () => {
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("maps _next/data URLs to page URLs before middleware/routing", async () => {
+    const { normalizePagesDataRequestPageUrl, parsePagesDataRequest } =
+      await import("../packages/vinext/src/server/prod-server.js");
+
+    expect(parsePagesDataRequest("/_next/data/build-1/ssr-page.json", "", "build-1")).toEqual({
+      localePrefix: "",
+      pageUrl: "/ssr-page",
+    });
+    expect(
+      parsePagesDataRequest("/_next/data/build-1/en/send-url.json", "?foo=1", "build-1", {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toEqual({
+      localePrefix: "/en",
+      pageUrl: "/send-url?foo=1",
+    });
+    expect(normalizePagesDataRequestPageUrl({ localePrefix: "/de", pageUrl: "/" }, false)).toBe(
+      "/de",
+    );
+    expect(
+      normalizePagesDataRequestPageUrl({ localePrefix: "/en", pageUrl: "/send-url?foo=1" }, false),
+    ).toBe("/en/send-url?foo=1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // X-Forwarded-Proto trust proxy gating
 // ---------------------------------------------------------------------------
 

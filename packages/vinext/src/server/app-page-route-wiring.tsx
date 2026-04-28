@@ -667,3 +667,29 @@ export function buildAppPageElements<
 
   return elements;
 }
+
+export function buildAppPageLoadingElements<
+  TModule extends AppPageModule,
+  TErrorModule extends AppPageErrorModule,
+>(
+  options: Pick<
+    BuildAppPageElementsOptions<TModule, TErrorModule>,
+    "interceptionContext" | "route" | "routePath"
+  >,
+): AppElements | null {
+  const LoadingComponent = getDefaultExport(options.route.loading);
+  if (!LoadingComponent) {
+    return null;
+  }
+
+  const interceptionContext = options.interceptionContext ?? null;
+  const routeId = createAppPayloadRouteId(options.routePath, interceptionContext);
+  const rootLayoutTreePath = createAppPageLayoutEntries(options.route)[0]?.treePath ?? null;
+
+  return {
+    [APP_ROUTE_KEY]: routeId,
+    [APP_INTERCEPTION_CONTEXT_KEY]: interceptionContext,
+    [APP_ROOT_LAYOUT_KEY]: rootLayoutTreePath,
+    [routeId]: <LoadingComponent />,
+  };
+}

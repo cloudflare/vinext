@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { appendSearchParamsToUrl } from "../packages/vinext/src/utils/query.js";
+import { appendSearchParamsToUrl, parseQueryString } from "../packages/vinext/src/utils/query.js";
 
 describe("appendSearchParamsToUrl", () => {
   it("adds query params to a path with no existing query", () => {
@@ -43,5 +43,13 @@ describe("appendSearchParamsToUrl", () => {
   it("supports query-only relative URLs", () => {
     const url = appendSearchParamsToUrl("?lang=en", [["q", "vinext"]]);
     expect(url).toBe("?lang=en&q=vinext");
+  });
+});
+
+describe("parseQueryString", () => {
+  it("preserves question marks inside query values", () => {
+    expect(parseQueryString("/linker?href=/about?hello=world")).toEqual({
+      href: "/about?hello=world",
+    });
   });
 });

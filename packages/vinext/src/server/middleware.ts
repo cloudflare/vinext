@@ -33,6 +33,7 @@ import { normalizePath } from "./normalize-path.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 /**
  * Determine whether a middleware/proxy file path refers to a proxy file.
@@ -398,6 +399,14 @@ export async function runMiddleware(
   const matcher = config?.matcher;
   const url = new URL(request.url);
 
+  if (
+    basePath &&
+    matcher !== undefined &&
+    request.headers.get("x-vinext-request-had-base-path") === "0"
+  ) {
+    return { continue: true };
+  }
+
   // Normalize the pathname before middleware matching to prevent bypasses
   // via percent-encoding (/%61dmin → /admin) or double slashes (/dashboard//settings).
   let decodedPathname: string;
@@ -419,7 +428,7 @@ export async function runMiddleware(
   if (normalizedPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = normalizedPathname;
-    mwRequest = new Request(mwUrl, request);
+    mwRequest = new Request(mwUrl, request.clone());
   }
 
   // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
@@ -431,6 +440,17 @@ export async function runMiddleware(
     mwRequest instanceof NextRequest
       ? mwRequest
       : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+  if (mwRequest.headers.get("x-vinext-data-request") === "1") {
+    Object.defineProperty(nextRequest, "__isData", {
+      value: true,
+      enumerable: false,
+      configurable: true,
+    });
+    const dataLocale = mwRequest.headers.get("x-vinext-data-locale");
+    if (dataLocale) {
+      nextRequest.nextUrl.locale = dataLocale;
+    }
+  }
   const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
 
   // Execute the middleware
@@ -505,7 +525,13 @@ export async function runMiddleware(
     let rewritePath: string;
     try {
       const rewriteParsed = new URL(rewriteUrl, request.url);
-      rewritePath = rewriteParsed.pathname + rewriteParsed.search;
+      const requestUrl = new URL(request.url);
+      rewritePath =
+        rewriteParsed.origin !== requestUrl.origin
+          ? rewriteParsed.toString()
+          : (basePath && hasBasePath(rewriteParsed.pathname, basePath)
+              ? stripBasePath(rewriteParsed.pathname, basePath)
+              : rewriteParsed.pathname) + rewriteParsed.search;
     } catch {
       rewritePath = rewriteUrl;
     }

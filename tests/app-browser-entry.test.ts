@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { devOnCaughtError } from "../packages/vinext/src/server/app-browser-error.js";
@@ -24,6 +26,11 @@ import {
   shouldHardNavigate,
   type AppRouterState,
 } from "../packages/vinext/src/server/app-browser-state.js";
+
+const APP_BROWSER_ENTRY_SOURCE = readFileSync(
+  fileURLToPath(new URL("../packages/vinext/src/server/app-browser-entry.ts", import.meta.url)),
+  "utf8",
+);
 
 function createResolvedElements(
   routeId: string,
@@ -54,6 +61,30 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
 }
 
 describe("app browser entry state helpers", () => {
+  it("fetches client navigation RSC payloads with RSC headers", () => {
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain(
+      'const headers = new Headers({ Accept: "text/x-component", RSC: "1" });',
+    );
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain("const rscFetchUrl = rscUrl;");
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain("navResponse = await fetch(rscFetchUrl, {");
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain('"X-Vinext-Loading-Payload": "1"');
+  });
+
+  it("handles internal server action redirects through the App Router navigator", () => {
+    // Ported from Next.js: test/e2e/next-form/default/app-dir.test.ts
+    // Server action redirects from <Form> should not trigger MPA navigation after hydration.
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain(
+      'const actionRedirect = fetchResponse.headers.get("x-action-redirect");',
+    );
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain(
+      'window.dispatchEvent(new Event("vinext:link-status-navigation"));',
+    );
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain("await window.__VINEXT_RSC_NAVIGATE__?.(");
+    expect(APP_BROWSER_ENTRY_SOURCE).toContain('redirectType === "push" ? "push" : "replace"');
+    expect(APP_BROWSER_ENTRY_SOURCE).not.toContain("window.location.assign(actionRedirect);");
+    expect(APP_BROWSER_ENTRY_SOURCE).not.toContain("window.location.replace(actionRedirect);");
+  });
+
   it("requires renderId when creating pending commits", () => {
     // @ts-expect-error renderId is required to avoid duplicate commit ids.
     void createPendingNavigationCommit({

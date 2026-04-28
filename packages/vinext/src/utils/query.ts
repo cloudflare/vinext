@@ -40,7 +40,8 @@ export function addQueryParam(
  * Parse a URL's query string into a Record, with multi-value keys promoted to arrays.
  */
 export function parseQueryString(url: string): Record<string, string | string[]> {
-  const qs = url.split("?")[1];
+  const queryIndex = url.indexOf("?");
+  const qs = queryIndex === -1 ? "" : url.slice(queryIndex + 1);
   if (!qs) return {};
   const params = new URLSearchParams(qs);
   const query: Record<string, string | string[]> = {};

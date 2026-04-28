@@ -62,6 +62,48 @@ export function withBasePath(path: string, basePath: string): string {
   return basePath + path;
 }
 
+function isFileLikePathname(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, "");
+  const lastSegment = normalized.slice(normalized.lastIndexOf("/") + 1);
+  return lastSegment.includes(".");
+}
+
+/**
+ * Apply Next.js trailingSlash browser URL canonicalization for local paths.
+ */
+export function normalizeLocalTrailingSlashHref(href: string, trailingSlash: boolean): string {
+  if (
+    !href.startsWith("/") ||
+    href.startsWith("//") ||
+    href.startsWith("http://") ||
+    href.startsWith("https://")
+  ) {
+    return href;
+  }
+
+  try {
+    const parsed = new URL(href, "http://vinext.local");
+    const pathname = parsed.pathname;
+    if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
+      return href;
+    }
+
+    let nextPathname = pathname;
+    if (isFileLikePathname(pathname)) {
+      nextPathname = pathname.replace(/\/+$/, "");
+    } else if (trailingSlash) {
+      nextPathname = pathname.endsWith("/") ? pathname : `${pathname}/`;
+    } else {
+      nextPathname = pathname.replace(/\/+$/, "");
+    }
+
+    if (nextPathname === "") nextPathname = "/";
+    return `${nextPathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return href;
+  }
+}
+
 /**
  * Resolve a potentially relative href against the current URL.
  * Handles: "#hash", "?query", "?query#hash", and relative paths.

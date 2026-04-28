@@ -1,18 +1,31 @@
+import { Transform } from "node:stream";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   handlePagesApiRoute,
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
+import type {
+  PagesReqResRequest,
+  PagesReqResResponse,
+} from "../packages/vinext/src/server/pages-node-compat.js";
+import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+
+type TestPagesApiHandler = (
+  req: PagesReqResRequest,
+  res: PagesReqResResponse,
+) => unknown | Promise<unknown>;
 
 function createMatch(
-  handler: PagesApiRouteMatch["route"]["module"]["default"],
+  handler: TestPagesApiHandler,
   params: Record<string, string | string[]> = {},
+  moduleOverrides: Partial<PagesApiRouteMatch["route"]["module"]> = {},
 ): PagesApiRouteMatch {
   return {
     params,
     route: {
       pattern: "/api/test",
       module: {
+        ...moduleOverrides,
         default: handler,
       },
     },
@@ -37,6 +50,181 @@ describe("pages api route", () => {
       id: "123",
       tag: ["a", "b"],
     });
+  });
+
+  it("calls edge runtime Pages API routes with NextRequest", async () => {
+    // Ported from Next.js deploy fixture:
+    // test/e2e/middleware-general/app/pages/api/edge-search-params.js
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/edge-search-params",
+          module: {
+            config: { runtime: "edge" },
+            default(req: NextRequest) {
+              return Response.json(Object.fromEntries((req as any).nextUrl.searchParams));
+            },
+          },
+        },
+      },
+      request: new Request("https://example.com/api/edge-search-params?hello=world"),
+      url: "/api/edge-search-params?hello=world&foo=bar",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ foo: "bar", hello: "world" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('config.runtime = "edge"'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("https://nextjs.org/blog/next-16"));
+    warn.mockRestore();
+  });
+
+  it("adds dynamic params to edge runtime Pages API nextUrl search params", async () => {
+    // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await handlePagesApiRoute({
+      match: {
+        params: { id: "id-1" },
+        route: {
+          pattern: "/api/[id]",
+          module: {
+            config: { runtime: "edge" },
+            default(req: NextRequest) {
+              return Response.json(Object.fromEntries((req as any).nextUrl.searchParams));
+            },
+          },
+        },
+      },
+      request: new Request("https://example.com/api/id-1?a=b"),
+      url: "/api/id-1?a=b",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ a: "b", id: "id-1" });
+    warn.mockRestore();
+  });
+
+  it("exposes AsyncLocalStorage as an edge runtime global", async () => {
+    // Ported from Next.js: test/e2e/edge-async-local-storage/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-async-local-storage/index.test.ts
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "AsyncLocalStorage");
+    Reflect.deleteProperty(globalThis, "AsyncLocalStorage");
+
+    try {
+      const { installEdgeRuntimeGlobals } =
+        await import("../packages/vinext/src/server/edge-runtime-globals.js");
+      installEdgeRuntimeGlobals();
+
+      const AsyncLocalStorageGlobal = (
+        globalThis as typeof globalThis & {
+          AsyncLocalStorage: new <T>() => {
+            getStore(): T | undefined;
+            run<R>(store: T, callback: () => R): R;
+          };
+        }
+      ).AsyncLocalStorage;
+      const storage = new AsyncLocalStorageGlobal<{ id: string }>();
+
+      await storage.run({ id: "req-1" }, async () => {
+        await Promise.resolve();
+        expect(storage.getStore()).toEqual({ id: "req-1" });
+      });
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(globalThis, "AsyncLocalStorage", descriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "AsyncLocalStorage");
+      }
+    }
+  });
+
+  it("recognizes top-level runtime = edge exports", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/top-level-edge",
+          module: {
+            runtime: "edge",
+            default() {
+              return Response.json({ ok: true });
+            },
+          },
+        },
+      },
+      request: new Request("https://example.com/api/top-level-edge"),
+      url: "/api/top-level-edge",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    warn.mockRestore();
+  });
+
+  it("treats config.runtime = experimental-edge as an edge-style Pages API route", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/experimental-edge",
+          module: {
+            config: { runtime: "experimental-edge" },
+            default() {
+              return Response.json({ ok: true });
+            },
+          },
+        },
+      },
+      request: new Request("https://example.com/api/experimental-edge"),
+      url: "/api/experimental-edge",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    warn.mockRestore();
+  });
+
+  it("strips encoded body headers from edge runtime Pages API responses", async () => {
+    // Ported from Next.js: test/e2e/edge-compiler-can-import-blob-assets/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-compiler-can-import-blob-assets/index.test.ts
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/edge",
+          module: {
+            config: { runtime: "edge" },
+            default() {
+              return new Response("<!doctype html>Example Domain", {
+                headers: {
+                  "content-encoding": "br",
+                  "content-length": "999",
+                  "content-type": "text/html; charset=utf-8",
+                },
+              });
+            },
+          },
+        },
+      },
+      request: new Request("https://example.com/api/edge"),
+      url: "/api/edge",
+    });
+
+    expect(response.headers.has("content-encoding")).toBe(false);
+    expect(response.headers.has("content-length")).toBe(false);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    await expect(response.text()).resolves.toContain("Example Domain");
+    warn.mockRestore();
   });
 
   it("returns 400 with an Invalid JSON statusText for malformed JSON bodies", async () => {
@@ -137,6 +325,84 @@ describe("pages api route", () => {
     await expect(response.text()).resolves.toBe("Request body too large");
   });
 
+  it("honors route-level bodyParser sizeLimit config", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          res.status(200).json({ ok: true });
+        },
+        {},
+        { config: { api: { bodyParser: { sizeLimit: "5kb" } } } },
+      ),
+      request: new Request("https://example.com/api/parse", {
+        method: "POST",
+        headers: {
+          "content-length": String(5 * 1024 + 1),
+          "content-type": "text/plain",
+        },
+        body: "x",
+      }),
+      url: "/api/parse",
+    });
+
+    expect(response.status).toBe(413);
+    await expect(response.text()).resolves.toBe("Request body too large");
+  });
+
+  it("leaves body unparsed and exposes a raw async iterable when bodyParser is false", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        async (req, res) => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req as AsyncIterable<Buffer>) {
+            chunks.push(chunk);
+          }
+          res.json({ body: req.body, rawBody: Buffer.concat(chunks).toString("utf8") });
+        },
+        {},
+        { config: { api: { bodyParser: false } } },
+      ),
+      request: new Request("https://example.com/api/raw", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "hello raw body",
+      }),
+      url: "/api/raw",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ rawBody: "hello raw body" });
+  });
+
+  it("supports piping raw Pages API requests into streamed responses", async () => {
+    // Ported from Next.js: test/e2e/proxy-request-with-middleware/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/proxy-request-with-middleware/test/index.test.ts
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (req, res) => {
+          const passthrough = new Transform({
+            transform(chunk, _encoding, callback) {
+              callback(null, chunk);
+            },
+          });
+
+          return req.pipe(passthrough).pipe(res);
+        },
+        {},
+        { config: { api: { bodyParser: false } } },
+      ),
+      request: new Request("https://example.com/api/raw", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"key":"value"}',
+      }),
+      url: "/api/raw",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('{"key":"value"}');
+  });
+
   it("returns 404 when match is null", async () => {
     const response = await handlePagesApiRoute({
       match: null,
@@ -187,6 +453,24 @@ describe("pages api route", () => {
 
     expect(customRedirectResponse.status).toBe(301);
     expect(customRedirectResponse.headers.get("location")).toBe("/permanent");
+  });
+
+  it("forwards res.revalidate calls to the Pages runtime", async () => {
+    const onRevalidate = vi.fn(async () => {});
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(async (_req, res) => {
+        await res.revalidate("/posts/one", { unstable_onlyGenerated: true });
+        res.json({ revalidated: true });
+      }),
+      onRevalidate,
+      request: new Request("https://example.com/api/revalidate"),
+      url: "/api/revalidate",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ revalidated: true });
+    expect(onRevalidate).toHaveBeenCalledWith("/posts/one", { unstable_onlyGenerated: true });
   });
 
   it("res.writeHead() lowercases header keys and joins array values", async () => {

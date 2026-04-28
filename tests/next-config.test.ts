@@ -87,6 +87,45 @@ describe("loadNextConfig phase argument", () => {
   });
 });
 
+describe("loadNextConfig deprecated option warnings", () => {
+  it("warns for explicitly configured Next.js proxy rename deprecations", async () => {
+    // Ported from Next.js: test/e2e/deprecation-warnings/deprecation-warnings.test.ts
+    const tmpDir = makeTempDir();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "next.config.js"),
+        `module.exports = {
+          skipMiddlewareUrlNormalize: true,
+          experimental: {
+            instrumentationHook: true,
+            middlewarePrefetch: "strict",
+            middlewareClientMaxBodySize: "5mb",
+            externalMiddlewareRewritesResolve: true,
+          },
+        };\n`,
+      );
+
+      await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+
+      const messages = warn.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(messages).toContain("experimental.instrumentationHook");
+      expect(messages).toContain("no longer needed");
+      expect(messages).toContain("experimental.middlewarePrefetch");
+      expect(messages).toContain("Please use `experimental.proxyPrefetch` instead");
+      expect(messages).toContain("experimental.middlewareClientMaxBodySize");
+      expect(messages).toContain("Please use `experimental.proxyClientMaxBodySize` instead");
+      expect(messages).toContain("experimental.externalMiddlewareRewritesResolve");
+      expect(messages).toContain("Please use `experimental.externalProxyRewritesResolve` instead");
+      expect(messages).toContain("skipMiddlewareUrlNormalize");
+      expect(messages).toContain("Please use `skipProxyUrlNormalize` instead");
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("resolveNextConfig alias extraction", () => {
   let tmpDir: string;
 
@@ -174,6 +213,29 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
+  });
+
+  it("preserves bare package alias targets from turbopack and webpack config", async () => {
+    tmpDir = makeTempDir();
+
+    const rawConfig = {
+      turbopack: {
+        resolveAlias: {
+          "preact/compat": "react",
+        },
+      },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve = webpackConfig.resolve || {};
+        webpackConfig.resolve.alias = webpackConfig.resolve.alias || {};
+        webpackConfig.resolve.alias["scheduler/tracing"] = "scheduler";
+        return webpackConfig;
+      },
+    };
+
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["preact/compat"]).toBe("react");
+    expect(config.aliases["scheduler/tracing"]).toBe("scheduler");
   });
 
   it("does not attribute turbopack aliases to webpack support warnings", async () => {
@@ -398,6 +460,43 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig experimental.scrollRestoration", () => {
+  // Ported from Next.js: test/e2e/reload-scroll-backforward-restoration/next.config.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/reload-scroll-backforward-restoration/next.config.js
+  it("defaults to disabled", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.experimentalScrollRestoration).toBe(false);
+  });
+
+  it("reads experimental.scrollRestoration", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        scrollRestoration: true,
+      },
+    });
+    expect(resolved.experimentalScrollRestoration).toBe(true);
+  });
+});
+
+describe("resolveNextConfig experimental.clientTraceMetadata", () => {
+  // Ported from Next.js: test/e2e/opentelemetry/client-trace-metadata/next.config.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/client-trace-metadata/next.config.js
+  it("defaults to disabled", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("reads string metadata keys", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        clientTraceMetadata: ["my-test-key-1", 42, "my-test-key-2"],
+      },
+    });
+
+    expect(resolved.clientTraceMetadata).toEqual(["my-test-key-1", "my-test-key-2"]);
+  });
+});
+
 describe("detectNextIntlConfig", () => {
   let tmpDir: string;
 
@@ -411,6 +510,7 @@ describe("detectNextIntlConfig", () => {
     return {
       env: {},
       basePath: "",
+      assetPrefix: "",
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
@@ -420,13 +520,21 @@ describe("detectNextIntlConfig", () => {
       headers: [],
       images: undefined,
       i18n: null,
+      crossOrigin: null,
       mdx: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      typescriptTsconfigPath: null,
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      experimentalScrollRestoration: false,
+      clientTraceMetadata: undefined,
       serverExternalPackages: [],
+      compiler: {
+        define: {},
+        defineServer: {},
+      },
       buildId: "test-build-id",
       ...overrides,
     };

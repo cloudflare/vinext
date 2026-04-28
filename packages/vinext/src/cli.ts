@@ -21,7 +21,11 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
+import {
+  detectPackageManager,
+  ensureViteConfigCompatibility,
+  execPackageManagerCommand,
+} from "./utils/project.js";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
@@ -407,7 +411,10 @@ async function buildApp() {
       const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
       console.log("  Upgrading React for RSC compatibility...");
-      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
+      execPackageManagerCommand(pm, [...pmArgs, ...reactUpgrade], {
+        cwd: process.cwd(),
+        stdio: "inherit",
+      });
     }
   }
 

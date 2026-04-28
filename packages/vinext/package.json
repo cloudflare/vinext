@@ -62,7 +62,9 @@
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "jiti": "catalog:",
     "magic-string": "catalog:",
+    "urlpattern-polyfill": "^10.1.0",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"
   },

@@ -45,6 +45,7 @@ import {
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
 } from "./image-optimization.js";
+import type { NextHeader, NextRedirect, NextRewrite } from "../config/next-config.js";
 import { normalizePath } from "./normalize-path.js";
 import { isOpenRedirectShaped } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -55,6 +56,8 @@ import type { ExecutionContextLike } from "../shims/request-context.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import { getNextStaticAssetLookupPath, isNextStaticAssetPath } from "./next-static-compat.js";
+import "./edge-runtime-globals.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -834,12 +837,19 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   const resolvedOutDir = path.resolve(outDir);
   const clientDir = path.join(resolvedOutDir, "client");
 
-  // Detect build type
-  const rscEntryPath = path.join(resolvedOutDir, "server", "index.js");
-  const serverEntryPath = path.join(resolvedOutDir, "server", "entry.js");
-  const isAppRouter = fs.existsSync(rscEntryPath);
+  // Detect build type. Vite/Rolldown can emit either .js or .mjs depending on
+  // the project package type and output format.
+  const rscEntryPath = [
+    path.join(resolvedOutDir, "server", "index.js"),
+    path.join(resolvedOutDir, "server", "index.mjs"),
+  ].find((candidate) => fs.existsSync(candidate));
+  const serverEntryPath = [
+    path.join(resolvedOutDir, "server", "entry.js"),
+    path.join(resolvedOutDir, "server", "entry.mjs"),
+  ].find((candidate) => fs.existsSync(candidate));
+  const isAppRouter = !!rscEntryPath;
 
-  if (!isAppRouter && !fs.existsSync(serverEntryPath)) {
+  if (!isAppRouter && !serverEntryPath) {
     console.error(`[vinext] No build output found in ${outDir}`);
     console.error("Run `vinext build` first.");
     process.exit(1);
@@ -849,7 +859,13 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     return startAppRouterServer({ port, host, clientDir, rscEntryPath, compress });
   }
 
-  return startPagesRouterServer({ port, host, clientDir, serverEntryPath, compress });
+  return startPagesRouterServer({
+    port,
+    host,
+    clientDir,
+    serverEntryPath: serverEntryPath!,
+    compress,
+  });
 }
 
 // ─── App Router Production Server ─────────────────────────────────────────────
@@ -940,6 +956,78 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
   const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
+  const appBasePath: string =
+    typeof rscModule.vinextConfig?.basePath === "string" ? rscModule.vinextConfig.basePath : "";
+  const appAssetPrefix: string =
+    typeof rscModule.vinextConfig?.assetPrefix === "string"
+      ? rscModule.vinextConfig.assetPrefix
+      : "";
+
+  const pagesEntryPath = [
+    path.join(path.dirname(rscEntryPath), "entry.js"),
+    path.join(path.dirname(rscEntryPath), "entry.mjs"),
+  ].find((candidate) => fs.existsSync(candidate));
+  const pagesServerEntry = pagesEntryPath
+    ? ((await import(
+        `${pathToFileURL(pagesEntryPath).href}?t=${fs.statSync(pagesEntryPath).mtimeMs}`
+      )) as {
+        handleApiRoute?: (request: Request, url: string) => Promise<Response> | Response;
+        runMiddleware?: (
+          request: Request,
+          ctx?: unknown,
+        ) => Promise<{
+          continue: boolean;
+          redirectUrl?: string;
+          redirectStatus?: number;
+          response?: Response;
+          responseHeaders?: Headers;
+          rewriteUrl?: string;
+          rewriteStatus?: number;
+          waitUntilPromises?: Promise<unknown>[];
+        }>;
+      })
+    : null;
+
+  const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+  if (fs.existsSync(ssrManifestPath)) {
+    try {
+      (
+        globalThis as typeof globalThis & {
+          __VINEXT_SSR_MANIFEST__?: Record<string, string[]>;
+        }
+      ).__VINEXT_SSR_MANIFEST__ = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8")) as Record<
+        string,
+        string[]
+      >;
+    } catch {
+      /* ignore parse errors */
+    }
+  }
+  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+  if (fs.existsSync(buildManifestPath)) {
+    try {
+      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+      for (const [, value] of Object.entries(buildManifest)) {
+        const entry = value as { isEntry?: boolean; file?: unknown };
+        if (
+          entry.isEntry &&
+          typeof entry.file === "string" &&
+          /(?:^|\/)pages[-.]/.test(entry.file)
+        ) {
+          globalThis.__VINEXT_CLIENT_ENTRY__ = manifestFileWithBase(entry.file, "/");
+          break;
+        }
+      }
+      const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
+        manifestFileWithBase(file, "/"),
+      );
+      if (lazyChunks.length > 0) {
+        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+      }
+    } catch {
+      /* ignore parse errors */
+    }
+  }
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
@@ -1004,12 +1092,24 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     // Serve hashed build assets (Vite output in /assets/) directly.
+    // With basePath configured, generated HTML points at /<basePath>/assets/*;
+    // strip that prefix before looking in dist/client.
     // Public directory files fall through to the RSC handler, which runs
     // middleware before serving them.
+    const appStaticLookupPath = stripBasePath(pathname, appBasePath);
     if (
-      pathname.startsWith("/assets/") &&
-      (await tryServeStatic(req, res, clientDir, pathname, compress, staticCache))
+      appStaticLookupPath.startsWith("/assets/") &&
+      (await tryServeStatic(req, res, clientDir, appStaticLookupPath, compress, staticCache))
     ) {
+      return;
+    }
+    const nextStaticLookupPath = getNextStaticAssetLookupPath(appStaticLookupPath, appAssetPrefix);
+    if (isNextStaticAssetPath(nextStaticLookupPath)) {
+      if (await tryServeStatic(req, res, clientDir, nextStaticLookupPath, compress, staticCache)) {
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
       return;
     }
 
@@ -1068,7 +1168,83 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req, normalizedUrl);
-      const response = await rscHandler(request);
+      let response = await rscHandler(request);
+
+      // Hybrid App + Pages builds produce a separate Pages server entry for
+      // Pages API routes. If the App handler did not match an /api route,
+      // delegate to that entry so App Router production serving does not hide
+      // the Pages Router API surface.
+      if (
+        response.status === 404 &&
+        (pathname.startsWith("/api/") || pathname === "/api") &&
+        typeof pagesServerEntry?.handleApiRoute === "function"
+      ) {
+        const fallbackHeaders = omitHeadersCaseInsensitive(mergeResponseHeaders({}, response), [
+          "content-encoding",
+          "content-length",
+          "content-type",
+          "transfer-encoding",
+        ]);
+        cancelResponseBody(response);
+        let pagesApiRequest = request;
+        let pagesApiUrl = normalizedUrl;
+        if (typeof pagesServerEntry.runMiddleware === "function") {
+          const middlewareResult = await pagesServerEntry.runMiddleware(request, undefined);
+          if (middlewareResult.waitUntilPromises?.length) {
+            void Promise.allSettled(middlewareResult.waitUntilPromises);
+          }
+          if (!middlewareResult.continue) {
+            if (middlewareResult.redirectUrl) {
+              response = new Response(null, {
+                status: middlewareResult.redirectStatus ?? 307,
+                headers: {
+                  ...Object.fromEntries(toWebHeaders(fallbackHeaders)),
+                  Location: normalizeLocalRedirectLocation(
+                    middlewareResult.redirectUrl,
+                    request.url,
+                    false,
+                  ),
+                },
+              });
+              await sendWebResponse(response, req, res, compress);
+              return;
+            }
+            if (middlewareResult.response) {
+              response = mergeWebResponse(fallbackHeaders, middlewareResult.response);
+              await sendWebResponse(response, req, res, compress);
+              return;
+            }
+          }
+          if (middlewareResult.responseHeaders) {
+            for (const [key, value] of middlewareResult.responseHeaders) {
+              if (key === "set-cookie") {
+                const existing = fallbackHeaders[key];
+                if (Array.isArray(existing)) {
+                  existing.push(value);
+                } else if (existing) {
+                  fallbackHeaders[key] = [existing as string, value];
+                } else {
+                  fallbackHeaders[key] = [value];
+                }
+              } else {
+                fallbackHeaders[key] = value;
+              }
+            }
+            pagesApiRequest = applyMiddlewareRequestHeaders(
+              fallbackHeaders,
+              pagesApiRequest,
+            ).request;
+          }
+          if (middlewareResult.rewriteUrl && !isExternalUrl(middlewareResult.rewriteUrl)) {
+            const rewriteUrl = new URL(middlewareResult.rewriteUrl, request.url);
+            pagesApiUrl = rewriteUrl.pathname + rewriteUrl.search;
+          }
+        }
+        response = mergeWebResponse(
+          fallbackHeaders,
+          await pagesServerEntry.handleApiRoute(pagesApiRequest, pagesApiUrl),
+        );
+      }
 
       const staticFileSignal = response.headers.get("x-vinext-static-file");
       if (staticFileSignal) {
@@ -1145,6 +1321,206 @@ type PagesRouterServerOptions = {
   compress: boolean;
 };
 
+type PagesDataRequestInfo = {
+  localePrefix: string;
+  pageUrl: string;
+};
+
+function isFileLikePathname(pathname: string): boolean {
+  const pathWithoutTrailing = pathname.replace(/\/+$/, "");
+  const lastSegment = pathWithoutTrailing.slice(pathWithoutTrailing.lastIndexOf("/") + 1);
+  return lastSegment.includes(".");
+}
+
+function normalizeTrailingSlashPathAndSearch(url: string, trailingSlash: boolean): string {
+  const parsed = new URL(url, "http://vinext.local");
+  let pathname = parsed.pathname;
+  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
+    return pathname + parsed.search;
+  }
+
+  if (isFileLikePathname(pathname)) {
+    pathname = pathname.replace(/\/+$/, "") || "/";
+  } else if (trailingSlash) {
+    pathname = pathname.endsWith("/") ? pathname : `${pathname}/`;
+  } else {
+    pathname = pathname.replace(/\/+$/, "") || "/";
+  }
+
+  return pathname + parsed.search;
+}
+
+function pathnameForConfigMatch(pathname: string, trailingSlash: boolean): string {
+  if (!trailingSlash || pathname === "/") return pathname;
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
+function rulesForRequestBasePath<T extends { basePath?: false }>(
+  rules: readonly T[],
+  basePath: string,
+  requestHadBasePath: boolean,
+): T[] {
+  if (!basePath) return [...rules];
+  return rules.filter((rule) =>
+    requestHadBasePath ? rule.basePath !== false : rule.basePath === false,
+  );
+}
+
+function normalizeLocalRedirectLocation(
+  location: string,
+  requestUrl: string,
+  trailingSlash: boolean,
+  i18nConfig?: { locales?: string[] } | null,
+): string {
+  try {
+    const parsed = new URL(location, requestUrl);
+    const requestOrigin = new URL(requestUrl).origin;
+    if (parsed.origin !== requestOrigin) return location;
+    parsed.pathname = stripLocalePrefixFromApiPath(parsed.pathname, i18nConfig);
+    const normalized = normalizeTrailingSlashPathAndSearch(
+      parsed.pathname + parsed.search,
+      trailingSlash,
+    );
+    parsed.pathname = normalized.split("?")[0] || "/";
+    parsed.search = normalized.includes("?") ? normalized.slice(normalized.indexOf("?")) : "";
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch {
+    return location;
+  }
+}
+
+function stripLocalePrefixFromApiPath(
+  pathname: string,
+  i18nConfig?: { locales?: string[] } | null,
+): string {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length < 2 || segments[1] !== "api") return pathname;
+  const locale = i18nConfig?.locales?.find(
+    (candidate) => candidate.toLowerCase() === segments[0]?.toLowerCase(),
+  );
+  return locale ? `/${segments.slice(1).join("/")}` : pathname;
+}
+
+function buildPagesDataRedirectLocation(
+  location: string,
+  requestUrl: string,
+  trailingSlash: boolean,
+  localePrefix: string,
+): string {
+  try {
+    const parsed = new URL(location, requestUrl);
+    const requestOrigin = new URL(requestUrl).origin;
+    if (parsed.origin !== requestOrigin) return location;
+
+    const normalized = normalizeTrailingSlashPathAndSearch(
+      parsed.pathname + parsed.search,
+      trailingSlash,
+    );
+    const normalizedPathname = normalized.split("?")[0] || "/";
+    const pathname =
+      localePrefix &&
+      (normalizedPathname === `${localePrefix}/api` ||
+        normalizedPathname.startsWith(`${localePrefix}/api/`))
+        ? normalizedPathname.slice(localePrefix.length) || "/"
+        : normalizedPathname;
+    const search = normalized.includes("?") ? normalized.slice(normalized.indexOf("?")) : "";
+    const localizedPathname =
+      localePrefix &&
+      pathname !== "/" &&
+      !pathname.startsWith(`${localePrefix}/`) &&
+      pathname !== localePrefix &&
+      !pathname.startsWith("/api/")
+        ? `${localePrefix}${pathname}`
+        : pathname;
+    return localizedPathname + search + parsed.hash;
+  } catch {
+    return location;
+  }
+}
+
+function publicPagesDataRedirectLocalePrefix(
+  dataRequestInfo: PagesDataRequestInfo,
+  i18nConfig?: { defaultLocale?: string } | null,
+): string {
+  return dataRequestInfo.localePrefix === `/${i18nConfig?.defaultLocale}`
+    ? ""
+    : dataRequestInfo.localePrefix;
+}
+
+function parsePagesDataRequest(
+  pathname: string,
+  search: string,
+  buildId?: string | null,
+  i18nConfig?: { locales?: string[]; defaultLocale?: string } | null,
+): PagesDataRequestInfo | null {
+  const prefix = "/_next/data/";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(".json")) return null;
+
+  const rest = pathname.slice(prefix.length);
+  const firstSlash = rest.indexOf("/");
+  if (firstSlash < 0) return null;
+
+  const requestBuildId = rest.slice(0, firstSlash);
+  if (buildId && requestBuildId !== buildId) return null;
+
+  const rawPagePath = rest.slice(firstSlash).slice(0, -".json".length);
+  const pagePath = rawPagePath === "/index" ? "/" : rawPagePath;
+  const segments = pagePath.split("/").filter(Boolean);
+  const firstSegment = segments[0];
+  const locales = i18nConfig?.locales ?? [];
+  const locale = locales.find(
+    (candidate) => candidate.toLowerCase() === firstSegment?.toLowerCase(),
+  );
+  const localePrefix = locale ? `/${locale}` : "";
+  const pathWithoutLocale = locale ? "/" + segments.slice(1).join("/") : pagePath;
+  const normalizedPath =
+    pathWithoutLocale === "/" || pathWithoutLocale === "" ? "/" : pathWithoutLocale;
+
+  return {
+    localePrefix,
+    pageUrl: normalizedPath + search,
+  };
+}
+
+function normalizePagesDataRequestPageUrl(
+  dataRequestInfo: PagesDataRequestInfo,
+  trailingSlash: boolean,
+): string {
+  return normalizeTrailingSlashPathAndSearch(
+    `${dataRequestInfo.localePrefix}${dataRequestInfo.pageUrl}`,
+    trailingSlash,
+  );
+}
+
+function normalizePagesDataRequestMiddlewareUrl(
+  dataRequestInfo: PagesDataRequestInfo,
+  trailingSlash: boolean,
+  i18nConfig?: { defaultLocale?: string } | null,
+): string {
+  const localePrefix = publicPagesDataRedirectLocalePrefix(dataRequestInfo, i18nConfig);
+  return normalizeTrailingSlashPathAndSearch(
+    `${localePrefix}${dataRequestInfo.pageUrl}`,
+    trailingSlash,
+  );
+}
+
+function applyPagesDataLocalePrefixToResolvedUrl(
+  resolvedUrl: string,
+  dataRequestInfo: PagesDataRequestInfo | null,
+): string {
+  if (!dataRequestInfo?.localePrefix || isExternalUrl(resolvedUrl)) return resolvedUrl;
+
+  const parsed = new URL(resolvedUrl, "http://vinext.local");
+  if (
+    parsed.pathname === dataRequestInfo.localePrefix ||
+    parsed.pathname.startsWith(`${dataRequestInfo.localePrefix}/`)
+  ) {
+    return resolvedUrl;
+  }
+
+  return `${dataRequestInfo.localePrefix}${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
 /**
  * Start the Pages Router production server.
  *
@@ -1170,7 +1546,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
+  const assetPrefix: string = vinextConfig?.assetPrefix ?? "";
+  const buildId: string | null = vinextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? null;
   const assetBase = basePath ? `${basePath}/` : "/";
+  const i18nConfig = vinextConfig?.i18n ?? null;
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? {
@@ -1200,13 +1579,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   }
 
-  // Load the build manifest to compute lazy chunks — chunks only reachable via
-  // dynamic imports (React.lazy, next/dynamic). These should not be
-  // modulepreloaded since they are fetched on demand.
+  // Load the build manifest to find the Pages client entry and compute lazy
+  // chunks. The generated Pages server entry reads these globals while rendering
+  // asset tags, mirroring the Cloudflare Worker build-time injection path.
   const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
   if (fs.existsSync(buildManifestPath)) {
     try {
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+      for (const [, value] of Object.entries(buildManifest)) {
+        const entry = value as { isEntry?: boolean; file?: unknown };
+        if (entry.isEntry && typeof entry.file === "string") {
+          globalThis.__VINEXT_CLIENT_ENTRY__ = manifestFileWithBase(entry.file, assetBase);
+          break;
+        }
+      }
       const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
         manifestFileWithBase(file, assetBase),
       );
@@ -1300,12 +1686,34 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // middleware. These are always public and don't need protection.
     // Public directory files (e.g. /favicon.ico, /robots.txt) are served
     // after middleware (step 5b) so middleware can intercept them.
-    const staticLookupPath = stripBasePath(pathname, basePath);
+    const staticLookupPath = getNextStaticAssetLookupPath(
+      stripBasePath(pathname, basePath),
+      assetPrefix,
+    );
     if (
       staticLookupPath.startsWith("/assets/") &&
       (await tryServeStatic(req, res, clientDir, staticLookupPath, compress, staticCache))
     ) {
       return;
+    }
+    if (isNextStaticAssetPath(staticLookupPath)) {
+      if (await tryServeStatic(req, res, clientDir, staticLookupPath, compress, staticCache)) {
+        return;
+      }
+      if (buildId && staticLookupPath === `/_next/static/${buildId}/_buildManifest.js`) {
+        const body =
+          "self.__BUILD_MANIFEST = {};\nself.__BUILD_MANIFEST_CB && self.__BUILD_MANIFEST_CB();\n";
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Content-Length": String(Buffer.byteLength(body)),
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        res.end(body);
+        return;
+      }
+      // Missing Next static assets still flow through middleware in Next.js.
+      // This allows middleware to rewrite e.g. missing chunk URLs and allows
+      // NextResponse.next({ headers }) to decorate the eventual static 404.
     }
 
     // ── Image optimization passthrough ──────────────────────────────
@@ -1352,6 +1760,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     try {
+      const requestHadBasePath = !basePath || hasBasePath(pathname, basePath);
+
       // ── 2. Strip basePath ─────────────────────────────────────────
       {
         const stripped = stripBasePath(pathname, basePath);
@@ -1362,15 +1772,45 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
       }
 
+      const originalPagesRequestUrl = url;
+      const dataRequestInfo = parsePagesDataRequest(
+        pathname,
+        rawQs,
+        vinextConfig?.buildId,
+        i18nConfig,
+      );
+      const isPagesDataRequest = dataRequestInfo !== null;
+      if (dataRequestInfo) {
+        url = normalizePagesDataRequestPageUrl(dataRequestInfo, trailingSlash);
+        pathname = url.split("?")[0];
+      }
+      const middlewareRequestUrl = dataRequestInfo
+        ? normalizePagesDataRequestMiddlewareUrl(dataRequestInfo, trailingSlash, i18nConfig)
+        : url;
+
       // ── 3. Trailing slash normalization ───────────────────────────
-      if (pathname !== "/" && pathname !== "/api" && !pathname.startsWith("/api/")) {
+      if (
+        !isPagesDataRequest &&
+        pathname !== "/" &&
+        pathname !== "/api" &&
+        !pathname.startsWith("/api/")
+      ) {
         const hasTrailing = pathname.endsWith("/");
-        if (trailingSlash && !hasTrailing) {
+        const pathWithoutTrailing = pathname.replace(/\/+$/, "");
+        const lastSegment = pathWithoutTrailing.slice(pathWithoutTrailing.lastIndexOf("/") + 1);
+        const isFileLike = lastSegment.includes(".");
+        if (isFileLike && hasTrailing) {
+          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+          res.writeHead(308, { Location: basePath + pathWithoutTrailing + qs });
+          res.end();
+          return;
+        }
+        if (trailingSlash && !hasTrailing && !isFileLike) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
           res.writeHead(308, { Location: basePath + pathname + "/" + qs });
           res.end();
           return;
-        } else if (!trailingSlash && hasTrailing) {
+        } else if (!trailingSlash && hasTrailing && !isFileLike) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
           res.writeHead(308, { Location: basePath + pathname.replace(/\/+$/, "") + qs });
           res.end();
@@ -1388,9 +1828,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
+      if (isPagesDataRequest) {
+        reqHeaders.set("x-vinext-data-request", "1");
+        reqHeaders.set("x-vinext-original-url", originalPagesRequestUrl);
+        if (dataRequestInfo.localePrefix) {
+          reqHeaders.set("x-vinext-data-locale", dataRequestInfo.localePrefix.slice(1));
+        }
+      }
+      if (basePath) {
+        reqHeaders.set("x-vinext-request-had-base-path", requestHadBasePath ? "1" : "0");
+      }
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      let webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      let webRequest = new Request(`${protocol}://${hostHeader}${middlewareRequestUrl}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
@@ -1405,21 +1855,68 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // beforeFiles, afterFiles, and fallback all run after middleware per the
       // Next.js execution order, so they use postMwReqCtx below.
       const reqCtx: RequestContext = requestContextFromRequest(webRequest);
+      const requestRedirects: NextRedirect[] = rulesForRequestBasePath(
+        configRedirects,
+        basePath,
+        requestHadBasePath,
+      );
+      const requestHeaders: NextHeader[] = rulesForRequestBasePath(
+        configHeaders,
+        basePath,
+        requestHadBasePath,
+      );
+      const requestRewrites = {
+        beforeFiles: rulesForRequestBasePath<NextRewrite>(
+          configRewrites.beforeFiles ?? [],
+          basePath,
+          requestHadBasePath,
+        ),
+        afterFiles: rulesForRequestBasePath<NextRewrite>(
+          configRewrites.afterFiles ?? [],
+          basePath,
+          requestHadBasePath,
+        ),
+        fallback: rulesForRequestBasePath<NextRewrite>(
+          configRewrites.fallback ?? [],
+          basePath,
+          requestHadBasePath,
+        ),
+      };
 
       // ── 4. Apply redirects from next.config.js ────────────────────
-      if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+      if (requestRedirects.length) {
+        const redirectMatchPathname = dataRequestInfo
+          ? dataRequestInfo.pageUrl.split("?")[0] || "/"
+          : middlewareRequestUrl.split("?")[0] || "/";
+        const redirect = matchRedirect(
+          pathnameForConfigMatch(redirectMatchPathname, trailingSlash),
+          requestRedirects,
+          reqCtx,
+        );
         if (redirect) {
           // Guard against double-prefixing: only add basePath if destination
           // doesn't already start with it.
           // Sanitize the final destination to prevent protocol-relative URL open redirects.
           const dest = sanitizeDestination(
             basePath &&
+              requestHadBasePath &&
               !isExternalUrl(redirect.destination) &&
               !hasBasePath(redirect.destination, basePath)
               ? basePath + redirect.destination
               : redirect.destination,
           );
+          if (isPagesDataRequest) {
+            res.writeHead(redirect.permanent ? 308 : 307, {
+              "x-nextjs-redirect": buildPagesDataRedirectLocation(
+                dest,
+                webRequest.url,
+                trailingSlash,
+                publicPagesDataRedirectLocalePrefix(dataRequestInfo, i18nConfig),
+              ),
+            });
+            res.end();
+            return;
+          }
           res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
           res.end();
           return;
@@ -1428,6 +1925,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 5. Run middleware ─────────────────────────────────────────
       let resolvedUrl = url;
+      let resolvedConfigUrl = middlewareRequestUrl;
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
@@ -1442,8 +1940,38 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
         if (!result.continue) {
           if (result.redirectUrl) {
+            if (isPagesDataRequest) {
+              const redirectHeaders: Record<string, string | string[]> = {
+                "x-nextjs-redirect": buildPagesDataRedirectLocation(
+                  result.redirectUrl,
+                  webRequest.url,
+                  trailingSlash,
+                  publicPagesDataRedirectLocalePrefix(dataRequestInfo, i18nConfig),
+                ),
+              };
+              if (result.responseHeaders) {
+                for (const [key, value] of result.responseHeaders) {
+                  const existing = redirectHeaders[key];
+                  if (existing === undefined) {
+                    redirectHeaders[key] = value;
+                  } else if (Array.isArray(existing)) {
+                    existing.push(value);
+                  } else {
+                    redirectHeaders[key] = [existing, value];
+                  }
+                }
+              }
+              res.writeHead(result.redirectStatus ?? 307, redirectHeaders);
+              res.end();
+              return;
+            }
             const redirectHeaders: Record<string, string | string[]> = {
-              Location: result.redirectUrl,
+              Location: normalizeLocalRedirectLocation(
+                result.redirectUrl,
+                webRequest.url,
+                trailingSlash,
+                i18nConfig,
+              ),
             };
             if (result.responseHeaders) {
               for (const [key, value] of result.responseHeaders) {
@@ -1504,7 +2032,36 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
         // Apply middleware rewrite
         if (result.rewriteUrl) {
+          if (isExternalUrl(result.rewriteUrl)) {
+            const { request: externalRewriteRequest } = applyMiddlewareRequestHeaders(
+              middlewareHeaders,
+              webRequest,
+            );
+            const proxyResponse = await proxyExternalRequest(
+              externalRewriteRequest,
+              result.rewriteUrl,
+            );
+            const mergedResponse = mergeWebResponse(
+              middlewareHeaders,
+              proxyResponse,
+              result.rewriteStatus,
+            );
+            await sendWebResponse(mergedResponse, req, res, compress);
+            return;
+          }
+          if (dataRequestInfo) {
+            const rewrittenPathname = result.rewriteUrl.split("?")[0] || "/";
+            middlewareHeaders["x-nextjs-matched-path"] =
+              dataRequestInfo.localePrefix + rewrittenPathname;
+          }
           resolvedUrl = result.rewriteUrl;
+          resolvedConfigUrl = result.rewriteUrl;
+        } else {
+          const matchedPath = middlewareHeaders["x-matched-path"];
+          if (typeof matchedPath === "string" && matchedPath.startsWith("/")) {
+            resolvedUrl = matchedPath;
+            resolvedConfigUrl = matchedPath;
+          }
         }
 
         // Apply custom status code from middleware rewrite
@@ -1525,6 +2082,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Config header matching must keep using the original normalized pathname
       // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
+      let resolvedConfigPathname = resolvedConfigUrl.split("?")[0];
 
       // ── 6. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
@@ -1534,8 +2092,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // by middleware so middleware always wins for the same key.
       // This runs before step 5b so config headers are included in static
       // public directory file responses (matching Next.js behavior).
-      if (configHeaders.length) {
-        const matched = matchHeaders(pathname, configHeaders, reqCtx);
+      if (requestHeaders.length) {
+        const matched = matchHeaders(pathname, requestHeaders, reqCtx);
         for (const h of matched) {
           const lk = h.key.toLowerCase();
           if (lk === "set-cookie") {
@@ -1555,6 +2113,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             middlewareHeaders[lk] = h.value;
           }
         }
+      }
+
+      if (isNextStaticAssetPath(staticLookupPath)) {
+        const body = "Not Found";
+        res.writeHead(404, {
+          ...omitHeadersCaseInsensitive(middlewareHeaders, ["content-type", "content-length"]),
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Length": String(Buffer.byteLength(body)),
+        });
+        res.end(body);
+        return;
       }
 
       // ── 5b. Serve public directory static files ────────────────────
@@ -1582,16 +2151,23 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
-      if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+      if (requestRewrites.beforeFiles.length) {
+        const rewritten = matchRewrite(
+          pathnameForConfigMatch(resolvedConfigPathname, trailingSlash),
+          requestRewrites.beforeFiles,
+          postMwReqCtx,
+          resolvedConfigUrl,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
+          resolvedConfigUrl = rewritten;
+          resolvedUrl = applyPagesDataLocalePrefixToResolvedUrl(rewritten, dataRequestInfo);
           resolvedPathname = rewritten.split("?")[0];
+          resolvedConfigPathname = resolvedConfigUrl.split("?")[0];
         }
       }
 
@@ -1636,18 +2212,52 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         return;
       }
 
+      // ── 8b. Public/static asset routes after beforeFiles rewrites ──
+      // beforeFiles rewrites run before filesystem routes in Next.js, so a
+      // rewrite can target public/file.txt and should be served as a static
+      // file before afterFiles rewrites or page rendering.
+      if (
+        resolvedPathname !== "/" &&
+        !resolvedPathname.startsWith("/api/") &&
+        !resolvedPathname.startsWith("/assets/") &&
+        (await tryServeStatic(
+          req,
+          res,
+          clientDir,
+          resolvedPathname,
+          compress,
+          staticCache,
+          middlewareHeaders,
+        ))
+      ) {
+        return;
+      }
+
       // ── 9. Apply afterFiles rewrites from next.config.js ──────────
-      if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+      if (requestRewrites.afterFiles.length) {
+        const rewritten = matchRewrite(
+          pathnameForConfigMatch(resolvedConfigPathname, trailingSlash),
+          requestRewrites.afterFiles,
+          postMwReqCtx,
+          resolvedConfigUrl,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
+          resolvedConfigUrl = rewritten;
+          resolvedUrl = applyPagesDataLocalePrefixToResolvedUrl(rewritten, dataRequestInfo);
           resolvedPathname = rewritten.split("?")[0];
+          resolvedConfigPathname = resolvedConfigUrl.split("?")[0];
         }
+      }
+
+      if (basePath && !requestHadBasePath && resolvedUrl === url) {
+        res.writeHead(404);
+        res.end("404 - Not found");
+        return;
       }
 
       // ── 10. SSR page rendering ────────────────────────────────────
@@ -1660,14 +2270,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           ssrManifest,
           undefined,
           middlewareResponseHeaders,
+          isPagesDataRequest,
         );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
-        if (response && response.status === 404 && configRewrites.fallback?.length) {
+        if (response && response.status === 404 && requestRewrites.fallback.length) {
           const fallbackRewrite = matchRewrite(
-            resolvedPathname,
-            configRewrites.fallback,
+            pathnameForConfigMatch(resolvedConfigPathname, trailingSlash),
+            requestRewrites.fallback,
             postMwReqCtx,
+            resolvedConfigUrl,
           );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
@@ -1675,12 +2287,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
+            const localizedFallbackRewrite = applyPagesDataLocalePrefixToResolvedUrl(
+              fallbackRewrite,
+              dataRequestInfo,
+            );
             response = await renderPage(
               webRequest,
-              fallbackRewrite,
+              localizedFallbackRewrite,
               ssrManifest,
               undefined,
               middlewareResponseHeaders,
+              isPagesDataRequest,
             );
           }
         }
@@ -1753,4 +2370,6 @@ export {
   mergeResponseHeaders,
   mergeWebResponse,
   tryServeStatic,
+  parsePagesDataRequest,
+  normalizePagesDataRequestPageUrl,
 };

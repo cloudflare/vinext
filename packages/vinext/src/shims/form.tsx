@@ -21,15 +21,28 @@
 import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
 import { navigateClientSide } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
+import { hasBasePath } from "../utils/base-path.js";
 import { toSameOriginPath } from "./url-utils.js";
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
 export { useActionState };
 
-type FormSubmitter = HTMLButtonElement | HTMLInputElement;
+type FormSubmitter = (HTMLButtonElement | HTMLInputElement) & {
+  disabled?: boolean;
+  formEnctype?: string;
+  formMethod?: string;
+  formTarget?: string;
+  name?: string;
+  value?: string;
+  getAttribute(name: string): string | null;
+};
 const SUPPORTED_FORM_ENCTYPE = "application/x-www-form-urlencoded";
 const SUPPORTED_FORM_METHOD = "GET";
 const SUPPORTED_FORM_TARGET = "_self";
+
+function getBasePath(): string {
+  return process.env.__NEXT_ROUTER_BASEPATH ?? "";
+}
 
 function isSafeAction(action: string): boolean {
   // Block dangerous URI schemes
@@ -52,18 +65,37 @@ function isSafeAction(action: string): boolean {
   return true;
 }
 
-function getSubmitter(nativeEvent: unknown): FormSubmitter | null {
+function isFormSubmitter(value: unknown): value is FormSubmitter {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "getAttribute" in value &&
+    typeof value.getAttribute === "function"
+  );
+}
+
+function getSubmitter(
+  nativeEvent: unknown,
+  form: HTMLFormElement,
+  fallbackSubmitter: FormSubmitter | null,
+): FormSubmitter | null {
   const submitter =
     nativeEvent &&
     typeof nativeEvent === "object" &&
     "submitter" in nativeEvent &&
-    nativeEvent.submitter instanceof Element
+    isFormSubmitter(nativeEvent.submitter)
       ? nativeEvent.submitter
       : null;
 
-  if (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) {
-    return submitter;
+  if (submitter) return submitter;
+
+  const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+  if (isFormSubmitter(activeElement) && form.contains(activeElement as Node)) {
+    return activeElement;
   }
+
+  if (fallbackSubmitter) return fallbackSubmitter;
+
   return null;
 }
 
@@ -77,6 +109,21 @@ function getEffectiveMethod(
 
 function getEffectiveAction(submitter: FormSubmitter | null, formAction: string): string {
   return submitter?.getAttribute("formaction") ?? formAction;
+}
+
+function addBasePathToFormAction(action: string): string {
+  const basePath = getBasePath();
+  if (!basePath || !action.startsWith("/") || action.startsWith("//")) return action;
+
+  try {
+    const url = new URL(action, "http://vinext.local");
+    if (url.origin !== "http://vinext.local" || hasBasePath(url.pathname, basePath)) {
+      return action;
+    }
+    return `${basePath}${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return action;
+  }
 }
 
 function checkFormActionUrl(action: string, source: "action" | "formAction"): void {
@@ -98,8 +145,20 @@ function checkFormActionUrl(action: string, source: "action" | "formAction"): vo
   }
 }
 
+function getSubmitterAttribute(
+  submitter: FormSubmitter,
+  lowerName: string,
+  reactName: string,
+): string | null {
+  return submitter.getAttribute(lowerName) ?? submitter.getAttribute(reactName);
+}
+
 function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
-  const formEncType = submitter.getAttribute("formenctype");
+  const formEncType =
+    getSubmitterAttribute(submitter, "formenctype", "formEncType") ??
+    (submitter.formEnctype && submitter.formEnctype !== SUPPORTED_FORM_ENCTYPE
+      ? submitter.formEnctype
+      : null);
   if (formEncType !== null && formEncType !== SUPPORTED_FORM_ENCTYPE) {
     console.error(
       `<Form>'s \`encType\` was set to an unsupported value via \`formEncType="${formEncType}"\`. ` +
@@ -108,7 +167,11 @@ function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
     return true;
   }
 
-  const formMethod = submitter.getAttribute("formmethod");
+  const formMethod =
+    getSubmitterAttribute(submitter, "formmethod", "formMethod") ??
+    (submitter.formMethod && submitter.formMethod.toUpperCase() !== SUPPORTED_FORM_METHOD
+      ? submitter.formMethod
+      : null);
   if (formMethod !== null && formMethod.toUpperCase() !== SUPPORTED_FORM_METHOD) {
     console.error(
       `<Form>'s \`method\` was set to an unsupported value via \`formMethod="${formMethod}"\`. ` +
@@ -117,7 +180,11 @@ function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
     return true;
   }
 
-  const formTarget = submitter.getAttribute("formtarget");
+  const formTarget =
+    getSubmitterAttribute(submitter, "formtarget", "formTarget") ??
+    (submitter.formTarget && submitter.formTarget !== SUPPORTED_FORM_TARGET
+      ? submitter.formTarget
+      : null);
   if (formTarget !== null && formTarget !== SUPPORTED_FORM_TARGET) {
     console.error(
       `<Form>'s \`target\` was set to an unsupported value via \`formTarget="${formTarget}"\`. ` +
@@ -127,6 +194,22 @@ function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
   }
 
   return false;
+}
+
+function hasUnsupportedSubmitterFallback(form: HTMLFormElement): boolean {
+  if (typeof form.querySelectorAll !== "function") return false;
+
+  for (const element of form.querySelectorAll("button,input")) {
+    if (isFormSubmitter(element) && hasUnsupportedSubmitterAttributes(element)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasReactClientActionAttributes(submitter: FormSubmitter): boolean {
+  const action = submitter.getAttribute("formaction") ?? submitter.getAttribute("formAction");
+  return action !== null && /^\s*javascript:/i.test(action);
 }
 
 function createFormSubmitDestinationUrl(
@@ -142,6 +225,15 @@ function createFormSubmitDestinationUrl(
   const formData = buildFormData(form, submitter);
   for (const [name, value] of formData) {
     targetUrl.searchParams.append(name, typeof value === "string" ? value : value.name);
+  }
+
+  // When a basePath-prefixed action/formAction resolves to a browser URL,
+  // hand the absolute URL to navigateClientSide so it can normalize back to
+  // an app-relative route before re-applying basePath. Returning "/base/..."
+  // here would be treated as app-relative and become "/base/base/...".
+  const basePath = getBasePath();
+  if (basePath && hasBasePath(targetUrl.pathname, basePath)) {
+    return targetUrl.href;
   }
 
   return toSameOriginPath(targetUrl.href) ?? targetUrl.href;
@@ -164,6 +256,8 @@ function buildFormData(form: HTMLFormElement, submitter: FormSubmitter | null): 
 type FormProps = {
   /** Target URL for GET forms, or server action for POST forms */
   action: string | ((formData: FormData) => void | Promise<void>);
+  /** Disable automatic loading-state prefetch behavior */
+  prefetch?: false | null;
   /** Replace instead of push in history (default: false) */
   replace?: boolean;
   /** Scroll to top after navigation (default: true) */
@@ -171,11 +265,50 @@ type FormProps = {
 } & FormHTMLAttributes<HTMLFormElement>;
 
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
-  const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
+  const {
+    action,
+    prefetch = null,
+    replace = false,
+    scroll = true,
+    onSubmit,
+    onClickCapture,
+    ...rest
+  } = props;
+  let capturedSubmitter: FormSubmitter | null = null;
+  let didPrefetchLoading = false;
+
+  function setFormRef(element: HTMLFormElement | null): void {
+    if (typeof ref === "function") {
+      ref(element);
+    } else if (ref) {
+      ref.current = element;
+    }
+
+    if (
+      element &&
+      !didPrefetchLoading &&
+      typeof action === "string" &&
+      prefetch !== false &&
+      isSafeAction(action) &&
+      typeof window !== "undefined" &&
+      typeof window.__VINEXT_RSC_PREFETCH_LOADING__ === "function"
+    ) {
+      didPrefetchLoading = true;
+      void window.__VINEXT_RSC_PREFETCH_LOADING__(action);
+    }
+  }
 
   // If action is a function (server action), pass it directly to React
   if (typeof action === "function") {
-    return <form ref={ref} action={action} onSubmit={onSubmit} {...rest} />;
+    return (
+      <form
+        ref={setFormRef}
+        action={action}
+        onSubmit={onSubmit}
+        onClickCapture={onClickCapture}
+        {...rest}
+      />
+    );
   }
 
   // Block dangerous action URLs. Render <form> without action attribute
@@ -188,8 +321,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
     }
-    return <form ref={ref} onSubmit={onSubmit} {...rest} />;
+    return <form ref={setFormRef} onSubmit={onSubmit} {...rest} />;
   }
+
+  const actionHref = addBasePathToFormAction(action);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
@@ -198,8 +333,14 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       if (e.defaultPrevented) return;
     }
 
-    const submitter = getSubmitter(e.nativeEvent);
+    const submitter = getSubmitter(e.nativeEvent, e.currentTarget, capturedSubmitter);
     if (submitter && hasUnsupportedSubmitterAttributes(submitter)) {
+      return;
+    }
+    if (!submitter && hasUnsupportedSubmitterFallback(e.currentTarget)) {
+      return;
+    }
+    if (submitter && hasReactClientActionAttributes(submitter)) {
       return;
     }
 
@@ -207,7 +348,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     const method = getEffectiveMethod(submitter, rest.method);
     if (method !== "GET") return;
 
-    const effectiveAction = getEffectiveAction(submitter, action as string);
+    const effectiveAction = getEffectiveAction(submitter, actionHref);
     if (process.env.NODE_ENV !== "production" && submitter?.getAttribute("formaction") !== null) {
       checkFormActionUrl(effectiveAction, "formAction");
     }
@@ -226,7 +367,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: use the shared navigator so URL/history publish stays
       // aligned with the committed RSC tree.
-      await navigateClientSide(url, replace ? "replace" : "push", scroll);
+      await navigateClientSide(
+        url,
+        replace ? "replace" : "push",
+        scroll,
+        prefetch !== false,
+        prefetch === false,
+      );
     } else {
       // Pages Router: use router or fallback
       if (replace) {
@@ -244,7 +391,23 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
   }
 
-  return <form ref={ref} action={action} onSubmit={handleSubmit} {...rest} />;
+  function handleClickCapture(e: React.MouseEvent<HTMLFormElement>) {
+    const target = e.target;
+    if (isFormSubmitter(target) && e.currentTarget.contains(target)) {
+      capturedSubmitter = target;
+    }
+    onClickCapture?.(e);
+  }
+
+  return (
+    <form
+      ref={setFormRef}
+      action={actionHref}
+      onSubmit={handleSubmit}
+      onClickCapture={handleClickCapture}
+      {...rest}
+    />
+  );
 });
 
 export default Form;

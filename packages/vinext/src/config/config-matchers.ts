@@ -665,6 +665,7 @@ export function matchConfigPattern(
   // where the param name is followed by a dot — the simple matcher would treat
   // "slug.md" as the param name and match any single segment regardless of suffix.
   if (
+    pattern.includes(":") ||
     pattern.includes("(") ||
     pattern.includes("\\") ||
     /:[\w-]+[*+][^/]/.test(pattern) ||
@@ -696,7 +697,12 @@ export function matchConfigPattern(
               tokenRe.lastIndex += 1;
               const constraint = extractConstraint(pattern, tokenRe);
               paramNames.push(name);
-              if (constraint !== null) {
+              const hasLiteralSuffix =
+                tokenRe.lastIndex < pattern.length && pattern[tokenRe.lastIndex] !== "/";
+              if (quantifier === "*" && regexStr.endsWith("/") && !hasLiteralSuffix) {
+                const capture = constraint !== null ? constraint : ".*";
+                regexStr = `${regexStr.slice(0, -1)}(?:/(${capture}))?`;
+              } else if (constraint !== null) {
                 regexStr += `(${constraint})`;
               } else {
                 regexStr += quantifier === "*" ? "(.*)" : "(.+)";
@@ -713,7 +719,7 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$");
+        const re = safeRegExp("^" + regexStr + "$", "i");
         // Store null for rejected patterns so we don't re-run isSafeRegex.
         compiled = re ? { re, paramNames } : null;
         _compiledPatternCache.set(pattern, compiled);
@@ -740,7 +746,9 @@ export function matchConfigPattern(
     const isPlus = catchAllMatch[2] === "+";
 
     const prefixNoSlash = prefix.replace(/\/$/, "");
-    if (!pathname.startsWith(prefixNoSlash)) return null;
+    const lowerPathname = pathname.toLowerCase();
+    const lowerPrefixNoSlash = prefixNoSlash.toLowerCase();
+    if (!lowerPathname.startsWith(lowerPrefixNoSlash)) return null;
     const charAfter = pathname[prefixNoSlash.length];
     if (charAfter !== undefined && charAfter !== "/") return null;
 
@@ -762,11 +770,36 @@ export function matchConfigPattern(
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) {
       params[parts[i].slice(1)] = pathParts[i];
-    } else if (parts[i] !== pathParts[i]) {
+    } else if (parts[i].toLowerCase() !== pathParts[i].toLowerCase()) {
       return null;
     }
   }
   return params;
+}
+
+function matchLocaleFalseConfigPattern(
+  pathname: string,
+  rule: { source: string; locale?: false },
+): Record<string, string> | null {
+  const params = matchConfigPattern(pathname, rule.source);
+  if (params || rule.locale !== false) return params;
+
+  const leadingLocaleParam = /^\/:([\w-]+)(?=\/)/.exec(rule.source);
+  if (!leadingLocaleParam) return null;
+
+  const suffixPattern = rule.source.slice(leadingLocaleParam[0].length) || "/";
+  const suffixParams = matchConfigPattern(pathname, suffixPattern);
+  if (!suffixParams) return null;
+
+  return {
+    [leadingLocaleParam[1]]: "",
+    ...suffixParams,
+  };
+}
+
+function getLocaleFalseLeadingParamName(rule: { source: string; locale?: false }): string | null {
+  if (rule.locale !== false) return null;
+  return /^\/:([\w-]+)(?=\/)/.exec(rule.source)?.[1] ?? null;
 }
 
 /**
@@ -895,7 +928,7 @@ export function matchRedirect(
       // the locale-static match wins. Stop scanning.
       break;
     }
-    const params = matchConfigPattern(pathname, redirect.source);
+    const params = matchLocaleFalseConfigPattern(pathname, redirect);
     if (params) {
       const conditionParams =
         redirect.has || redirect.missing
@@ -928,25 +961,96 @@ export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  currentUrl?: string,
 ): string | null {
   for (const rewrite of rewrites) {
-    const params = matchConfigPattern(pathname, rewrite.source);
+    const params = matchLocaleFalseConfigPattern(pathname, rewrite);
     if (params) {
       const conditionParams =
         rewrite.has || rewrite.missing
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      let dest = substituteDestinationParams(rewrite.destination, {
+      const rewriteParams = {
         ...params,
         ...conditionParams,
-      });
+      };
+      let dest = substituteDestinationParams(rewrite.destination, rewriteParams);
+      const appendParams = { ...params };
+      const localeParamName = getLocaleFalseLeadingParamName(rewrite);
+      if (localeParamName) {
+        delete appendParams[localeParamName];
+      }
+      dest = appendUnusedRewriteParams(dest, rewrite.destination, appendParams);
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
       dest = sanitizeDestination(dest);
+      if (currentUrl) {
+        dest = mergeRewriteSourceQuery(dest, currentUrl);
+      }
       return dest;
     }
   }
   return null;
+}
+
+function mergeRewriteSourceQuery(destination: string, sourceUrl: string): string {
+  if (!sourceUrl.includes("?")) return destination;
+
+  const base = "http://vinext.local";
+  const source = new URL(sourceUrl, base);
+  if (source.searchParams.size === 0) return destination;
+
+  const isProtocolRelative = destination.startsWith("//");
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:/i.test(destination);
+  const target = new URL(isProtocolRelative ? `http:${destination}` : destination, base);
+
+  for (const key of new Set(source.searchParams.keys())) {
+    if (target.searchParams.has(key)) continue;
+    for (const value of source.searchParams.getAll(key)) {
+      target.searchParams.append(key, value);
+    }
+  }
+
+  if (isProtocolRelative) {
+    return `//${target.host}${target.pathname}${target.search}${target.hash}`;
+  }
+  if (isAbsolute) {
+    return target.toString();
+  }
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+
+function appendUnusedRewriteParams(
+  destination: string,
+  originalDestination: string,
+  params: Record<string, string>,
+): string {
+  const unusedParams = Object.entries(params).filter(
+    ([key]) =>
+      !new RegExp(`:${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([+*])?(?![A-Za-z0-9_])`).test(
+        originalDestination,
+      ),
+  );
+  if (unusedParams.length === 0) return destination;
+
+  const base = "http://vinext.local";
+  const isProtocolRelative = destination.startsWith("//");
+  const isAbsolute = /^[a-z][a-z0-9+.-]*:/i.test(destination);
+  const target = new URL(isProtocolRelative ? `http:${destination}` : destination, base);
+
+  for (const [key, value] of unusedParams) {
+    if (!target.searchParams.has(key)) {
+      target.searchParams.append(key, value);
+    }
+  }
+
+  if (isProtocolRelative) {
+    return `//${target.host}${target.pathname}${target.search}${target.hash}`;
+  }
+  if (isAbsolute) {
+    return target.toString();
+  }
+  return `${target.pathname}${target.search}${target.hash}`;
 }
 
 /**
@@ -1139,7 +1243,7 @@ export function matchHeaders(
     let sourceRegex = _compiledHeaderSourceCache.get(rule.source);
     if (sourceRegex === undefined) {
       const escaped = escapeHeaderSource(rule.source);
-      sourceRegex = safeRegExp("^" + escaped + "$");
+      sourceRegex = safeRegExp("^" + escaped + "$", "i");
       _compiledHeaderSourceCache.set(rule.source, sourceRegex);
     }
     if (sourceRegex && sourceRegex.test(pathname)) {

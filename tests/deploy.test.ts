@@ -591,7 +591,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     // After stripping, a new request with the stripped URL must be created
     // so middleware matchers see the basePath-free pathname (matching prod-server)
     expect(content).toContain("strippedUrl.pathname = pathname");
-    expect(content).toContain("new Request(strippedUrl, request)");
+    expect(content).toContain('strippedHeaders.set("x-vinext-request-had-base-path"');
+    expect(content).toContain("new Request(strippedUrl");
   });
 
   it("handles trailing slash normalization", () => {
@@ -880,6 +881,20 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
     expect(basePathPos).toBeLessThan(imagePos);
+  });
+
+  it("serves Vite assets after basePath stripping before middleware", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
+    const assetPos = content.indexOf('pathname.startsWith("/assets/")');
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+
+    expect(basePathPos).toBeGreaterThan(-1);
+    expect(assetPos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(basePathPos).toBeLessThan(assetPos);
+    expect(assetPos).toBeLessThan(middlewarePos);
+    expect(content).toContain("new URL(pathname + url.search, request.url)");
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {

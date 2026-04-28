@@ -175,6 +175,48 @@ module.exports.postcss = true;`,
     return dir;
   }
 
+  async function createTmpTsProject(configFileName: string): Promise<string> {
+    const fsp = await import("node:fs/promises");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-ts-"));
+
+    await fsp.writeFile(
+      path.join(dir, "plugin.ts"),
+      `const plugin = () => {
+  return {
+    postcssPlugin: "mock-ts-plugin",
+    Declaration: {
+      color(decl: { value: string }) {
+        if (decl.value === "red") decl.value = "green";
+      },
+    },
+  };
+};
+
+plugin.postcss = true;
+
+export default plugin;
+`,
+    );
+    await fsp.writeFile(
+      path.join(dir, configFileName),
+      `import plugin from "./plugin";
+
+type PluginConfig = Record<string, unknown> | boolean | (() => unknown);
+
+interface PostCSSConfig {
+  plugins: PluginConfig[];
+}
+
+const config: PostCSSConfig = {
+  plugins: [plugin],
+};
+
+export default config;
+`,
+    );
+    return dir;
+  }
+
   async function cleanupDir(dir: string) {
     const fsp = await import("node:fs/promises");
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -257,6 +299,54 @@ module.exports.postcss = true;`,
     } finally {
       await cleanupDir(dir1);
       await cleanupDir(dir2);
+    }
+  });
+
+  it("loads postcss.config.ts with extensionless TypeScript plugin imports", async () => {
+    const dir = await createTmpTsProject("postcss.config.ts");
+
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeDefined();
+      expect(result!.plugins).toHaveLength(1);
+      const plugins = result!.plugins as unknown[];
+      expect(typeof plugins[0]).toBe("function");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("loads .postcssrc.ts with extensionless TypeScript plugin imports", async () => {
+    const dir = await createTmpTsProject(".postcssrc.ts");
+
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeDefined();
+      expect(result!.plugins).toHaveLength(1);
+      const plugins = result!.plugins as unknown[];
+      expect(typeof plugins[0]).toBe("function");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("resolves string plugin entries from TypeScript configs", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.ts",
+      `type Config = { plugins: string[] };
+const config: Config = { plugins: ["mock-postcss-plugin"] };
+export default config;
+`,
+    );
+
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeDefined();
+      expect(result!.plugins).toHaveLength(1);
+      const plugins = result!.plugins as unknown[];
+      expect(typeof plugins[0]).toBe("object");
+    } finally {
+      await cleanupDir(dir);
     }
   });
 });

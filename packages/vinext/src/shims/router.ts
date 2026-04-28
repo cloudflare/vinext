@@ -5,12 +5,25 @@
  * Backed by the browser History API. Supports client-side navigation
  * by fetching new page data and re-rendering the React root.
  */
-import { useState, useEffect, useCallback, useMemo, createElement, type ReactElement } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useContext,
+  createElement,
+  type ComponentType,
+  type ReactElement,
+} from "react";
 import { RouterContext } from "./internal/router-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
-import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
-import { stripBasePath } from "../utils/base-path.js";
+import {
+  normalizeLocalTrailingSlashHref,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+} from "./url-utils.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import {
   addQueryParam,
@@ -21,6 +34,8 @@ import {
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+const __trailingSlash = process.env.__NEXT_ROUTER_TRAILING_SLASH === "true";
+const __scrollRestoration = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
 type BeforePopStateCallback = (state: {
   url: string;
@@ -66,9 +81,32 @@ export type NextRouter = {
   prefetch(url: string): Promise<void>;
   /** Register a callback to run before popstate navigation */
   beforePopState(cb: BeforePopStateCallback): void;
+  /** Static data cache used by Next's legacy Pages Router internals. */
+  sdc: Record<string, unknown>;
   /** Listen for route changes */
   events: RouterEvents;
 };
+
+type LegacyRouterEvent =
+  | "routeChangeStart"
+  | "routeChangeComplete"
+  | "routeChangeError"
+  | "beforeHistoryChange"
+  | "hashChangeStart"
+  | "hashChangeComplete";
+
+type LegacyRouterEventHandler = (...args: unknown[]) => void;
+
+type LegacyRouterEventProperty =
+  | "onRouteChangeStart"
+  | "onRouteChangeComplete"
+  | "onRouteChangeError"
+  | "onBeforeHistoryChange"
+  | "onHashChangeStart"
+  | "onHashChangeComplete";
+
+export type NextRouterSingleton = NextRouter &
+  Partial<Record<LegacyRouterEventProperty, LegacyRouterEventHandler | null>>;
 
 type UrlObject = {
   pathname?: string;
@@ -87,6 +125,17 @@ type RouterEvents = {
   emit(event: string, ...args: unknown[]): void;
 };
 
+const LEGACY_ROUTER_EVENT_PROPS: Record<LegacyRouterEvent, LegacyRouterEventProperty> = {
+  routeChangeStart: "onRouteChangeStart",
+  routeChangeComplete: "onRouteChangeComplete",
+  routeChangeError: "onRouteChangeError",
+  beforeHistoryChange: "onBeforeHistoryChange",
+  hashChangeStart: "onHashChangeStart",
+  hashChangeComplete: "onHashChangeComplete",
+};
+
+let singletonRouter: NextRouterSingleton | null = null;
+
 function createRouterEvents(): RouterEvents {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
@@ -100,12 +149,24 @@ function createRouterEvents(): RouterEvents {
     },
     emit(event: string, ...args: unknown[]) {
       listeners.get(event)?.forEach((handler) => handler(...args));
+      const legacyProp = LEGACY_ROUTER_EVENT_PROPS[event as LegacyRouterEvent];
+      const legacyHandler = legacyProp ? singletonRouter?.[legacyProp] : null;
+      if (typeof legacyHandler === "function") legacyHandler(...args);
     },
   };
 }
 
 // Singleton events instance
 const routerEvents = createRouterEvents();
+
+function dispatchVinextNavigate(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("vinext:navigate"));
+  setTimeout(() => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent("vinext:navigate"));
+  }, 0);
+}
 
 function resolveUrl(url: string | UrlObject): string {
   if (typeof url === "string") return url;
@@ -115,6 +176,92 @@ function resolveUrl(url: string | UrlObject): string {
     result = appendSearchParamsToUrl(result, params);
   }
   return result;
+}
+
+function getDynamicParamNames(pattern: string): string[] {
+  const names: string[] = [];
+  const dynamicParamRe = /\[(?:\.\.\.)?([^\]]+)\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = dynamicParamRe.exec(pattern)) !== null) {
+    names.push(match[1]);
+  }
+  return names;
+}
+
+function interpolateVisibleDynamicPath(
+  routePattern: string,
+  visiblePathname: string,
+  query: URLSearchParams,
+): string | null {
+  const patternParts = routePattern.split("/").filter(Boolean);
+  const pathParts = visiblePathname.split("/").filter(Boolean);
+  const nextParts: string[] = [];
+
+  for (let i = 0; i < patternParts.length; i++) {
+    const patternPart = patternParts[i];
+    const catchAll = patternPart.match(/^\[\.\.\.([^\]]+)\]$/);
+    if (catchAll) {
+      const values = query.getAll(catchAll[1]);
+      if (values.length === 0) return null;
+      nextParts.push(...values.map((value) => encodeURIComponent(value)));
+      query.delete(catchAll[1]);
+      return `/${nextParts.join("/")}`;
+    }
+
+    const dynamic = patternPart.match(/^\[([^\]]+)\]$/);
+    if (dynamic) {
+      if (pathParts[i] === undefined) return null;
+      const value = query.get(dynamic[1]);
+      nextParts.push(encodeURIComponent(value ?? decodeURIComponent(pathParts[i])));
+      if (value !== null) query.delete(dynamic[1]);
+      continue;
+    }
+
+    if (patternPart !== pathParts[i]) return null;
+    nextParts.push(pathParts[i]);
+  }
+
+  if (patternParts.length !== pathParts.length) return null;
+  return `/${nextParts.join("/")}`;
+}
+
+function resolveCurrentVisibleQueryNavigation(queryString: string): string {
+  if (typeof window === "undefined") return queryString;
+
+  const currentPathname = stripBasePath(window.location.pathname, __basePath);
+  const origin = window.location.origin ?? new URL(window.location.href).origin;
+  const parsed = new URL(`${currentPathname}${queryString}`, origin);
+  const nextDataPage = window.__NEXT_DATA__?.page;
+  let searchParams = new URLSearchParams(parsed.search);
+
+  let pathname = currentPathname;
+  if (nextDataPage && getDynamicParamNames(nextDataPage).some((name) => searchParams.has(name))) {
+    const interpolatedSearchParams = new URLSearchParams(searchParams);
+    const interpolatedPathname = interpolateVisibleDynamicPath(
+      nextDataPage,
+      currentPathname,
+      interpolatedSearchParams,
+    );
+    if (interpolatedPathname) {
+      pathname = interpolatedPathname;
+      searchParams = interpolatedSearchParams;
+    }
+  }
+
+  const search = searchParams.toString();
+  return `${pathname}${search ? `?${search}` : ""}${parsed.hash}`;
+}
+
+function resolvePagesRelativeNavigationUrl(url: string | UrlObject): string {
+  if (typeof url === "string") {
+    return url.startsWith("?") ? resolveCurrentVisibleQueryNavigation(url) : url;
+  }
+
+  if (url.pathname !== undefined) return resolveUrl(url);
+
+  const params = url.query ? urlQueryToSearchParams(url.query) : new URLSearchParams();
+  const query = params.toString();
+  return resolveCurrentVisibleQueryNavigation(query ? `?${query}` : "");
 }
 
 /**
@@ -129,7 +276,151 @@ function resolveNavigationTarget(
   as: string | undefined,
   locale: string | undefined,
 ): string {
-  return applyNavigationLocale(as ?? resolveUrl(url), locale);
+  return normalizeLocalTrailingSlashHref(
+    applyNavigationLocale(as ?? resolvePagesRelativeNavigationUrl(url), locale),
+    __trailingSlash,
+  );
+}
+
+function resolveNavigationRouteTarget(url: string | UrlObject, locale: string | undefined): string {
+  return normalizeLocalTrailingSlashHref(
+    applyNavigationLocale(resolvePagesRelativeNavigationUrl(url), locale),
+    __trailingSlash,
+  );
+}
+
+function resolveErrorRouteFetchTarget(
+  url: string | UrlObject,
+  as: string | undefined,
+): string | null {
+  if (as === undefined) return null;
+  const routeTarget = resolvePagesRelativeNavigationUrl(url);
+  const routePathname = routeTarget.split(/[?#]/, 1)[0];
+  if (routePathname === "/404") return routeTarget;
+  if (routePathname === "/_error") {
+    return routeTarget.replace(/^\/_error(?=$|[?#])/, "/404");
+  }
+  return null;
+}
+
+function hasDynamicRouteSegment(pathname: string): boolean {
+  return /\[[^\]]+\]/.test(pathname);
+}
+
+function appendSearchToPath(path: string, searchParams: URLSearchParams, hash: string): string {
+  const search = searchParams.toString();
+  return `${path}${search ? `?${search}` : ""}${hash}`;
+}
+
+function interpolateDynamicRouteTarget(routeTarget: string, asTarget: string): string {
+  const routeUrl = new URL(routeTarget, "http://vinext.local");
+  if (!hasDynamicRouteSegment(routeUrl.pathname)) return routeTarget;
+
+  const routeSearchParams = new URLSearchParams(routeUrl.search);
+  const dynamicParamNames = getDynamicParamNames(routeUrl.pathname);
+  let missingParam = false;
+
+  const interpolatedPathname = routeUrl.pathname
+    .replace(/\[\[\.\.\.([^\]]+)\]\]/g, (_match, key: string) => {
+      const values = routeSearchParams.getAll(key);
+      routeSearchParams.delete(key);
+      if (values.length === 0) {
+        missingParam = true;
+        return "";
+      }
+      return values.map((value) => encodeURIComponent(value)).join("/");
+    })
+    .replace(/\[\.\.\.([^\]]+)\]/g, (_match, key: string) => {
+      const values = routeSearchParams.getAll(key);
+      routeSearchParams.delete(key);
+      if (values.length === 0) {
+        missingParam = true;
+        return "";
+      }
+      return values.map((value) => encodeURIComponent(value)).join("/");
+    })
+    .replace(/\[([^\]]+)\]/g, (_match, key: string) => {
+      const value = routeSearchParams.get(key);
+      routeSearchParams.delete(key);
+      if (value == null) {
+        missingParam = true;
+        return "";
+      }
+      return encodeURIComponent(value);
+    });
+
+  if (!missingParam && !hasDynamicRouteSegment(interpolatedPathname)) {
+    return appendSearchToPath(interpolatedPathname, routeSearchParams, routeUrl.hash);
+  }
+
+  const asUrl = new URL(asTarget, "http://vinext.local");
+  for (const key of dynamicParamNames) {
+    routeSearchParams.delete(key);
+  }
+  return appendSearchToPath(asUrl.pathname, routeSearchParams, asUrl.hash);
+}
+
+function shouldHardNavigateManualBasePathTarget(resolved: string): boolean {
+  if (!__basePath || !resolved.startsWith("/") || resolved.startsWith("//")) return false;
+  try {
+    return hasBasePath(new URL(resolved, "http://vinext.local").pathname, __basePath);
+  } catch {
+    return false;
+  }
+}
+
+function isCurrentBrowserUrl(url: string): boolean {
+  try {
+    const current = new URL(window.location.href);
+    const target = new URL(url, window.location.href);
+    return (
+      current.pathname === target.pathname &&
+      current.search === target.search &&
+      current.hash === target.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function shouldCommitQueryNavigationBeforeFetch(url: string): boolean {
+  try {
+    const target = new URL(url, window.location.href);
+    return target.search !== "" && target.pathname === window.location.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function resolveNavigationRouteFetch(
+  url: string | UrlObject,
+  as: string | undefined,
+  locale: string | undefined,
+  browserFullUrl: string,
+): { routeFull: string; allowErrorPageData: boolean } {
+  const errorRouteFetchTarget = resolveErrorRouteFetchTarget(url, as);
+  let routeTarget: string | null = errorRouteFetchTarget;
+  if (!routeTarget && as !== undefined) {
+    const routeHrefTarget = resolveNavigationRouteTarget(url, locale);
+    const asTarget = resolveNavigationTarget(as, undefined, locale);
+    routeTarget = interpolateDynamicRouteTarget(routeHrefTarget, asTarget);
+  }
+  if (!routeTarget) {
+    return { routeFull: browserFullUrl, allowErrorPageData: false };
+  }
+
+  if (isExternalUrl(routeTarget)) {
+    const localPath = toSameOriginAppPath(routeTarget, __basePath);
+    if (localPath == null) {
+      return { routeFull: browserFullUrl, allowErrorPageData: errorRouteFetchTarget !== null };
+    }
+    routeTarget = localPath;
+  }
+
+  return {
+    routeFull: toBrowserNavigationHref(routeTarget, window.location.href, __basePath),
+    allowErrorPageData: errorRouteFetchTarget !== null,
+  };
 }
 
 function getDomainLocales(): readonly DomainLocale[] | undefined {
@@ -171,17 +462,24 @@ export function isExternalUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
-/** Resolve a hash URL to a basePath-stripped app URL for event payloads */
+/** Resolve a hash URL to the browser-visible URL for event payloads. */
 function resolveHashUrl(url: string): string {
   if (typeof window === "undefined") return url;
-  if (url.startsWith("#"))
-    return stripBasePath(window.location.pathname, __basePath) + window.location.search + url;
-  // Full-path hash URL — strip basePath for consistency with other events
+  if (url.startsWith("#")) return window.location.pathname + window.location.search + url;
   try {
     const parsed = new URL(url, window.location.href);
-    return stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+    return parsed.pathname + parsed.search + parsed.hash;
   } catch {
     return url;
+  }
+}
+
+function toRouterEventUrl(fullHref: string): string {
+  try {
+    const parsed = new URL(fullHref, window.location.href);
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch {
+    return fullHref;
   }
 }
 
@@ -208,17 +506,83 @@ function scrollToHash(hash: string): void {
   if (el) el.scrollIntoView({ behavior: "auto" });
 }
 
+function createKey(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function canUseManualScrollRestoration(): boolean {
+  if (!__scrollRestoration || typeof window === "undefined") return false;
+  if (!window.history) return false;
+  if (!("scrollRestoration" in window.history)) return false;
+  try {
+    const testKey = "__vinext_scroll_test";
+    window.sessionStorage.setItem(testKey, testKey);
+    window.sessionStorage.removeItem(testKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const manualScrollRestoration = canUseManualScrollRestoration();
+let _historyKey =
+  typeof window !== "undefined" &&
+  window.history?.state &&
+  typeof window.history.state === "object" &&
+  typeof (window.history.state as { key?: unknown }).key === "string"
+    ? (window.history.state as { key: string }).key
+    : createKey();
+
+function saveScrollPositionToSession(key: string): void {
+  if (!manualScrollRestoration) return;
+  try {
+    window.sessionStorage.setItem(
+      `__next_scroll_${key}`,
+      JSON.stringify({ x: window.scrollX, y: window.scrollY }),
+    );
+  } catch {
+    // Fall back to browser behavior if sessionStorage is unavailable.
+  }
+}
+
+function readScrollPositionFromSession(key: string): { x: number; y: number } | null {
+  if (!manualScrollRestoration) return null;
+  try {
+    const value = window.sessionStorage.getItem(`__next_scroll_${key}`);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as { x?: unknown; y?: unknown };
+    if (typeof parsed.x !== "number" || typeof parsed.y !== "number") return null;
+    return { x: parsed.x, y: parsed.y };
+  } catch {
+    return { x: 0, y: 0 };
+  }
+}
+
 /** Save current scroll position into history state for back/forward restoration */
 function saveScrollPosition(): void {
+  saveScrollPositionToSession(_historyKey);
   const state = window.history.state ?? {};
   window.history.replaceState(
-    { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
+    {
+      ...state,
+      __vinext_scrollX: window.scrollX,
+      __vinext_scrollY: window.scrollY,
+      __vinext_restore_url:
+        window.location.pathname + window.location.search + window.location.hash,
+    },
     "",
   );
 }
 
 /** Restore scroll position from history state */
-function restoreScrollPosition(state: unknown): void {
+function restoreScrollPosition(
+  state: unknown,
+  forcedScroll?: { x: number; y: number } | null,
+): void {
+  if (forcedScroll) {
+    requestAnimationFrame(() => window.scrollTo(forcedScroll.x, forcedScroll.y));
+    return;
+  }
   if (state && typeof state === "object" && "__vinext_scrollY" in state) {
     const { __vinext_scrollX: x, __vinext_scrollY: y } = state as {
       __vinext_scrollX: number;
@@ -228,6 +592,19 @@ function restoreScrollPosition(state: unknown): void {
   }
 }
 
+function preserveTargetSearchIfRewriteDroppedIt(targetHref: string): void {
+  const target = new URL(targetHref, window.location.href);
+  if (target.search === "") return;
+  if (window.location.pathname !== target.pathname || window.location.search !== "") return;
+
+  window.history.replaceState(
+    window.history.state ?? {},
+    "",
+    target.pathname + target.search + target.hash,
+  );
+  _lastPathnameAndSearch = window.location.pathname + window.location.search;
+}
+
 /**
  * SSR context - set by the dev server before rendering each page.
  */
@@ -235,6 +612,7 @@ type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
+  isFallback?: boolean;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
@@ -270,29 +648,53 @@ export function setSSRContext(ctx: SSRContext | null): void {
   _setSSRContextImpl(ctx);
 }
 
-/**
- * Extract param names from a Next.js route pattern.
- * E.g., "/posts/[id]" → ["id"], "/docs/[...slug]" → ["slug"],
- * "/shop/[[...path]]" → ["path"], "/blog/[year]/[month]" → ["year", "month"]
- * Also handles internal format: "/posts/:id" → ["id"], "/docs/:slug+" → ["slug"]
- */
-function extractRouteParamNames(pattern: string): string[] {
-  const names: string[] = [];
-  // Match Next.js bracket format: [id], [...slug], [[...slug]]
-  const bracketMatches = pattern.matchAll(/\[{1,2}(?:\.\.\.)?([\w-]+)\]{1,2}/g);
-  for (const m of bracketMatches) {
-    names.push(m[1]);
+function extractDynamicParamsFromPath(
+  pattern: string,
+  pathname: string,
+): Record<string, string | string[]> | null {
+  const patternParts = pattern.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  const params: Record<string, string | string[]> = {};
+
+  for (let i = 0; i < patternParts.length; i++) {
+    const patternPart = patternParts[i];
+    const catchAll = patternPart.match(/^\[\.\.\.([^\]]+)\]$/);
+    if (catchAll) {
+      params[catchAll[1]] = pathParts.slice(i).map((part) => decodeURIComponent(part));
+      return params;
+    }
+
+    const dynamic = patternPart.match(/^\[([^\]]+)\]$/);
+    if (dynamic) {
+      const pathPart = pathParts[i];
+      if (pathPart === undefined) return null;
+      params[dynamic[1]] = decodeURIComponent(pathPart);
+      continue;
+    }
+
+    if (patternPart !== pathParts[i]) return null;
   }
-  if (names.length > 0) return names;
-  // Fallback: match internal :param format
-  const colonMatches = pattern.matchAll(/:([\w-]+)[+*]?/g);
-  for (const m of colonMatches) {
-    names.push(m[1]);
-  }
-  return names;
+
+  return patternParts.length === pathParts.length ? params : null;
 }
 
 function getPathnameAndQuery(): {
+  pathname: string;
+  query: Record<string, string | string[]>;
+  asPath: string;
+} {
+  return getPathnameAndQueryFromLocation({ includeSearchParams: true });
+}
+
+function getHydrationPathnameAndQuery(): {
+  pathname: string;
+  query: Record<string, string | string[]>;
+  asPath: string;
+} {
+  return getPathnameAndQueryFromLocation({ includeSearchParams: false });
+}
+
+function getPathnameAndQueryFromLocation(options: { includeSearchParams: boolean }): {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
@@ -308,35 +710,50 @@ function getPathnameAndQuery(): {
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
-  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const browserUrl = new URL(
+    _pendingNavigationBrowserUrl ?? window.location.href,
+    window.location.href,
+  );
+  const resolvedPath = stripBasePath(browserUrl.pathname, __basePath);
   // In Next.js, router.pathname is the route pattern (e.g., "/posts/[id]"),
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
-  const routeQuery: Record<string, string | string[]> = {};
-  // Include dynamic route params from __NEXT_DATA__ (e.g., { id: "42" } from /posts/[id]).
-  // Only include keys that are part of the route pattern (not stale query params).
+  const nextDataQuery: Record<string, string | string[]> = {};
+  // Include serialized router query from __NEXT_DATA__ (e.g., dynamic params
+  // plus query params introduced by middleware/config rewrites but not visible
+  // in window.location.search).
   const nextData = window.__NEXT_DATA__;
   if (nextData && nextData.query && nextData.page) {
-    const routeParamNames = extractRouteParamNames(nextData.page);
-    for (const key of routeParamNames) {
-      const value = nextData.query[key];
+    for (const [key, value] of Object.entries(nextData.query)) {
       if (typeof value === "string") {
-        routeQuery[key] = value;
+        nextDataQuery[key] = value;
       } else if (Array.isArray(value)) {
-        routeQuery[key] = [...value];
+        nextDataQuery[key] = [...value];
       }
     }
   }
-  // URL search params always reflect the current URL
+  // URL search params always reflect the current URL after hydration. During
+  // the first client render, prefer serialized __NEXT_DATA__.query so static
+  // Pages Router apps hydrate against the same query object the server used.
   const searchQuery: Record<string, string | string[]> = {};
-  const params = new URLSearchParams(window.location.search);
-  for (const [key, value] of params) {
-    addQueryParam(searchQuery, key, value);
+  if (options.includeSearchParams) {
+    const params = new URLSearchParams(browserUrl.search);
+    for (const [key, value] of params) {
+      addQueryParam(searchQuery, key, value);
+    }
   }
-  const query = { ...searchQuery, ...routeQuery };
+  const query = { ...nextDataQuery, ...searchQuery };
+  const dynamicPathParams = extractDynamicParamsFromPath(pathname, resolvedPath);
+  for (const key of getDynamicParamNames(pathname)) {
+    if (dynamicPathParams && key in dynamicPathParams) {
+      query[key] = dynamicPathParams[key];
+    } else if (key in nextDataQuery) {
+      query[key] = nextDataQuery[key];
+    }
+  }
   // asPath uses the resolved browser path, not the route pattern
-  const asPath = resolvedPath + window.location.search + window.location.hash;
+  const asPath = resolvedPath + browserUrl.search + browserUrl.hash;
   return { pathname, query, asPath };
 }
 
@@ -346,8 +763,8 @@ function getPathnameAndQuery(): {
  */
 class NavigationCancelledError extends Error {
   cancelled = true;
-  constructor(route: string) {
-    super(`Abort fetching component for route: "${route}"`);
+  constructor(_route: string) {
+    super("Route Cancelled");
     this.name = "NavigationCancelledError";
   }
 }
@@ -379,13 +796,287 @@ let _navigationId = 0;
 
 /** AbortController for the in-flight fetch, so superseded navigations abort network I/O. */
 let _activeAbortController: AbortController | null = null;
+let _activeNavigationUrl: string | null = null;
+let _activeNavigationPromise: Promise<void> | null = null;
+let _pendingNavigationBrowserUrl: string | null = null;
+const _preEmittedCancelledUrls = new Set<string>();
+const _inFlightPagesDataRequests = new Map<string, Promise<PagesNavigationDataResult>>();
 
-function scheduleHardNavigationAndThrow(url: string, message: string): never {
+function emitActiveNavigationCancelled(): void {
+  if (!_activeAbortController || !_activeNavigationUrl) return;
+  const cancelledUrl = _activeNavigationUrl;
+  _preEmittedCancelledUrls.add(cancelledUrl);
+  routerEvents.emit(
+    "routeChangeError",
+    new NavigationCancelledError(cancelledUrl),
+    toRouterEventUrl(cancelledUrl),
+    { shallow: false },
+  );
+}
+
+function scheduleHardNavigationAndThrow(url: string, message: string, delayMs = 0): never {
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
   }
-  window.location.href = url;
+  if (delayMs > 0) {
+    setTimeout(() => {
+      window.location.href = url;
+    }, delayMs);
+  } else {
+    window.location.href = url;
+  }
   throw new HardNavigationScheduledError(message);
+}
+
+function getPagesDataPathParts(appPathname: string): {
+  localePrefix: string;
+  pagePathname: string;
+} {
+  const locales = window.__VINEXT_LOCALES__ ?? [];
+  const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
+  const targetLocale = appPathname.split("/").filter(Boolean)[0];
+  if (targetLocale && locales.includes(targetLocale)) {
+    const pagePathname = appPathname.slice(targetLocale.length + 1) || "/";
+    return { localePrefix: `/${targetLocale}`, pagePathname };
+  }
+
+  if (defaultLocale && locales.includes(defaultLocale)) {
+    return { localePrefix: `/${defaultLocale}`, pagePathname: appPathname };
+  }
+
+  // Non-i18n data URLs do not carry a locale prefix.
+  return { localePrefix: "", pagePathname: appPathname };
+}
+
+function buildPagesDataUrl(url: string): string | null {
+  const buildId = window.__NEXT_DATA__?.buildId ?? process.env.__VINEXT_BUILD_ID;
+  if (!buildId) return null;
+
+  const parsed = new URL(url, window.location.href);
+  const appPathname = stripBasePath(parsed.pathname, __basePath);
+  const dataPathParts = getPagesDataPathParts(appPathname);
+  const pagePathname =
+    dataPathParts.pagePathname === "/"
+      ? dataPathParts.localePrefix
+        ? ""
+        : "/index"
+      : dataPathParts.pagePathname.replace(/\/$/, "");
+  const basePathPrefix = __basePath || "";
+
+  return `${parsed.origin}${basePathPrefix}/_next/data/${buildId}${dataPathParts.localePrefix}${pagePathname}.json${parsed.search}`;
+}
+
+type PagesNavigationData = Record<string, unknown> & {
+  pageProps?: Record<string, unknown>;
+  page?: string;
+  query?: Record<string, string | string[]>;
+  buildId?: string;
+  gssp?: boolean;
+  gsp?: boolean;
+  isFallback?: boolean;
+  locale?: string;
+  locales?: string[];
+  defaultLocale?: string;
+  domainLocales?: VinextNextData["domainLocales"];
+  __vinext?: VinextNextData["__vinext"];
+};
+
+type PagesNavigationDataResult =
+  | { kind: "data"; data: PagesNavigationData }
+  | {
+      kind: "redirect";
+      url: string;
+      result: Exclude<PagesNavigationDataResult, { kind: "redirect" }>;
+    }
+  | { kind: "not-found" }
+  | { kind: "fallback" };
+
+async function renderPagesRoot(
+  root: { render(element: ReactElement): void },
+  element: ReactElement,
+) {
+  try {
+    const { flushSync } = await import("react-dom");
+    flushSync(() => root.render(element));
+  } catch {
+    root.render(element);
+  }
+}
+
+async function fetchPagesNavigationData(
+  url: string,
+  signal: AbortSignal,
+  options: { allowErrorPageData?: boolean } = {},
+): Promise<PagesNavigationDataResult> {
+  const dataUrl = buildPagesDataUrl(url);
+  if (!dataUrl) return { kind: "fallback" };
+
+  const cachedData = window.next?.router?.sdc?.[dataUrl];
+  if (cachedData && typeof cachedData === "object") {
+    return { kind: "data", data: cachedData as PagesNavigationData };
+  }
+
+  const inFlightRequest = _inFlightPagesDataRequests.get(dataUrl);
+  if (inFlightRequest) {
+    return await inFlightRequest;
+  }
+
+  const requestPromise = fetchUncachedPagesNavigationData(url, dataUrl, signal, options);
+  _inFlightPagesDataRequests.set(dataUrl, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    if (_inFlightPagesDataRequests.get(dataUrl) === requestPromise) {
+      _inFlightPagesDataRequests.delete(dataUrl);
+    }
+  }
+}
+
+async function fetchUncachedPagesNavigationData(
+  url: string,
+  dataUrl: string,
+  signal: AbortSignal,
+  options: { allowErrorPageData?: boolean },
+): Promise<PagesNavigationDataResult> {
+  let res: Response;
+  try {
+    res = await fetch(dataUrl, {
+      headers: { "x-nextjs-data": "1" },
+      credentials: "include",
+      signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new NavigationCancelledError(url);
+    }
+    throw err;
+  }
+
+  let redirectUrl: string | undefined;
+  const redirectHeader = res.headers.get("x-nextjs-redirect");
+  if (redirectHeader) {
+    redirectUrl = redirectHeader;
+  }
+  if (res.redirected) {
+    try {
+      const finalUrl = new URL(res.url);
+      if (finalUrl.origin === window.location.origin) {
+        redirectUrl = finalUrl.pathname + finalUrl.search + finalUrl.hash;
+      }
+    } catch {
+      // Ignore malformed redirect URLs and handle the response normally.
+    }
+  }
+
+  const withRedirect = (
+    result: Exclude<PagesNavigationDataResult, { kind: "redirect" }>,
+  ): PagesNavigationDataResult =>
+    redirectUrl ? { kind: "redirect", url: redirectUrl, result } : result;
+
+  if (!res.ok) {
+    if (redirectUrl) {
+      return withRedirect({ kind: "fallback" });
+    }
+    if (res.status === 404) {
+      const contentType = res.headers.get("Content-Type") ?? "";
+      if (!redirectUrl && !contentType.toLowerCase().includes("application/json")) {
+        return { kind: "fallback" };
+      }
+      if (!redirectUrl && contentType.toLowerCase().includes("application/json")) {
+        try {
+          const data = (await res.clone().json()) as { page?: unknown };
+          if (data.page === "/404" && !options.allowErrorPageData) {
+            scheduleHardNavigationAndThrow(url, "Navigation data request resolved to /404");
+          }
+        } catch (err: unknown) {
+          if (err instanceof HardNavigationScheduledError) {
+            throw err;
+          }
+          // Malformed 404 JSON falls back to the soft not-found render below.
+        }
+      }
+      return withRedirect({ kind: "not-found" });
+    }
+    if (window.__VINEXT_SUPPRESS_DATA_NAVIGATION_FAILURE === true) {
+      return withRedirect({ kind: "fallback" });
+    }
+    scheduleHardNavigationAndThrow(url, "Failed to load static props", 1500);
+  }
+
+  const contentType = res.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    return withRedirect({ kind: "fallback" });
+  }
+
+  try {
+    const data = (await res.json()) as PagesNavigationData;
+    if (!redirectUrl && data.page === "/404" && !options.allowErrorPageData) {
+      scheduleHardNavigationAndThrow(url, "Navigation data request resolved to /404");
+    }
+    return withRedirect({ kind: "data", data });
+  } catch (err: unknown) {
+    if (err instanceof HardNavigationScheduledError) {
+      throw err;
+    }
+    return withRedirect({ kind: "fallback" });
+  }
+}
+
+function renderPagesNotFound(root: { render(element: ReactElement): void }): void {
+  const element = createElement(
+    "div",
+    null,
+    createElement("h1", null, "404 - Page not found"),
+    createElement("p", null, "This page could not be found."),
+  );
+  window.__NEXT_DATA__ = {
+    ...window.__NEXT_DATA__,
+    page: "/404",
+    query: {},
+    isFallback: false,
+  } as VinextNextData;
+  root.render(element);
+}
+
+function getCurrentBrowserPathSearchHash(): string {
+  return window.location.pathname + window.location.search + window.location.hash;
+}
+
+function syncHistoryTrackingFromCurrent(): void {
+  const state = window.history.state as NextHistoryState | null;
+  if (state?.__N && typeof state.key === "string") {
+    _historyKey = state.key;
+  }
+  _lastPathnameAndSearch = window.location.pathname + window.location.search;
+}
+
+function commitPushNavigationHistory(
+  historyState: NextHistoryState,
+  full: string,
+  routeFull: string,
+  hasAs: boolean,
+): void {
+  if (hasAs && routeFull !== full && isCurrentBrowserUrl(full)) {
+    historyState.key = _historyKey;
+    window.history.replaceState(historyState, "", full);
+  } else {
+    window.history.pushState(historyState, "", full);
+    _historyKey = historyState.key ?? _historyKey;
+  }
+  _lastPathnameAndSearch = window.location.pathname + window.location.search;
+}
+
+function commitReplaceNavigationHistory(historyState: NextHistoryState, full: string): void {
+  window.history.replaceState(historyState, "", full);
+  _historyKey = historyState.key ?? _historyKey;
+  _lastPathnameAndSearch = window.location.pathname + window.location.search;
+}
+
+function syncI18nGlobalsFromNextData(nextData: VinextNextData): void {
+  if (!nextData.locales) return;
+  window.__VINEXT_LOCALE__ = nextData.locale;
+  window.__VINEXT_LOCALES__ = nextData.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = nextData.defaultLocale;
 }
 
 /**
@@ -396,7 +1087,10 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
  * Throws on hard-navigation failures (non-OK response, missing data) so the
  * caller can distinguish success from failure for event emission.
  */
-async function navigateClient(url: string): Promise<void> {
+async function navigateClient(
+  url: string,
+  options: { allowErrorPageData?: boolean; beforeRender?: () => void } = {},
+): Promise<void> {
   if (typeof window === "undefined") return;
 
   const root = window.__VINEXT_ROOT__;
@@ -405,6 +1099,12 @@ async function navigateClient(url: string): Promise<void> {
     window.location.href = url;
     return;
   }
+
+  if (_activeNavigationUrl === url) {
+    await _activeNavigationPromise;
+    return;
+  }
+  _activeNavigationUrl = url;
 
   // Cancel any in-flight navigation (abort its fetch, mark it stale)
   _activeAbortController?.abort();
@@ -420,7 +1120,115 @@ async function navigateClient(url: string): Promise<void> {
     }
   }
 
-  try {
+  const navigationPromise = (async () => {
+    let dataResult = await fetchPagesNavigationData(url, controller.signal, options);
+    assertStillCurrent();
+
+    if (dataResult.kind === "redirect") {
+      const targetUrl = new URL(url, window.location.href);
+      const redirectUrl = new URL(dataResult.url, window.location.href);
+      if (redirectUrl.origin !== window.location.origin) {
+        scheduleHardNavigationAndThrow(
+          redirectUrl.href,
+          "Navigation data request redirected externally",
+        );
+      }
+      const redirectOnlyDroppedQuery =
+        targetUrl.pathname === redirectUrl.pathname &&
+        targetUrl.search !== "" &&
+        redirectUrl.search === "";
+      if (!redirectOnlyDroppedQuery) {
+        window.history.replaceState(
+          {},
+          "",
+          redirectUrl.pathname + redirectUrl.search + redirectUrl.hash,
+        );
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
+        url = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
+      }
+      dataResult = dataResult.result;
+    }
+
+    if (dataResult.kind === "not-found") {
+      options.beforeRender?.();
+      renderPagesNotFound(root);
+      return;
+    }
+
+    if (dataResult.kind === "data" && dataResult.data.__vinext?.pageModuleUrl) {
+      const { pageProps = {}, ...appProps } = dataResult.data;
+      const nextData = {
+        ...window.__NEXT_DATA__,
+        props: { ...appProps, pageProps },
+        page:
+          dataResult.data.page ??
+          window.__NEXT_DATA__?.page ??
+          stripBasePath(new URL(url, window.location.href).pathname, __basePath),
+        query: dataResult.data.query ?? {},
+        buildId: dataResult.data.buildId ?? window.__NEXT_DATA__?.buildId,
+        isFallback: dataResult.data.isFallback ?? false,
+        locale: dataResult.data.locale ?? window.__NEXT_DATA__?.locale,
+        locales: dataResult.data.locales ?? window.__NEXT_DATA__?.locales,
+        defaultLocale: dataResult.data.defaultLocale ?? window.__NEXT_DATA__?.defaultLocale,
+        domainLocales: dataResult.data.domainLocales ?? window.__NEXT_DATA__?.domainLocales,
+        ...(dataResult.data.gsp ? { gsp: true } : {}),
+        ...(dataResult.data.gssp ? { gssp: true } : {}),
+        __vinext: dataResult.data.__vinext,
+      } as VinextNextData;
+
+      const pageModuleUrl = dataResult.data.__vinext.pageModuleUrl;
+      if (!isValidModulePath(pageModuleUrl)) {
+        console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+        scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
+      }
+
+      const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
+      assertStillCurrent();
+
+      const PageComponent = pageModule.default;
+      if (!PageComponent) {
+        scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
+      }
+
+      const React = (await import("react")).default;
+      assertStillCurrent();
+
+      let AppComponent = window.__VINEXT_APP__;
+      const appModuleUrl = dataResult.data.__vinext.appModuleUrl;
+      if (!AppComponent && appModuleUrl) {
+        if (!isValidModulePath(appModuleUrl)) {
+          console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
+        } else {
+          try {
+            const appModule = await import(/* @vite-ignore */ appModuleUrl);
+            AppComponent = appModule.default;
+            window.__VINEXT_APP__ = AppComponent;
+          } catch {
+            // _app not available — continue without it
+          }
+        }
+      }
+      assertStillCurrent();
+
+      let element;
+      if (AppComponent) {
+        element = React.createElement(AppComponent, {
+          Component: PageComponent,
+          pageProps,
+          ...appProps,
+        });
+      } else {
+        element = React.createElement(PageComponent, pageProps);
+      }
+
+      window.__NEXT_DATA__ = nextData;
+      syncI18nGlobalsFromNextData(nextData);
+      element = wrapWithRouterContext(element);
+      options.beforeRender?.();
+      await renderPagesRoot(root, element);
+      return;
+    }
+
     // Fetch the target page's SSR HTML
     let res: Response;
     try {
@@ -437,7 +1245,30 @@ async function navigateClient(url: string): Promise<void> {
     }
     assertStillCurrent();
 
-    if (!res.ok) {
+    if (res.redirected) {
+      try {
+        const targetUrl = new URL(url, window.location.href);
+        const finalUrl = new URL(res.url);
+        if (finalUrl.origin === window.location.origin) {
+          const redirectOnlyDroppedQuery =
+            targetUrl.pathname === finalUrl.pathname &&
+            targetUrl.search !== "" &&
+            finalUrl.search === "";
+          if (!redirectOnlyDroppedQuery) {
+            window.history.replaceState(
+              {},
+              "",
+              finalUrl.pathname + finalUrl.search + finalUrl.hash,
+            );
+            _lastPathnameAndSearch = window.location.pathname + window.location.search;
+          }
+        }
+      } catch {
+        // Ignore malformed redirect URLs and continue with the fetched response.
+      }
+    }
+
+    if (!res.ok && res.status !== 404) {
       // Set window.location.href first so the browser navigates to the correct
       // page even if the caller suppresses the error.  The assignment schedules
       // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -453,14 +1284,27 @@ async function navigateClient(url: string): Promise<void> {
     const html = await res.text();
     assertStillCurrent();
 
-    // Extract __NEXT_DATA__ from the HTML
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
+    // Extract __NEXT_DATA__ from the HTML. i18n pages append vinext locale
+    // globals in the same inline script after the JSON assignment.
+    const match = html.match(
+      /<script(?:\s[^>]*)?>window\.__NEXT_DATA__\s*=\s*([\s\S]*?)<\/script>/,
+    );
     if (!match) {
+      if (res.status === 404) {
+        options.beforeRender?.();
+        renderPagesNotFound(root);
+        return;
+      }
       scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
     }
 
-    const nextData = JSON.parse(match[1]);
-    const { pageProps } = nextData.props;
+    let nextDataJson = match[1].trim();
+    const localeGlobalsIndex = nextDataJson.indexOf(";window.__VINEXT_");
+    if (localeGlobalsIndex !== -1) {
+      nextDataJson = nextDataJson.slice(0, localeGlobalsIndex);
+    }
+    const nextData = JSON.parse(nextDataJson);
+    const { pageProps, ...appProps } = nextData.props;
     // Defer writing window.__NEXT_DATA__ until just before root.render() —
     // writing it here would let a stale navigation briefly pollute the global
     // between this assertStillCurrent() and the next one after await import().
@@ -525,26 +1369,38 @@ async function navigateClient(url: string): Promise<void> {
       element = React.createElement(AppComponent, {
         Component: PageComponent,
         pageProps,
+        ...appProps,
       });
     } else {
       element = React.createElement(PageComponent, pageProps);
     }
 
-    // Wrap with RouterContext.Provider so next/compat/router works
-    element = wrapWithRouterContext(element);
-
     // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
-    // so a stale navigation can never pollute the global.
+    // so a stale navigation can never pollute the global. Commit before
+    // wrapWithRouterContext() so the new router value sees fresh route/query data.
     // INVARIANT: Everything after the final assertStillCurrent() above (the
     // checkpoint immediately after the optional _app import) through
     // root.render() is synchronous. If any step here ever becomes async, add
     // another assertStillCurrent() before writing __NEXT_DATA__.
     window.__NEXT_DATA__ = nextData;
-    root.render(element);
+    syncI18nGlobalsFromNextData(nextData);
+
+    // Wrap with RouterContext.Provider so next/compat/router works
+    element = wrapWithRouterContext(element);
+
+    options.beforeRender?.();
+    await renderPagesRoot(root, element);
+  })();
+  _activeNavigationPromise = navigationPromise;
+
+  try {
+    await navigationPromise;
   } finally {
     // Clean up the abort controller if this navigation is still the active one
     if (navId === _navigationId) {
       _activeAbortController = null;
+      _activeNavigationUrl = null;
+      _activeNavigationPromise = null;
     }
   }
 }
@@ -564,12 +1420,17 @@ async function navigateClient(url: string): Promise<void> {
 async function runNavigateClient(
   fullUrl: string,
   resolvedUrl: string,
+  options: { allowErrorPageData?: boolean; beforeRender?: () => void } = {},
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
-    await navigateClient(fullUrl);
+    await navigateClient(fullUrl, options);
     return "completed";
   } catch (err: unknown) {
-    routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
+    const alreadyEmittedCancellation =
+      err instanceof NavigationCancelledError && _preEmittedCancelledUrls.delete(fullUrl);
+    if (!alreadyEmittedCancellation) {
+      routerEvents.emit("routeChangeError", err, toRouterEventUrl(resolvedUrl), { shallow: false });
+    }
     if (err instanceof NavigationCancelledError) {
       return "cancelled";
     }
@@ -577,7 +1438,11 @@ async function runNavigateClient(
     // navigation so the browser lands on the correct page. Known failure modes
     // throw HardNavigationScheduledError, and this guard skips those; only
     // unexpected failures (parse, import, render) need recovery here.
-    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
+    if (
+      typeof window !== "undefined" &&
+      !(err instanceof HardNavigationScheduledError) &&
+      !(err instanceof Error && err.message === "Failed to load static props")
+    ) {
       window.location.href = fullUrl;
     }
     return "failed";
@@ -629,8 +1494,12 @@ function buildRouterValue(
     domainLocales,
     isReady: true,
     isPreview: false,
-    isFallback: typeof window !== "undefined" && nextData?.isFallback === true,
+    isFallback:
+      typeof window === "undefined"
+        ? _ssrState?.isFallback === true
+        : nextData?.isFallback === true,
     ...methods,
+    sdc: {},
     events: routerEvents,
   };
 }
@@ -638,12 +1507,22 @@ function buildRouterValue(
 /**
  * useRouter hook - Pages Router compatible.
  */
+let _hasHydratedPagesRouter = false;
+
 export function useRouter(): NextRouter {
-  const [{ pathname, query, asPath }, setState] = useState(getPathnameAndQuery);
+  const contextRouter = useContext(RouterContext);
+  const [{ pathname, query, asPath }, setState] = useState(() =>
+    _hasHydratedPagesRouter ? getPathnameAndQuery() : getHydrationPathnameAndQuery(),
+  );
 
   // Popstate is handled by the module-level listener below so beforePopState()
   // is consistently enforced even when multiple components mount useRouter().
   useEffect(() => {
+    // Hydration should start from the SSR snapshot, but Pages Router query
+    // values derived from window.location.search become authoritative once the
+    // client router is mounted.
+    _hasHydratedPagesRouter = true;
+    setState(getPathnameAndQuery());
     const onNavigate = ((_e: CustomEvent) => {
       setState(getPathnameAndQuery());
     }) as EventListener;
@@ -666,37 +1545,87 @@ export function useRouter(): NextRouter {
       }
 
       const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+      if (shouldHardNavigateManualBasePathTarget(resolved)) {
+        window.location.href = full;
+        return true;
+      }
+      const { routeFull, allowErrorPageData } = resolveNavigationRouteFetch(
+        url,
+        as,
+        options?.locale,
+        full,
+      );
+      const eventUrl = toRouterEventUrl(full);
+      const stateUrl =
+        as !== undefined ? resolveNavigationRouteTarget(url, options?.locale) : resolved;
+      const historyState = createPagesHistoryState(stateUrl, resolved, options);
 
       // Hash-only change — no page fetch needed
-      if (isHashOnlyChange(resolved)) {
-        const eventUrl = resolveHashUrl(resolved);
-        routerEvents.emit("hashChangeStart", eventUrl, {
+      if (isHashOnlyChange(full)) {
+        const hashEventUrl = resolveHashUrl(full);
+        routerEvents.emit("hashChangeStart", hashEventUrl, {
           shallow: options?.shallow ?? false,
         });
         const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-        window.history.pushState({}, "", resolved.startsWith("#") ? resolved : full);
+        saveScrollPosition();
+        window.history.pushState(historyState, "", resolved.startsWith("#") ? resolved : full);
+        _historyKey = historyState.key ?? _historyKey;
         _lastPathnameAndSearch = window.location.pathname + window.location.search;
         scrollToHash(hash);
         setState(getPathnameAndQuery());
-        routerEvents.emit("hashChangeComplete", eventUrl, {
+        routerEvents.emit("hashChangeComplete", hashEventUrl, {
           shallow: options?.shallow ?? false,
         });
-        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+        dispatchVinextNavigate();
         return true;
       }
 
       saveScrollPosition();
-      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
-      window.history.pushState({}, "", full);
-      _lastPathnameAndSearch = window.location.pathname + window.location.search;
-      if (!options?.shallow) {
-        const result = await runNavigateClient(full, resolved);
+      emitActiveNavigationCancelled();
+      routerEvents.emit("routeChangeStart", eventUrl, { shallow: options?.shallow ?? false });
+      if (options?.shallow) {
+        commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+        setState(getPathnameAndQuery());
+        routerEvents.emit("beforeHistoryChange", eventUrl, { shallow: true });
+        routerEvents.emit("routeChangeComplete", eventUrl, { shallow: true });
+      } else {
+        const committedBeforeFetch = shouldCommitQueryNavigationBeforeFetch(full);
+        if (committedBeforeFetch) {
+          commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+        }
+        const previousBrowserUrl = getCurrentBrowserPathSearchHash();
+        let completedBeforeRender = false;
+        const completeBeforeRender = () => {
+          if (completedBeforeRender) return;
+          completedBeforeRender = true;
+          if (!committedBeforeFetch && getCurrentBrowserPathSearchHash() === previousBrowserUrl) {
+            commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+          } else {
+            syncHistoryTrackingFromCurrent();
+          }
+          preserveTargetSearchIfRewriteDroppedIt(full);
+          setState(getPathnameAndQuery());
+          routerEvents.emit("beforeHistoryChange", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+          routerEvents.emit("routeChangeComplete", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+        };
+        _pendingNavigationBrowserUrl = full;
+        const result = await runNavigateClient(routeFull, eventUrl, {
+          allowErrorPageData,
+          beforeRender: completeBeforeRender,
+        });
+        if (_pendingNavigationBrowserUrl === full) {
+          _pendingNavigationBrowserUrl = null;
+        }
         if (result === "cancelled") return true;
         if (result === "failed") return false;
+        if (!completedBeforeRender) {
+          completeBeforeRender();
+        }
       }
-      setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -705,7 +1634,7 @@ export function useRouter(): NextRouter {
       } else if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      dispatchVinextNavigate();
       return true;
     },
     [],
@@ -726,36 +1655,85 @@ export function useRouter(): NextRouter {
       }
 
       const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+      if (shouldHardNavigateManualBasePathTarget(resolved)) {
+        window.location.replace(full);
+        return true;
+      }
+      const { routeFull, allowErrorPageData } = resolveNavigationRouteFetch(
+        url,
+        as,
+        options?.locale,
+        full,
+      );
+      const eventUrl = toRouterEventUrl(full);
+      const stateUrl =
+        as !== undefined ? resolveNavigationRouteTarget(url, options?.locale) : resolved;
+      const historyState = createPagesHistoryState(stateUrl, resolved, options, _historyKey);
 
       // Hash-only change — no page fetch needed
-      if (isHashOnlyChange(resolved)) {
-        const eventUrl = resolveHashUrl(resolved);
-        routerEvents.emit("hashChangeStart", eventUrl, {
+      if (isHashOnlyChange(full)) {
+        const hashEventUrl = resolveHashUrl(full);
+        routerEvents.emit("hashChangeStart", hashEventUrl, {
           shallow: options?.shallow ?? false,
         });
         const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-        window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : full);
+        window.history.replaceState(historyState, "", resolved.startsWith("#") ? resolved : full);
+        _historyKey = historyState.key ?? _historyKey;
         _lastPathnameAndSearch = window.location.pathname + window.location.search;
         scrollToHash(hash);
         setState(getPathnameAndQuery());
-        routerEvents.emit("hashChangeComplete", eventUrl, {
+        routerEvents.emit("hashChangeComplete", hashEventUrl, {
           shallow: options?.shallow ?? false,
         });
-        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+        dispatchVinextNavigate();
         return true;
       }
 
-      routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-      routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
-      window.history.replaceState({}, "", full);
-      _lastPathnameAndSearch = window.location.pathname + window.location.search;
-      if (!options?.shallow) {
-        const result = await runNavigateClient(full, resolved);
+      emitActiveNavigationCancelled();
+      routerEvents.emit("routeChangeStart", eventUrl, { shallow: options?.shallow ?? false });
+      if (options?.shallow) {
+        commitReplaceNavigationHistory(historyState, full);
+        setState(getPathnameAndQuery());
+        routerEvents.emit("beforeHistoryChange", eventUrl, { shallow: true });
+        routerEvents.emit("routeChangeComplete", eventUrl, { shallow: true });
+      } else {
+        const committedBeforeFetch = shouldCommitQueryNavigationBeforeFetch(full);
+        if (committedBeforeFetch) {
+          commitReplaceNavigationHistory(historyState, full);
+        }
+        const previousBrowserUrl = getCurrentBrowserPathSearchHash();
+        let completedBeforeRender = false;
+        const completeBeforeRender = () => {
+          if (completedBeforeRender) return;
+          completedBeforeRender = true;
+          if (!committedBeforeFetch && getCurrentBrowserPathSearchHash() === previousBrowserUrl) {
+            commitReplaceNavigationHistory(historyState, full);
+          } else {
+            syncHistoryTrackingFromCurrent();
+          }
+          preserveTargetSearchIfRewriteDroppedIt(full);
+          setState(getPathnameAndQuery());
+          routerEvents.emit("beforeHistoryChange", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+          routerEvents.emit("routeChangeComplete", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+        };
+        _pendingNavigationBrowserUrl = full;
+        const result = await runNavigateClient(routeFull, eventUrl, {
+          allowErrorPageData,
+          beforeRender: completeBeforeRender,
+        });
+        if (_pendingNavigationBrowserUrl === full) {
+          _pendingNavigationBrowserUrl = null;
+        }
         if (result === "cancelled") return true;
         if (result === "failed") return false;
+        if (!completedBeforeRender) {
+          completeBeforeRender();
+        }
       }
-      setState(getPathnameAndQuery());
-      routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
 
       // Scroll: handle hash target, else scroll to top unless scroll:false
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -764,7 +1742,7 @@ export function useRouter(): NextRouter {
       } else if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      dispatchVinextNavigate();
       return true;
     },
     [],
@@ -783,7 +1761,7 @@ export function useRouter(): NextRouter {
     if (typeof document !== "undefined") {
       const link = document.createElement("link");
       link.rel = "prefetch";
-      link.href = url;
+      link.href = new URL(url, window.location.href).href;
       link.as = "document";
       document.head.appendChild(link);
     }
@@ -804,7 +1782,34 @@ export function useRouter(): NextRouter {
     [pathname, query, asPath, push, replace, back, reload, prefetch],
   );
 
-  return router;
+  return typeof window === "undefined" && contextRouter ? contextRouter : router;
+}
+
+type WithRouterComponent<P> = ComponentType<P> & {
+  getInitialProps?: unknown;
+  origGetInitialProps?: unknown;
+};
+
+export function withRouter<P extends { router: NextRouter }>(
+  ComposedComponent: WithRouterComponent<P>,
+): WithRouterComponent<Omit<P, "router">> {
+  function WithRouterWrapper(props: Omit<P, "router">) {
+    const router = useRouter();
+    return createElement(ComposedComponent, { ...(props as P), router });
+  }
+
+  const displayName = ComposedComponent.displayName || ComposedComponent.name || "Component";
+  WithRouterWrapper.displayName = `withRouter(${displayName})`;
+
+  const WrappedComponent = WithRouterWrapper as WithRouterComponent<Omit<P, "router">>;
+  if (ComposedComponent.getInitialProps) {
+    WrappedComponent.getInitialProps = ComposedComponent.getInitialProps;
+  }
+  if (ComposedComponent.origGetInitialProps) {
+    WrappedComponent.origGetInitialProps = ComposedComponent.origGetInitialProps;
+  }
+
+  return WrappedComponent;
 }
 
 // beforePopState callback: called before handling browser back/forward.
@@ -816,12 +1821,227 @@ let _beforePopStateCb: BeforePopStateCallback | undefined;
 // compare the previous value with the (already-changed) window.location.
 let _lastPathnameAndSearch =
   typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
+let _lastIgnoredStalePopstate: string | null = null;
+let _isFirstPagesPopStateEvent = true;
+
+type NextHistoryState = {
+  url?: string;
+  as?: string;
+  options?: { shallow?: boolean; locale?: string };
+  key?: string;
+  __N?: boolean;
+  __NA?: boolean;
+};
+
+function createPagesHistoryState(
+  url: string,
+  as: string,
+  options?: TransitionOptions,
+  key = createKey(),
+): NextHistoryState {
+  return {
+    url,
+    as,
+    options: {
+      shallow: options?.shallow ?? false,
+      locale: options?.locale,
+    },
+    key,
+    __N: true,
+  };
+}
+
+function getLocaleStrippedCurrentAsPath(): string {
+  const appPathname = stripBasePath(window.location.pathname, __basePath);
+  return (
+    stripLocaleFromAppPathAndSearch(appPathname + window.location.search) + window.location.hash
+  );
+}
+
+function stripLocaleFromAppPathAndSearch(pathAndSearch: string): string {
+  const [pathnamePart, searchPart = ""] = pathAndSearch.split("?", 2);
+  const locales = window.__VINEXT_LOCALES__ ?? [];
+  const firstSegment = pathnamePart.split("/").filter(Boolean)[0];
+  const pathname =
+    firstSegment && locales.includes(firstSegment)
+      ? pathnamePart.slice(firstSegment.length + 1) || "/"
+      : pathnamePart;
+  return `${pathname}${searchPart ? `?${searchPart}` : ""}`;
+}
+
+function getCurrentAppUrl(): string {
+  return stripBasePath(window.location.pathname, __basePath) + window.location.search;
+}
+
+function getPathnameAndSearch(href: string): string {
+  const url = new URL(href, window.location.href);
+  return url.pathname + url.search;
+}
+
+function getAppPathnameAndSearch(href: string): string {
+  const url = new URL(href, window.location.href);
+  return stripBasePath(url.pathname, __basePath) + url.search;
+}
+
+function getCurrentLocaleStrippedPathAndSearch(): string {
+  const asPath = getLocaleStrippedCurrentAsPath();
+  const hashIndex = asPath.indexOf("#");
+  return hashIndex === -1 ? asPath : asPath.slice(0, hashIndex);
+}
+
+function ensureInitialPagesHistoryState(): void {
+  const state = window.history.state as NextHistoryState | null;
+  if (state?.__N && typeof state.key === "string") {
+    _historyKey = state.key;
+    return;
+  }
+
+  const appUrl = getCurrentAppUrl();
+  window.history.replaceState(
+    {
+      ...state,
+      ...createPagesHistoryState(
+        appUrl,
+        getLocaleStrippedCurrentAsPath(),
+        {
+          locale: window.__VINEXT_LOCALE__,
+        },
+        _historyKey,
+      ),
+    },
+    "",
+  );
+}
 
 // Module-level popstate listener: handles browser back/forward by re-rendering
 // the React root with the page at the new URL. This runs regardless of whether
 // any component calls useRouter().
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && window.history) {
+  ensureInitialPagesHistoryState();
+  if (manualScrollRestoration) {
+    window.history.scrollRestoration = "manual";
+  }
+
+  window.addEventListener("pageshow", (event: PageTransitionEvent) => {
+    const pageShowState = window.history.state as NextHistoryState | null;
+    if (pageShowState?.__N && typeof pageShowState.key === "string") {
+      _historyKey = pageShowState.key;
+    }
+
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const state = window.history.state as { __vinext_restore_url?: unknown } | null;
+    if (!event.persisted && state?.__vinext_restore_url !== currentUrl) return;
+    if (state && "__vinext_restore_url" in state) {
+      const { __vinext_restore_url: _restoreUrl, ...nextState } = state;
+      window.history.replaceState(nextState, "");
+    }
+
+    const browserUrl = window.location.pathname + window.location.search;
+    const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+    _lastPathnameAndSearch = browserUrl;
+
+    const fullAppUrl = appUrl + window.location.hash;
+    void (async () => {
+      const result = await runNavigateClient(browserUrl, fullAppUrl);
+      if (result === "completed") {
+        dispatchVinextNavigate();
+      }
+    })();
+  });
+
   window.addEventListener("popstate", (e: PopStateEvent) => {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+      return;
+    }
+
+    const isFirstPopStateEvent = _isFirstPagesPopStateEvent;
+    _isFirstPagesPopStateEvent = false;
+
+    const state = e.state as NextHistoryState | null;
+
+    if (state?.__NA) {
+      window.location.reload();
+      return;
+    }
+
+    if (state?.__N) {
+      const stateUrl = state.url ?? window.location.pathname + window.location.search;
+      const stateAs = state.as ?? stateUrl;
+      const stateOptions = state.options ?? {};
+      let forcedScroll: { x: number; y: number } | null = null;
+      if (manualScrollRestoration && typeof state.key === "string" && _historyKey !== state.key) {
+        saveScrollPositionToSession(_historyKey);
+        forcedScroll = readScrollPositionFromSession(state.key) ?? { x: 0, y: 0 };
+      }
+      if (typeof state.key === "string") {
+        _historyKey = state.key;
+      }
+
+      if (_beforePopStateCb !== undefined) {
+        const shouldContinue = (_beforePopStateCb as BeforePopStateCallback)({
+          url: stateUrl,
+          as: stateAs,
+          options: { shallow: stateOptions.shallow ?? false },
+        });
+        if (!shouldContinue) return;
+      }
+
+      const fullStateUrl = toBrowserNavigationHref(stateUrl, window.location.href, __basePath);
+      const browserPathAndSearch = window.location.pathname + window.location.search;
+      const stateBrowserPathAndSearch = getPathnameAndSearch(fullStateUrl);
+      const stateAppPathAndSearch = getAppPathnameAndSearch(fullStateUrl);
+      const stateAsPathAndSearch = getPathnameAndSearch(stateAs);
+      const currentAsPathAndSearch = getCurrentLocaleStrippedPathAndSearch();
+      const localeMatchesCurrent =
+        stateOptions.locale === undefined || stateOptions.locale === window.__VINEXT_LOCALE__;
+      const staleSameVisibleRoute =
+        isFirstPopStateEvent &&
+        localeMatchesCurrent &&
+        stateAsPathAndSearch === currentAsPathAndSearch &&
+        stateAppPathAndSearch !== currentAsPathAndSearch;
+
+      if (staleSameVisibleRoute) {
+        const staleKey = `${stateOptions.locale ?? ""}:${stateBrowserPathAndSearch}:${stateAsPathAndSearch}`;
+        if (_lastIgnoredStalePopstate !== staleKey) {
+          _lastIgnoredStalePopstate = staleKey;
+          restoreScrollPosition(e.state, forcedScroll);
+          return;
+        }
+      } else {
+        _lastIgnoredStalePopstate = null;
+      }
+
+      if (
+        browserPathAndSearch === _lastPathnameAndSearch &&
+        stateBrowserPathAndSearch === browserPathAndSearch
+      ) {
+        const hashUrl = stripBasePath(browserPathAndSearch, __basePath) + window.location.hash;
+        routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
+        scrollToHash(window.location.hash);
+        routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
+        restoreScrollPosition(e.state, forcedScroll);
+        dispatchVinextNavigate();
+        return;
+      }
+      _lastIgnoredStalePopstate = null;
+      _lastPathnameAndSearch = browserPathAndSearch;
+      routerEvents.emit("routeChangeStart", stateAs, { shallow: stateOptions.shallow ?? false });
+      routerEvents.emit("beforeHistoryChange", stateAs, {
+        shallow: stateOptions.shallow ?? false,
+      });
+      void (async () => {
+        const result = await runNavigateClient(fullStateUrl, stateAs);
+        if (result === "completed") {
+          routerEvents.emit("routeChangeComplete", stateAs, {
+            shallow: stateOptions.shallow ?? false,
+          });
+          restoreScrollPosition(e.state, forcedScroll);
+          dispatchVinextNavigate();
+        }
+      })();
+      return;
+    }
+
     const browserUrl = window.location.pathname + window.location.search;
     const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
 
@@ -849,7 +2069,7 @@ if (typeof window !== "undefined") {
       routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
       scrollToHash(window.location.hash);
       routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      dispatchVinextNavigate();
       return;
     }
 
@@ -866,7 +2086,7 @@ if (typeof window !== "undefined") {
       if (result === "completed") {
         routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
         restoreScrollPosition(e.state);
-        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+        dispatchVinextNavigate();
       }
       // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
       // "failed": runNavigateClient already scheduled the hard-navigation fallback.
@@ -898,128 +2118,297 @@ export function wrapWithRouterContext(element: ReactElement): ReactElement {
   return createElement(RouterContext.Provider, { value: routerValue }, element) as ReactElement;
 }
 
+function noRouter(): never {
+  throw new Error(
+    'No router instance found. you should only use "next/router" inside the client side of your app. https://nextjs.org/docs/messages/no-router-instance',
+  );
+}
+
+function assertClientRouter(): void {
+  if (typeof window === "undefined") noRouter();
+}
+
 // Also export a default Router singleton for `import Router from 'next/router'`
-const Router = {
-  push: async (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
-    let resolved = resolveNavigationTarget(url, as, options?.locale);
+const Router: NextRouterSingleton = {
+  get pathname() {
+    return getPathnameAndQuery().pathname;
+  },
+  get route() {
+    return typeof window !== "undefined"
+      ? (window.__NEXT_DATA__?.page ?? this.pathname)
+      : this.pathname;
+  },
+  get query() {
+    return getPathnameAndQuery().query;
+  },
+  get asPath() {
+    return getPathnameAndQuery().asPath;
+  },
+  get basePath() {
+    return __basePath;
+  },
+  get locale() {
+    return typeof window !== "undefined" ? window.__VINEXT_LOCALE__ : _getSSRContext()?.locale;
+  },
+  get locales() {
+    return typeof window !== "undefined" ? window.__VINEXT_LOCALES__ : _getSSRContext()?.locales;
+  },
+  get defaultLocale() {
+    return typeof window !== "undefined"
+      ? window.__VINEXT_DEFAULT_LOCALE__
+      : _getSSRContext()?.defaultLocale;
+  },
+  get domainLocales() {
+    return typeof window !== "undefined"
+      ? window.__NEXT_DATA__?.domainLocales
+      : _getSSRContext()?.domainLocales;
+  },
+  isReady: true,
+  isPreview: false,
+  get isFallback() {
+    return typeof window !== "undefined" && window.__NEXT_DATA__?.isFallback === true;
+  },
+  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    assertClientRouter();
+    return (async () => {
+      let resolved = resolveNavigationTarget(url, as, options?.locale);
 
-    // External URLs (unless same-origin)
-    if (isExternalUrl(resolved)) {
-      const localPath = toSameOriginAppPath(resolved, __basePath);
-      if (localPath == null) {
-        window.location.assign(resolved);
+      // External URLs (unless same-origin)
+      if (isExternalUrl(resolved)) {
+        const localPath = toSameOriginAppPath(resolved, __basePath);
+        if (localPath == null) {
+          window.location.assign(resolved);
+          return true;
+        }
+        resolved = localPath;
+      }
+
+      const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+      if (shouldHardNavigateManualBasePathTarget(resolved)) {
+        window.location.href = full;
         return true;
       }
-      resolved = localPath;
-    }
+      const { routeFull, allowErrorPageData } = resolveNavigationRouteFetch(
+        url,
+        as,
+        options?.locale,
+        full,
+      );
+      const eventUrl = toRouterEventUrl(full);
+      const stateUrl =
+        as !== undefined ? resolveNavigationRouteTarget(url, options?.locale) : resolved;
+      const historyState = createPagesHistoryState(stateUrl, resolved, options);
 
-    const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
-
-    // Hash-only change
-    if (isHashOnlyChange(resolved)) {
-      const eventUrl = resolveHashUrl(resolved);
-      routerEvents.emit("hashChangeStart", eventUrl, {
-        shallow: options?.shallow ?? false,
-      });
-      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.pushState({}, "", resolved.startsWith("#") ? resolved : full);
-      _lastPathnameAndSearch = window.location.pathname + window.location.search;
-      scrollToHash(hash);
-      routerEvents.emit("hashChangeComplete", eventUrl, {
-        shallow: options?.shallow ?? false,
-      });
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
-      return true;
-    }
-
-    saveScrollPosition();
-    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
-    window.history.pushState({}, "", full);
-    _lastPathnameAndSearch = window.location.pathname + window.location.search;
-    if (!options?.shallow) {
-      const result = await runNavigateClient(full, resolved);
-      if (result === "cancelled") return true;
-      if (result === "failed") return false;
-    }
-    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
-
-    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-    if (hash) {
-      scrollToHash(hash);
-    } else if (options?.scroll !== false) {
-      window.scrollTo(0, 0);
-    }
-    window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    return true;
-  },
-  replace: async (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
-    let resolved = resolveNavigationTarget(url, as, options?.locale);
-
-    // External URLs (unless same-origin)
-    if (isExternalUrl(resolved)) {
-      const localPath = toSameOriginAppPath(resolved, __basePath);
-      if (localPath == null) {
-        window.location.replace(resolved);
+      // Hash-only change
+      if (isHashOnlyChange(full)) {
+        const hashEventUrl = resolveHashUrl(full);
+        routerEvents.emit("hashChangeStart", hashEventUrl, {
+          shallow: options?.shallow ?? false,
+        });
+        const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        saveScrollPosition();
+        window.history.pushState(historyState, "", resolved.startsWith("#") ? resolved : full);
+        _historyKey = historyState.key ?? _historyKey;
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
+        scrollToHash(hash);
+        routerEvents.emit("hashChangeComplete", hashEventUrl, {
+          shallow: options?.shallow ?? false,
+        });
+        dispatchVinextNavigate();
         return true;
       }
-      resolved = localPath;
-    }
 
-    const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+      saveScrollPosition();
+      emitActiveNavigationCancelled();
+      routerEvents.emit("routeChangeStart", eventUrl, { shallow: options?.shallow ?? false });
+      if (options?.shallow) {
+        commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+        routerEvents.emit("beforeHistoryChange", eventUrl, { shallow: true });
+        routerEvents.emit("routeChangeComplete", eventUrl, { shallow: true });
+      } else {
+        const committedBeforeFetch = shouldCommitQueryNavigationBeforeFetch(full);
+        if (committedBeforeFetch) {
+          commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+        }
+        const previousBrowserUrl = getCurrentBrowserPathSearchHash();
+        let completedBeforeRender = false;
+        const completeBeforeRender = () => {
+          if (completedBeforeRender) return;
+          completedBeforeRender = true;
+          if (!committedBeforeFetch && getCurrentBrowserPathSearchHash() === previousBrowserUrl) {
+            commitPushNavigationHistory(historyState, full, routeFull, as !== undefined);
+          } else {
+            syncHistoryTrackingFromCurrent();
+          }
+          preserveTargetSearchIfRewriteDroppedIt(full);
+          routerEvents.emit("beforeHistoryChange", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+          routerEvents.emit("routeChangeComplete", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+        };
+        _pendingNavigationBrowserUrl = full;
+        const result = await runNavigateClient(routeFull, eventUrl, {
+          allowErrorPageData,
+          beforeRender: completeBeforeRender,
+        });
+        if (_pendingNavigationBrowserUrl === full) {
+          _pendingNavigationBrowserUrl = null;
+        }
+        if (result === "cancelled") return true;
+        if (result === "failed") return false;
+        if (!completedBeforeRender) {
+          completeBeforeRender();
+        }
+      }
 
-    // Hash-only change
-    if (isHashOnlyChange(resolved)) {
-      const eventUrl = resolveHashUrl(resolved);
-      routerEvents.emit("hashChangeStart", eventUrl, {
-        shallow: options?.shallow ?? false,
-      });
       const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : full);
-      _lastPathnameAndSearch = window.location.pathname + window.location.search;
-      scrollToHash(hash);
-      routerEvents.emit("hashChangeComplete", eventUrl, {
-        shallow: options?.shallow ?? false,
-      });
-      window.dispatchEvent(new CustomEvent("vinext:navigate"));
+      if (hash) {
+        scrollToHash(hash);
+      } else if (options?.scroll !== false) {
+        window.scrollTo(0, 0);
+      }
+      dispatchVinextNavigate();
       return true;
-    }
-
-    routerEvents.emit("routeChangeStart", resolved, { shallow: options?.shallow ?? false });
-    routerEvents.emit("beforeHistoryChange", resolved, { shallow: options?.shallow ?? false });
-    window.history.replaceState({}, "", full);
-    _lastPathnameAndSearch = window.location.pathname + window.location.search;
-    if (!options?.shallow) {
-      const result = await runNavigateClient(full, resolved);
-      if (result === "cancelled") return true;
-      if (result === "failed") return false;
-    }
-    routerEvents.emit("routeChangeComplete", resolved, { shallow: options?.shallow ?? false });
-
-    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-    if (hash) {
-      scrollToHash(hash);
-    } else if (options?.scroll !== false) {
-      window.scrollTo(0, 0);
-    }
-    window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    return true;
+    })();
   },
-  back: () => window.history.back(),
-  reload: () => window.location.reload(),
-  prefetch: async (url: string) => {
-    if (typeof document !== "undefined") {
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.href = url;
-      link.as = "document";
-      document.head.appendChild(link);
-    }
+  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    assertClientRouter();
+    return (async () => {
+      let resolved = resolveNavigationTarget(url, as, options?.locale);
+
+      // External URLs (unless same-origin)
+      if (isExternalUrl(resolved)) {
+        const localPath = toSameOriginAppPath(resolved, __basePath);
+        if (localPath == null) {
+          window.location.replace(resolved);
+          return true;
+        }
+        resolved = localPath;
+      }
+
+      const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
+      if (shouldHardNavigateManualBasePathTarget(resolved)) {
+        window.location.replace(full);
+        return true;
+      }
+      const { routeFull, allowErrorPageData } = resolveNavigationRouteFetch(
+        url,
+        as,
+        options?.locale,
+        full,
+      );
+      const eventUrl = toRouterEventUrl(full);
+      const stateUrl =
+        as !== undefined ? resolveNavigationRouteTarget(url, options?.locale) : resolved;
+      const historyState = createPagesHistoryState(stateUrl, resolved, options, _historyKey);
+
+      // Hash-only change
+      if (isHashOnlyChange(full)) {
+        const hashEventUrl = resolveHashUrl(full);
+        routerEvents.emit("hashChangeStart", hashEventUrl, {
+          shallow: options?.shallow ?? false,
+        });
+        const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        window.history.replaceState(historyState, "", resolved.startsWith("#") ? resolved : full);
+        _historyKey = historyState.key ?? _historyKey;
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
+        scrollToHash(hash);
+        routerEvents.emit("hashChangeComplete", hashEventUrl, {
+          shallow: options?.shallow ?? false,
+        });
+        dispatchVinextNavigate();
+        return true;
+      }
+
+      emitActiveNavigationCancelled();
+      routerEvents.emit("routeChangeStart", eventUrl, { shallow: options?.shallow ?? false });
+      if (options?.shallow) {
+        commitReplaceNavigationHistory(historyState, full);
+        routerEvents.emit("beforeHistoryChange", eventUrl, { shallow: true });
+        routerEvents.emit("routeChangeComplete", eventUrl, { shallow: true });
+      } else {
+        const committedBeforeFetch = shouldCommitQueryNavigationBeforeFetch(full);
+        if (committedBeforeFetch) {
+          commitReplaceNavigationHistory(historyState, full);
+        }
+        const previousBrowserUrl = getCurrentBrowserPathSearchHash();
+        let completedBeforeRender = false;
+        const completeBeforeRender = () => {
+          if (completedBeforeRender) return;
+          completedBeforeRender = true;
+          if (!committedBeforeFetch && getCurrentBrowserPathSearchHash() === previousBrowserUrl) {
+            commitReplaceNavigationHistory(historyState, full);
+          } else {
+            syncHistoryTrackingFromCurrent();
+          }
+          preserveTargetSearchIfRewriteDroppedIt(full);
+          routerEvents.emit("beforeHistoryChange", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+          routerEvents.emit("routeChangeComplete", eventUrl, {
+            shallow: options?.shallow ?? false,
+          });
+        };
+        _pendingNavigationBrowserUrl = full;
+        const result = await runNavigateClient(routeFull, eventUrl, {
+          allowErrorPageData,
+          beforeRender: completeBeforeRender,
+        });
+        if (_pendingNavigationBrowserUrl === full) {
+          _pendingNavigationBrowserUrl = null;
+        }
+        if (result === "cancelled") return true;
+        if (result === "failed") return false;
+        if (!completedBeforeRender) {
+          completeBeforeRender();
+        }
+      }
+
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      if (hash) {
+        scrollToHash(hash);
+      } else if (options?.scroll !== false) {
+        window.scrollTo(0, 0);
+      }
+      dispatchVinextNavigate();
+      return true;
+    })();
+  },
+  back: () => {
+    assertClientRouter();
+    window.history.back();
+  },
+  reload: () => {
+    assertClientRouter();
+    window.location.reload();
+  },
+  prefetch: (url: string) => {
+    assertClientRouter();
+    return (async () => {
+      if (typeof document !== "undefined") {
+        const link = document.createElement("link");
+        link.rel = "prefetch";
+        link.href = new URL(url, window.location.href).href;
+        link.as = "document";
+        document.head.appendChild(link);
+      }
+    })();
   },
   beforePopState: (cb: BeforePopStateCallback) => {
+    assertClientRouter();
     _beforePopStateCb = cb;
   },
+  sdc: {},
   events: routerEvents,
 };
+
+singletonRouter = Router;
+
+if (typeof window !== "undefined") {
+  window.next ??= {};
+  window.next.router = Router;
+}
 
 export default Router;

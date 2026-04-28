@@ -19,7 +19,18 @@ export function isValidModulePath(p: unknown): p is string {
   if (p.startsWith("//")) return false;
   // Must not contain protocol (prevents importing from external URLs)
   if (p.includes("://")) return false;
-  // Must not traverse directories
-  if (p.includes("..")) return false;
+  // Must not traverse directories. Check path segments instead of any ".."
+  // substring so valid catch-all route chunks like "__...slug__-hash.js" work.
+  const pathOnly = p.split(/[?#]/, 1)[0];
+  const segments = pathOnly.split(/[\\/]/);
+  for (const segment of segments) {
+    let decoded = segment;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      // Malformed escapes are not traversal segments by themselves.
+    }
+    if (segment === ".." || decoded.split(/[\\/]/).includes("..")) return false;
+  }
   return true;
 }

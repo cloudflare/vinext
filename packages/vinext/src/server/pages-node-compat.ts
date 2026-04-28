@@ -1,4 +1,5 @@
 import { decode as decodeQueryString } from "node:querystring";
+import { Readable, Writable } from "node:stream";
 import { parseCookies } from "../config/config-matchers.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
@@ -19,7 +20,8 @@ export type PagesReqResRequest = {
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
-};
+  [Symbol.asyncIterator]: () => AsyncIterableIterator<Buffer>;
+} & Readable;
 
 export type PagesReqResHeaders = {
   [key: string]: string | number | boolean | string[];
@@ -31,22 +33,32 @@ export type PagesReqResResponse = {
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
   setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
   getHeader: (name: string) => string | number | boolean | string[] | undefined;
+  write: (chunk: string | Uint8Array | Buffer) => boolean;
   end: (data?: BodyInit | null) => void;
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => void;
+  setPreviewData: (data: unknown) => PagesReqResResponse;
+  clearPreviewData: () => PagesReqResResponse;
+  revalidate: (urlPath: string, options?: { unstable_onlyGenerated?: boolean }) => Promise<void>;
   getHeaders: () => PagesReqResHeaders;
-};
+} & Writable;
 
 type CreatePagesReqResOptions = {
   body: unknown;
+  onRevalidate?: (
+    urlPath: string,
+    options?: { unstable_onlyGenerated?: boolean },
+  ) => Promise<void> | void;
+  preserveRequestBodyStream?: boolean;
   query: PagesRequestQuery;
   request: Request;
   url: string;
 };
 
 type CreatePagesReqResResult = {
+  isResponsePiped: () => boolean;
   req: PagesReqResRequest;
   res: PagesReqResResponse;
   responsePromise: Promise<Response>;
@@ -79,6 +91,34 @@ async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number)
 
   chunks.push(decoder.decode());
   return chunks.join("");
+}
+
+export function parsePagesBodySizeLimit(
+  sizeLimit: number | string | undefined,
+  fallback = MAX_PAGES_API_BODY_SIZE,
+): number {
+  if (typeof sizeLimit === "number" && Number.isFinite(sizeLimit) && sizeLimit >= 0) {
+    return sizeLimit;
+  }
+
+  if (typeof sizeLimit !== "string") {
+    return fallback;
+  }
+
+  const match = sizeLimit
+    .trim()
+    .toLowerCase()
+    .match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?$/);
+  if (!match) {
+    return fallback;
+  }
+
+  const value = Number.parseFloat(match[1]);
+  const unit = match[2] ?? "b";
+  const multiplier =
+    unit === "gb" ? 1024 * 1024 * 1024 : unit === "mb" ? 1024 * 1024 : unit === "kb" ? 1024 : 1;
+
+  return Math.floor(value * multiplier);
 }
 
 export async function parsePagesApiBody(
@@ -130,36 +170,89 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     headersObj[key.toLowerCase()] = value;
   }
 
-  const req: PagesReqResRequest = {
-    method: options.request.method,
-    url: options.url,
-    headers: headersObj,
-    query: options.query,
-    body: options.body,
-    cookies: parseCookies(options.request.headers.get("cookie")),
-  };
+  const reqStream =
+    options.preserveRequestBodyStream && options.request.body
+      ? Readable.fromWeb(
+          options.request.body as import("node:stream/web").ReadableStream<Uint8Array>,
+        )
+      : Readable.from([]);
+  const req = reqStream as PagesReqResRequest;
+  req.method = options.request.method;
+  req.url = options.url;
+  req.headers = headersObj;
+  req.query = options.query;
+  req.body = options.body;
+  req.cookies = parseCookies(options.request.headers.get("cookie"));
 
   let resStatusCode = 200;
   const resHeaders: Record<string, string | number | boolean> = {};
   const setCookieHeaders: string[] = [];
-  let resBody: BodyInit | null = null;
+  const resBodyChunks: Buffer[] = [];
+  let responsePiped = false;
   let ended = false;
   let resolveResponse!: (value: Response) => void;
   const responsePromise = new Promise<Response>((resolve) => {
     resolveResponse = resolve;
   });
 
-  const res: PagesReqResResponse = {
-    get statusCode() {
-      return resStatusCode;
+  function normalizeResponseChunk(data: BodyInit): Buffer {
+    if (Buffer.isBuffer(data)) return data;
+    if (data instanceof Uint8Array) return Buffer.from(data);
+    if (data instanceof ArrayBuffer) return Buffer.from(data);
+    return Buffer.from(String(data));
+  }
+
+  function resolveOnce(): void {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(resHeaders)) {
+      headers.set(key, String(value));
+    }
+    for (const cookie of setCookieHeaders) {
+      headers.append("set-cookie", cookie);
+    }
+    const body = resBodyChunks.length > 0 ? Buffer.concat(resBodyChunks) : null;
+    resolveResponse(new Response(body, { status: resStatusCode, headers }));
+  }
+
+  const resStream = new Writable({
+    write(chunk, _encoding, callback) {
+      if (chunk !== undefined && chunk !== null) {
+        resBodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      callback();
     },
-    set statusCode(code) {
-      resStatusCode = code;
+  });
+  resStream.on("pipe", () => {
+    responsePiped = true;
+  });
+  resStream.on("finish", resolveOnce);
+
+  const streamWrite = resStream.write.bind(resStream);
+  const streamEnd = resStream.end.bind(resStream);
+  const res = resStream as PagesReqResResponse;
+
+  Object.defineProperties(res, {
+    statusCode: {
+      get() {
+        return resStatusCode;
+      },
+      set(code: number) {
+        resStatusCode = code;
+      },
     },
-    get headersSent() {
-      return ended;
+    headersSent: {
+      get() {
+        return ended || res.writableEnded;
+      },
     },
-    writeHead(code, headers) {
+  });
+
+  Object.assign(res, {
+    writeHead(code: number, headers?: PagesReqResHeaders) {
       resStatusCode = code;
       if (headers) {
         for (const [key, value] of Object.entries(headers)) {
@@ -176,7 +269,10 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
       }
       return res;
     },
-    setHeader(name, value) {
+    write(chunk: string | Uint8Array | Buffer) {
+      return streamWrite(chunk);
+    },
+    setHeader(name: string, value: string | number | boolean | string[]) {
       if (name.toLowerCase() === "set-cookie") {
         // Node.js res.setHeader() replaces the existing value entirely.
         setCookieHeaders.length = 0;
@@ -190,38 +286,31 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
       }
       return res;
     },
-    getHeader(name) {
+    getHeader(name: string) {
       if (name.toLowerCase() === "set-cookie") {
         return setCookieHeaders.length > 0 ? setCookieHeaders : undefined;
       }
       return resHeaders[name.toLowerCase()];
     },
-    end(data) {
-      if (ended) {
+    end(data?: BodyInit | null) {
+      if (ended || res.writableEnded) {
         return;
       }
-      ended = true;
       if (data !== undefined && data !== null) {
-        resBody = data;
+        resBodyChunks.push(normalizeResponseChunk(data));
       }
-      const headers = new Headers();
-      for (const [key, value] of Object.entries(resHeaders)) {
-        headers.set(key, String(value));
-      }
-      for (const cookie of setCookieHeaders) {
-        headers.append("set-cookie", cookie);
-      }
-      resolveResponse(new Response(resBody, { status: resStatusCode, headers }));
+      streamEnd();
+      resolveOnce();
     },
-    status(code) {
+    status(code: number) {
       resStatusCode = code;
       return res;
     },
-    json(data) {
+    json(data: unknown) {
       resHeaders["content-type"] = "application/json";
       res.end(JSON.stringify(data));
     },
-    send(data) {
+    send(data: unknown) {
       if (Buffer.isBuffer(data)) {
         if (!resHeaders["content-type"]) {
           resHeaders["content-type"] = "application/octet-stream";
@@ -242,13 +331,27 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
       }
       res.end(String(data));
     },
-    redirect(statusOrUrl, url) {
+    redirect(statusOrUrl: number | string, url?: string) {
       if (typeof statusOrUrl === "string") {
         res.writeHead(307, { Location: statusOrUrl });
       } else {
         res.writeHead(statusOrUrl, { Location: url ?? "" });
       }
       res.end();
+    },
+    setPreviewData(data: unknown) {
+      const encoded = Buffer.from(JSON.stringify(data)).toString("base64url");
+      setCookieHeaders.push(`__prerender_bypass=vinext-preview; Path=/; SameSite=Lax`);
+      setCookieHeaders.push(`__next_preview_data=${encoded}; Path=/; SameSite=Lax; HttpOnly`);
+      return res;
+    },
+    clearPreviewData() {
+      setCookieHeaders.push(`__prerender_bypass=; Path=/; Max-Age=0; SameSite=Lax`);
+      setCookieHeaders.push(`__next_preview_data=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly`);
+      return res;
+    },
+    async revalidate(urlPath: string, revalidateOptions?: { unstable_onlyGenerated?: boolean }) {
+      await options.onRevalidate?.(urlPath, revalidateOptions);
     },
     getHeaders() {
       const headers: PagesReqResHeaders = { ...resHeaders };
@@ -257,7 +360,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
       }
       return headers;
     },
-  };
+  });
 
-  return { req, res, responsePromise };
+  return { isResponsePiped: () => responsePiped, req, res, responsePromise };
 }

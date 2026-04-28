@@ -96,6 +96,49 @@ function buildBeforeInteractiveScriptProps(options: {
   return scriptProps;
 }
 
+function ServerScriptTag(
+  props: Pick<ScriptProps, "src" | "id" | "children" | "dangerouslySetInnerHTML"> & {
+    rest: Record<string, unknown>;
+    resolvedNonce?: string;
+  },
+): React.ReactElement {
+  return React.createElement(
+    "script",
+    buildBeforeInteractiveScriptProps({
+      src: props.src,
+      id: props.id,
+      rest: props.rest,
+      resolvedNonce: props.resolvedNonce,
+      dangerouslySetInnerHTML: props.dangerouslySetInnerHTML,
+    }),
+    props.children,
+  );
+}
+
+function ServerScriptWithContext(
+  props: Pick<ScriptProps, "src" | "id" | "children" | "dangerouslySetInnerHTML"> & {
+    rest: Record<string, unknown>;
+  },
+): React.ReactElement {
+  const tagProps = {
+    ...props,
+    resolvedNonce: useScriptNonce(),
+  };
+  if (props.dangerouslySetInnerHTML) {
+    return React.createElement(ServerScriptTag, tagProps);
+  }
+  return React.createElement(
+    ServerScriptTag,
+    {
+      src: props.src,
+      id: props.id,
+      rest: props.rest,
+      resolvedNonce: tagProps.resolvedNonce,
+    },
+    props.children,
+  );
+}
+
 /**
  * Load a script imperatively (outside of React).
  */
@@ -152,7 +195,7 @@ export function initScriptLoader(scripts: ScriptProps[]): void {
   }
 }
 
-function Script(props: ScriptProps): React.ReactElement | null {
+function ClientScript(props: ScriptProps): React.ReactElement | null {
   const {
     src,
     id,
@@ -271,25 +314,6 @@ function Script(props: ScriptProps): React.ReactElement | null {
     rest,
   ]);
 
-  // SSR path: only "beforeInteractive" renders a <script> tag server-side
-  if (typeof window === "undefined") {
-    if (strategy === "beforeInteractive") {
-      return React.createElement(
-        "script",
-        buildBeforeInteractiveScriptProps({
-          src,
-          id,
-          rest,
-          resolvedNonce,
-          dangerouslySetInnerHTML,
-        }),
-        children,
-      );
-    }
-    // Other strategies don't render during SSR
-    return null;
-  }
-
   if (strategy === "beforeInteractive") {
     return React.createElement(
       "script",
@@ -306,6 +330,46 @@ function Script(props: ScriptProps): React.ReactElement | null {
 
   // The component itself renders nothing — scripts are injected imperatively
   return null;
+}
+
+function Script(props: ScriptProps): React.ReactElement | null {
+  if (typeof window !== "undefined") {
+    return React.createElement(ClientScript, props);
+  }
+
+  if (props.strategy !== "beforeInteractive") {
+    return null;
+  }
+
+  const { src, id, children, dangerouslySetInnerHTML, ...rest } = props;
+  if (typeof rest.nonce === "string" && rest.nonce.length > 0) {
+    const tagProps = {
+      src,
+      id,
+      dangerouslySetInnerHTML,
+      rest,
+      resolvedNonce: rest.nonce,
+    };
+    if (dangerouslySetInnerHTML) {
+      return React.createElement(ServerScriptTag, tagProps);
+    }
+    return React.createElement(
+      ServerScriptTag,
+      { src, id, rest, resolvedNonce: rest.nonce },
+      children,
+    );
+  }
+
+  const tagProps = {
+    src,
+    id,
+    dangerouslySetInnerHTML,
+    rest,
+  };
+  if (dangerouslySetInnerHTML) {
+    return React.createElement(ServerScriptWithContext, tagProps);
+  }
+  return React.createElement(ServerScriptWithContext, { src, id, rest }, children);
 }
 
 export default Script;

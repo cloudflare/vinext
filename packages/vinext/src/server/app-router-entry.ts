@@ -13,10 +13,12 @@
  */
 
 // @ts-expect-error — virtual module resolved by vinext
-import rscHandler from "virtual:vinext-rsc-entry";
+import rscHandler, { vinextConfig } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
 import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { stripBasePath } from "../utils/base-path.js";
+import { getNextStaticAssetLookupPath, isNextStaticAssetPath } from "./next-static-compat.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -55,6 +57,39 @@ export default {
     // decodeURIComponent + normalizePath on the incoming URL. Decoding here
     // AND in the handler would double-decode, causing inconsistent path
     // matching between middleware and routing.
+
+    if (env?.ASSETS) {
+      const basePath =
+        typeof vinextConfig?.basePath === "string" ? (vinextConfig.basePath as string) : "";
+      const assetPrefix =
+        typeof vinextConfig?.assetPrefix === "string" ? (vinextConfig.assetPrefix as string) : "";
+      const assetPathname = stripBasePath(url.pathname, basePath);
+      if (assetPathname.startsWith("/assets/")) {
+        const assetResponse = await env.ASSETS.fetch(
+          new Request(new URL(assetPathname + url.search, request.url), request),
+        );
+        if (assetResponse.status !== 404) {
+          return assetResponse;
+        }
+        return new Response("Not Found", {
+          status: 404,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      const nextStaticLookupPath = getNextStaticAssetLookupPath(assetPathname, assetPrefix);
+      if (isNextStaticAssetPath(nextStaticLookupPath)) {
+        const assetResponse = await env.ASSETS.fetch(
+          new Request(new URL(nextStaticLookupPath + url.search, request.url), request),
+        );
+        if (assetResponse.status !== 404) {
+          return assetResponse;
+        }
+        return new Response("Not Found", {
+          status: 404,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+    }
 
     // Delegate to RSC handler (which decodes + normalizes the pathname itself),
     // wrapping in the ExecutionContext ALS scope so downstream code can reach
