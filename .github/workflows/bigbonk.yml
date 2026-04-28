@@ -18,7 +18,8 @@ jobs:
       (
         github.event.comment.author_association == 'MEMBER' ||
         github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.comment.author_association == 'OWNER'
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.user.login == 'NathanDrake2406'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
