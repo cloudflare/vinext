@@ -438,6 +438,7 @@ function discoverSlotSubRoutes(
         layoutTreePositions: parentRoute.layoutTreePositions,
         isDynamic: parentRoute.isDynamic || subIsDynamic,
         params: [...parentRoute.params, ...subParams],
+        rootParamNames: parentRoute.rootParamNames,
         patternParts: [...parentRoute.patternParts, ...urlParts],
       };
       syntheticRoutes.push(newRoute);

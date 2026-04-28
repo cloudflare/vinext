@@ -435,7 +435,7 @@ import {
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
-import { setRootParams as __setRootParams } from ${JSON.stringify(rootParamsShimPath)};
+import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from ${JSON.stringify(rootParamsShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(routeTriePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -470,6 +470,13 @@ console.error = (...args) => {
 // it in a module-level variable (that would leak between concurrent requests).
 function setNavigationContext(ctx) {
   _setNavigationContextOrig(ctx);
+  if (ctx === null) __setRootParams(null);
+}
+
+function __clearRequestContext() {
+  setHeadersContext(null);
+  setNavigationContext(null);
+  __setRootParams(null);
 }
 
 // ISR cache is disabled in dev mode — every request re-renders fresh,
@@ -613,14 +620,6 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
-}
-
-function __pickRootParams(params, rootParamNames) {
-  const picked = {};
-  for (const name of rootParamNames || []) {
-    picked[name] = params[name];
-  }
-  return picked;
 }
 
 // djb2 hash — matches Next.js's stringHash for digest generation.
@@ -826,8 +825,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     boundaryComponent: opts?.boundaryComponent ?? null,
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
     clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
     },
     createRscOnErrorHandler(pathname, routePath) {
       return createRscOnErrorHandler(request, pathname, routePath);
@@ -874,8 +872,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   return __renderAppPageErrorBoundary({
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
     clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
     },
     createRscOnErrorHandler(pathname, routePath) {
       return createRscOnErrorHandler(request, pathname, routePath);
@@ -1687,8 +1684,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
         return proxyExternalRequest(request, __rewritten);
       }
       cleanPathname = __rewritten;
@@ -1785,8 +1781,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     !pathname.endsWith(".rsc") &&
     __publicFiles.has(cleanPathname)
   ) {
-    setHeadersContext(null);
-    setNavigationContext(null);
+    __clearRequestContext();
     return __createStaticFileSignal(cleanPathname, _mwCtx);
   }
 
@@ -1806,8 +1801,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     allowedOrigins: __allowedOrigins,
     cleanPathname,
     clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
     },
     contentType: actionContentType,
     decodeAction,
@@ -1835,8 +1829,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // stream to prevent bypasses via chunked transfer-encoding.
     const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
     if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
       return new Response("Payload Too Large", { status: 413 });
     }
 
@@ -1848,16 +1841,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
       } catch (sizeErr) {
         if (sizeErr && sizeErr.message === "Request body too large") {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
           return new Response("Payload Too Large", { status: 413 });
         }
         throw sizeErr;
       }
       const payloadResponse = await validateServerActionPayload(body);
       if (payloadResponse) {
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
         return payloadResponse;
       }
       const temporaryReferences = createTemporaryReferenceSet();
@@ -1912,8 +1903,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       if (actionRedirect) {
         const actionPendingCookies = getAndClearPendingCookies();
         const actionDraftCookie = getDraftModeCookieHeader();
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
         const redirectHeaders = new Headers({
           "Content-Type": "text/x-component; charset=utf-8",
           "Vary": "RSC, Accept",
@@ -2038,8 +2028,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
       );
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
       return new Response(
         process.env.NODE_ENV === "production"
           ? "Internal Server Error"
@@ -2054,8 +2043,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
         return proxyExternalRequest(request, __afterRewritten);
       }
       cleanPathname = __afterRewritten;
@@ -2069,8 +2057,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
@@ -2113,8 +2100,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         // (non-404). A 404 means the path isn't a Pages route either,
         // so fall through to the App Router not-found page below.
         if (__pagesRes.status !== 404) {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
           return __pagesRes;
         }
       }
@@ -2125,8 +2111,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
     if (notFoundResponse) return notFoundResponse;
-    setHeadersContext(null);
-    setNavigationContext(null);
+    __clearRequestContext();
     const notFoundHeaders = new Headers();
     __mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers);
     return new Response("Not Found", { status: 404, headers: notFoundHeaders });
@@ -2162,8 +2147,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     } = __resolveAppRouteHandlerMethod(handler, method);
 
     if (shouldAutoRespondToOptions) {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
       return __applyRouteHandlerMiddlewareContext(
         new Response(null, {
           status: 204,
@@ -2194,8 +2178,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         buildPageCacheTags: __pageCacheTags,
         cleanPathname,
         clearRequestContext: function() {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
         },
         consumeDynamicUsage,
         getCollectedFetchTags,
@@ -2240,8 +2223,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         buildPageCacheTags: __pageCacheTags,
         cleanPathname,
         clearRequestContext: function() {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
         },
         consumeDynamicUsage,
         executionContext: _getRequestExecutionContext(),
@@ -2268,8 +2250,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         setHeadersAccessPhase,
       });
     }
-    setHeadersContext(null);
-    setNavigationContext(null);
+    __clearRequestContext();
     return __applyRouteHandlerMiddlewareContext(
       new Response(null, {
         status: 405,
@@ -2282,8 +2263,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   const hasPageModule = !!route.page;
   const PageComponent = route.page?.default;
   if (hasPageModule && !PageComponent) {
-    setHeadersContext(null);
-    setNavigationContext(null);
+    __clearRequestContext();
     return new Response("Page has no default export", { status: 500 });
   }
 
@@ -2350,8 +2330,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const __cachedPageResponse = await __readAppPageCacheResponse({
       cleanPathname,
       clearRequestContext: function() {
-        setHeadersContext(null);
-        setNavigationContext(null);
+        __clearRequestContext();
       },
       isRscRequest,
       isrDebug: __isrDebug,
@@ -2401,8 +2380,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             _getNavigationContext(),
             __revalFontData,
           );
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
           const __freshHtml = await __readAppPageTextStream(__revalHtmlStream);
           const __freshRscData = await __revalRscCapture.capturedRscDataPromise;
           const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
@@ -2420,8 +2398,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // This runs AFTER the ISR cache read so that a cache hit skips this work entirely.
   const __dynamicParamsResponse = await __validateAppPageDynamicParams({
     clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
     },
     enforceStaticParamsOnly: dynamicParamsConfig === false,
     generateStaticParams: route.page?.generateStaticParams,
@@ -2521,8 +2498,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     renderSpecialError(__buildSpecialError) {
       return __buildAppPageSpecialErrorResponse({
         clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
         },
         middlewareContext: _mwCtx,
         renderFallbackPage(statusCode) {
@@ -2559,8 +2535,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   return __renderAppPageLifecycle({
     cleanPathname,
     clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+      __clearRequestContext();
     },
     consumeDynamicUsage,
     createRscOnErrorHandler(pathname, routePath) {
@@ -2643,8 +2618,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     async renderLayoutSpecialError(__layoutSpecialError, li) {
       return __buildAppPageSpecialErrorResponse({
         clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
         },
         middlewareContext: _mwCtx,
         renderFallbackPage(statusCode) {
@@ -2686,8 +2660,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     async renderPageSpecialError(specialError) {
       return __buildAppPageSpecialErrorResponse({
         clearRequestContext() {
-          setHeadersContext(null);
-          setNavigationContext(null);
+          __clearRequestContext();
         },
         middlewareContext: _mwCtx,
         renderFallbackPage(statusCode) {

@@ -2029,6 +2029,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
+        function invalidateRootParamsModule() {
+          for (const env of Object.values(server.environments)) {
+            const mod = env.moduleGraph.getModuleById(RESOLVED_ROOT_PARAMS);
+            if (mod) env.moduleGraph.invalidateModule(mod);
+          }
+        }
+
         // Node throws on unhandled 'error' events on sockets. When a browser
         // drops the connection mid-response (common in dev: HMR triggers a
         // reload while an RSC stream is still flushing), the next res.write
@@ -2048,6 +2055,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
             invalidateRscEntryModule();
+            invalidateRootParamsModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -2057,6 +2065,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
             invalidateRscEntryModule();
+            invalidateRootParamsModule();
           }
         });
 

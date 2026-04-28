@@ -4410,13 +4410,28 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", routes);
 
     expect(code).toContain("setRootParams as __setRootParams");
+    expect(code).toContain("pickRootParams as __pickRootParams");
     expect(code).toContain('rootParamNames: ["lang","locale"]');
     expect(code).toContain("__setRootParams(__pickRootParams(params, route.rootParamNames));");
+    expect(code).toContain("function __clearRequestContext() {");
+    expect(code).toContain("__setRootParams(null);");
+  });
+
+  it("generated root params selection is delegated to the runtime shim", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+
+    expect(code).toContain("pickRootParams as __pickRootParams");
+    expect(code).not.toContain("function __pickRootParams(params, rootParamNames)");
   });
 
   it("root params runtime getter returns current request values", async () => {
-    const { getRootParam, setRootParams } =
+    const { getRootParam, pickRootParams, setRootParams } =
       await import("../packages/vinext/src/shims/root-params.js");
+
+    expect(pickRootParams({ lang: "en", locale: "us", slug: "post" }, ["lang", "locale"])).toEqual({
+      lang: "en",
+      locale: "us",
+    });
 
     setRootParams({ lang: "en", locale: "us" });
 

@@ -387,6 +387,27 @@ describe("appRouter - route discovery", () => {
     });
   });
 
+  it("preserves root layout params on synthetic parallel slot routes", async () => {
+    await withTempDir("vinext-app-root-params-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[lang]", "@modal", "details"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "[lang]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[lang]", "@modal", "details", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((r) => r.pattern === "/:lang/details");
+
+      expect(route).toBeDefined();
+      expect(route!.rootParamNames).toEqual(["lang"]);
+    });
+  });
+
   it("computes root layout params for dynamic and catch-all segments", () => {
     expect(computeRootParamNames(["[lang]", "[...slug]", "page"], [2])).toEqual(["lang", "slug"]);
     expect(computeRootParamNames(["[[...rest]]"], [1])).toEqual(["rest"]);
