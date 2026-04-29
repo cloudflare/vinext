@@ -33,24 +33,12 @@ const middlewareRequestHeadersPath = resolveEntryPath(
 const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
 const routingUtilsPath = resolveEntryPath("../routing/utils.js", import.meta.url);
-const appRouteHandlerRuntimePath = resolveEntryPath(
-  "../server/app-route-handler-runtime.js",
-  import.meta.url,
-);
-const appRouteHandlerPolicyPath = resolveEntryPath(
-  "../server/app-route-handler-policy.js",
-  import.meta.url,
-);
-const appRouteHandlerExecutionPath = resolveEntryPath(
-  "../server/app-route-handler-execution.js",
+const appRouteHandlerDispatchPath = resolveEntryPath(
+  "../server/app-route-handler-dispatch.js",
   import.meta.url,
 );
 const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
-  import.meta.url,
-);
-const appRouteHandlerCachePath = resolveEntryPath(
-  "../server/app-route-handler-cache.js",
   import.meta.url,
 );
 const implicitTagsPath = resolveEntryPath("../server/implicit-tags.js", import.meta.url);
@@ -75,10 +63,6 @@ const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", imp
 const appPageMethodPath = resolveEntryPath("../server/app-page-method.js", import.meta.url);
 const appStaticGenerationPath = resolveEntryPath(
   "../server/app-static-generation.js",
-  import.meta.url,
-);
-const appRouteHandlerResponsePath = resolveEntryPath(
-  "../server/app-route-handler-response.js",
   import.meta.url,
 );
 const appRscRouteMatchingPath = resolveEntryPath(
@@ -384,21 +368,11 @@ import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromM
 import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
-  isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
-} from ${JSON.stringify(appRouteHandlerRuntimePath)};
-import {
-  getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
-  hasAppRouteHandlerDefaultExport as __hasAppRouteHandlerDefaultExport,
-  resolveAppRouteHandlerMethod as __resolveAppRouteHandlerMethod,
-  shouldReadAppRouteHandlerCache as __shouldReadAppRouteHandlerCache,
-} from ${JSON.stringify(appRouteHandlerPolicyPath)};
-import {
-  executeAppRouteHandler as __executeAppRouteHandler,
-} from ${JSON.stringify(appRouteHandlerExecutionPath)};
+  dispatchAppRouteHandler as __dispatchAppRouteHandler,
+} from ${JSON.stringify(appRouteHandlerDispatchPath)};
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
 } from ${JSON.stringify(appServerActionExecutionPath)};
-import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from ${JSON.stringify(appRouteHandlerCachePath)};
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from ${JSON.stringify(appPageCachePath)};
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -449,9 +423,6 @@ import {
 import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from ${JSON.stringify(appStaticGenerationPath)};
-import {
-  applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
-} from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { buildPageCacheTags } from ${JSON.stringify(implicitTagsPath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
@@ -1871,144 +1842,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // Handle route.ts API handlers
   if (route.routeHandler) {
-    const handler = route.routeHandler;
-    const method = request.method.toUpperCase();
-    const revalidateSeconds = __getAppRouteHandlerRevalidateSeconds(handler);
-    const __buildRouteHandlerPageCacheTags = function(pathname, extraTags) {
-      return buildPageCacheTags(pathname, extraTags, route.routeSegments, "route");
-    };
-    if (__hasAppRouteHandlerDefaultExport(handler) && process.env.NODE_ENV === "development") {
-      console.error(
-        "[vinext] Detected default export in route handler " + route.pattern + ". Export a named export for each HTTP method instead.",
-      );
-    }
-
-    const {
-      allowHeaderForOptions,
-      handlerFn,
-      isAutoHead,
-      shouldAutoRespondToOptions,
-    } = __resolveAppRouteHandlerMethod(handler, method);
-
-    if (shouldAutoRespondToOptions) {
-      __clearRequestContext();
-      return __applyRouteHandlerMiddlewareContext(
-        new Response(null, {
-          status: 204,
-          headers: { "Allow": allowHeaderForOptions },
-        }),
-        _mwCtx,
-      );
-    }
-
-    // ISR cache read for route handlers (production only).
-    // Only GET/HEAD (auto-HEAD) with finite revalidate > 0 are ISR-eligible.
-    // Known-dynamic handlers skip the read entirely so stale cache entries
-    // from earlier requests do not replay once the process has learned they
-    // access request-specific data.
-    if (
-      __shouldReadAppRouteHandlerCache({
-        dynamicConfig: handler.dynamic,
-        handlerFn,
-        isAutoHead,
-        isKnownDynamic: __isKnownDynamicAppRoute(route.pattern),
-        isProduction: process.env.NODE_ENV === "production",
-        method,
-        revalidateSeconds,
-      })
-    ) {
-      const __cachedRouteResponse = await __readAppRouteHandlerCacheResponse({
-        basePath: __basePath,
-        buildPageCacheTags: __buildRouteHandlerPageCacheTags,
-        cleanPathname,
-        clearRequestContext: function() {
-          __clearRequestContext();
-        },
-        consumeDynamicUsage,
-        dynamicConfig: handler.dynamic,
-        getCollectedFetchTags,
-        handlerFn,
-        i18n: __i18nConfig,
-        isAutoHead,
-        isrDebug: __isrDebug,
-        isrGet: __isrGet,
-        isrRouteKey: __isrRouteKey,
-        isrSet: __isrSet,
-        markDynamicUsage,
-        middlewareContext: _mwCtx,
-        params,
-        requestUrl: request.url,
-        revalidateSearchParams: url.searchParams,
-        revalidateSeconds,
-        routePattern: route.pattern,
-        runInRevalidationContext: async function(renderFn) {
-          const __revalHeadCtx = __createStaticGenerationHeadersContext({
-            dynamicConfig: handler.dynamic,
-            routeKind: "route",
-            routePattern: route.pattern,
-          });
-          const __revalUCtx = _createUnifiedCtx({
-            headersContext: __revalHeadCtx,
-            executionContext: _getRequestExecutionContext(),
-            unstableCacheRevalidation: "foreground",
-          });
-          await _runWithUnifiedCtx(__revalUCtx, async () => {
-            _ensureFetchPatch();
-            setCurrentFetchSoftTags(buildPageCacheTags(cleanPathname, [], route.routeSegments, "route"));
-            await renderFn();
-          });
-        },
-        scheduleBackgroundRegeneration(key, renderFn) {
-          __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "route" });
-        },
-        setHeadersAccessPhase,
-        setNavigationContext,
-      });
-      if (__cachedRouteResponse) {
-        return __cachedRouteResponse;
-      }
-    }
-
-    if (typeof handlerFn === "function") {
-      return __executeAppRouteHandler({
-        basePath: __basePath,
-        buildPageCacheTags: __buildRouteHandlerPageCacheTags,
-        cleanPathname,
-        clearRequestContext: function() {
-          __clearRequestContext();
-        },
-        consumeDynamicUsage,
-        executionContext: _getRequestExecutionContext(),
-        getAndClearPendingCookies,
-        getCollectedFetchTags,
-        getDraftModeCookieHeader,
-        handler,
-        handlerFn,
-        i18n: __i18nConfig,
-        isAutoHead,
-        isProduction: process.env.NODE_ENV === "production",
-        isrDebug: __isrDebug,
-        isrRouteKey: __isrRouteKey,
-        isrSet: __isrSet,
-        markDynamicUsage,
-        method,
-        middlewareContext: _mwCtx,
-        middlewareRequestHeaders: _mwCtx.requestHeaders,
-        params: makeThenableParams(params),
-        reportRequestError: _reportRequestError,
-        request,
-        revalidateSeconds,
-        routePattern: route.pattern,
-        setHeadersAccessPhase,
-      });
-    }
-    __clearRequestContext();
-    return __applyRouteHandlerMiddlewareContext(
-      new Response(null, {
-        status: 405,
-      }),
-      _mwCtx,
-    );
+    return __dispatchAppRouteHandler({
+      basePath: __basePath,
+      cleanPathname,
+      clearRequestContext: function() {
+        __clearRequestContext();
+      },
+      i18n: __i18nConfig,
+      isrDebug: __isrDebug,
+      isrGet: __isrGet,
+      isrRouteKey: __isrRouteKey,
+      isrSet: __isrSet,
+      middlewareContext: _mwCtx,
+      middlewareRequestHeaders: _mwCtx.requestHeaders,
+      params,
+      request,
+      route: {
+        pattern: route.pattern,
+        routeHandler: route.routeHandler,
+        routeSegments: route.routeSegments,
+      },
+      scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
+      searchParams: url.searchParams,
+    });
   }
 
   // Build the component tree: layouts wrapping the page

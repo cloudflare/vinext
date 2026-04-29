@@ -4418,17 +4418,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("const __pendingRegenerations = new Map()");
   });
 
-  it("generated code threads collected fetch tags into page ISR writes", () => {
+  it("generated code threads collected fetch tags into page ISR writes and delegates route ISR", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("getCollectedFetchTags");
     expect(code).toContain("buildPageCacheTags");
     expect(code).toContain(
       'buildPageCacheTags(cleanPathname, [], route.routeSegments, route.routeHandler ? "route" : "page")',
     );
-    expect(code).toContain(
-      "const __buildRouteHandlerPageCacheTags = function(pathname, extraTags) {",
-    );
-    expect(code).toContain("buildPageCacheTags: __buildRouteHandlerPageCacheTags");
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
+    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
     expect(code).toContain(
       'const __pageTags = buildPageCacheTags(cleanPathname, getCollectedFetchTags(), route.routeSegments, "page")',
     );
@@ -4725,22 +4724,22 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code contains APP_ROUTE ISR cache read for route handlers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR reads now flow through the typed cache helper.
-    expect(code).toContain(
-      "readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse",
-    );
-    expect(code).toContain("await __readAppRouteHandlerCacheResponse({");
+    // Route handler ISR reads now flow through the typed dispatch helper.
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
     expect(code).toContain("isrGet: __isrGet");
-    expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn) {");
+    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
+    expect(code).not.toContain("await __readAppRouteHandlerCacheResponse({");
   });
 
   it("generated code contains APP_ROUTE ISR cache write for route handlers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR writes now flow through the typed execution helper.
-    expect(code).toContain("executeAppRouteHandler as __executeAppRouteHandler");
-    expect(code).toContain("return __executeAppRouteHandler({");
+    // Route handler ISR writes now flow through the typed dispatch helper.
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
     expect(code).toContain("isrRouteKey: __isrRouteKey");
     expect(code).toContain("isrSet: __isrSet");
+    expect(code).not.toContain("return __executeAppRouteHandler({");
   });
 
   it("generated code merges middleware headers into intercept route responses", () => {
