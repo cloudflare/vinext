@@ -688,7 +688,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     ) {
       console.warn("[vinext] cacheLife: expire must be >= revalidate");
     }
-    resolvedConfig = { ...profile };
+    resolvedConfig = { ...cacheLifeProfiles.default, ...profile };
   } else {
     return;
   }

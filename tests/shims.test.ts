@@ -2174,6 +2174,20 @@ describe("next/cache shim", () => {
     consoleWarn.mockRestore();
   });
 
+  it("cacheLife inline configs inherit default profile values for omitted fields", async () => {
+    const { cacheLife, _consumeRequestScopedCacheLife, _runWithCacheState } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    await _runWithCacheState(async () => {
+      cacheLife({ expire: 60 });
+
+      expect(_consumeRequestScopedCacheLife()).toEqual({
+        revalidate: 900,
+        expire: 60,
+      });
+    });
+  });
+
   it("exports cacheTag as a no-op function", async () => {
     const { cacheTag } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheTag).toBe("function");

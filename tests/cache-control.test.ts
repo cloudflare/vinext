@@ -23,9 +23,19 @@ describe("cache-control helpers", () => {
     );
   });
 
+  it("uses route policy for HIT cached responses when expire is known", () => {
+    expect(buildCachedRevalidateCacheControl("HIT", 60, 300)).toBe(
+      "s-maxage=60, stale-while-revalidate=240",
+    );
+  });
+
   it("preserves legacy STALE cached response headers when expire is unknown", () => {
     expect(buildCachedRevalidateCacheControl("STALE", 60)).toBe(
       "s-maxage=0, stale-while-revalidate",
     );
+  });
+
+  it("keeps the full expire window when revalidate is zero", () => {
+    expect(buildRevalidateCacheControl(0, 300)).toBe("s-maxage=0, stale-while-revalidate=300");
   });
 });

@@ -28,6 +28,13 @@ export function buildRevalidateCacheControl(
   return `s-maxage=${revalidateSeconds}${staleWhileRevalidate}`;
 }
 
+/**
+ * Builds Cache-Control for ISR cache reads. HIT responses and STALE responses
+ * with stored expire metadata use the same route policy because Next.js derives
+ * this header from cache-control metadata, not from the cache hit/stale state.
+ * STALE entries without expire metadata keep vinext's legacy `s-maxage=0`
+ * fallback so older cache entries are not treated as newly fresh downstream.
+ */
 export function buildCachedRevalidateCacheControl(
   cacheState: "HIT" | "STALE",
   revalidateSeconds: number,

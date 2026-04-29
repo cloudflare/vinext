@@ -335,6 +335,8 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
       expireSeconds: options.expireSeconds,
+      // cacheLife-only routes discover their actual revalidate during the
+      // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () =>
         runAppPageRevalidationContext(
