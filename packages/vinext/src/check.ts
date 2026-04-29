@@ -165,9 +165,9 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "server actions via 'use server' directive",
   },
   "experimental.prefetchInlining": {
-    status: "supported",
+    status: "partial",
     detail:
-      "recognized; vinext uses unified RSC navigation payloads — per-segment prefetch inlining is not applicable",
+      "config recognized; vinext uses unified RSC navigation payloads so per-segment prefetch inlining is a no-op",
   },
   "i18n.domains": {
     status: "partial",

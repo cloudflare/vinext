@@ -349,6 +349,20 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.serverActions")?.status).toBe("supported");
   });
 
+  it("detects experimental.prefetchInlining as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          prefetchInlining: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.prefetchInlining")?.status).toBe("partial");
+  });
+
   it("detects allowedDevOrigins as supported", () => {
     writeFile(
       "next.config.mjs",
