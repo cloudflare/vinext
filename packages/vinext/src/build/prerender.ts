@@ -31,6 +31,16 @@ import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
+function getErrorMessageWithStack(err: Error): string {
+  // Include the full stack trace for sourcemap-aware error reporting during
+  // prerender. When Node.js is started with --enable-source-maps and the server
+  // bundle includes sourcemaps, this resolves bundled stack frames to original
+  // source files, matching Next.js's enablePrerenderSourceMaps behavior.
+  const stack = err.stack ?? "";
+  if (stack.startsWith(err.message)) return stack;
+  return `${err.message}\n${stack}`;
+}
+
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
 export type PrerenderResult = {
@@ -595,7 +605,12 @@ export async function prerenderPages({
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
         } catch (e) {
-          result = { route: route.pattern, status: "error", error: (e as Error).message };
+          const err = e as Error;
+          result = {
+            route: route.pattern,
+            status: "error",
+            error: config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message,
+          };
         }
         onProgress?.({
           completed: ++completed,
@@ -945,10 +960,14 @@ export async function prerenderApp({
             });
           }
         } catch (e) {
+          const err = e as Error;
+          const detail = config.enablePrerenderSourceMaps
+            ? getErrorMessageWithStack(err)
+            : err.message;
           results.push({
             route: route.pattern,
             status: "error",
-            error: `Failed to call generateStaticParams(): ${(e as Error).message}`,
+            error: `Failed to call generateStaticParams(): ${detail}`,
           });
         }
       } else if (type === "unknown") {
@@ -1064,7 +1083,8 @@ export async function prerenderApp({
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
         const err = e as Error & { digest?: string };
-        const msg = err.digest ? `${err.message} (digest: ${err.digest})` : err.message;
+        const base = config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message;
+        const msg = err.digest ? `${base} (digest: ${err.digest})` : base;
         return { route: routePattern, status: "error", error: msg };
       }
     }

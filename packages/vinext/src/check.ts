@@ -162,6 +162,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "Vite replaces webpack — custom webpack configs need migration",
   },
+  enablePrerenderSourceMaps: {
+    status: "supported",
+    detail: "sourcemap-resolved stack traces during prerender",
+  },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
   "experimental.serverActions": {
