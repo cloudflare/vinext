@@ -71,7 +71,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/config": { status: "supported" },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
   "next/offline": {
-    status: "supported",
+    status: "partial",
     detail: "useOffline() hook available; offline retry behavior deferred",
   },
   "next/document": { status: "supported", detail: "custom _document.tsx" },
