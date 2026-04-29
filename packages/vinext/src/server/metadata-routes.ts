@@ -395,7 +395,7 @@ function getStaticMetadataRoute(appDirPath: string): string {
 
 function getMetadataRouteSuffix(page: string): string {
   const lastSlash = page.lastIndexOf("/");
-  const parentPathname = lastSlash > 0 ? page.slice(0, lastSlash) : lastSlash === -1 ? "" : "";
+  const parentPathname = lastSlash > 0 ? page.slice(0, lastSlash) : "";
   if (page.endsWith("/sitemap") || page.endsWith("/sitemap.xml")) return "";
   const segments = parentPathname.split("/");
   const hasInvisibleParent = segments.some(
@@ -409,11 +409,21 @@ function getMetadataRouteSuffix(page: string): string {
   return (hash >>> 0).toString(36).slice(0, 6);
 }
 
+function computeMetadataRouteSuffix(
+  appDirPath: string,
+  leafName: string,
+): { route: string; suffix: string } {
+  const route = getStaticMetadataRoute(appDirPath);
+  const pagePath =
+    appDirPath === "" || appDirPath === "/" ? `/${leafName}` : `${appDirPath}/${leafName}`;
+  const suffix = getMetadataRouteSuffix(pagePath);
+  return { route, suffix };
+}
+
 function getMetadataRouteFilename(appDirPath: string, lastSegment: string): string {
   const ext = path.posix.extname(lastSegment);
   const name = lastSegment.slice(0, -ext.length || undefined);
-  const pagePath = appDirPath === "" || appDirPath === "/" ? `/${name}` : `${appDirPath}/${name}`;
-  const suffix = getMetadataRouteSuffix(pagePath);
+  const { suffix } = computeMetadataRouteSuffix(appDirPath, name);
   const routeSuffix = suffix ? `-${suffix}` : "";
   return `${name}${routeSuffix}${ext}`;
 }
@@ -528,12 +538,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const appDirPath = parentSegments.length > 0 ? `/${parentSegments.join("/")}` : "";
         const servedUrl = isStatic
           ? (() => {
-              const route = getStaticMetadataRoute(appDirPath);
-              const pagePath =
-                appDirPath === "" || appDirPath === "/"
-                  ? `/${metaType}`
-                  : `${appDirPath}/${metaType}`;
-              const suffix = getMetadataRouteSuffix(pagePath);
+              const { route, suffix } = computeMetadataRouteSuffix(appDirPath, metaType);
               const urlPath = withMetadataSuffix(config.urlPath, suffix);
               return route === "" ? urlPath : `${route}${urlPath}`;
             })()
