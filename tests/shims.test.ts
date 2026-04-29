@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -3573,9 +3574,8 @@ describe("double-encoded path handling in middleware", () => {
     expect(matchPattern(normalized, "/dashboard")).toBe(false);
   });
 
-  it("matchRoute in generated code does not double-decode pathnames", async () => {
-    // Verify that matchRoute no longer calls decodeURIComponent internally.
-    // The generated RSC entry code is a string — we check it directly.
+  it("RSC route matching does not double-decode pathnames", async () => {
+    // Verify the generated entry delegates route matching to the typed helper.
     const { generateRscEntry } = await import("../packages/vinext/src/entries/app-rsc-entry.js");
     const code = generateRscEntry("/tmp/app", [
       {
@@ -3599,13 +3599,16 @@ describe("double-encoded path handling in middleware", () => {
         parallelSlots: [],
       },
     ]);
-    // Extract the matchRoute function from generated code
-    const matchRouteMatch = code.match(/function matchRoute\(url\) \{[\s\S]*?\n\}/);
-    expect(matchRouteMatch).toBeTruthy();
-    const matchRouteCode = matchRouteMatch![0];
+    expect(code).toContain("createAppRscRouteMatcher as __createAppRscRouteMatcher");
+    expect(code).toContain("return __routeMatcher.matchRoute(url);");
+
+    const routeMatchingSource = await readFile(
+      new URL("../packages/vinext/src/server/app-rsc-route-matching.ts", import.meta.url),
+      "utf8",
+    );
     // Verify it does NOT call decodeURIComponent (the comment mentions it but
     // should not have an actual call like `decodeURIComponent(...)`)
-    expect(matchRouteCode).not.toMatch(/\bdecodeURIComponent\s*\(/);
+    expect(routeMatchingSource).not.toMatch(/\bdecodeURIComponent\s*\(/);
   });
 
   it("App Router middleware receives a Request with the decoded pathname (not raw URL)", async () => {
