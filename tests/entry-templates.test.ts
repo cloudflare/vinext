@@ -324,7 +324,9 @@ describe("Pages Router entry templates", () => {
     expect(stableCode).toContain('from "<ROOT>/packages/vinext/src/server/isr-cache.js";');
     expect(code).toContain("function isrGet(key) {");
     expect(code).toContain("return __sharedIsrGet(key);");
-    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).toContain(
+      "return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);",
+    );
     expect(code).not.toContain("const promise = renderFn()");
     expect(code).not.toContain("ctx.waitUntil(promise)");
   });
@@ -377,7 +379,9 @@ describe("Pages Router entry templates", () => {
       "triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration",
     );
     expect(code).toContain("const pageDataResult = await __resolvePagesPageData({");
-    expect(code).toContain("return __sharedTriggerBackgroundRegeneration(key, renderFn);");
+    expect(code).toContain(
+      "return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);",
+    );
     expect(code).not.toContain("async function isrGet(key)");
     expect(code).not.toContain("async function isrSet(key, data, revalidateSeconds, tags)");
     expect(code).not.toContain("const pendingRegenerations = new Map();");

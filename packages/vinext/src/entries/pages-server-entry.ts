@@ -313,8 +313,8 @@ function isrGet(key) {
 function isrSet(key, data, revalidateSeconds, tags) {
   return __sharedIsrSet(key, data, revalidateSeconds, tags);
 }
-function triggerBackgroundRegeneration(key, renderFn) {
-  return __sharedTriggerBackgroundRegeneration(key, renderFn);
+function triggerBackgroundRegeneration(key, renderFn, errorContext) {
+  return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);
 }
 function isrCacheKey(router, pathname) {
   return __sharedIsrCacheKey(router, pathname, buildId || undefined);

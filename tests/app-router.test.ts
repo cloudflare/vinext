@@ -4609,7 +4609,7 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated code delegates page cache STALE handling to the same helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
-    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
+    expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn) {");
     expect(code).toContain("renderFreshPageForCache: async function()");
   });
 
@@ -4704,7 +4704,7 @@ describe("generateRscEntry ISR code generation", () => {
     );
     expect(code).toContain("await __readAppRouteHandlerCacheResponse({");
     expect(code).toContain("isrGet: __isrGet");
-    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
+    expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn) {");
   });
 
   it("generated code contains APP_ROUTE ISR cache write for route handlers", () => {

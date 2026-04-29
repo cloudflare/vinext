@@ -101,7 +101,11 @@ export type ResolvePagesPageDataOptions = {
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
   scriptNonce?: string;
-  triggerBackgroundRegeneration: (key: string, renderFn: () => Promise<void>) => void;
+  triggerBackgroundRegeneration: (
+    key: string,
+    renderFn: () => Promise<void>,
+    errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
+  ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
 };
 
@@ -316,41 +320,49 @@ export async function resolvePagesPageData(
     }
 
     if (cachedValue?.kind === "PAGES" && cached && cached.isStale && !options.scriptNonce) {
-      options.triggerBackgroundRegeneration(cacheKey, async function () {
-        return options.runInFreshUnifiedContext(async () => {
-          const freshResult = await options.pageModule.getStaticProps?.({
-            params: options.params,
-            locale: options.i18n.locale,
-            locales: options.i18n.locales,
-            defaultLocale: options.i18n.defaultLocale,
-          });
-
-          if (
-            freshResult?.props &&
-            typeof freshResult.revalidate === "number" &&
-            freshResult.revalidate > 0
-          ) {
-            options.applyRequestContexts();
-            const freshHtml = await renderPagesIsrHtml({
-              buildId: options.buildId,
-              cachedHtml: cachedValue.html,
-              createPageElement: options.createPageElement,
-              i18n: options.i18n,
-              pageProps: freshResult.props,
+      options.triggerBackgroundRegeneration(
+        cacheKey,
+        async function () {
+          return options.runInFreshUnifiedContext(async () => {
+            const freshResult = await options.pageModule.getStaticProps?.({
               params: options.params,
-              renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-              routePattern: options.routePattern,
-              safeJsonStringify: options.safeJsonStringify,
+              locale: options.i18n.locale,
+              locales: options.i18n.locales,
+              defaultLocale: options.i18n.defaultLocale,
             });
 
-            await options.isrSet(
-              cacheKey,
-              buildPagesCacheValue(freshHtml, freshResult.props),
-              freshResult.revalidate,
-            );
-          }
-        });
-      });
+            if (
+              freshResult?.props &&
+              typeof freshResult.revalidate === "number" &&
+              freshResult.revalidate > 0
+            ) {
+              options.applyRequestContexts();
+              const freshHtml = await renderPagesIsrHtml({
+                buildId: options.buildId,
+                cachedHtml: cachedValue.html,
+                createPageElement: options.createPageElement,
+                i18n: options.i18n,
+                pageProps: freshResult.props,
+                params: options.params,
+                renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
+                routePattern: options.routePattern,
+                safeJsonStringify: options.safeJsonStringify,
+              });
+
+              await options.isrSet(
+                cacheKey,
+                buildPagesCacheValue(freshHtml, freshResult.props),
+                freshResult.revalidate,
+              );
+            }
+          });
+        },
+        {
+          routerKind: "Pages Router",
+          routePath: options.routePattern,
+          routeType: "render",
+        },
+      );
 
       return {
         kind: "response",
