@@ -430,6 +430,8 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
 
 
 
@@ -475,10 +477,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -503,10 +505,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -531,10 +533,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -559,10 +561,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
@@ -2836,6 +2838,8 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
 
 
 
@@ -2881,10 +2885,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -2909,10 +2913,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -2937,10 +2941,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -2965,10 +2969,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
@@ -5248,7 +5252,9 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
-import * as mod_11 from "/tmp/test/app/global-error.tsx";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
+import * as mod_13 from "/tmp/test/app/global-error.tsx";
 
 
 
@@ -5294,10 +5300,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -5322,10 +5328,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -5350,10 +5356,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -5378,10 +5384,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
@@ -5417,7 +5423,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
     getNavigationContext: _getNavigationContext,
-    globalErrorModule: mod_11,
+    globalErrorModule: mod_13,
     isRscRequest,
     layoutModules: opts?.layouts ?? null,
     loadSsrHandler() {
@@ -5465,7 +5471,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
     getNavigationContext: _getNavigationContext,
-    globalErrorModule: mod_11,
+    globalErrorModule: mod_13,
     isRscRequest,
     loadSsrHandler() {
       return import.meta.viteRsc.loadModule("ssr", "index");
@@ -5725,7 +5731,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
 
   return __buildAppPageElements({
     element: PageComponent ? createElement(PageComponent, pageProps) : null,
-    globalErrorModule: mod_11,
+    globalErrorModule: mod_13,
     isRscRequest,
     mountedSlotIds,
     makeThenableParams,
@@ -7655,6 +7661,8 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
 
 // Run instrumentation register() exactly once, lazily on the first request.
 // Previously this was a top-level await, which blocked the entire module graph
@@ -7730,10 +7738,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -7758,10 +7766,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -7786,10 +7794,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -7814,10 +7822,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
@@ -10094,7 +10102,9 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
-import * as mod_11 from "/tmp/test/app/sitemap.ts";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
+import * as mod_13 from "/tmp/test/app/sitemap.ts";
 
 
 
@@ -10140,10 +10150,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -10168,10 +10178,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -10196,10 +10206,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -10224,10 +10234,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
@@ -10238,7 +10248,7 @@ const metadataRoutes = [
     isDynamic: true,
     servedUrl: "/sitemap.xml",
     contentType: "application/xml",
-    module: mod_11,
+    module: mod_13,
   }
 ];
 
@@ -12507,6 +12517,8 @@ import * as mod_7 from "/tmp/test/app/dashboard/template.tsx";
 import * as mod_8 from "/tmp/test/app/dashboard/loading.tsx";
 import * as mod_9 from "/tmp/test/app/dashboard/error.tsx";
 import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
+import * as mod_11 from "/tmp/test/app/dashboard/forbidden.tsx";
+import * as mod_12 from "/tmp/test/app/dashboard/unauthorized.tsx";
 
 
 
@@ -12552,10 +12564,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(1), // evaluated once at module load
@@ -12580,10 +12592,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null],
     unauthorized: null,
+    unauthorizeds: [null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(2), // evaluated once at module load
@@ -12608,10 +12620,10 @@ const routes = [
     error: null,
     notFound: null,
     notFounds: [null, null],
-    forbiddens: [],
     forbidden: null,
-    unauthorizeds: [],
+    forbiddens: [null, null],
     unauthorized: null,
+    unauthorizeds: [null, null],
   },
   {
     __buildTimeClassifications: __VINEXT_CLASS(3), // evaluated once at module load
@@ -12636,10 +12648,10 @@ const routes = [
     error: mod_9,
     notFound: mod_10,
     notFounds: [null, mod_10],
-    forbiddens: [],
-    forbidden: null,
-    unauthorizeds: [],
-    unauthorized: null,
+    forbidden: mod_11,
+    forbiddens: [null, mod_11],
+    unauthorized: mod_12,
+    unauthorizeds: [null, mod_12],
   }
 ];
 const _routeTrie = _buildRouteTrie(routes);
