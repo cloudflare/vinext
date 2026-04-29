@@ -76,31 +76,14 @@ const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise
   Promise<void>
 >;
 
-export type ISRRegenErrorContext = {
-  routerKind: OnRequestErrorContext["routerKind"];
-  routePath: string;
-  routeType: OnRequestErrorContext["routeType"];
-};
-
-/**
- * Trigger a background regeneration for a cache key.
- *
- * If a regeneration for this key is already in progress, this is a no-op.
- * The renderFn should produce the new cache value and call isrSet internally.
- *
- * On Cloudflare Workers the regeneration promise is registered with
- * `ctx.waitUntil()` via the ALS-backed ExecutionContext, keeping the isolate
- * alive until the regeneration completes even after the Response is returned.
- *
- * When `errorContext` is provided and the background regeneration throws,
- * the error is reported via the registered `onRequestError()` handler
- * (from instrumentation.ts / next.config.ts instrumentation hook) so
- * observability tools (Sentry, OpenTelemetry, etc.) see revalidation failures.
- */
 export function triggerBackgroundRegeneration(
   key: string,
   renderFn: () => Promise<void>,
-  errorContext?: ISRRegenErrorContext,
+  errorContext?: {
+    routerKind: OnRequestErrorContext["routerKind"];
+    routePath: string;
+    routeType: OnRequestErrorContext["routeType"];
+  },
 ): void {
   if (pendingRegenerations.has(key)) return;
 
