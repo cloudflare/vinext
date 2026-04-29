@@ -45,6 +45,26 @@ describe("RSC stream hint helpers", () => {
     );
   });
 
+  it("only rewrites stylesheet preload hints in mixed Flight content", async () => {
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks([
+        '0:D{"name":"page"}\n' +
+          ':HL["/assets/a.css","stylesheet",{"crossOrigin":""}]\n' +
+          '1:["$","link",null,{"rel":"stylesheet","href":"/assets/b.css"}]\n' +
+          ':HL["/assets/c.css","style"]\n' +
+          ':HL["/assets/d.css","stylesheet"]\n',
+      ]),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      '0:D{"name":"page"}\n' +
+        ':HL["/assets/a.css","style",{"crossOrigin":""}]\n' +
+        '1:["$","link",null,{"rel":"stylesheet","href":"/assets/b.css"}]\n' +
+        ':HL["/assets/c.css","style"]\n' +
+        ':HL["/assets/d.css","style"]\n',
+    );
+  });
+
   it("buffers partial Flight lines across chunks before rewriting hints", async () => {
     const stream = normalizeReactFlightPreloadHints(
       streamFromChunks([':HL["/assets/app.css",', '"styles', 'heet"]\n0:D{"name":"page"}\n']),

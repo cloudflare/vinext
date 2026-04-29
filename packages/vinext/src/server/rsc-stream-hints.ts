@@ -1,5 +1,10 @@
 const REACT_FLIGHT_STYLESHEET_PRELOAD_HINT = /(\d*:HL\[.*?),"stylesheet"(\]|,)/g;
 
+/**
+ * React Flight emits HL hints with "stylesheet" for CSS preloads, but the
+ * HTML spec requires "style" for <link rel="preload">. Rewrite each complete
+ * Flight line so SSR embeds, navigation, and server actions see valid hints.
+ */
 function normalizeReactFlightHintLine(line: string): string {
   return line.replace(REACT_FLIGHT_STYLESHEET_PRELOAD_HINT, '$1,"style"$2');
 }
