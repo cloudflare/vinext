@@ -164,6 +164,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
+  "experimental.prefetchInlining": {
+    status: "supported",
+    detail:
+      "recognized; vinext uses unified RSC navigation payloads — per-segment prefetch inlining is not applicable",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
@@ -402,6 +407,12 @@ export function analyzeConfig(root: string): CheckItem[] {
       items.push({
         name: "experimental.serverActions",
         ...CONFIG_SUPPORT["experimental.serverActions"]!,
+      });
+    }
+    if (/\bprefetchInlining\b/.test(content)) {
+      items.push({
+        name: "experimental.prefetchInlining",
+        ...CONFIG_SUPPORT["experimental.prefetchInlining"]!,
       });
     }
   }
