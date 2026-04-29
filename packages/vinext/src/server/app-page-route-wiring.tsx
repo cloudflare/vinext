@@ -556,11 +556,8 @@ export function buildAppPageElements<
     options.route.errors && options.route.errors.length > 0
       ? options.route.errors[options.route.errors.length - 1]
       : null;
-  const pageErrorComponent = getErrorBoundaryExport(options.route.error);
-  if (pageErrorComponent && options.route.error !== lastLayoutErrorModule) {
-    routeChildren = <ErrorBoundary fallback={pageErrorComponent}>{routeChildren}</ErrorBoundary>;
-  }
-
+  // Next.js nesting (outer to inner): Error > NotFound > children.
+  // Building bottom-up means NotFoundBoundary must wrap first, then ErrorBoundary.
   const notFoundComponent =
     getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
   if (notFoundComponent) {
@@ -568,6 +565,11 @@ export function buildAppPageElements<
     routeChildren = (
       <NotFoundBoundary fallback={<NotFoundComponent />}>{routeChildren}</NotFoundBoundary>
     );
+  }
+
+  const pageErrorComponent = getErrorBoundaryExport(options.route.error);
+  if (pageErrorComponent && options.route.error !== lastLayoutErrorModule) {
+    routeChildren = <ErrorBoundary fallback={pageErrorComponent}>{routeChildren}</ErrorBoundary>;
   }
 
   for (let index = orderedTreePositions.length - 1; index >= 0; index--) {
