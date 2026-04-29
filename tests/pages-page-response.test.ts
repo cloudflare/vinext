@@ -191,6 +191,52 @@ describe("pages page response", () => {
     );
   });
 
+  it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {
+    // Ported from Next.js: vercel/next.js@9853944
+    // styled-jsx (and <Head>) styles must be collected AFTER rendering completes,
+    // not concurrently. Otherwise dynamic styles that are registered during
+    // rendering are silently dropped from the HTML output.
+    const common = createCommonOptions();
+    const callOrder: string[] = [];
+
+    common.renderToReadableStream.mockImplementation(async () => {
+      // Verify getSSRHeadHTML has NOT been called yet
+      expect(common.options.getSSRHeadHTML).not.toHaveBeenCalled();
+      callOrder.push("render");
+      // Return the original stream by calling the original factory
+      return createStream(["<div>live-body</div>"]);
+    });
+
+    (common.options.getSSRHeadHTML as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      callOrder.push("head");
+      return '<meta name="test-head" content="1" />';
+    });
+
+    await renderPagesPageResponse(common.options);
+
+    expect(callOrder).toEqual(["render", "head"]);
+  });
+
+  it("clears SSR context only after rendering, not before", async () => {
+    const common = createCommonOptions();
+    const callOrder: string[] = [];
+
+    common.renderToReadableStream.mockImplementation(async () => {
+      // Verify clearSsrContext has NOT been called yet
+      expect(common.clearSsrContext).not.toHaveBeenCalled();
+      callOrder.push("render");
+      return createStream(["<div>live-body</div>"]);
+    });
+
+    common.clearSsrContext.mockImplementation(() => {
+      callOrder.push("clear");
+    });
+
+    await renderPagesPageResponse(common.options);
+
+    expect(callOrder).toEqual(["render", "clear"]);
+  });
+
   it("disables pages ISR caching when a script nonce is present", async () => {
     const common = createCommonOptions();
 
