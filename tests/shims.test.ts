@@ -12704,8 +12704,7 @@ describe("isOriginAllowed", () => {
   });
 });
 
-// Ported from Next.js: packages/next/src/client/components/offline.ts
-// https://github.com/vercel/next.js/pull/92012 — useOffline() hook
+// Reference: vercel/next.js#92012 — useOffline() hook
 describe("next/offline shim", () => {
   it("exports useOffline", async () => {
     const offline = await import("../packages/vinext/src/shims/offline.js");
