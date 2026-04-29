@@ -268,6 +268,11 @@ export type ResolvedNextConfig = {
    * filesystem paths via fileURLToPath() during config resolution.
    */
   cacheHandler: string | undefined;
+  /**
+   * Maximum memory size (bytes) for the default in-memory cache handler.
+   * Set to 0 to disable in-memory caching entirely.
+   */
+  cacheMaxMemorySize: number | undefined;
 };
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
@@ -496,6 +501,7 @@ export async function resolveNextConfig(
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverExternalPackages: [],
       cacheHandler: undefined,
+      cacheMaxMemorySize: undefined,
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -634,6 +640,10 @@ export async function resolveNextConfig(
       ? resolveCacheHandlerPathToFilesystem(config.cacheHandler)
       : undefined;
 
+  // Resolve cacheMaxMemorySize
+  const cacheMaxMemorySize: number | undefined =
+    typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -654,6 +664,7 @@ export async function resolveNextConfig(
     serverActionsBodySizeLimit,
     serverExternalPackages,
     cacheHandler,
+    cacheMaxMemorySize,
     buildId,
   };
 

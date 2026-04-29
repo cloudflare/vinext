@@ -428,6 +428,7 @@ describe("detectNextIntlConfig", () => {
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverExternalPackages: [],
       cacheHandler: undefined,
+      cacheMaxMemorySize: undefined,
       buildId: "test-build-id",
       ...overrides,
     };
@@ -749,5 +750,50 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeUndefined();
+  });
+});
+
+describe("resolveNextConfig cacheHandler", () => {
+  it("resolves file:// URLs to filesystem paths", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "file:///absolute/path/to/handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+  });
+
+  it("passes through absolute paths unchanged", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "/absolute/path/to/handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+  });
+
+  it("passes through relative paths unchanged", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "./my-cache-handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("./my-cache-handler.js");
+  });
+
+  it("defaults to undefined when not configured", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.cacheHandler).toBeUndefined();
+  });
+
+  it("defaults to undefined when config is null", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.cacheHandler).toBeUndefined();
+  });
+
+  it("resolves cacheMaxMemorySize when configured", async () => {
+    const resolved = await resolveNextConfig({
+      cacheMaxMemorySize: 52428800,
+    });
+    expect(resolved.cacheMaxMemorySize).toBe(52428800);
+  });
+
+  it("defaults cacheMaxMemorySize to undefined when not configured", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.cacheMaxMemorySize).toBeUndefined();
   });
 });
