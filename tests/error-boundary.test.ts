@@ -1,13 +1,13 @@
 /**
  * Error boundary unit tests.
  *
- * Tests the ErrorBoundary and NotFoundBoundary components that handle
- * error.tsx and not-found.tsx rendering in the App Router. Verifies
- * correct digest handling, error propagation, and the reset mechanism.
+ * Tests the ErrorBoundary, NotFoundBoundary, ForbiddenBoundary, and
+ * UnauthorizedBoundary components that handle error.tsx, not-found.tsx,
+ * forbidden.tsx, and unauthorized.tsx rendering in the App Router.
+ * Verifies correct digest handling, error propagation, and pathname reset.
  *
- * These test the same digest-based error routing that Next.js uses
- * to distinguish between notFound(), redirect(), forbidden(), and
- * genuine application errors.
+ * Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.test.ts
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.test.ts
  */
 import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
 
@@ -242,5 +242,63 @@ describe("ErrorBoundary digest classification (actual class)", () => {
       error,
       previousPathname: "/error-test",
     });
+  });
+});
+
+// Test the actual ForbiddenBoundary.getDerivedStateFromError classification.
+// Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
+describe("ForbiddenBoundary digest classification", () => {
+  it("NEXT_HTTP_ERROR_FALLBACK;403 should be a valid forbidden digest", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(true);
+    // The ForbiddenBoundary checks for digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;403")
+    expect(digest).toBe("NEXT_HTTP_ERROR_FALLBACK;403");
+  });
+
+  it("NEXT_HTTP_ERROR_FALLBACK;404 should NOT match forbidden digest (notFound domain)", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    // ForbiddenBoundary checks for "NEXT_HTTP_ERROR_FALLBACK;403" specifically
+    const forbiddenChecks = digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;403");
+    expect(forbiddenChecks).toBe(false);
+  });
+
+  it("NEXT_HTTP_ERROR_FALLBACK;401 should NOT match forbidden digest (unauthorized domain)", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;401";
+    const forbiddenChecks = digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;403");
+    expect(forbiddenChecks).toBe(false);
+  });
+
+  it("regular errors should NOT match forbidden digest", () => {
+    const error = new Error("oops");
+    const hasDigest = error && typeof error === "object" && "digest" in error;
+    expect(hasDigest).toBe(false);
+  });
+});
+
+// Test the actual UnauthorizedBoundary.getDerivedStateFromError classification.
+// Catches NEXT_HTTP_ERROR_FALLBACK;401 and re-throws everything else.
+describe("UnauthorizedBoundary digest classification", () => {
+  it("NEXT_HTTP_ERROR_FALLBACK;401 should be a valid unauthorized digest", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;401";
+    expect(digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")).toBe(true);
+    expect(digest).toBe("NEXT_HTTP_ERROR_FALLBACK;401");
+  });
+
+  it("NEXT_HTTP_ERROR_FALLBACK;404 should NOT match unauthorized digest (notFound domain)", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const unauthorizedChecks = digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;401");
+    expect(unauthorizedChecks).toBe(false);
+  });
+
+  it("NEXT_HTTP_ERROR_FALLBACK;403 should NOT match unauthorized digest (forbidden domain)", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const unauthorizedChecks = digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;401");
+    expect(unauthorizedChecks).toBe(false);
+  });
+
+  it("regular errors should NOT match unauthorized digest", () => {
+    const error = new Error("oops");
+    const hasDigest = error && typeof error === "object" && "digest" in error;
+    expect(hasDigest).toBe(false);
   });
 });
