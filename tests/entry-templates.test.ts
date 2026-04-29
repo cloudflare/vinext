@@ -459,6 +459,24 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("const _hlFixRe =");
   });
 
+  it("generateRscEntry delegates internal prerender endpoints", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+    const stableCode = stabilize(code);
+
+    expect(stableCode).toContain(
+      'from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";',
+    );
+    expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
+    expect(code).toContain(
+      "const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(",
+    );
+    expect(code).toContain("loadPagesRoutes: __loadPrerenderPagesRoutes,");
+    expect(code).not.toContain('if (pathname === "/__vinext/prerender/static-params")');
+    expect(code).not.toContain('if (pathname === "/__vinext/prerender/pages-static-paths")');
+  });
+
   it("generateSsrEntry snapshot", () => {
     const code = generateSsrEntry();
     expect(stabilize(code)).toMatchSnapshot();

@@ -111,6 +111,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -1043,37 +1046,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -2249,6 +2230,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -3187,37 +3171,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   pathname = stripBasePath(pathname, __basePath);
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -4393,6 +4355,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -5326,37 +5291,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -6532,6 +6475,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -7497,37 +7443,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -8703,6 +8627,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -9642,37 +9569,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -10848,6 +10753,9 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
   matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
+} from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -11780,37 +11688,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
-  // ── Prerender: static-params endpoint ────────────────────────────────
-  // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_startWorker.
-  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
-  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
-  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
-  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
-  if (pathname === "/__vinext/prerender/static-params") {
-    if (process.env.VINEXT_PRERENDER !== "1") {
-      return new Response("Not Found", { status: 404 });
-    }
-    const pattern = url.searchParams.get("pattern");
-    if (!pattern) return new Response("missing pattern", { status: 400 });
-    const fn = generateStaticParamsMap[pattern];
-    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-    try {
-      const parentParams = url.searchParams.get("parentParams");
-      const raw = parentParams ? JSON.parse(parentParams) : {};
-      // Ensure params is a plain object — reject primitives, arrays, and null
-      // so user-authored generateStaticParams always receives { params: {} }
-      // rather than { params: 5 } or similar if input is malformed.
-      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
-      const result = await fn({ params });
-      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
-    }
-  }
+  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
+    isPrerenderEnabled() {
+      return process.env.VINEXT_PRERENDER === "1";
+    },
 
-  
+    pathname,
+    staticParamsMap: generateStaticParamsMap,
+  });
+  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
