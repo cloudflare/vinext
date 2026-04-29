@@ -59,16 +59,22 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       }
     }
     if (route.notFoundPath) imports.getImportVar(route.notFoundPath);
-    for (const nfp of route.notFoundPaths) {
-      if (nfp) imports.getImportVar(nfp);
+    if (route.notFoundPaths) {
+      for (const nfp of route.notFoundPaths) {
+        if (nfp) imports.getImportVar(nfp);
+      }
     }
     if (route.forbiddenPath) imports.getImportVar(route.forbiddenPath);
-    for (const fp of route.forbiddenPaths) {
-      if (fp) imports.getImportVar(fp);
+    if (route.forbiddenPaths) {
+      for (const fp of route.forbiddenPaths) {
+        if (fp) imports.getImportVar(fp);
+      }
     }
     if (route.unauthorizedPath) imports.getImportVar(route.unauthorizedPath);
-    for (const up of route.unauthorizedPaths) {
-      if (up) imports.getImportVar(up);
+    if (route.unauthorizedPaths) {
+      for (const up of route.unauthorizedPaths) {
+        if (up) imports.getImportVar(up);
+      }
     }
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) imports.getImportVar(slot.pagePath);
@@ -90,11 +96,13 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
   return routes.map((route, routeIdx) => {
     const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
     const templateVars = route.templates.map((t) => imports.getImportVar(t));
-    const notFoundVars = route.notFoundPaths.map((nf) => (nf ? imports.getImportVar(nf) : "null"));
-    const forbiddenVars = route.forbiddenPaths.map((fp) =>
+    const notFoundVars = (route.notFoundPaths ?? []).map((nf) =>
+      nf ? imports.getImportVar(nf) : "null",
+    );
+    const forbiddenVars = (route.forbiddenPaths ?? []).map((fp) =>
       fp ? imports.getImportVar(fp) : "null",
     );
-    const unauthorizedVars = route.unauthorizedPaths.map((up) =>
+    const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
       up ? imports.getImportVar(up) : "null",
     );
     const slotEntries = route.parallelSlots.map((slot) => {
