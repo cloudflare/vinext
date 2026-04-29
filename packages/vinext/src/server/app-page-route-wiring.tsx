@@ -19,6 +19,7 @@ import {
   renderWithAppDependencyBarrier,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
+import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
@@ -329,7 +330,6 @@ export function buildAppPageElements<
   const templateDependenciesById = new Map<string, AppRenderDependency>();
   const templateDependenciesBeforeById = new Map<string, AppRenderDependency[]>();
   const pageDependencies: AppRenderDependency[] = [];
-  const routeThenableParams = options.makeThenableParams(options.matchedParams);
   const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
   const slotNameCounts = new Map<string, number>();
   for (const slot of Object.values(options.route.slots ?? {})) {
@@ -421,7 +421,13 @@ export function buildAppPageElements<
     }
 
     const layoutProps: Record<string, unknown> = {
-      params: routeThenableParams,
+      params: options.makeThenableParams(
+        resolveAppPageSegmentParams(
+          options.route.routeSegments,
+          layoutEntry.treePosition,
+          options.matchedParams,
+        ),
+      ),
     };
 
     for (const slot of Object.values(options.route.slots ?? {})) {

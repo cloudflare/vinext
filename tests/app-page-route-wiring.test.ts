@@ -2,6 +2,7 @@ import { Fragment, createElement, isValidElement, type ReactNode } from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
+import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import {
   type AppPageModule,
   type AppPageSlotOverride,
@@ -191,6 +192,44 @@ describe("app page route wiring helpers", () => {
 
     expect(entries.map((entry) => entry.id)).toEqual(["layout:/", "layout:/(marketing)"]);
     expect(entries.map((entry) => entry.treePath)).toEqual(["/", "/(marketing)"]);
+  });
+
+  it("passes only segment-applicable params to each layout", () => {
+    // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+    const paramCalls: AppPageParams[] = [];
+
+    buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        paramCalls.push({ ...params });
+        return Promise.resolve(params);
+      },
+      matchedParams: { category: "books", id: "hello-world" },
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null, null],
+        layoutTreePositions: [1, 2, 3],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null, null],
+        routeSegments: ["dynamic", "[category]", "[id]"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dynamic/books/hello-world",
+      rootNotFoundModule: null,
+    });
+
+    expect(paramCalls).toEqual([
+      {},
+      { category: "books" },
+      { category: "books", id: "hello-world" },
+    ]);
   });
 
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {

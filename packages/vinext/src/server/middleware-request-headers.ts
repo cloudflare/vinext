@@ -1,5 +1,6 @@
 const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
 const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
+const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 
 type MiddlewareHeaderValue = string | string[];
 type MiddlewareHeaderSource = Headers | Record<string, MiddlewareHeaderValue>;
@@ -95,5 +96,9 @@ export function buildRequestHeadersFromMiddlewareResponse(
 }
 
 export function shouldKeepMiddlewareHeader(key: string): boolean {
-  return key === MIDDLEWARE_OVERRIDE_HEADERS || key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX);
+  return (
+    key === MIDDLEWARE_OVERRIDE_HEADERS ||
+    key === MIDDLEWARE_SET_COOKIE_HEADER ||
+    key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX)
+  );
 }

@@ -192,7 +192,7 @@ export class NextResponse<_Body = unknown> extends Response {
 
   constructor(body?: BodyInit | null, init?: ResponseInit) {
     super(body, init);
-    this._cookies = new ResponseCookies(this.headers);
+    this._cookies = new MiddlewareResponseCookies(this.headers);
   }
 
   get cookies(): ResponseCookies {
@@ -568,6 +568,63 @@ export class RequestCookies {
   }
 }
 
+// Keep this error message in sync with headers.ts. This adapter backs
+// NextRequest cookies, while headers.ts owns the next/headers cookies object.
+class ReadonlyRequestCookiesError extends Error {
+  constructor() {
+    super(
+      "Cookies can only be modified in a Server Action or Route Handler. Read more: https://nextjs.org/docs/app/api-reference/functions/cookies#options",
+    );
+  }
+
+  static callable(this: void): never {
+    throw new ReadonlyRequestCookiesError();
+  }
+}
+
+const REQUEST_HEADERS_MUTATING_METHODS = new Set(["set", "delete", "append"]);
+
+// Keep this error message in sync with headers.ts. This adapter backs
+// NextRequest headers in force-static route handlers, while headers.ts owns the
+// next/headers object.
+class ReadonlyRequestHeadersError extends Error {
+  constructor() {
+    super(
+      "Headers cannot be modified. Read more: https://nextjs.org/docs/app/api-reference/functions/headers",
+    );
+  }
+
+  static callable(this: void): never {
+    throw new ReadonlyRequestHeadersError();
+  }
+}
+
+export function sealRequestHeaders(headers: Headers): Headers {
+  return new Proxy<Headers>(headers, {
+    get(target, prop) {
+      if (typeof prop === "string" && REQUEST_HEADERS_MUTATING_METHODS.has(prop)) {
+        return ReadonlyRequestHeadersError.callable;
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+export function sealRequestCookies(cookies: RequestCookies): RequestCookies {
+  return new Proxy<RequestCookies>(cookies, {
+    get(target, prop) {
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 /**
  * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
  * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
@@ -691,6 +748,45 @@ export class ResponseCookies {
     for (const { serialized } of this._parsed.values()) {
       this._headers.append("Set-Cookie", serialized);
     }
+  }
+}
+
+class MiddlewareResponseCookies extends ResponseCookies {
+  private _responseHeaders: Headers;
+
+  constructor(headers: Headers) {
+    super(headers);
+    this._responseHeaders = headers;
+  }
+
+  override set(
+    ...args:
+      | [name: string, value: string, options?: CookieOptions]
+      | [options: CookieOptions & { name: string; value: string }]
+  ): this {
+    super.set(...args);
+    this._syncMiddlewareCookieHeader();
+    return this;
+  }
+
+  override delete(
+    ...args:
+      | [name: string]
+      | [options: Omit<CookieOptions & { name: string }, "maxAge" | "expires">]
+  ): this {
+    super.delete(...args);
+    this._syncMiddlewareCookieHeader();
+    return this;
+  }
+
+  private _syncMiddlewareCookieHeader(): void {
+    const cookies = this._responseHeaders.getSetCookie();
+    if (cookies.length === 0) {
+      this._responseHeaders.delete("x-middleware-set-cookie");
+      return;
+    }
+
+    this._responseHeaders.set("x-middleware-set-cookie", cookies.join(","));
   }
 }
 

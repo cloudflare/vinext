@@ -245,7 +245,7 @@ describe("app page render lifecycle", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("flight-data");
 
@@ -289,7 +289,7 @@ describe("app page render lifecycle", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("s-maxage=30, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("set-cookie")).toBe("draft=1; Path=/");
     await expect(response.text()).resolves.toBe("<html>page</html>");

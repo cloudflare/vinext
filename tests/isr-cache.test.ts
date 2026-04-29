@@ -17,6 +17,7 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   createRequestContext,
@@ -238,6 +239,79 @@ describe("triggerBackgroundRegeneration", () => {
     consoleError.mockRestore();
   });
 
+  it("reports error via onRequestError handler when errorContext is provided", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue(new Error("regen failed"));
+      triggerBackgroundRegeneration("regen-report-error", renderFn, {
+        routerKind: "App Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(handler).toHaveBeenCalledOnce();
+      const [error, request, context] = handler.mock.calls[0];
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("regen failed");
+      expect(request).toEqual({ path: "regen-report-error", method: "GET", headers: {} });
+      expect(context).toEqual({
+        routerKind: "App Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+        revalidateReason: "stale",
+      });
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does NOT call onRequestError handler when errorContext is omitted", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue(new Error("regen failed"));
+      triggerBackgroundRegeneration("regen-no-ctx", renderFn);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(consoleError).toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
+  it("wraps non-Error throw values in Error before reporting", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const renderFn = vi.fn().mockRejectedValue("string error");
+      triggerBackgroundRegeneration("regen-string-error", renderFn, {
+        routerKind: "Pages Router",
+        routePath: "/about",
+        routeType: "render",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(handler).toHaveBeenCalledOnce();
+      const [error] = handler.mock.calls[0];
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("string error");
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
   it("different keys run independently", async () => {
     const renderFnA = vi.fn().mockResolvedValue(undefined);
     const renderFnB = vi.fn().mockResolvedValue(undefined);
@@ -327,26 +401,17 @@ describe("triggerBackgroundRegeneration", () => {
 describe("revalidatePath type parameter", () => {
   let handler: MemoryCacheHandler;
 
-  /**
-   * Mirrors `__pageCacheTags` in app-rsc-entry.ts — keep in sync.
-   */
-  function deriveImplicitTags(pathname: string): string[] {
-    const tags = ["_N_T_/layout"];
-    const segments = pathname.split("/");
-    let built = "";
-    for (let i = 1; i < segments.length; i++) {
-      if (segments[i]) {
-        built += "/" + segments[i];
-        tags.push(`_N_T_${built}/layout`);
-      }
-    }
-    tags.push(`_N_T_${built}/page`);
-    return tags;
+  function staticRouteSegments(pathname: string): string[] {
+    return pathname.split("/").filter(Boolean);
   }
 
   /** Helper: store a FETCH cache entry with path + implicit hierarchy tags. */
-  async function seedEntry(path: string, body: string): Promise<void> {
-    const tags = [path, `_N_T_${path}`, ...deriveImplicitTags(path)];
+  async function seedEntry(
+    path: string,
+    body: string,
+    routeSegments = staticRouteSegments(path),
+  ): Promise<void> {
+    const tags = buildPageCacheTags(path, [], routeSegments, "page");
     const value: CachedFetchValue = {
       kind: "FETCH",
       data: { headers: {}, body, url: path },
@@ -406,6 +471,21 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain
     expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+
+  it("uses route pattern tags for typed dynamic route invalidation", async () => {
+    await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
+
+    await revalidatePath("/blog/hello", "layout");
+    expect(await handler.get("entry:/blog/hello")).not.toBeNull();
+
+    await revalidatePath("/blog/[slug]", "layout");
+    expect(await handler.get("entry:/blog/hello")).toBeNull();
+
+    await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
+
+    await revalidatePath("/blog/hello");
+    expect(await handler.get("entry:/blog/hello")).toBeNull();
   });
 
   it("handles deeply nested children under a layout prefix", async () => {

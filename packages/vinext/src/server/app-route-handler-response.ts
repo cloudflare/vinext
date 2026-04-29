@@ -1,5 +1,6 @@
 import type { CachedRouteValue } from "../shims/cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { processMiddlewareHeaders } from "./request-pipeline.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -26,6 +27,13 @@ const APP_ROUTE_REWRITE_ERROR =
   "NextResponse.rewrite() was used in a app route handler, this is not currently supported. Please remove the invocation to continue.";
 const APP_ROUTE_NEXT_ERROR =
   "NextResponse.next() was used in a app route handler, this is not supported. See here for more info: https://nextjs.org/docs/messages/next-response-next-in-app-route-handler";
+
+function hasMiddlewareHeader(headers: Headers): boolean {
+  for (const key of headers.keys()) {
+    if (key.startsWith("x-middleware-")) return true;
+  }
+  return false;
+}
 
 function buildRouteHandlerCacheControl(
   cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],
@@ -113,12 +121,67 @@ export function markRouteHandlerCacheMiss(response: Response): void {
   response.headers.set("X-Vinext-Cache", "MISS");
 }
 
+function getSetCookieName(cookie: string): string | null {
+  const equalsIndex = cookie.indexOf("=");
+  if (equalsIndex <= 0) {
+    return null;
+  }
+  return cookie.slice(0, equalsIndex);
+}
+
+function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[]): void {
+  if (pendingCookies.length === 0) {
+    return;
+  }
+
+  const returnedCookies = headers.getSetCookie();
+  const returnedCookieNames = new Set<string>();
+  for (const cookie of returnedCookies) {
+    const name = getSetCookieName(cookie);
+    if (name) {
+      returnedCookieNames.add(name);
+    }
+  }
+
+  const fallbackCookies = new Map<string, string>();
+  const unkeyedFallbackCookies: string[] = [];
+  for (const cookie of pendingCookies) {
+    const name = getSetCookieName(cookie);
+    if (!name) {
+      unkeyedFallbackCookies.push(cookie);
+      continue;
+    }
+
+    if (!returnedCookieNames.has(name)) {
+      fallbackCookies.set(name, cookie);
+    }
+  }
+
+  headers.delete("Set-Cookie");
+  for (const cookie of unkeyedFallbackCookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+  for (const cookie of fallbackCookies.values()) {
+    headers.append("Set-Cookie", cookie);
+  }
+  for (const cookie of returnedCookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+}
+
 export async function buildAppRouteCacheValue(response: Response): Promise<CachedRouteValue> {
   const body = await response.arrayBuffer();
   const headers: CachedRouteValue["headers"] = {};
 
   response.headers.forEach((value, key) => {
-    if (key === "set-cookie" || key === "x-vinext-cache" || key === "cache-control") return;
+    if (
+      key === "set-cookie" ||
+      key === "x-vinext-cache" ||
+      key === "cache-control" ||
+      key.startsWith("x-middleware-")
+    ) {
+      return;
+    }
     headers[key] = value;
   });
   const setCookies = response.headers.getSetCookie?.() ?? [];
@@ -139,14 +202,18 @@ export function finalizeRouteHandlerResponse(
   options: FinalizeRouteHandlerResponseOptions,
 ): Response {
   const { pendingCookies, draftCookie, isHead } = options;
-  if (pendingCookies.length === 0 && !draftCookie && !isHead) {
+  if (
+    pendingCookies.length === 0 &&
+    !draftCookie &&
+    !isHead &&
+    !hasMiddlewareHeader(response.headers)
+  ) {
     return response;
   }
 
   const headers = new Headers(response.headers);
-  for (const cookie of pendingCookies) {
-    headers.append("Set-Cookie", cookie);
-  }
+  processMiddlewareHeaders(headers);
+  applyMutableCookieFallbacks(headers, pendingCookies);
   if (draftCookie) {
     headers.append("Set-Cookie", draftCookie);
   }

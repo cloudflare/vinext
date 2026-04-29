@@ -233,6 +233,20 @@ describe("App Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
+  it("generateRscEntry delegates route matching to the shared helper", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const stableCode = stabilize(code);
+
+    expect(stableCode).toContain(
+      'from "<ROOT>/packages/vinext/src/server/app-rsc-route-matching.js";',
+    );
+    expect(code).toContain("const __routeMatcher = __createAppRscRouteMatcher(routes);");
+    expect(code).toContain("return __routeMatcher.matchRoute(url);");
+    expect(code).toContain("return __routeMatcher.findIntercept(pathname, sourcePathname);");
+    expect(code).not.toContain("const interceptLookup = [];");
+    expect(code).not.toContain("function mergeMatchedParams(");
+  });
+
   it("generateRscEntry uses buildPageElements in the server-action re-render path", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
     // PR 2c returns the flat elements payload instead of the monolithic page
@@ -261,6 +275,16 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       "_noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);",
     );
+  });
+
+  it("generateRscEntry delegates React Flight preload hint normalization", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain(
+      "normalizeReactFlightPreloadHints as __normalizeReactFlightPreloadHints",
+    );
+    expect(code).toContain("return __normalizeReactFlightPreloadHints(_renderToReadableStream");
+    expect(code).not.toContain("const _hlFixRe =");
   });
 
   it("generateSsrEntry snapshot", () => {

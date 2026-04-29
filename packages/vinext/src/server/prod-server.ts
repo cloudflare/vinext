@@ -1557,6 +1557,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
       }
 
+      if (isExternalUrl(resolvedUrl)) {
+        const proxyResponse = await proxyExternalRequest(webRequest, resolvedUrl);
+        const mergedResponse = mergeWebResponse(middlewareHeaders, proxyResponse, undefined);
+        await sendWebResponse(mergedResponse, req, res, compress);
+        return;
+      }
+
       // ── 5b. Serve public directory static files ────────────────────
       // Public directory files (non-build-asset static files) are served
       // after middleware so middleware can intercept or redirect them.

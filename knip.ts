@@ -39,6 +39,9 @@ export default {
         // from disk via `fs`), so knip wouldn't otherwise trace them.
         "src/server/app-browser-entry.ts",
         "src/server/app-ssr-entry.ts",
+        // Runtime helpers imported by generated virtual entries. The imports
+        // are emitted as strings, so knip cannot trace them statically.
+        "src/server/app-middleware.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
@@ -70,8 +73,8 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // vitest reporter
-    "agent",
+    // vitest reporter used outside CI
+    ...(process.env.CI ? [] : ["agent"]),
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",

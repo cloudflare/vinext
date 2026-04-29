@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { cookies, headers, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   executeAppRouteHandler,
@@ -46,6 +47,61 @@ describe("app route handler execution helpers", () => {
     expect(receivedParams).toEqual({ slug: "demo" });
     expect(dynamicUsedInHandler).toBe(true);
     await expect(response.json()).resolves.toEqual({ header: "pong" });
+  });
+
+  it("runs force-static route handlers with empty request APIs without marking dynamic usage", async () => {
+    const dynamicUsage = createDynamicUsageState();
+
+    try {
+      const { dynamicUsedInHandler, response } = await runAppRouteHandler({
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        dynamicConfig: "force-static",
+        async handlerFn(request) {
+          const headerStore = await headers();
+          const cookieStore = await cookies();
+          return Response.json({
+            cookie: cookieStore.get("session")?.value ?? null,
+            geo: request.geo ?? null,
+            header: headerStore.get("x-test"),
+            ip: request.ip ?? null,
+            requestCookie: request.cookies.get("session")?.value ?? null,
+            requestHeader: request.headers.get("x-test"),
+            requestUrl: request.url,
+            search: request.nextUrl.search,
+            searchParam: request.nextUrl.searchParams.get("token"),
+          });
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        params: {},
+        request: new Request("https://tenant.example.com/api/static?token=secret", {
+          headers: {
+            "cf-connecting-ip": "203.0.113.10",
+            "cf-ipcountry": "AU",
+            cookie: "session=abc",
+            "x-test": "pong",
+          },
+        }),
+        routePattern: "/api/static",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      });
+
+      expect(dynamicUsedInHandler).toBe(false);
+      await expect(response.json()).resolves.toEqual({
+        cookie: null,
+        geo: null,
+        header: null,
+        ip: null,
+        requestCookie: null,
+        requestHeader: null,
+        requestUrl: "http://localhost:3000/api/static",
+        search: "",
+        searchParam: null,
+      });
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it("finalizes static route handler responses and schedules cache writes", async () => {

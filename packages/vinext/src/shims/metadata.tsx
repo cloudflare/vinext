@@ -354,7 +354,7 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
 export async function resolveModuleMetadata(
   mod: Record<string, unknown>,
   params: Record<string, string | string[]> = {},
-  searchParams?: Record<string, string>,
+  searchParams?: Record<string, string | string[]>,
   parent: Promise<Metadata> = Promise.resolve({}),
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {

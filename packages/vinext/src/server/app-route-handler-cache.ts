@@ -1,4 +1,5 @@
 import type { NextI18nConfig } from "../config/next-config.js";
+import type { HeadersAccessPhase } from "../shims/headers.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
@@ -28,6 +29,7 @@ type ReadAppRouteHandlerCacheOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
+  dynamicConfig?: string;
   getCollectedFetchTags: () => string[];
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
@@ -45,6 +47,7 @@ type ReadAppRouteHandlerCacheOptions = {
   routePattern: string;
   runInRevalidationContext: RouteHandlerRevalidationContextRunner;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
+  setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
   setNavigationContext: (
     context: {
       pathname: string;
@@ -95,11 +98,14 @@ export async function readAppRouteHandlerCacheResponse(
           const { dynamicUsedInHandler, response } = await runAppRouteHandler({
             basePath: options.basePath,
             consumeDynamicUsage: options.consumeDynamicUsage,
+            dynamicConfig: options.dynamicConfig,
             handlerFn: options.handlerFn,
             i18n: options.i18n,
             markDynamicUsage: options.markDynamicUsage,
             params: options.params,
             request: new Request(options.requestUrl, { method: "GET" }),
+            routePattern: options.routePattern,
+            setHeadersAccessPhase: options.setHeadersAccessPhase,
           });
 
           options.setNavigationContext(null);

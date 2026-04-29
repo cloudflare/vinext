@@ -3,6 +3,7 @@ import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryComponent,
+  resolveAppPageParentHttpAccessBoundaryModule,
   wrapAppPageBoundaryElement,
 } from "../packages/vinext/src/server/app-page-boundary.js";
 
@@ -50,6 +51,28 @@ describe("app page boundary helpers", () => {
     });
 
     expect(component).toBe("RootNotFound");
+  });
+
+  it("selects the matching parent HTTP access boundary for layout throws", () => {
+    expect(
+      resolveAppPageParentHttpAccessBoundaryModule({
+        layoutIndex: 2,
+        rootForbiddenModule: "RootForbidden",
+        routeForbiddenModules: [null, "ParentForbidden", "ThrowingLayoutForbidden"],
+        routeNotFoundModules: [null, "ParentNotFound"],
+        statusCode: 403,
+      }),
+    ).toBe("ParentForbidden");
+
+    expect(
+      resolveAppPageParentHttpAccessBoundaryModule({
+        layoutIndex: 2,
+        rootUnauthorizedModule: "RootUnauthorized",
+        routeNotFoundModules: [null, "ParentNotFound"],
+        routeUnauthorizedModules: [null, undefined, "ThrowingLayoutUnauthorized"],
+        statusCode: 401,
+      }),
+    ).toBe("RootUnauthorized");
   });
 
   it("resolves page, layout, and global error boundaries in order", () => {
@@ -123,11 +146,11 @@ describe("app page boundary helpers", () => {
         const slug = Array.isArray(params.slug) ? params.slug.join("/") : params.slug;
         return `${routeSegments[treePosition] ?? "root"}:${slug}`;
       },
-      routeSegments: ["root", "[slug]"],
+      routeSegments: ["[slug]"],
     });
 
     expect(wrapped).toBe(
-      'ErrorBoundary(GlobalError)[Segment(root:post)[Layout(RootLayout)[Segment([slug]:post)[Layout(LeafLayout)[Boundary|{"slug":"post","thenable":true}]]|{"slug":"post","thenable":true}]]]',
+      'ErrorBoundary(GlobalError)[Segment([slug]:post)[Layout(RootLayout)[Segment(root:post)[Layout(LeafLayout)[Boundary|{"slug":"post","thenable":true}]]|{"thenable":true}]]]',
     );
   });
 

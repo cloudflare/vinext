@@ -771,7 +771,12 @@ export default {
         }
       }
 
-      // ��─ 6. Apply beforeFiles rewrites from next.config.js ─────────
+      if (isExternalUrl(resolvedUrl)) {
+        const proxyResponse = await proxyExternalRequest(request, resolvedUrl);
+        return mergeHeaders(proxyResponse, middlewareHeaders, undefined);
+      }
+
+      // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {

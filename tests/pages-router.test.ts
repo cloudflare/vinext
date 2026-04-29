@@ -2380,6 +2380,48 @@ export default function CounterPage() {
     expect(result.rewriteUrl).toContain("/ssr");
   });
 
+  it("runMiddleware preserves internal middleware cookie headers on rewrites", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/rewrite-with-cookie");
+    const result = await serverEntry.runMiddleware(request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toContain("/ssr");
+    expect(result.responseHeaders.get("x-middleware-set-cookie")).toContain(
+      "rewrite-cookie=visible",
+    );
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("runMiddleware preserves external middleware rewrite destinations", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    if (!fs.existsSync(serverEntryPath)) {
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+    }
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/external-middleware-rewrite");
+    const result = await serverEntry.runMiddleware(request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("https://api.example.com/from-middleware?ok=1");
+  });
+
   it("runMiddleware handles block (/blocked -> 403)", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);
@@ -2388,6 +2430,18 @@ export default function CounterPage() {
     expect(result.continue).toBe(false);
     expect(result.response).toBeInstanceOf(Response);
     expect(result.response.status).toBe(403);
+  });
+
+  it("runMiddleware strips internal cookie headers from custom responses", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/blocked-with-cookie");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(false);
+    expect(result.response).toBeInstanceOf(Response);
+    expect(result.response.status).toBe(403);
+    expect(result.response.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(result.response.headers.get("set-cookie")).toContain("blocked=1");
   });
 
   it("runMiddleware sets x-custom-middleware header on matched paths", async () => {
@@ -2594,6 +2648,32 @@ describe("Production server middleware (Pages Router)", () => {
     const html = await res.text();
     // /rewritten should serve the content of /ssr page
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("preserves upstream status for external middleware rewrites in production", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((_, res) => {
+      res.writeHead(418, { "content-type": "text/plain" });
+      res.end("upstream status");
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-status`, {
+        headers: {
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/external`,
+        },
+      });
+      expect(res.status).toBe(418);
+      expect(await res.text()).toBe("upstream status");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   // Ported from Next.js:

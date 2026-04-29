@@ -3,7 +3,7 @@ import type { CachedAppPageValue } from "../shims/cache.js";
 import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
 import {
   finalizeAppPageHtmlCacheResponse,
-  scheduleAppPageRscCacheWrite,
+  finalizeAppPageRscCacheResponse,
 } from "./app-page-cache.js";
 import {
   buildAppPageFontLinkHeader,
@@ -198,7 +198,7 @@ export async function renderAppPageLifecycle(
       }),
     });
 
-    scheduleAppPageRscCacheWrite({
+    return finalizeAppPageRscCacheResponse(rscResponse, {
       capturedRscDataPromise: options.isProduction ? isrRscDataPromise : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
@@ -215,8 +215,6 @@ export async function renderAppPageLifecycle(
         options.waitUntil?.(promise);
       },
     });
-
-    return rscResponse;
   }
 
   const fontData = createAppPageFontData({
@@ -319,6 +317,7 @@ export async function renderAppPageLifecycle(
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
       capturedRscDataPromise: isrRscDataPromise,
       cleanPathname: options.cleanPathname,
+      consumeDynamicUsage: options.consumeDynamicUsage,
       getPageTags() {
         return options.getPageTags();
       },

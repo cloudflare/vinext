@@ -80,13 +80,17 @@ test.describe("RSC fetch non-ok response handling", () => {
   test("client navigation to a 500-route hard-navs to the destination URL without looping", async ({
     page,
   }) => {
-    // Intercept the .rsc request for /about and return a 500 error. This
+    const targetPath = "/rsc-fetch-error-target";
+
+    // Intercept the .rsc request for a dedicated unlinked fixture page and
+    // return a 500 error. Using an unlinked target keeps the hit count tied to
+    // the explicit navigation below instead of racing home-page Link prefetch.
     // intercept persists across navigations and reloads on this page, so if
     // the fix is incomplete and a reload loop develops, the intercept hit
     // count will grow without bound.
-    let aboutRscHits = 0;
-    await page.route(/\/about\.rsc(\?|$)/, (route) => {
-      aboutRscHits += 1;
+    let targetRscHits = 0;
+    await page.route(/\/rsc-fetch-error-target\.rsc(\?|$)/, (route) => {
+      targetRscHits += 1;
       return route.fulfill({
         status: 500,
         // status 500 + text/html exercises both the !ok guard and the
@@ -107,41 +111,36 @@ test.describe("RSC fetch non-ok response handling", () => {
     await page.goto(`${BASE}/`);
     await waitForAppRouterHydration(page);
 
-    const navigationPromise = page.waitForURL(`${BASE}/about`, { timeout: 10_000 });
-    await Promise.all([navigationPromise, page.locator('a[href="/about"]').click()]);
+    const navigationPromise = page.waitForURL(`${BASE}${targetPath}`, { timeout: 10_000 });
+    await page.evaluate(() => {
+      void (window as any).__VINEXT_RSC_NAVIGATE__("/rsc-fetch-error-target");
+    });
+    await navigationPromise;
 
-    expect(page.url()).toBe(`${BASE}/about`);
+    expect(page.url()).toBe(`${BASE}${targetPath}`);
 
     // Stability check: the hard-nav must settle. Without the
     // readInitialRscStream reload-loop guard, the initial RSC fetch on the
-    // freshly-loaded /about page hits the intercepted 500 and reloads
+    // freshly-loaded target page hits the intercepted 500 and reloads
     // indefinitely — networkidle would never fire and the default timeout
     // catches that. Tracking actual request activity avoids flaky wall-clock
     // waits in CI.
-    const hitsBeforeNetworkIdle = aboutRscHits;
+    const hitsBeforeNetworkIdle = targetRscHits;
     await page.waitForLoadState("networkidle");
-    expect(page.url()).toBe(`${BASE}/about`);
-    // Pin the embedded-RSC assumption: after the hard-nav lands on /about,
+    expect(page.url()).toBe(`${BASE}${targetPath}`);
+    // Pin the embedded-RSC assumption: after the hard-nav lands on the target,
     // hydration must come from the HTML-embedded RSC branch and issue no
     // further .rsc fetches. If a future change makes the embed path
     // conditional and falls back to a fetch, this count would grow and the
     // test would flag it rather than silently relying on networkidle timing.
-    expect(aboutRscHits).toBe(hitsBeforeNetworkIdle);
+    expect(targetRscHits).toBe(hitsBeforeNetworkIdle);
 
-    // Expected trajectory: up to two hits — one from the home-page Link
-    // prefetch of /about.rsc (which the prefetch-cache discards because the
-    // response is !ok), and one from the client RSC nav fetch that triggers
-    // the hard-nav. Hydration timing can race the prefetch, in which case
-    // the count is 1. After the hard navigation to /about, the embedded-RSC
-    // branch in readInitialRscStream handles hydration without a fallback
-    // .rsc fetch, so no post-reload hits occur. A runaway reload loop would
-    // produce many more.
-    // Lower bound: at minimum, the client nav fetch that triggers the
-    // hard-nav must have fired. A value of 0 would mean the navigation
-    // skipped the RSC fetch entirely and the test is no longer exercising
-    // the !ok-guard path.
-    expect(aboutRscHits).toBeGreaterThanOrEqual(1);
-    expect(aboutRscHits).toBeLessThanOrEqual(2);
+    // Expected trajectory: exactly one hit from the client RSC nav fetch that
+    // triggers the hard-nav. The target route is intentionally absent from the
+    // home page's visible Links, so a count of 0 means the test skipped the
+    // !ok guard path, while a count above 1 means hydration fell back to a
+    // post-reload .rsc fetch or entered a reload loop.
+    expect(targetRscHits).toBe(1);
 
     const rscParseError = consoleErrors.find((msg) => isRscStreamParseError(msg));
     expect(rscParseError).toBeUndefined();
@@ -150,13 +149,16 @@ test.describe("RSC fetch non-ok response handling", () => {
   test("redirect chain to a non-ok endpoint hard-navs to the post-redirect URL", async ({
     page,
   }) => {
-    // Chain: client nav to /rsc-fetch-redirect-src →
-    // fetch /rsc-fetch-redirect-src.rsc → 307 Location
+    const sourcePath = "/rsc-fetch-redirect-src";
+    const targetPath = "/rsc-fetch-error-target";
+
+    // Chain: client nav to /rsc-fetch-redirect-src → fetch
+    // /rsc-fetch-redirect-src.rsc → real server redirect to
     // /rsc-fetch-error-target.rsc → 500. The hard-nav target must be
     // /rsc-fetch-error-target (the post-redirect URL), not
     // /rsc-fetch-redirect-src (the original request).
     // Without the navResponseUrl ?? navResponse.url branch in the nav-site
-    // guard, the browser would bounce off /rsc-fetch-redirect-src and the server
+    // guard, the browser would bounce off the source path and the server
     // would re-issue the 307, flashing the wrong URL in the address bar
     // and mis-keying analytics.
     const consoleErrors: string[] = [];
@@ -167,8 +169,9 @@ test.describe("RSC fetch non-ok response handling", () => {
     });
 
     // Capture the document URL at every main-frame navigation so we can
-    // assert the address bar never flashes the redirect source en route to
-    // the post-redirect target.
+    // assert the address bar never flashes the source URL en route to the target.
+    // Without this, a regression that dropped `navResponseUrl ?? navResponse.url`
+    // would still pass because the server's 307 converges to the target eventually.
     const frameUrls: string[] = [];
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) frameUrls.push(frame.url());
@@ -179,19 +182,15 @@ test.describe("RSC fetch non-ok response handling", () => {
 
     const sourceRedirectPromise = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === "/rsc-fetch-redirect-src.rsc" &&
-        response.status() === 307,
+        new URL(response.url()).pathname === `${sourcePath}.rsc` && response.status() === 307,
       { timeout: 10_000 },
     );
     const targetErrorPromise = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === "/rsc-fetch-error-target.rsc" &&
-        response.status() === 500,
+        new URL(response.url()).pathname === `${targetPath}.rsc` && response.status() === 500,
       { timeout: 10_000 },
     );
-    const navigationPromise = page.waitForURL(`${BASE}/rsc-fetch-error-target`, {
-      timeout: 10_000,
-    });
+    const navigationPromise = page.waitForURL(`${BASE}${targetPath}`, { timeout: 10_000 });
     await Promise.all([
       sourceRedirectPromise,
       targetErrorPromise,
@@ -199,9 +198,9 @@ test.describe("RSC fetch non-ok response handling", () => {
       page.getByTestId("rsc-fetch-redirect-src-link").click(),
     ]);
 
-    expect(page.url()).toBe(`${BASE}/rsc-fetch-error-target`);
+    expect(page.url()).toBe(`${BASE}${targetPath}`);
     await expect(page.getByRole("heading", { name: "RSC fetch error target" })).toBeVisible();
-    expect(frameUrls.some((url) => url.includes("/rsc-fetch-redirect-src"))).toBe(false);
+    expect(frameUrls.some((url) => url.includes(sourcePath))).toBe(false);
 
     const rscParseError = consoleErrors.find((msg) => isRscStreamParseError(msg));
     expect(rscParseError).toBeUndefined();

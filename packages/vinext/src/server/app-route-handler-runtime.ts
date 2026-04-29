@@ -1,5 +1,11 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { NextRequest, type NextURL } from "../shims/server.js";
+import {
+  NextRequest,
+  RequestCookies,
+  sealRequestCookies,
+  sealRequestHeaders,
+  type NextURL,
+} from "../shims/server.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 
 const ROUTE_HANDLER_HTTP_METHODS = [
@@ -57,6 +63,8 @@ export function markKnownDynamicAppRoute(pattern: string): void {
 type RequestDynamicAccess =
   | "request.headers"
   | "request.cookies"
+  | "request.ip"
+  | "request.geo"
   | "request.url"
   | "request.body"
   | "request.blob"
@@ -75,12 +83,15 @@ type NextUrlDynamicAccess =
   | "nextUrl.origin";
 
 type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
+type AppRouteRequestMode = "auto" | "force-static" | "error";
 
 type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
+  requestMode?: AppRouteRequestMode;
+  staticGenerationErrorMessage?: (expression?: string) => string;
 };
 
 type TrackedAppRouteRequest = {
@@ -131,11 +142,45 @@ function rebuildRequestWithHeaders(input: Request, headers: Headers): Request {
   return new Request(input.url, init);
 }
 
+function cleanStaticUrl(url: string): string {
+  const cleanUrl = new URL(url);
+  cleanUrl.protocol = "http:";
+  cleanUrl.host = "localhost:3000";
+  cleanUrl.username = "";
+  cleanUrl.password = "";
+  cleanUrl.search = "";
+  cleanUrl.hash = "";
+  return cleanUrl.href;
+}
+
+function readEmptyBodyAsArrayBuffer(): Promise<ArrayBuffer> {
+  return new Response(null).arrayBuffer();
+}
+
+function readEmptyBodyAsBlob(): Promise<Blob> {
+  return new Response(null).blob();
+}
+
+// Empty JSON/form-data parses reject naturally; that keeps force-static body
+// stubs aligned with a bodyless request instead of inventing synthetic data.
+function readEmptyBodyAsFormData(): Promise<FormData> {
+  return new Response(null).formData();
+}
+
+function readEmptyBodyAsJson(): Promise<unknown> {
+  return new Response(null).json();
+}
+
+function readEmptyBodyAsText(): Promise<string> {
+  return new Response(null).text();
+}
+
 export function createTrackedAppRouteRequest(
   request: Request,
   options: TrackedAppRouteRequestOptions = {},
 ): TrackedAppRouteRequest {
   let didAccessDynamicRequest = false;
+  const requestMode = options.requestMode ?? "auto";
   const nextConfig = buildNextConfig(options);
 
   const markDynamicAccess = (access: AppRouteDynamicRequestAccess): void => {
@@ -170,6 +215,64 @@ export function createTrackedAppRouteRequest(
     return new Proxy(nextUrl, nextUrlHandler);
   };
 
+  const wrapForceStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    const emptySearchParams = new URLSearchParams();
+    const staticHref = cleanStaticUrl(nextUrl.href);
+    const nextUrlHandler: ProxyHandler<NextURL> = {
+      get(target, prop): unknown {
+        switch (prop) {
+          case "search":
+            return "";
+          case "searchParams":
+            return emptySearchParams;
+          case "href":
+            return staticHref;
+          case "url":
+            return undefined;
+          case "toJSON":
+          case "toString":
+            return () => staticHref;
+          case "clone":
+            return () => wrapForceStaticNextUrl(target.clone());
+          default:
+            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        }
+      },
+    };
+
+    return new Proxy(nextUrl, nextUrlHandler);
+  };
+
+  const throwStaticGenerationError = (expression: string): never => {
+    throw new Error(
+      options.staticGenerationErrorMessage?.(expression) ??
+        `Route handler with \`dynamic = "error"\` used ${expression}.`,
+    );
+  };
+
+  const wrapRequireStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    const nextUrlHandler: ProxyHandler<NextURL> = {
+      get(target, prop): unknown {
+        switch (prop) {
+          case "search":
+          case "searchParams":
+          case "url":
+          case "href":
+          case "toJSON":
+          case "toString":
+          case "origin":
+            return throwStaticGenerationError(`nextUrl.${String(prop)}`);
+          case "clone":
+            return () => wrapRequireStaticNextUrl(target.clone());
+          default:
+            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        }
+      },
+    };
+
+    return new Proxy(nextUrl, nextUrlHandler);
+  };
+
   const wrapRequest = (input: Request): NextRequest => {
     const requestHeaders = options.middlewareHeaders
       ? buildRequestHeadersFromMiddlewareResponse(input.headers, options.middlewareHeaders)
@@ -182,15 +285,83 @@ export function createTrackedAppRouteRequest(
         ? requestWithOverrides
         : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
     let proxiedNextUrl: NextURL | null = null;
+    let forceStaticNextUrl: NextURL | null = null;
+    let requireStaticNextUrl: NextURL | null = null;
+    let forceStaticHeaders: Headers | null = null;
+    let forceStaticCookies: RequestCookies | null = null;
 
     const requestHandler: ProxyHandler<NextRequest> = {
       get(target, prop): unknown {
+        if (requestMode === "force-static") {
+          switch (prop) {
+            case "nextUrl":
+              forceStaticNextUrl ??= wrapForceStaticNextUrl(target.nextUrl);
+              return forceStaticNextUrl;
+            case "headers":
+              forceStaticHeaders ??= sealRequestHeaders(new Headers());
+              return forceStaticHeaders;
+            case "cookies":
+              forceStaticCookies ??= sealRequestCookies(new RequestCookies(new Headers()));
+              return forceStaticCookies;
+            case "url":
+              return cleanStaticUrl(target.nextUrl.href);
+            case "ip":
+            case "geo":
+              return undefined;
+            case "body":
+              return null;
+            case "arrayBuffer":
+              return readEmptyBodyAsArrayBuffer;
+            case "blob":
+              return readEmptyBodyAsBlob;
+            case "formData":
+              return readEmptyBodyAsFormData;
+            case "json":
+              return readEmptyBodyAsJson;
+            case "text":
+              return readEmptyBodyAsText;
+            case "clone":
+              return () => wrapRequest(target.clone());
+            default:
+              return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+          }
+        }
+
+        if (requestMode === "error") {
+          switch (prop) {
+            case "nextUrl":
+              requireStaticNextUrl ??= wrapRequireStaticNextUrl(target.nextUrl);
+              return requireStaticNextUrl;
+            case "headers":
+            case "cookies":
+            case "url":
+            // Deliberate vinext divergence from Next.js: ip/geo are exposed
+            // on NextRequest for Cloudflare compatibility, so require-static
+            // treats them as dynamic request APIs instead of falling through.
+            case "ip":
+            case "geo":
+            case "body":
+            case "blob":
+            case "json":
+            case "text":
+            case "arrayBuffer":
+            case "formData":
+              return throwStaticGenerationError(`request.${String(prop)}`);
+            case "clone":
+              return () => wrapRequest(target.clone());
+            default:
+              return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+          }
+        }
+
         switch (prop) {
           case "nextUrl":
             proxiedNextUrl ??= wrapNextUrl(target.nextUrl);
             return proxiedNextUrl;
           case "headers":
           case "cookies":
+          case "ip":
+          case "geo":
           case "url":
           case "body":
           case "blob":

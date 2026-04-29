@@ -42,6 +42,7 @@ type ReadAppPageCacheResponseOptions = {
 type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
+  consumeDynamicUsage: () => boolean;
   getPageTags: () => string[];
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
@@ -64,6 +65,8 @@ type ScheduleAppPageRscCacheWriteOptions = {
   revalidateSeconds: number;
   waitUntil?: (promise: Promise<void>) => void;
 };
+
+const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
 function buildAppPageCacheControl(
   cacheState: BuildAppPageCachedResponseOptions["cacheState"],
@@ -233,6 +236,11 @@ export function finalizeAppPageHtmlCacheResponse(
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
   const rscKey = options.isrRscKey(options.cleanPathname, null);
+  const clientHeaders = new Headers(response.headers);
+  // HTML Server Components can access request APIs while the stream is being
+  // consumed. Until that late dynamic check finishes, downstream shared caches
+  // must not cache the speculative MISS response.
+  clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
 
   const cachePromise = (async () => {
     try {
@@ -247,6 +255,11 @@ export function finalizeAppPageHtmlCacheResponse(
         chunks.push(decoder.decode(value, { stream: true }));
       }
       chunks.push(decoder.decode());
+
+      if (options.consumeDynamicUsage()) {
+        options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
+        return;
+      }
 
       const pageTags = options.getPageTags();
       const writes = [
@@ -283,7 +296,29 @@ export function finalizeAppPageHtmlCacheResponse(
   return new Response(streamForClient, {
     status: response.status,
     statusText: response.statusText,
-    headers: response.headers,
+    headers: clientHeaders,
+  });
+}
+
+export function finalizeAppPageRscCacheResponse(
+  response: Response,
+  options: ScheduleAppPageRscCacheWriteOptions,
+): Response {
+  const didSchedule = scheduleAppPageRscCacheWrite(options);
+  if (!didSchedule) {
+    return response;
+  }
+
+  const clientHeaders = new Headers(response.headers);
+  // RSC payloads are also streamed lazily. Until the captured stream proves no
+  // late request API was used, the client-facing MISS response must not enter a
+  // shared cache.
+  clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: clientHeaders,
   });
 }
 

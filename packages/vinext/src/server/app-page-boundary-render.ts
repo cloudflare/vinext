@@ -2,16 +2,7 @@ import { Fragment, createElement, type ComponentType, type ReactNode } from "rea
 import { buildClientHookErrorMessage } from "../shims/client-hook-error.js";
 import { ErrorBoundary } from "../shims/error-boundary.js";
 import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
-import {
-  MetadataHead,
-  ViewportHead,
-  mergeMetadata,
-  mergeViewport,
-  resolveModuleMetadata,
-  resolveModuleViewport,
-  type Metadata,
-  type Viewport,
-} from "../shims/metadata.js";
+import { MetadataHead, ViewportHead } from "../shims/metadata.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import {
@@ -33,6 +24,7 @@ import {
   createAppPayloadRouteId,
   type AppElements,
 } from "./app-elements.js";
+import { resolveAppPageHead } from "./app-page-head.js";
 import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -114,55 +106,6 @@ function getDefaultExport<TModule extends AppPageModule>(
   module: TModule | null | undefined,
 ): AppPageComponent | null {
   return module?.default ?? null;
-}
-
-async function resolveAppPageLayoutHead<TModule extends AppPageModule>(
-  layoutModules: readonly (TModule | null | undefined)[],
-  params: AppPageParams,
-): Promise<{ metadata: Metadata | null; viewport: Viewport }> {
-  const filteredLayouts = layoutModules.filter(Boolean) as TModule[];
-  const layoutMetadataPromises: Promise<Metadata | null>[] = [];
-  let accumulatedMetadata = Promise.resolve<Metadata>({});
-
-  for (let index = 0; index < filteredLayouts.length; index++) {
-    const parentForLayout = accumulatedMetadata;
-    const metadataPromise = resolveModuleMetadata(
-      filteredLayouts[index],
-      params,
-      undefined,
-      parentForLayout,
-    ).catch((error) => {
-      console.error("[vinext] Layout generateMetadata() failed:", error);
-      return null;
-    });
-    layoutMetadataPromises.push(metadataPromise);
-    accumulatedMetadata = metadataPromise.then(async (metadataResult) => {
-      if (metadataResult) {
-        return mergeMetadata([await parentForLayout, metadataResult]);
-      }
-      return parentForLayout;
-    });
-  }
-
-  const [metadataResults, viewportResults] = await Promise.all([
-    Promise.all(layoutMetadataPromises),
-    Promise.all(
-      filteredLayouts.map((layoutModule) =>
-        resolveModuleViewport(layoutModule, params).catch((error) => {
-          console.error("[vinext] Layout generateViewport() failed:", error);
-          return null;
-        }),
-      ),
-    ),
-  ]);
-
-  const metadataList = metadataResults.filter(Boolean) as Metadata[];
-  const viewportList = viewportResults.filter(Boolean) as Viewport[];
-
-  return {
-    metadata: metadataList.length > 0 ? mergeMetadata(metadataList) : null,
-    viewport: mergeViewport(viewportList),
-  };
 }
 
 function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
@@ -319,10 +262,12 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   }
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
-  const { metadata, viewport } = await resolveAppPageLayoutHead(
+  const { metadata, viewport } = await resolveAppPageHead({
     layoutModules,
-    options.matchedParams,
-  );
+    layoutTreePositions: options.route?.layoutTreePositions,
+    params: options.matchedParams,
+    routeSegments: options.route?.routeSegments,
+  });
 
   const headElements: ReactNode[] = [
     createElement("meta", { charSet: "utf-8", key: "charset" }),

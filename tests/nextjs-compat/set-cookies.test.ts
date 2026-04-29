@@ -63,6 +63,21 @@ describe("Next.js compat: set-cookies", () => {
     expect(setCookies.some((c) => c.includes("theme=dark"))).toBe(true);
   });
 
+  it("returned response cookies take precedence over mutable cookies with the same name", async () => {
+    // Next.js app route handlers merge mutable cookies as fallbacks before
+    // reapplying returned response cookies as the final values.
+    // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/cookie-precedence`);
+    const setCookies = res.headers.getSetCookie();
+
+    expect(setCookies).toHaveLength(3);
+    expect(setCookies.some((c) => c.startsWith("session=returned;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("response-only=1;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("mutable-only=final;"))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith("session=mutable;"))).toBe(false);
+    expect(setCookies.some((c) => c.startsWith("mutable-only=first;"))).toBe(false);
+  });
+
   // ── cookies().delete() ──────────────────────────────────────
   // Next.js: deleting a cookie produces Set-Cookie with Max-Age=0
 

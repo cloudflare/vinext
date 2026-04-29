@@ -108,8 +108,12 @@ export type AppRoute = {
   notFoundPaths: (string | null)[];
   /** Forbidden component path (403) */
   forbiddenPath: string | null;
+  /** Forbidden component paths per layout level (aligned with layouts array). */
+  forbiddenPaths?: (string | null)[];
   /** Unauthorized component path (401) */
   unauthorizedPath: string | null;
+  /** Unauthorized component paths per layout level (aligned with layouts array). */
+  unauthorizedPaths?: (string | null)[];
   /**
    * Filesystem segments from app/ root to the route's directory.
    * Includes route groups and dynamic segments (as template strings like "[id]").
@@ -432,7 +436,9 @@ function discoverSlotSubRoutes(
         notFoundPath: parentRoute.notFoundPath,
         notFoundPaths: parentRoute.notFoundPaths,
         forbiddenPath: parentRoute.forbiddenPath,
+        forbiddenPaths: parentRoute.forbiddenPaths,
         unauthorizedPath: parentRoute.unauthorizedPath,
+        unauthorizedPaths: parentRoute.unauthorizedPaths,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
@@ -554,6 +560,8 @@ function directoryToAppRoute(
   // These are used for per-layout NotFoundBoundary to match Next.js behavior where
   // notFound() thrown from a layout is caught by the parent layout's boundary.
   const notFoundPaths = discoverBoundaryFilePerLayout(layouts, "not-found", matcher);
+  const forbiddenPaths = discoverBoundaryFilePerLayout(layouts, "forbidden", matcher);
+  const unauthorizedPaths = discoverBoundaryFilePerLayout(layouts, "unauthorized", matcher);
 
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
@@ -573,7 +581,9 @@ function directoryToAppRoute(
     notFoundPath,
     notFoundPaths,
     forbiddenPath,
+    forbiddenPaths,
     unauthorizedPath,
+    unauthorizedPaths,
     routeSegments: segments,
     templateTreePositions,
     layoutTreePositions,

@@ -2474,6 +2474,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }
                 }
               };
+              const applyMwRequestHeadersForExternalProxy = () => {
+                if (middlewareRequestHeaders) {
+                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                } else {
+                  delete req.headers["x-vinext-mw-ctx"];
+                }
+              };
 
               // Run middleware.ts if present
               if (middlewarePath) {
@@ -2647,6 +2654,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // External rewrite from beforeFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
                 applyDeferredMwHeaders();
+                applyMwRequestHeadersForExternalProxy();
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
@@ -2702,6 +2710,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // External rewrite from afterFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
                 applyDeferredMwHeaders();
+                applyMwRequestHeadersForExternalProxy();
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
@@ -2740,6 +2749,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   // External fallback rewrite — proxy to external URL
                   if (isExternalUrl(fallbackRewrite)) {
                     applyDeferredMwHeaders();
+                    applyMwRequestHeadersForExternalProxy();
                     await proxyExternalRewriteNode(req, res, fallbackRewrite);
                     return;
                   }

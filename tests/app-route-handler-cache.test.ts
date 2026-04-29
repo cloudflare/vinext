@@ -3,6 +3,7 @@ import { readAppRouteHandlerCacheResponse } from "../packages/vinext/src/server/
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
+import type { HeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -91,6 +92,9 @@ describe("app route handler cache helpers", () => {
       scheduleBackgroundRegeneration() {
         throw new Error("should not schedule regeneration");
       },
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 
@@ -152,6 +156,9 @@ describe("app route handler cache helpers", () => {
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegenerations.push(renderFn);
       },
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext(context) {
         navigationCalls.push(context?.pathname ?? null);
       },
@@ -171,6 +178,64 @@ describe("app route handler cache helpers", () => {
       },
     ]);
     expect(navigationCalls).toEqual(["/api/stale", null]);
+  });
+
+  it("sets the route-handler header access phase while stale route handlers regenerate", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    const phases: string[] = [];
+    const options = {
+      buildPageCacheTags(pathname: string, extraTags: string[]) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/stale-force-static",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      dynamicConfig: "force-static",
+      getCollectedFetchTags() {
+        return [];
+      },
+      handlerFn() {
+        return new Response("regenerated");
+      },
+      isAutoHead: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+      },
+      isrRouteKey(pathname: string) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      requestUrl: "https://example.com/api/stale-force-static",
+      revalidateSearchParams: new URLSearchParams(),
+      revalidateSeconds: 60,
+      routePattern: "/api/stale-force-static",
+      async runInRevalidationContext(renderFn: () => Promise<void>) {
+        await renderFn();
+      },
+      scheduleBackgroundRegeneration(_key: string, renderFn: () => Promise<void>) {
+        scheduledRegens.push(renderFn);
+      },
+      setHeadersAccessPhase(phase: HeadersAccessPhase): HeadersAccessPhase {
+        phases.push(phase);
+        return "render";
+      },
+      setNavigationContext() {},
+    };
+
+    await readAppRouteHandlerCacheResponse(options);
+
+    const scheduledRegenRun = scheduledRegens[0];
+    expect(scheduledRegens).toHaveLength(1);
+    if (!scheduledRegenRun) {
+      throw new Error("Expected scheduled route regeneration");
+    }
+    await scheduledRegenRun();
+
+    expect(phases).toEqual(["route-handler"]);
   });
 
   it("skips regeneration writes when the stale handler reads dynamic request data", async () => {
@@ -216,6 +281,9 @@ describe("app route handler cache helpers", () => {
       },
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegens.push(renderFn);
+      },
+      setHeadersAccessPhase() {
+        return "render";
       },
       setNavigationContext() {},
     });
@@ -274,6 +342,9 @@ describe("app route handler cache helpers", () => {
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegens.push(renderFn);
       },
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 
@@ -329,6 +400,9 @@ describe("app route handler cache helpers", () => {
         await renderFn();
       },
       scheduleBackgroundRegeneration() {},
+      setHeadersAccessPhase() {
+        return "render";
+      },
       setNavigationContext() {},
     });
 

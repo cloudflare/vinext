@@ -247,6 +247,13 @@ export async function renderPagesPageResponse(
     scriptNonce: options.scriptNonce,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
+  // Render the page FIRST so that <Head> and other SSR state collectors
+  // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
+  // them. This fixes a race condition where head styles were silently dropped
+  // because they were collected before the page had finished rendering.
+  // Mirrors Next.js fix: vercel/next.js@9853944
+  const bodyStream = await options.renderToReadableStream(pageElement);
+
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
@@ -259,7 +266,6 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
-  const bodyStream = await options.renderToReadableStream(pageElement);
   const compositeStream = await buildPagesCompositeStream(bodyStream, shellPrefix, shellSuffix);
 
   if (

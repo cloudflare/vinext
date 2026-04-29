@@ -1062,6 +1062,8 @@ export async function proxyExternalRequest(
   // external rewrite destinations. It authorizes hidden production endpoints
   // used only by vinext's own prerender pipeline.
   headers.delete("x-vinext-prerender-secret");
+  // Internal App Router dev middleware context must never leave the dev server.
+  headers.delete("x-vinext-mw-ctx");
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";

@@ -120,6 +120,7 @@ describe("app route handler response helpers", () => {
         "content-type": "text/plain",
         "cache-control": "s-maxage=60, stale-while-revalidate",
         "x-vinext-cache": "MISS",
+        "x-middleware-set-cookie": "internal=1; Path=/",
         "x-extra": "kept",
       },
     });
@@ -208,6 +209,53 @@ describe("app route handler response helpers", () => {
     expect(result.statusText).toBe("Accepted");
     expect(result.headers.getSetCookie?.()).toEqual(["a=1; Path=/", "draft=1; Path=/"]);
     await expect(result.text()).resolves.toBe("");
+  });
+
+  it("uses mutable cookies as fallbacks and keeps returned response cookies final", async () => {
+    // Matches Next.js appendMutableCookies:
+    // packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+    const response = new Response("body", {
+      headers: [
+        ["Set-Cookie", "session=returned; Path=/; HttpOnly"],
+        ["Set-Cookie", "response-only=1; Path=/"],
+      ],
+    });
+
+    const result = finalizeRouteHandlerResponse(response, {
+      pendingCookies: [
+        "session=mutable; Path=/",
+        "mutable-only=first; Path=/",
+        "mutable-only=final; Path=/; Secure",
+      ],
+      draftCookie: null,
+      isHead: false,
+    });
+
+    expect(result.headers.getSetCookie()).toEqual([
+      "mutable-only=final; Path=/; Secure",
+      "session=returned; Path=/; HttpOnly",
+      "response-only=1; Path=/",
+    ]);
+    await expect(result.text()).resolves.toBe("body");
+  });
+
+  it("strips internal middleware headers from finalized route handler responses", async () => {
+    const response = new Response("body", {
+      headers: [
+        ["set-cookie", "session=abc; Path=/"],
+        ["x-middleware-set-cookie", "session=abc; Path=/"],
+      ],
+    });
+
+    const result = finalizeRouteHandlerResponse(response, {
+      pendingCookies: [],
+      isHead: false,
+    });
+
+    expect(result.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(result.headers.getSetCookie()).toEqual(["session=abc; Path=/"]);
+    await expect(result.text()).resolves.toBe("body");
   });
 
   it("applies revalidate and MISS headers separately", () => {

@@ -12,15 +12,10 @@ import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
-import {
-  generateSafeRegExpCode,
-  generateMiddlewareMatcherCode,
-  generateNormalizePathCode,
-  generateRouteMatchNormalizationCode,
-} from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
+const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
 const _routeTriePath = resolveEntryPath("../routing/route-trie.js", import.meta.url);
 const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.url);
 const _pagesPageResponsePath = resolveEntryPath(
@@ -144,113 +139,24 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
-import { NextRequest, NextFetchEvent } from "next/server";`
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};`
     : "";
 
-  // The matcher config is read from the middleware module at import time.
-  // We inline the matching + execution logic so the prod server can call it.
+  // The matcher config is read from the middleware module at request time.
+  // The generated entry only wires the user module into the shared runtime
+  // helper; matcher, execution, waitUntil, and result shaping live in normal
+  // TypeScript modules so dev/prod paths cannot drift.
   const middlewareExportCode = middlewarePath
     ? `
-// --- Middleware support (generated from middleware-codegen.ts) ---
-${generateNormalizePathCode("es5")}
-${generateRouteMatchNormalizationCode("es5")}
-${generateSafeRegExpCode("es5")}
-${generateMiddlewareMatcherCode("es5")}
-
 export async function runMiddleware(request, ctx) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _runMiddleware(request));
-  return _runMiddleware(request);
-}
-
-async function _runMiddleware(request) {
-  var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
-  var middlewareFn = isProxy
-    ? (middlewareModule.proxy ?? middlewareModule.default)
-    : (middlewareModule.middleware ?? middlewareModule.default);
-  if (typeof middlewareFn !== "function") {
-    var fileType = isProxy ? "Proxy" : "Middleware";
-    var expectedExport = isProxy ? "proxy" : "middleware";
-    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
-  }
-
-  var config = middlewareModule.config;
-  var matcher = config && config.matcher;
-  var url = new URL(request.url);
-
-  // Normalize pathname before matching to prevent path-confusion bypasses
-  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
-  var decodedPathname;
-  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
-    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
-  }
-  var normalizedPathname = __normalizePath(decodedPathname);
-
-  if (!matchesMiddleware(normalizedPathname, matcher, request, i18nConfig)) return { continue: true };
-
-   // Construct a new Request with the decoded + normalized pathname so middleware
-   // always sees the same canonical path that the router uses.
-  var mwRequest = request;
-  if (normalizedPathname !== url.pathname) {
-    var mwUrl = new URL(url);
-    mwUrl.pathname = normalizedPathname;
-    mwRequest = new Request(mwUrl, request);
-  }
-  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
-  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
-  var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
-  var response;
-  try { response = await middlewareFn(nextRequest, fetchEvent); }
-  catch (e) {
-    console.error("[vinext] Middleware error:", e);
-    var _mwCtxErr = _getRequestExecutionContext();
-    if (_mwCtxErr && typeof _mwCtxErr.waitUntil === "function") { _mwCtxErr.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
-    return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
-  }
-  var _mwCtx = _getRequestExecutionContext();
-  if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
-
-  if (!response) return { continue: true };
-
-  if (response.headers.get("x-middleware-next") === "1") {
-    var rHeaders = new Headers();
-    for (var [key, value] of response.headers) {
-      // Keep x-middleware-request-* headers so the production server can
-      // apply middleware-request header overrides before stripping internals
-      // from the final client response.
-      if (
-        !key.startsWith("x-middleware-") ||
-        key === "x-middleware-override-headers" ||
-        key.startsWith("x-middleware-request-")
-      ) rHeaders.append(key, value);
-    }
-    return { continue: true, responseHeaders: rHeaders };
-  }
-
-  if (response.status >= 300 && response.status < 400) {
-    var location = response.headers.get("Location") || response.headers.get("location");
-    if (location) {
-      var rdHeaders = new Headers();
-      for (var [rk, rv] of response.headers) {
-        if (!rk.startsWith("x-middleware-") && rk.toLowerCase() !== "location") rdHeaders.append(rk, rv);
-      }
-      return { continue: false, redirectUrl: location, redirectStatus: response.status, responseHeaders: rdHeaders };
-    }
-  }
-
-  var rewriteUrl = response.headers.get("x-middleware-rewrite");
-  if (rewriteUrl) {
-    var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) {
-      if (!k.startsWith("x-middleware-") || k === "x-middleware-override-headers" || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
-    }
-    var rewritePath;
-    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
-    catch { rewritePath = rewriteUrl; }
-    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
-  }
-
-  return { continue: false, response: response };
+  return __runGeneratedMiddleware({
+    basePath: vinextConfig.basePath,
+    ctx,
+    i18nConfig,
+    isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
+    module: middlewareModule,
+    request,
+  });
 }
 `
     : `
@@ -279,6 +185,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
+import { runGeneratedMiddleware as __runGeneratedMiddleware } from ${JSON.stringify(_middlewareRuntimePath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};

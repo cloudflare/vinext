@@ -1,4 +1,5 @@
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 export type AppPageParams = Record<string, string | string[]>;
 
@@ -10,6 +11,17 @@ type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
   routeForbiddenModule?: TModule | null;
   routeNotFoundModule?: TModule | null;
   routeUnauthorizedModule?: TModule | null;
+  statusCode: number;
+};
+
+type ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule> = {
+  layoutIndex: number;
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  routeForbiddenModules?: readonly (TModule | null | undefined)[] | null;
+  routeNotFoundModules?: readonly (TModule | null | undefined)[] | null;
+  routeUnauthorizedModules?: readonly (TModule | null | undefined)[] | null;
   statusCode: number;
 };
 
@@ -93,6 +105,32 @@ export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
   return options.getDefaultExport(boundaryModule) ?? null;
 }
 
+export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
+  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
+): TModule | null {
+  let routeModules = options.routeNotFoundModules;
+  let rootModule = options.rootNotFoundModule;
+
+  if (options.statusCode === 403) {
+    routeModules = options.routeForbiddenModules;
+    rootModule = options.rootForbiddenModule;
+  } else if (options.statusCode === 401) {
+    routeModules = options.routeUnauthorizedModules;
+    rootModule = options.rootUnauthorizedModule;
+  }
+
+  if (routeModules) {
+    for (let index = options.layoutIndex - 1; index >= 0; index--) {
+      const module = routeModules[index];
+      if (module) {
+        return module;
+      }
+    }
+  }
+
+  return rootModule ?? null;
+}
+
 export function resolveAppPageErrorBoundary<TModule, TComponent>(
   options: ResolveAppPageErrorBoundaryOptions<TModule, TComponent>,
 ): ResolveAppPageErrorBoundaryResult<TComponent> {
@@ -141,14 +179,16 @@ export function wrapAppPageBoundaryElement<
   let element = options.element;
 
   if (!options.skipLayoutWrapping) {
-    const asyncParams = options.makeThenableParams(options.matchedParams);
-
     for (let index = options.layoutModules.length - 1; index >= 0; index--) {
       const layoutComponent = options.getDefaultExport(options.layoutModules[index]);
       if (!layoutComponent) {
         continue;
       }
 
+      const treePosition = options.layoutTreePositions ? options.layoutTreePositions[index] : 0;
+      const asyncParams = options.makeThenableParams(
+        resolveAppPageSegmentParams(options.routeSegments, treePosition, options.matchedParams),
+      );
       element = options.renderLayout(layoutComponent, element, asyncParams);
 
       if (
@@ -156,7 +196,6 @@ export function wrapAppPageBoundaryElement<
         options.renderLayoutSegmentProvider &&
         options.resolveChildSegments
       ) {
-        const treePosition = options.layoutTreePositions ? options.layoutTreePositions[index] : 0;
         const childSegments = options.resolveChildSegments(
           options.routeSegments ?? [],
           treePosition,

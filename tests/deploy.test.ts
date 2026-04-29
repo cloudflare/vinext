@@ -555,6 +555,21 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("resolvedUrl = result.rewriteUrl");
   });
 
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("proxies external middleware rewrites before local route handling", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const middlewareRewritePos = content.indexOf("resolvedUrl = result.rewriteUrl");
+    const externalCheckPos = content.indexOf("isExternalUrl(resolvedUrl)", middlewareRewritePos);
+    const localApiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+
+    expect(middlewareRewritePos).toBeGreaterThan(-1);
+    expect(externalCheckPos).toBeGreaterThan(middlewareRewritePos);
+    expect(externalCheckPos).toBeLessThan(localApiRoutePos);
+    expect(content).toContain("proxyExternalRequest(request, resolvedUrl)");
+    expect(content).toContain("return mergeHeaders(proxyResponse, middlewareHeaders, undefined)");
+  });
+
   it("handles middleware access control responses", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("result.response");
