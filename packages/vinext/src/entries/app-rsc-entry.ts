@@ -7,7 +7,7 @@
  *
  * Previously housed in server/app-dev-server.ts.
  */
-import fs from "node:fs";
+import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import type {
   NextHeader,
@@ -151,207 +151,18 @@ export function generateRscEntry(
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
-  // Build import map for all page and layout files
-  const imports: string[] = [];
-  const importMap: Map<string, string> = new Map();
-  let importIdx = 0;
-
-  function getImportVar(filePath: string): string {
-    if (importMap.has(filePath)) return importMap.get(filePath)!;
-    const varName = `mod_${importIdx++}`;
-    const absPath = filePath.replace(/\\/g, "/");
-    imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
-    importMap.set(filePath, varName);
-    return varName;
-  }
-
-  // Pre-register all modules
-  for (const route of routes) {
-    if (route.pagePath) getImportVar(route.pagePath);
-    if (route.routePath) getImportVar(route.routePath);
-    for (const layout of route.layouts) getImportVar(layout);
-    for (const tmpl of route.templates) getImportVar(tmpl);
-    if (route.loadingPath) getImportVar(route.loadingPath);
-    if (route.errorPath) getImportVar(route.errorPath);
-    if (route.layoutErrorPaths) {
-      for (const ep of route.layoutErrorPaths) {
-        if (ep) getImportVar(ep);
-      }
-    }
-    if (route.notFoundPath) getImportVar(route.notFoundPath);
-    for (const nfp of route.notFoundPaths || []) {
-      if (nfp) getImportVar(nfp);
-    }
-    if (route.forbiddenPath) getImportVar(route.forbiddenPath);
-    for (const fp of route.forbiddenPaths || []) {
-      if (fp) getImportVar(fp);
-    }
-    if (route.unauthorizedPath) getImportVar(route.unauthorizedPath);
-    for (const up of route.unauthorizedPaths || []) {
-      if (up) getImportVar(up);
-    }
-    // Register parallel slot modules
-    for (const slot of route.parallelSlots) {
-      if (slot.pagePath) getImportVar(slot.pagePath);
-      if (slot.defaultPath) getImportVar(slot.defaultPath);
-      if (slot.layoutPath) getImportVar(slot.layoutPath);
-      if (slot.loadingPath) getImportVar(slot.loadingPath);
-      if (slot.errorPath) getImportVar(slot.errorPath);
-      // Register intercepting route modules
-      for (const ir of slot.interceptingRoutes) {
-        getImportVar(ir.pagePath);
-        for (const layoutPath of ir.layoutPaths) {
-          getImportVar(layoutPath);
-        }
-      }
-    }
-  }
-
-  // Build route table as serialized JS
-  const routeEntries = routes.map((route, routeIdx) => {
-    const layoutVars = route.layouts.map((l) => getImportVar(l));
-    const templateVars = route.templates.map((t) => getImportVar(t));
-    const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
-    const forbiddenVars = (route.forbiddenPaths || []).map((fp) =>
-      fp ? getImportVar(fp) : "null",
-    );
-    const unauthorizedVars = (route.unauthorizedPaths || []).map((up) =>
-      up ? getImportVar(up) : "null",
-    );
-    const slotEntries = route.parallelSlots.map((slot) => {
-      const interceptEntries = slot.interceptingRoutes.map(
-        (ir) => `        {
-          convention: ${JSON.stringify(ir.convention)},
-          targetPattern: ${JSON.stringify(ir.targetPattern)},
-          interceptLayouts: [${ir.layoutPaths.map((layoutPath) => getImportVar(layoutPath)).join(", ")}],
-          page: ${getImportVar(ir.pagePath)},
-          params: ${JSON.stringify(ir.params)},
-        }`,
-      );
-      return `      ${JSON.stringify(slot.key)}: {
-        name: ${JSON.stringify(slot.name)},
-        page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
-        default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
-        layout: ${slot.layoutPath ? getImportVar(slot.layoutPath) : "null"},
-        loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
-        error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
-        layoutIndex: ${slot.layoutIndex},
-        routeSegments: ${JSON.stringify(slot.routeSegments)},
-        intercepts: [
-${interceptEntries.join(",\n")}
-        ],
-      }`;
-    });
-    const layoutErrorVars = (route.layoutErrorPaths || []).map((ep) =>
-      ep ? getImportVar(ep) : "null",
-    );
-    return `  {
-    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
-    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
-    pattern: ${JSON.stringify(route.pattern)},
-    patternParts: ${JSON.stringify(route.patternParts)},
-    isDynamic: ${route.isDynamic},
-    params: ${JSON.stringify(route.params)},
-    rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
-    page: ${route.pagePath ? getImportVar(route.pagePath) : "null"},
-    routeHandler: ${route.routePath ? getImportVar(route.routePath) : "null"},
-    layouts: [${layoutVars.join(", ")}],
-    routeSegments: ${JSON.stringify(route.routeSegments)},
-    templateTreePositions: ${JSON.stringify(route.templateTreePositions)},
-    layoutTreePositions: ${JSON.stringify(route.layoutTreePositions)},
-    templates: [${templateVars.join(", ")}],
-    errors: [${layoutErrorVars.join(", ")}],
-    slots: {
-${slotEntries.join(",\n")}
-    },
-    loading: ${route.loadingPath ? getImportVar(route.loadingPath) : "null"},
-    error: ${route.errorPath ? getImportVar(route.errorPath) : "null"},
-    notFound: ${route.notFoundPath ? getImportVar(route.notFoundPath) : "null"},
-    notFounds: [${notFoundVars.join(", ")}],
-    forbidden: ${route.forbiddenPath ? getImportVar(route.forbiddenPath) : "null"},
-    forbiddens: [${forbiddenVars.join(", ")}],
-    unauthorized: ${route.unauthorizedPath ? getImportVar(route.unauthorizedPath) : "null"},
-    unauthorizeds: [${unauthorizedVars.join(", ")}],
-  }`;
-  });
-
-  // Find root not-found/forbidden/unauthorized pages and root layouts for global error handling
-  const rootRoute = routes.find((r) => r.pattern === "/");
-  const rootNotFoundVar = rootRoute?.notFoundPath ? getImportVar(rootRoute.notFoundPath) : null;
-  const rootForbiddenVar = rootRoute?.forbiddenPath ? getImportVar(rootRoute.forbiddenPath) : null;
-  const rootUnauthorizedVar = rootRoute?.unauthorizedPath
-    ? getImportVar(rootRoute.unauthorizedPath)
-    : null;
-  const rootLayoutVars = rootRoute ? rootRoute.layouts.map((l) => getImportVar(l)) : [];
-
-  // Global error boundary (app/global-error.tsx)
-  const globalErrorVar = globalErrorPath ? getImportVar(globalErrorPath) : null;
-
-  // Build metadata route handling
-  const effectiveMetaRoutes = metadataRoutes ?? [];
-  const dynamicMetaRoutes = effectiveMetaRoutes.filter((r) => r.isDynamic);
-
-  // Import dynamic metadata modules
-  for (const mr of dynamicMetaRoutes) {
-    getImportVar(mr.filePath);
-  }
-
-  // Build metadata route table
-  // For static metadata files, read the file content at code-generation time
-  // and embed it as base64. This ensures static metadata files work on runtimes
-  // without filesystem access (e.g., Cloudflare Workers).
-  //
-  // For metadata routes in dynamic segments (e.g., /blog/[slug]/opengraph-image),
-  // generate patternParts so the runtime can use shared route-pattern matching
-  // instead of strict equality — the same matching used for intercept routes.
-  const metaRouteEntries = effectiveMetaRoutes.map((mr) => {
-    // Convert dynamic segments in servedUrl to the shared route-pattern format.
-    // Keep in sync with routing/app-router.ts patternParts generation.
-    //   [param]       → :param
-    //   [...param]    → :param+
-    //   [[...param]]  → :param*
-    const patternParts =
-      mr.isDynamic && mr.servedUrl.includes("[")
-        ? JSON.stringify(
-            mr.servedUrl
-              .split("/")
-              .filter(Boolean)
-              .map((seg) => {
-                if (seg.startsWith("[[...") && seg.endsWith("]]"))
-                  return ":" + seg.slice(5, -2) + "*";
-                if (seg.startsWith("[...") && seg.endsWith("]"))
-                  return ":" + seg.slice(4, -1) + "+";
-                if (seg.startsWith("[") && seg.endsWith("]")) return ":" + seg.slice(1, -1);
-                return seg;
-              }),
-          )
-        : null;
-
-    if (mr.isDynamic) {
-      return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: true,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    module: ${getImportVar(mr.filePath)},${patternParts ? `\n    patternParts: ${patternParts},` : ""}
-  }`;
-    }
-    // Static: read file and embed as base64
-    let fileDataBase64 = "";
-    try {
-      const buf = fs.readFileSync(mr.filePath);
-      fileDataBase64 = buf.toString("base64");
-    } catch {
-      // File unreadable — will serve empty response at runtime
-    }
-    return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: false,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    fileDataBase64: ${JSON.stringify(fileDataBase64)},
-  }`;
-  });
+  const manifestCode = buildAppRscManifestCode({ routes, metadataRoutes, globalErrorPath });
+  const {
+    imports,
+    routeEntries,
+    metaRouteEntries,
+    generateStaticParamsEntries,
+    rootNotFoundVar,
+    rootForbiddenVar,
+    rootUnauthorizedVar,
+    rootLayoutVars,
+    globalErrorVar,
+  } = manifestCode;
 
   return `
 import {
@@ -376,7 +187,7 @@ import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader,
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
+${metaRouteEntries.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
@@ -1138,13 +949,7 @@ export const generateStaticParamsMap = {
 // to provide parent params for nested dynamic routes, but they don't have a pagePath
 // so they are excluded here. Supporting layout-level generateStaticParams requires
 // scanning layout.tsx files separately and including them in this map.
-${routes
-  .filter((r) => r.isDynamic && r.pagePath)
-  .map(
-    (r) =>
-      `  ${JSON.stringify(r.pattern)}: ${getImportVar(r.pagePath!)}?.generateStaticParams ?? null,`,
-  )
-  .join("\n")}
+${generateStaticParamsEntries.join("\n")}
 };
 
 export default async function handler(request, ctx) {

@@ -10,8 +10,11 @@
  *   Vite's pluginContainer.load() on the virtual module IDs.
  */
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { describe, it, expect, afterAll } from "vite-plus/test";
 import { createServer, type ViteDevServer } from "vite-plus";
+import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import type { AppRouterConfig } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";
@@ -123,6 +126,175 @@ const minimalAppRoutes: AppRoute[] = [
 // Pages Router snapshots below. Run `pnpm test tests/entry-templates.test.ts -u`
 // to update them after intentional fixture changes.
 const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+
+// ── App Router manifest construction ─────────────────────────────────
+
+describe("App Router generated manifest construction", () => {
+  it("constructs route module imports and route entries from the scanned app shape", () => {
+    const routes = [
+      {
+        pattern: "/",
+        patternParts: [],
+        pagePath: "/tmp/test/app/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx"],
+        forbiddenPath: "/tmp/test/app/forbidden.tsx",
+        forbiddenPaths: ["/tmp/test/app/forbidden.tsx"],
+        unauthorizedPath: "/tmp/test/app/unauthorized.tsx",
+        unauthorizedPaths: ["/tmp/test/app/unauthorized.tsx"],
+        routeSegments: [],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: false,
+        params: [],
+      },
+      {
+        pattern: "/dashboard/:id",
+        patternParts: ["dashboard", ":id"],
+        pagePath: "/tmp/test/app/dashboard/[id]/page.tsx",
+        routePath: "/tmp/test/app/dashboard/[id]/route.ts",
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/dashboard/layout.tsx"],
+        templates: ["/tmp/test/app/dashboard/template.tsx"],
+        parallelSlots: [
+          {
+            key: "modal:/tmp/test/app/dashboard/@modal",
+            name: "modal",
+            ownerDir: "/tmp/test/app/dashboard/@modal",
+            pagePath: "/tmp/test/app/dashboard/@modal/page.tsx",
+            defaultPath: "/tmp/test/app/dashboard/@modal/default.tsx",
+            layoutPath: "/tmp/test/app/dashboard/@modal/layout.tsx",
+            loadingPath: "/tmp/test/app/dashboard/@modal/loading.tsx",
+            errorPath: "/tmp/test/app/dashboard/@modal/error.tsx",
+            interceptingRoutes: [
+              {
+                convention: ".",
+                targetPattern: "/photos/:photoId",
+                pagePath: "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx",
+                layoutPaths: ["/tmp/test/app/dashboard/@modal/(.)photos/layout.tsx"],
+                params: ["photoId"],
+              },
+            ],
+            layoutIndex: 1,
+            routeSegments: ["@modal"],
+          },
+        ],
+        loadingPath: "/tmp/test/app/dashboard/loading.tsx",
+        errorPath: "/tmp/test/app/dashboard/error.tsx",
+        layoutErrorPaths: [null, "/tmp/test/app/dashboard/error.tsx"],
+        notFoundPath: "/tmp/test/app/dashboard/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx", "/tmp/test/app/dashboard/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: ["/tmp/test/app/forbidden.tsx", null],
+        unauthorizedPath: null,
+        unauthorizedPaths: ["/tmp/test/app/unauthorized.tsx", null],
+        routeSegments: ["dashboard", "[id]"],
+        templateTreePositions: [1],
+        layoutTreePositions: [0, 1],
+        isDynamic: true,
+        params: ["id"],
+        rootParamNames: ["id"],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: "/tmp/test/app/global-error.tsx",
+    });
+
+    const imports = manifest.imports.join("\n");
+    expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(1);
+    expect(imports).toContain('import * as mod_0 from "/tmp/test/app/page.tsx";');
+    expect(imports).toContain(
+      'import * as mod_17 from "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx";',
+    );
+    expect(imports).toContain('import * as mod_19 from "/tmp/test/app/global-error.tsx";');
+
+    expect(manifest.rootNotFoundVar).toBe("mod_2");
+    expect(manifest.rootForbiddenVar).toBe("mod_3");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
+    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
+    expect(manifest.globalErrorVar).toBe("mod_19");
+
+    const dynamicRouteEntry = manifest.routeEntries[1];
+    expect(dynamicRouteEntry).toContain('pattern: "/dashboard/:id"');
+    expect(dynamicRouteEntry).toContain("routeHandler: mod_6");
+    expect(dynamicRouteEntry).toContain("layouts: [mod_1, mod_7]");
+    expect(dynamicRouteEntry).toContain('"modal:/tmp/test/app/dashboard/@modal": {');
+    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_18]");
+    expect(dynamicRouteEntry).toContain("page: mod_17");
+    expect(dynamicRouteEntry).toContain('params: ["photoId"]');
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/dashboard/:id": mod_5?.generateStaticParams ?? null,',
+    ]);
+  });
+
+  it("embeds static metadata files and imports dynamic metadata modules", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
+    try {
+      const staticManifestPath = path.join(tmpDir, "manifest.webmanifest");
+      fs.writeFileSync(staticManifestPath, '{"name":"Vinext"}');
+
+      const manifest = buildAppRscManifestCode({
+        routes: minimalAppRoutes,
+        metadataRoutes: [
+          {
+            type: "manifest",
+            isDynamic: false,
+            filePath: staticManifestPath,
+            servedUrl: "/manifest.webmanifest",
+            contentType: "application/manifest+json",
+          },
+          {
+            type: "opengraph-image",
+            isDynamic: true,
+            filePath: "/tmp/test/app/blog/[slug]/opengraph-image.tsx",
+            servedUrl: "/blog/[slug]/opengraph-image",
+            contentType: "image/png",
+          },
+        ],
+        globalErrorPath: null,
+      });
+
+      const entries = manifest.metaRouteEntries.join("\n");
+      expect(entries).toContain(
+        `fileDataBase64: ${JSON.stringify(Buffer.from('{"name":"Vinext"}').toString("base64"))}`,
+      );
+      expect(entries).toContain("module: mod_11");
+      expect(manifest.imports).toContain(
+        'import * as mod_11 from "/tmp/test/app/blog/[slug]/opengraph-image.tsx";',
+      );
+      expect(entries).toContain('patternParts: ["blog",":slug","opengraph-image"]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws a build-time error when a discovered static metadata file cannot be read", () => {
+    expect(() =>
+      buildAppRscManifestCode({
+        routes: minimalAppRoutes,
+        metadataRoutes: [
+          {
+            type: "manifest",
+            isDynamic: false,
+            filePath: "/tmp/test/app/missing-manifest.webmanifest",
+            servedUrl: "/manifest.webmanifest",
+            contentType: "application/manifest+json",
+          },
+        ],
+        globalErrorPath: null,
+      }),
+    ).toThrow("[vinext] Failed to read static metadata route file");
+  });
+});
 
 // ── App Router entry templates ────────────────────────────────────────
 
