@@ -54,7 +54,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
   "next/cache": {
     status: "supported",
-    detail: "revalidateTag, revalidatePath, unstable_cache, cacheLife, cacheTag",
+    detail: "revalidateTag, revalidatePath, unstable_cache, unstable_io, cacheLife, cacheTag",
   },
   "next/dynamic": { status: "supported" },
   "next/head": { status: "supported" },

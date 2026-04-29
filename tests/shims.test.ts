@@ -1903,6 +1903,8 @@ describe("next/cache shim", () => {
     const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
     const result = unstable_io();
     expect(result).toBeInstanceOf(Promise);
+    expect((result as any).status).toBe("fulfilled");
+    expect((result as any).value).toBeUndefined();
     await expect(result).resolves.toBeUndefined();
   });
 

@@ -450,6 +450,7 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
  * Marks an IO boundary in server components by returning a resolved promise.
  *
  * See: https://github.com/vercel/next.js/pull/92521
+ * Guard removed: https://github.com/vercel/next.js/pull/92923
  *
  * In Next.js, `unstable_io()` during prerendering contexts returns a hanging
  * promise to prevent execution past the IO boundary. vinext targets
