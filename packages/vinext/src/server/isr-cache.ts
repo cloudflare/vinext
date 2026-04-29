@@ -168,16 +168,25 @@ export function buildAppPageCacheValue(
   };
 }
 
+function normalizeCachePathname(pathname: string): string {
+  return pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+}
+
+function buildCacheKey(prefix: string, pathname: string, suffix?: string): string {
+  const normalized = normalizeCachePathname(pathname);
+  const suffixPart = suffix ? `:${suffix}` : "";
+  const key = `${prefix}:${normalized}${suffixPart}`;
+  if (key.length <= 200) return key;
+  return `${prefix}:__hash:${fnv1a64(normalized)}${suffixPart}`;
+}
+
 /**
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
 export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
   const prefix = buildId ? `${router}:${buildId}` : router;
-  const key = `${prefix}:${normalized}`;
-  if (key.length <= 200) return key;
-  return `${prefix}:__hash:${fnv1a64(normalized)}`;
+  return buildCacheKey(prefix, pathname);
 }
 
 /**
@@ -206,11 +215,8 @@ function appIsrCacheKey(
   suffix: string,
   buildId = process.env.__VINEXT_BUILD_ID,
 ): string {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
   const prefix = buildId ? `app:${buildId}` : "app";
-  const key = `${prefix}:${normalized}:${suffix}`;
-  if (key.length <= 200) return key;
-  return `${prefix}:__hash:${fnv1a64(normalized)}:${suffix}`;
+  return buildCacheKey(prefix, pathname, suffix);
 }
 
 export function appIsrHtmlKey(pathname: string): string {

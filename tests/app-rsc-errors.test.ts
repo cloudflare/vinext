@@ -5,6 +5,15 @@ import {
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
 
+type DigestCarrier = Error & { digest: unknown };
+
+function expectDigestError(value: unknown): DigestCarrier {
+  if (!(value instanceof Error) || !("digest" in value)) {
+    throw new Error("expected production sanitization to return a digest error");
+  }
+  return value;
+}
+
 describe("app RSC error primitives", () => {
   it("uses the same stable digest hash shape as Next.js stringHash", () => {
     expect(errorDigest("message-stack")).toBe("701844781");
@@ -29,10 +38,20 @@ describe("app RSC error primitives", () => {
     error.stack = "stack";
 
     const sanitized = sanitizeErrorForClient(error, "production");
+    const digestError = expectDigestError(sanitized);
 
     expect(sanitized).not.toBe(error);
-    expect(sanitized.message).toContain("omitted in production");
-    expect(sanitized.digest).toBe(errorDigest("secret detailsstack"));
+    expect(digestError.message).toContain("omitted in production");
+    expect(digestError.digest).toBe(errorDigest("secret detailsstack"));
+  });
+
+  it("preserves the previous String(error) digest input for non-Error values", () => {
+    const thrownValue = { message: "object detail" };
+
+    const sanitized = sanitizeErrorForClient(thrownValue, "production");
+
+    expect(sanitized).toBeInstanceOf(Error);
+    expect(expectDigestError(sanitized).digest).toBe(errorDigest("[object Object]"));
   });
 
   it("returns existing digest strings from the RSC onError path", () => {
@@ -73,6 +92,24 @@ describe("app RSC error primitives", () => {
         routeType: "render",
       },
     );
+  });
+
+  it("reports non-Error thrown values with the previous String(error) message", () => {
+    const reportRequestError = vi.fn();
+    const onError = createRscOnErrorHandler({
+      errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+      nodeEnv: "production",
+      reportRequestError,
+      requestInfo: { path: "/feed", method: "GET", headers: {} },
+    });
+
+    const thrownValue = { message: "object detail" };
+
+    expect(onError(thrownValue)).toBe(errorDigest("[object Object]"));
+    expect(reportRequestError).toHaveBeenCalledOnce();
+    expect(reportRequestError.mock.calls[0]?.[0]).toMatchObject({
+      message: "[object Object]",
+    });
   });
 
   it("uses process.env.NODE_ENV when no explicit environment is provided", () => {

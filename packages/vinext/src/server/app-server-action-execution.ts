@@ -169,7 +169,7 @@ function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function getErrorMessage(error: unknown): string {
+function getServerActionFailureMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
@@ -320,7 +320,7 @@ function createServerActionErrorResponse(
   return new Response(
     process.env.NODE_ENV === "production"
       ? "Internal Server Error"
-      : "Server action failed: " + getErrorMessage(error),
+      : "Server action failed: " + getServerActionFailureMessage(error),
     { status: 500 },
   );
 }
@@ -443,7 +443,7 @@ export async function handleProgressiveServerActionRequest(
     return new Response(
       process.env.NODE_ENV === "production"
         ? "Internal Server Error"
-        : "Server action failed: " + getErrorMessage(error),
+        : "Server action failed: " + getServerActionFailureMessage(error),
       { status: 500 },
     );
   }

@@ -31,26 +31,12 @@ function hasDigest(error: unknown): error is { digest: unknown } {
   return Boolean(error && typeof error === "object" && "digest" in error);
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
-    return error.toString();
-  }
-  if (typeof error === "symbol") {
-    return error.description ? `Symbol(${error.description})` : "Symbol()";
-  }
-  if (error === null) return "null";
-  if (error === undefined) return "undefined";
+function getThrownValueMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  try {
-    const serialized = JSON.stringify(error);
-    if (serialized) return serialized;
-  } catch {
-    // Fall through to Object.prototype.toString for cyclic or host objects.
-  }
-
-  return Object.prototype.toString.call(error);
+function getThrownValueStack(error: unknown): string {
+  return error instanceof Error ? error.stack || "" : "";
 }
 
 /**
@@ -64,7 +50,7 @@ export function errorDigest(input: string): string {
   return (hash >>> 0).toString();
 }
 
-export function sanitizeErrorForClient(error: Error, nodeEnv = process.env.NODE_ENV): DigestError {
+export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NODE_ENV): unknown {
   if (resolveAppPageSpecialError(error)) {
     return error;
   }
@@ -78,7 +64,7 @@ export function sanitizeErrorForClient(error: Error, nodeEnv = process.env.NODE_
       "The specific message is omitted in production builds to avoid leaking sensitive details. " +
       "A digest property is included on this error instance which may provide additional details about the nature of the error.",
   );
-  sanitized.digest = errorDigest(error.message + (error.stack || ""));
+  sanitized.digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
   return sanitized;
 }
 
@@ -120,16 +106,14 @@ export function createRscOnErrorHandler(
 
     if (options.requestInfo && options.errorContext && error) {
       options.reportRequestError(
-        error instanceof Error ? error : new Error(getErrorMessage(error)),
+        error instanceof Error ? error : new Error(getThrownValueMessage(error)),
         options.requestInfo,
         options.errorContext,
       );
     }
 
     if (nodeEnv === "production" && error) {
-      const message = getErrorMessage(error);
-      const stack = error instanceof Error ? error.stack || "" : "";
-      return errorDigest(message + stack);
+      return errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
     }
 
     return undefined;
