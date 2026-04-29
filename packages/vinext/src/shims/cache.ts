@@ -453,8 +453,9 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
  * Guard removed: https://github.com/vercel/next.js/pull/92923
  *
  * In Next.js, `unstable_io()` during prerendering contexts returns a hanging
- * promise to prevent execution past the IO boundary. vinext targets
- * Cloudflare Workers (no prerendering), so this always resolves immediately.
+ * promise to prevent execution past the IO boundary. vinext does support
+ * prerendering (static export, --prerender-all, TPR), but the hanging IO
+ * boundary behavior is not yet implemented, so this always resolves immediately.
  */
 export function unstable_io(): Promise<void> {
   return _resolvedIOPromise;
