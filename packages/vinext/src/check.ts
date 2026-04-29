@@ -399,7 +399,7 @@ export function analyzeConfig(root: string): CheckItem[] {
   // Check for nested (dot-notation) options: parent block present + child name appears
   for (const key of Object.keys(CONFIG_SUPPORT)) {
     if (!key.includes(".")) continue;
-		const dot = key.indexOf(".");
+    const dot = key.indexOf(".");
     const parentBlock = new RegExp(String.raw`\b${key.slice(0, dot)}\s*[:=]\s*\{`);
     const childRef = new RegExp(String.raw`\b${key.slice(dot + 1)}\b`);
     if (parentBlock.test(content) && childRef.test(content)) {
