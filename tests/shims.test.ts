@@ -1892,6 +1892,29 @@ describe("next/cache shim", () => {
     mod.refresh();
   });
 
+  // Ported from Next.js: packages/next/src/client/request/io.browser.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/request/io.browser.ts
+  it("exports unstable_io function", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.unstable_io).toBe("function");
+  });
+
+  it("unstable_io returns a resolved promise", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const result = unstable_io();
+    expect(result).toBeInstanceOf(Promise);
+    expect((result as any).status).toBe("fulfilled");
+    expect((result as any).value).toBeUndefined();
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it("unstable_io returns same instance (singleton)", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const r1 = unstable_io();
+    const r2 = unstable_io();
+    expect(r1).toBe(r2);
+  });
+
   it("setCacheHandler swaps the active handler", async () => {
     const { setCacheHandler, getCacheHandler, unstable_cache } =
       await import("../packages/vinext/src/shims/cache.js");

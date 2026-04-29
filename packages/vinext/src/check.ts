@@ -54,7 +54,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
   "next/cache": {
     status: "supported",
-    detail: "revalidateTag, revalidatePath, unstable_cache, cacheLife, cacheTag",
+    detail: "revalidateTag, revalidatePath, unstable_cache, unstable_io, cacheLife, cacheTag",
   },
   "next/dynamic": { status: "supported" },
   "next/head": { status: "supported" },
@@ -385,7 +385,7 @@ export function analyzeConfig(root: string): CheckItem[] {
 
   for (const opt of configOptions) {
     // Simple heuristic: check if the option name appears as a property in the config
-    const regex = new RegExp(`\\b${opt}\\b`);
+    const regex = new RegExp(String.raw`\b${opt}\b`);
     if (regex.test(content)) {
       const support = CONFIG_SUPPORT[opt];
       if (support) {
@@ -396,34 +396,15 @@ export function analyzeConfig(root: string): CheckItem[] {
     }
   }
 
-  // Check for experimental options
-  if (/experimental\s*[:=]\s*\{/.test(content)) {
-    if (/\bppr\b/.test(content)) {
-      items.push({ name: "experimental.ppr", ...CONFIG_SUPPORT["experimental.ppr"]! });
+  // Check for nested (dot-notation) options: parent block present + child name appears
+  for (const key of Object.keys(CONFIG_SUPPORT)) {
+    if (!key.includes(".")) continue;
+    const dot = key.indexOf(".");
+    const parentBlock = new RegExp(String.raw`\b${key.slice(0, dot)}\s*[:=]\s*\{`);
+    const childRef = new RegExp(String.raw`\b${key.slice(dot + 1)}\b`);
+    if (parentBlock.test(content) && childRef.test(content)) {
+      items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
-    if (/\btypedRoutes\b/.test(content)) {
-      items.push({
-        name: "experimental.typedRoutes",
-        ...CONFIG_SUPPORT["experimental.typedRoutes"]!,
-      });
-    }
-    if (/\bserverActions\b/.test(content)) {
-      items.push({
-        name: "experimental.serverActions",
-        ...CONFIG_SUPPORT["experimental.serverActions"]!,
-      });
-    }
-    if (/\bprefetchInlining\b/.test(content)) {
-      items.push({
-        name: "experimental.prefetchInlining",
-        ...CONFIG_SUPPORT["experimental.prefetchInlining"]!,
-      });
-    }
-  }
-
-  // Check for i18n.domains
-  if (/domains\s*:/.test(content) && /i18n/.test(content)) {
-    items.push({ name: "i18n.domains", ...CONFIG_SUPPORT["i18n.domains"]! });
   }
 
   // Sort: unsupported first

@@ -435,6 +435,32 @@ export function unstable_noStore(): void {
 // Also export as `noStore` (Next.js 15+ naming)
 export { unstable_noStore as noStore };
 
+/**
+ * A fulfilled thenable that React can unwrap synchronously via `use()`
+ * without ever suspending. Reusing a single instance avoids allocating
+ * on every call — matching Next.js's browser/client implementation.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/client/request/io.browser.ts
+ */
+const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
+(_resolvedIOPromise as unknown as Record<string, unknown>).status = "fulfilled";
+(_resolvedIOPromise as unknown as Record<string, unknown>).value = undefined;
+
+/**
+ * Marks an IO boundary in server components by returning a resolved promise.
+ *
+ * See: https://github.com/vercel/next.js/pull/92521
+ * Guard removed: https://github.com/vercel/next.js/pull/92923
+ *
+ * In Next.js, `unstable_io()` during prerendering contexts returns a hanging
+ * promise to prevent execution past the IO boundary. vinext does support
+ * prerendering (static export, --prerender-all, TPR), but the hanging IO
+ * boundary behavior is not yet implemented, so this always resolves immediately.
+ */
+export function unstable_io(): Promise<void> {
+  return _resolvedIOPromise;
+}
+
 // ---------------------------------------------------------------------------
 // Request-scoped cacheLife for page-level "use cache" directives.
 // When cacheLife() is called outside a "use cache" function context (e.g.,

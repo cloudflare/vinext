@@ -835,6 +835,14 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Missing use client react hook test");
   });
 
+  it("error boundary catches string thrown in Server Component", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
+    expect(res.status).toBe(200);
+    expect(textContentByTestId(html, "string-error-message")).toBe(
+      "this is a test string thrown in a server component",
+    );
+  });
+
   it("redirect() from Server Component returns redirect response", async () => {
     const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
@@ -3697,6 +3705,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // wrong return values, broken control flow).
     describe("runtime behavior", () => {
       let rscOnError: (error: unknown) => string | undefined;
+      let prodRscOnError: (error: unknown) => string | undefined;
+      let digestFn: string;
+      let onErrorFn: string;
 
       beforeAll(() => {
         const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
@@ -3717,13 +3728,14 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
           throw new Error(`Unbalanced braces in ${name}`);
         }
 
-        const digestFn = extractFunction(code, "__errorDigest");
-        const onErrorFn = extractFunction(code, "rscOnError");
+        digestFn = extractFunction(code, "__errorDigest");
+        onErrorFn = extractFunction(code, "rscOnError");
 
         const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
         // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
         const factory = new Function("process", body);
         rscOnError = factory({ env: { NODE_ENV: "development" } });
+        prodRscOnError = factory({ env: { NODE_ENV: "production" } });
       });
 
       it("returns the digest string for navigation errors (redirect/notFound)", () => {
@@ -3759,6 +3771,25 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         } finally {
           spy.mockRestore();
         }
+      });
+
+      it("does not swallow strings thrown in Server Components", () => {
+        const result = prodRscOnError("this is a test string");
+        // Should return a digest hash (not undefined), indicating the string
+        // was processed through the normal error path
+        expect(result).toBeDefined();
+        expect(typeof result).toBe("string");
+        expect((result as string).length).toBeGreaterThan(0);
+        // The digest should be based on the string content
+        const result2 = prodRscOnError("different string");
+        expect(result2).not.toBe(result);
+      });
+
+      it("does not have an early return for string thrown values in generated code", () => {
+        // Next.js had a bug where typeof thrownValue === 'string' returned
+        // early, swallowing the error before logging. Verify the generated
+        // rscOnError has no such early-return path.
+        expect(onErrorFn).not.toContain("typeof thrownValue === 'string'");
       });
     });
   });
@@ -4438,17 +4469,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("const __pendingRegenerations = new Map()");
   });
 
-  it("generated code threads collected fetch tags into page ISR writes", () => {
+  it("generated code threads collected fetch tags into page ISR writes and delegates route ISR", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("getCollectedFetchTags");
     expect(code).toContain("buildPageCacheTags");
     expect(code).toContain(
       'buildPageCacheTags(cleanPathname, [], route.routeSegments, route.routeHandler ? "route" : "page")',
     );
-    expect(code).toContain(
-      "const __buildRouteHandlerPageCacheTags = function(pathname, extraTags) {",
-    );
-    expect(code).toContain("buildPageCacheTags: __buildRouteHandlerPageCacheTags");
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
+    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
     expect(code).toContain(
       'const __pageTags = buildPageCacheTags(cleanPathname, getCollectedFetchTags(), route.routeSegments, "page")',
     );
@@ -4747,22 +4777,22 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code contains APP_ROUTE ISR cache read for route handlers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR reads now flow through the typed cache helper.
-    expect(code).toContain(
-      "readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse",
-    );
-    expect(code).toContain("await __readAppRouteHandlerCacheResponse({");
+    // Route handler ISR reads now flow through the typed dispatch helper.
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
     expect(code).toContain("isrGet: __isrGet");
-    expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn) {");
+    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
+    expect(code).not.toContain("await __readAppRouteHandlerCacheResponse({");
   });
 
   it("generated code contains APP_ROUTE ISR cache write for route handlers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR writes now flow through the typed execution helper.
-    expect(code).toContain("executeAppRouteHandler as __executeAppRouteHandler");
-    expect(code).toContain("return __executeAppRouteHandler({");
+    // Route handler ISR writes now flow through the typed dispatch helper.
+    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
+    expect(code).toContain("return __dispatchAppRouteHandler({");
     expect(code).toContain("isrRouteKey: __isrRouteKey");
     expect(code).toContain("isrSet: __isrSet");
+    expect(code).not.toContain("return __executeAppRouteHandler({");
   });
 
   it("generated code merges middleware headers into intercept route responses", () => {
