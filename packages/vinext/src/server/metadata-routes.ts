@@ -340,6 +340,100 @@ function serializeDate(value: string | Date): string {
 }
 
 // -------------------------------------------------------------------
+// Static metadata URL resolution
+//
+// Ported from Next.js: packages/next/src/lib/metadata/get-metadata-route.ts
+// https://github.com/vercel/next.js/blob/7873aea/packages/next/src/lib/metadata/get-metadata-route.ts
+//
+// Static metadata files (like favicon.ico, icon.png) under dynamic parents
+// get a fixed URL with "-" placeholders instead of literal "[param]" segments.
+// Route groups and parallel route parents trigger a unique hash suffix to
+// avoid collisions.
+// -------------------------------------------------------------------
+
+/**
+ * Regular expression pattern used to match route parameters.
+ * Matches both single parameters and parameter groups.
+ * Examples:
+ *   - `[[...slug]]` matches parameter group with key 'slug', repeat: true, optional: true
+ *   - `[...slug]` matches parameter group with key 'slug', repeat: true, optional: false
+ *   - `[[foo]]` matches parameter with key 'foo', repeat: false, optional: true
+ *   - `[bar]` matches parameter with key 'bar', repeat: false, optional: false
+ */
+const PARAMETER_PATTERN = /^([^[]*)\[((?:\[[^\]]*\])|[^\]]+)\](.*)$/;
+
+function isGroupSegment(segment: string): boolean {
+  return segment.startsWith("(") && segment.endsWith(")");
+}
+
+function isParallelRouteSegment(segment: string): boolean {
+  return segment.startsWith("@") && segment !== "@children";
+}
+
+function normalizeStaticMetadataRouteSegment(segment: string): string {
+  let normalizedSegment = segment;
+  let match = normalizedSegment.match(PARAMETER_PATTERN);
+  while (match) {
+    normalizedSegment = `${match[1]}-${match[3]}`;
+    match = normalizedSegment.match(PARAMETER_PATTERN);
+  }
+  return normalizedSegment;
+}
+
+function getStaticMetadataRoute(appDirPath: string): string {
+  const segments = appDirPath.split("/").filter(Boolean);
+  const normalizedSegments: string[] = [];
+  for (const seg of segments) {
+    // Strip route groups and all parallel route slots (including @children)
+    // from the URL path. The @children slot is the default parallel route
+    // and must also be invisible in the URL, matching Next.js behavior.
+    if (isGroupSegment(seg) || seg.startsWith("@")) continue;
+    normalizedSegments.push(normalizeStaticMetadataRouteSegment(seg));
+  }
+  return normalizedSegments.length > 0 ? `/${normalizedSegments.join("/")}` : "";
+}
+
+function getMetadataRouteSuffix(page: string): string {
+  const lastSlash = page.lastIndexOf("/");
+  const parentPathname = lastSlash > 0 ? page.slice(0, lastSlash) : lastSlash === -1 ? "" : "";
+  if (page.endsWith("/sitemap") || page.endsWith("/sitemap.xml")) return "";
+  const segments = parentPathname.split("/");
+  const hasInvisibleParent = segments.some(
+    (seg) => isGroupSegment(seg) || isParallelRouteSegment(seg),
+  );
+  if (!hasInvisibleParent) return "";
+  let hash = 5381;
+  for (let i = 0; i < parentPathname.length; i++) {
+    hash = ((hash << 5) + hash + parentPathname.charCodeAt(i)) & 0xffffffff;
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
+function getMetadataRouteFilename(appDirPath: string, lastSegment: string): string {
+  const ext = path.posix.extname(lastSegment);
+  const name = lastSegment.slice(0, -ext.length || undefined);
+  const pagePath = appDirPath === "" || appDirPath === "/" ? `/${name}` : `${appDirPath}/${name}`;
+  const suffix = getMetadataRouteSuffix(pagePath);
+  const routeSuffix = suffix ? `-${suffix}` : "";
+  return `${name}${routeSuffix}${ext}`;
+}
+
+/**
+ * Compute the static URL for a metadata file given its app directory
+ * parent path and filename.
+ *
+ * Example:
+ *   fillStaticMetadataSegment("/", "favicon.ico") -> "/favicon.ico"
+ *   fillStaticMetadataSegment("/blog/[slug]", "favicon.ico") -> "/blog/-/favicon.ico"
+ *   fillStaticMetadataSegment("/(group)/group", "icon.png") -> "/group/icon-131tc6.png"
+ */
+export function fillStaticMetadataSegment(appDirPath: string, lastSegment: string): string {
+  const route = getStaticMetadataRoute(appDirPath);
+  const filename = getMetadataRouteFilename(appDirPath, lastSegment);
+  return route === "" ? `/${filename}` : `${route}/${filename}`;
+}
+
+// -------------------------------------------------------------------
 // Metadata route discovery
 // -------------------------------------------------------------------
 
@@ -425,14 +519,35 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const isDynamic = config.dynamicExtensions.includes(ext);
 
         if (!isStatic && !isDynamic) continue;
-        const suffix = metadataRouteSuffix(parentSegments, metaType);
-        const urlPath = withMetadataSuffix(config.urlPath, suffix);
+
+        // For static metadata files, normalize dynamic parent segments to "-"
+        // and strip route groups / parallel routes from the URL. The leaf
+        // URL path comes from METADATA_FILE_MAP (without file extension for
+        // icon, apple-icon, etc.). Dynamic files keep the existing urlPrefix
+        // behavior because the runtime uses patternParts for matching.
+        const appDirPath = parentSegments.length > 0 ? `/${parentSegments.join("/")}` : "";
+        const servedUrl = isStatic
+          ? (() => {
+              const route = getStaticMetadataRoute(appDirPath);
+              const pagePath =
+                appDirPath === "" || appDirPath === "/"
+                  ? `/${metaType}`
+                  : `${appDirPath}/${metaType}`;
+              const suffix = getMetadataRouteSuffix(pagePath);
+              const urlPath = withMetadataSuffix(config.urlPath, suffix);
+              return route === "" ? urlPath : `${route}${urlPath}`;
+            })()
+          : (() => {
+              const suffix = metadataRouteSuffix(parentSegments, metaType);
+              const urlPath = withMetadataSuffix(config.urlPath, suffix);
+              return urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`;
+            })();
 
         routes.push({
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
-          servedUrl: urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`,
+          servedUrl,
           contentType: isStatic
             ? getStaticContentType(ext, config.contentType)
             : config.contentType,

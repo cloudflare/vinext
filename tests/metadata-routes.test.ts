@@ -16,6 +16,7 @@ import {
   robotsToText,
   manifestToJson,
   scanMetadataFiles,
+  fillStaticMetadataSegment,
   METADATA_FILE_MAP,
   type SitemapEntry,
   type RobotsConfig,
@@ -584,6 +585,57 @@ describe("manifestToJson", () => {
   });
 });
 
+// ─── fillStaticMetadataSegment ────────────────────────────────────────────
+// Ported from Next.js: packages/next/src/lib/metadata/get-metadata-route.test.ts
+// https://github.com/vercel/next.js/blob/7873aea/packages/next/src/lib/metadata/get-metadata-route.test.ts
+
+describe("fillStaticMetadataSegment", () => {
+  it("preserves a statically known root favicon path", () => {
+    expect(fillStaticMetadataSegment("/", "favicon.ico")).toBe("/favicon.ico");
+  });
+
+  it("replaces dynamic segments with placeholder segments", () => {
+    expect(fillStaticMetadataSegment("/blog/[slug]", "favicon.ico")).toBe("/blog/-/favicon.ico");
+    expect(fillStaticMetadataSegment("/blog/[...slug]", "icon.png")).toBe("/blog/-/icon.png");
+  });
+
+  it("replaces catch-all segments with placeholder", () => {
+    expect(fillStaticMetadataSegment("/[...slug]", "favicon.ico")).toBe("/-/favicon.ico");
+    expect(fillStaticMetadataSegment("/[[...slug]]", "icon.png")).toBe("/-/icon.png");
+  });
+
+  it("strips route groups and applies hash suffix", () => {
+    const result = fillStaticMetadataSegment("/(group)/group", "icon.png");
+    // Route group (group) is stripped from the URL path.
+    // A unique hash suffix is appended because the parent path had a route group.
+    expect(result).toMatch(/^\/group\/icon-[0-9a-z]{6}\.png$/);
+  });
+
+  it("strips parallel route slots and applies hash suffix", () => {
+    const result = fillStaticMetadataSegment("/parallel/@parallel", "icon.png");
+    // Parallel route slot @parallel is stripped from the URL path.
+    expect(result).toMatch(/^\/parallel\/icon-[0-9a-z]{6}\.png$/);
+  });
+
+  it("keeps regular segments intact", () => {
+    expect(fillStaticMetadataSegment("/about/contact", "opengraph-image.png")).toBe(
+      "/about/contact/opengraph-image.png",
+    );
+  });
+
+  it("handles root path with dynamic file extensions", () => {
+    expect(fillStaticMetadataSegment("/", "icon.svg")).toBe("/icon.svg");
+    expect(fillStaticMetadataSegment("/", "apple-icon.jpg")).toBe("/apple-icon.jpg");
+  });
+
+  it("handles mixed route group and dynamic segments", () => {
+    const result = fillStaticMetadataSegment("/client/(meme)/more-route", "twitter-image.png");
+    // Route group (meme) is stripped, no dynamic segments to replace.
+    // Hash suffix applied due to route group parent.
+    expect(result).toMatch(/^\/client\/more-route\/twitter-image-[0-9a-z]{6}\.png$/);
+  });
+});
+
 // ─── scanMetadataFiles ──────────────────────────────────────────────────
 
 describe("scanMetadataFiles", () => {
@@ -784,6 +836,30 @@ describe("scanMetadataFiles", () => {
     expect(routes.find((r) => r.type === "favicon")).toBeDefined();
     expect(routes.find((r) => r.type === "icon")).toBeDefined();
     expect(routes.find((r) => r.type === "opengraph-image")).toBeDefined();
+  });
+
+  it("static metadata under dynamic parent uses '-' placeholder in servedUrl", () => {
+    createFile("blog/[slug]/opengraph-image.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const og = routes.find((r) => r.type === "opengraph-image" && r.isDynamic === false);
+    expect(og).toBeDefined();
+    expect(og!.servedUrl).toBe("/blog/-/opengraph-image");
+  });
+
+  it("static metadata under catch-all parent uses '-' placeholder", () => {
+    createFile("docs/[...slug]/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const icon = routes.find((r) => r.type === "icon" && r.isDynamic === false);
+    expect(icon).toBeDefined();
+    expect(icon!.servedUrl).toBe("/docs/-/icon");
+  });
+
+  it("static metadata under route group with dynamic parent", () => {
+    createFile("(marketing)/blog/[slug]/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const icon = routes.find((r) => r.type === "icon" && r.isDynamic === false);
+    expect(icon).toBeDefined();
+    expect(icon!.servedUrl).toMatch(/^\/blog\/-\/icon-[0-9a-z]{6}$/);
   });
 });
 
