@@ -179,7 +179,7 @@ type ForbiddenBoundaryState = {
   previousPathname: string;
 };
 
-class ForbiddenBoundaryInner extends React.Component<
+export class ForbiddenBoundaryInner extends React.Component<
   ForbiddenBoundaryInnerProps,
   ForbiddenBoundaryState
 > {
@@ -201,7 +201,7 @@ class ForbiddenBoundaryInner extends React.Component<
   static getDerivedStateFromError(error: Error): Partial<ForbiddenBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
-      if (digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;403")) {
+      if (digest === "NEXT_HTTP_ERROR_FALLBACK;403") {
         return { forbidden: true };
       }
     }
@@ -243,7 +243,7 @@ type UnauthorizedBoundaryState = {
   previousPathname: string;
 };
 
-class UnauthorizedBoundaryInner extends React.Component<
+export class UnauthorizedBoundaryInner extends React.Component<
   UnauthorizedBoundaryInnerProps,
   UnauthorizedBoundaryState
 > {
@@ -265,7 +265,7 @@ class UnauthorizedBoundaryInner extends React.Component<
   static getDerivedStateFromError(error: Error): Partial<UnauthorizedBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
-      if (digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;401")) {
+      if (digest === "NEXT_HTTP_ERROR_FALLBACK;401") {
         return { unauthorized: true };
       }
     }

@@ -30,7 +30,9 @@ type MinimalAppRoute = {
   layoutErrorPaths: (string | null)[];
   notFoundPath: null;
   notFoundPaths: (string | null)[];
+  forbiddenPaths: (string | null)[];
   forbiddenPath: null;
+  unauthorizedPaths: (string | null)[];
   unauthorizedPath: null;
   routeSegments: string[];
   layoutTreePositions: number[];
@@ -51,7 +53,9 @@ function makeRoute(partial: Partial<MinimalAppRoute> & { layouts: string[] }): M
     layoutErrorPaths: partial.layouts.map(() => null),
     notFoundPath: null,
     notFoundPaths: partial.layouts.map(() => null),
+    forbiddenPaths: partial.layouts.map(() => null),
     forbiddenPath: null,
+    unauthorizedPaths: partial.layouts.map(() => null),
     unauthorizedPath: null,
     routeSegments: [],
     layoutTreePositions: partial.layouts.map((_, idx) => idx),
