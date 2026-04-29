@@ -3970,7 +3970,7 @@ describe("App Router middleware with NextRequest", () => {
 });
 
 describe("RSC Flight hint fix", () => {
-  it("generateRscEntry wraps renderToReadableStream with HL hint fix", () => {
+  it("generateRscEntry delegates renderToReadableStream hint normalization", () => {
     // The RSC entry should shadow renderToReadableStream with a wrapper that
     // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
     // so all consumers (SSR embed, client-side nav, server actions) get clean data.
@@ -3996,75 +3996,10 @@ describe("RSC Flight hint fix", () => {
     };
     const code = generateRscEntry("/tmp/test/app", [route]);
     expect(code).toContain("_renderToReadableStream");
-    expect(code).toContain('"style"$2');
-  });
-
-  it('fixFlightHints regex correctly replaces "stylesheet" with "style" in RSC Flight HL hints', () => {
-    // Replicate the HL hint rewrite regex from the renderToReadableStream wrapper
-    // in app-rsc-entry.ts. This rewrites the Flight stream at the source so all
-    // consumers (SSR embed, client-side nav, server actions) get clean data.
-    // Use the corrected regex: \d* (zero or more digits) to match the actual
-    // React Flight wire format where hints are emitted without a chunk ID,
-    // i.e. ":HL[...]" not "2:HL[...]". The old \d+ never matched in practice.
-    function fixFlightHints(text: string): string {
-      return text.replace(/(\d*:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
-    }
-
-    // Test: actual React Flight wire format — NO numeric ID prefix for hints.
-    // React emits ":HL[...]" (emitHint writes ":H" + code + model).
-    expect(fixFlightHints(':HL["/assets/index.css","stylesheet"]')).toBe(
-      ':HL["/assets/index.css","style"]',
+    expect(code).toContain(
+      "normalizeReactFlightPreloadHints as __normalizeReactFlightPreloadHints",
     );
-
-    // Test: no-prefix with options (3-element array)
-    expect(fixFlightHints(':HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
-      ':HL["/assets/index.css","style",{"crossOrigin":""}]',
-    );
-
-    // Test: basic HL hint for CSS (with explicit numeric ID — legacy / hypothetical)
-    expect(fixFlightHints('2:HL["/assets/index.css","stylesheet"]')).toBe(
-      '2:HL["/assets/index.css","style"]',
-    );
-
-    // Test: HL hint with options (3-element array, with explicit ID)
-    expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
-      '2:HL["/assets/index.css","style",{"crossOrigin":""}]',
-    );
-
-    // Test: should NOT modify non-HL lines containing "stylesheet"
-    expect(
-      fixFlightHints(
-        '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]',
-      ),
-    ).toBe('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]');
-
-    // Test: multiple HL hints in one chunk — no-prefix format
-    expect(fixFlightHints(':HL["/a.css","stylesheet"]\n:HL["/b.css","stylesheet"]')).toBe(
-      ':HL["/a.css","style"]\n:HL["/b.css","style"]',
-    );
-
-    // Test: multiple HL hints in one chunk — with IDs
-    expect(fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]')).toBe(
-      '2:HL["/a.css","style"]\n3:HL["/b.css","style"]',
-    );
-
-    // Test: should NOT modify HL hints with other as values
-    expect(fixFlightHints(':HL["/font.woff2","font"]')).toBe(':HL["/font.woff2","font"]');
-
-    // Test: no change needed when already "style"
-    expect(fixFlightHints(':HL["/assets/index.css","style"]')).toBe(
-      ':HL["/assets/index.css","style"]',
-    );
-
-    // Test: mixed content — only HL hints should be modified (no-prefix format)
-    expect(
-      fixFlightHints('0:D{"name":"page"}\n:HL["/app.css","stylesheet"]\n3:["$","div",null,{}]'),
-    ).toBe('0:D{"name":"page"}\n:HL["/app.css","style"]\n3:["$","div",null,{}]');
-
-    // Test: mixed content — only HL hints should be modified (with ID)
-    expect(
-      fixFlightHints('0:D{"name":"page"}\n2:HL["/app.css","stylesheet"]\n3:["$","div",null,{}]'),
-    ).toBe('0:D{"name":"page"}\n2:HL["/app.css","style"]\n3:["$","div",null,{}]');
+    expect(code).toContain("return __normalizeReactFlightPreloadHints(_renderToReadableStream");
   });
 });
 // ── Client reference preloading (Issue #256) ─────────────────────────────────

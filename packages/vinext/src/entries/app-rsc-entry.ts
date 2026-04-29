@@ -85,6 +85,7 @@ const appRscRouteMatchingPath = resolveEntryPath(
   "../server/app-rsc-route-matching.js",
   import.meta.url,
 );
+const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
 const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
@@ -362,34 +363,12 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
 
-// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
-// requires "style" for <link rel="preload">. Fix at the source so every
-// consumer (SSR embed, client-side navigation, server actions) gets clean data.
-//
-// Flight lines are newline-delimited, so we buffer partial lines across chunks
-// to guarantee the regex never sees a split hint.
+import {
+  normalizeReactFlightPreloadHints as __normalizeReactFlightPreloadHints,
+} from ${JSON.stringify(rscStreamHintsPath)};
+
 function renderToReadableStream(model, options) {
-  const _hlFixRe = /(\\d*:HL\\[.*?),"stylesheet"(\\]|,)/g;
-  const stream = _renderToReadableStream(model, options);
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let carry = "";
-  return stream.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const text = carry + decoder.decode(chunk, { stream: true });
-      const lastNl = text.lastIndexOf("\\n");
-      if (lastNl === -1) {
-        carry = text;
-        return;
-      }
-      carry = text.slice(lastNl + 1);
-      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
-    },
-    flush(controller) {
-      const text = carry + decoder.decode();
-      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
-    }
-  }));
+  return __normalizeReactFlightPreloadHints(_renderToReadableStream(model, options));
 }
 import { createElement } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
