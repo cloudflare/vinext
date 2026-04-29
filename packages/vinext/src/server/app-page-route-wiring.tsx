@@ -615,7 +615,7 @@ export function buildAppPageElements<
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
 
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children.
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > children.
     // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
     // then ErrorBoundary, then Template, with the Layout slot outermost.
     if (layoutEntry) {
