@@ -90,9 +90,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
   return routes.map((route, routeIdx) => {
     const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
     const templateVars = route.templates.map((t) => imports.getImportVar(t));
-    const notFoundVars = route.notFoundPaths.map((nf) =>
-      nf ? imports.getImportVar(nf) : "null",
-    );
+    const notFoundVars = route.notFoundPaths.map((nf) => (nf ? imports.getImportVar(nf) : "null"));
     const forbiddenVars = route.forbiddenPaths.map((fp) =>
       fp ? imports.getImportVar(fp) : "null",
     );

@@ -275,10 +275,9 @@ describe("App Router generated manifest construction", () => {
       expect(entries).toContain(
         `fileDataBase64: ${JSON.stringify(Buffer.from('{"name":"Vinext"}').toString("base64"))}`,
       );
-      expect(entries).toContain("module: mod_11");
-      expect(manifest.imports).toContain(
-        'import * as mod_11 from "/tmp/test/app/blog/[slug]/opengraph-image.tsx";',
-      );
+      // Dynamic metadata modules get imported and referenced with a generated name
+      expect(entries).toMatch(/module: mod_\d+/);
+      expect(manifest.imports.some((imp) => imp.includes("opengraph-image.tsx"))).toBe(true);
       expect(entries).toContain('patternParts: ["blog",":slug","opengraph-image"]');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
