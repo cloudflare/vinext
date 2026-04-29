@@ -4,6 +4,7 @@ export const fetchCache = "auto";
 export const maxDuration = 30;
 export const preferredRegion = "auto";
 export const runtime = "nodejs";
+export const unstable_prefetch = "static";
 
 export default function ConfigTestPage() {
   return (
