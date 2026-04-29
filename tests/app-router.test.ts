@@ -815,6 +815,13 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Missing use client react hook test");
   });
 
+  it("error boundary catches string thrown in Server Component", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("this is a test string thrown in a server component");
+    expect(html).toContain('data-testid="string-error-boundary"');
+  });
+
   it("redirect() from Server Component returns redirect response", async () => {
     const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
@@ -3642,6 +3649,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // wrong return values, broken control flow).
     describe("runtime behavior", () => {
       let rscOnError: (error: unknown) => string | undefined;
+      let digestFn: string;
+      let onErrorFn: string;
 
       beforeAll(() => {
         const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
@@ -3662,8 +3671,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
           throw new Error(`Unbalanced braces in ${name}`);
         }
 
-        const digestFn = extractFunction(code, "__errorDigest");
-        const onErrorFn = extractFunction(code, "rscOnError");
+        digestFn = extractFunction(code, "__errorDigest");
+        onErrorFn = extractFunction(code, "rscOnError");
 
         const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
         // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
@@ -3704,6 +3713,34 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         } finally {
           spy.mockRestore();
         }
+      });
+
+      it("does not swallow strings thrown in Server Components", () => {
+        // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
+        const digestFactory = new Function(
+          "process",
+          `${digestFn}\n${onErrorFn}\nreturn rscOnError;`,
+        );
+        const prodRscOnError = digestFactory({ env: { NODE_ENV: "production" } });
+        const result = prodRscOnError("this is a test string");
+        // Should return a digest hash (not undefined), indicating the string
+        // was processed through the normal error path
+        expect(result).toBeDefined();
+        expect(typeof result).toBe("string");
+        expect((result as string).length).toBeGreaterThan(0);
+        // The digest should be based on the string content
+        const result2 = prodRscOnError("different string");
+        expect(result2).not.toBe(result);
+      });
+
+      it("does not have an early return for string thrown values in generated code", () => {
+        // Next.js had a bug where typeof thrownValue === 'string' returned
+        // early, swallowing the error before logging. Verify the generated
+        // rscOnError has no such early-return path.
+        expect(onErrorFn).not.toContain("typeof thrownValue === 'string'");
+        // Should still handle strings for digest generation
+        expect(onErrorFn).toContain("error instanceof Error");
+        expect(onErrorFn).toContain("String(error)");
       });
     });
   });
