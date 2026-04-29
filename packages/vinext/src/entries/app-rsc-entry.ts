@@ -16,6 +16,7 @@ import type {
   NextRewrite,
 } from "../config/next-config.js";
 import type { AppRoute } from "../routing/app-router.js";
+import { decodeRouteSegment } from "../routing/utils.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
@@ -1147,18 +1148,70 @@ async function __readFormDataWithLimit(request, maxBytes) {
 // Used by the prerender phase to enumerate dynamic route URLs without
 // loading route modules via the dev server.
 export const generateStaticParamsMap = {
-// TODO: layout-level generateStaticParams — this map only includes routes that
-// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
-// to provide parent params for nested dynamic routes, but they don't have a pagePath
-// so they are excluded here. Supporting layout-level generateStaticParams requires
-// scanning layout.tsx files separately and including them in this map.
-${routes
-  .filter((r) => r.isDynamic && r.pagePath)
-  .map(
-    (r) =>
-      `  ${JSON.stringify(r.pattern)}: ${getImportVar(r.pagePath!)}?.generateStaticParams ?? null,`,
-  )
-  .join("\n")}
+${(() => {
+  const entries: string[] = [];
+  const emittedPatterns = new Set<string>();
+
+  // 1. Page-level entries (leaf pages with generateStaticParams)
+  for (const r of routes) {
+    if (r.isDynamic && r.pagePath) {
+      entries.push(
+        `  ${JSON.stringify(r.pattern)}: ${getImportVar(r.pagePath)}?.generateStaticParams ?? null,`,
+      );
+      emittedPatterns.add(r.pattern);
+    }
+  }
+
+  // 2. Layout-level entries (layouts at dynamic segments that may export generateStaticParams)
+  for (const r of routes) {
+    if (!r.isDynamic) continue;
+    for (let li = 0; li < r.layouts.length; li++) {
+      const layoutDepth = r.layoutTreePositions[li];
+      // Build the prefix pattern from routeSegments up to this layout's depth
+      const prefixSegments = r.routeSegments.slice(0, layoutDepth);
+      // Convert filesystem segments to URL pattern parts (same logic as convertSegmentsToRouteParts)
+      const urlParts: string[] = [];
+      let hasDynamic = false;
+      for (const seg of prefixSegments) {
+        // Skip invisible segments
+        if (seg === "." || (seg.startsWith("(") && seg.endsWith(")")) || seg.startsWith("@"))
+          continue;
+        // Catch-all
+        const catchAll = seg.match(/^\[\.\.\.([\w-]+)\]$/);
+        if (catchAll) {
+          urlParts.push(`:${catchAll[1]}+`);
+          hasDynamic = true;
+          continue;
+        }
+        // Optional catch-all
+        const optCatchAll = seg.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
+        if (optCatchAll) {
+          urlParts.push(`:${optCatchAll[1]}*`);
+          hasDynamic = true;
+          continue;
+        }
+        // Dynamic segment
+        const dyn = seg.match(/^\[([\w-]+)\]$/);
+        if (dyn) {
+          urlParts.push(`:${dyn[1]}`);
+          hasDynamic = true;
+          continue;
+        }
+        // Static segment — decode percent-encoded chars to match convertSegmentsToRouteParts
+        urlParts.push(decodeRouteSegment(seg));
+      }
+      if (!hasDynamic) continue;
+      const prefixPattern = "/" + urlParts.join("/");
+      if (emittedPatterns.has(prefixPattern)) continue;
+      emittedPatterns.add(prefixPattern);
+      entries.push(
+        `  ${JSON.stringify(prefixPattern)}: ${getImportVar(r.layouts[li])}?.generateStaticParams ?? null,`,
+      );
+    }
+  }
+
+  return entries.join("\n");
+})()}
 };
 
 export default async function handler(request, ctx) {
