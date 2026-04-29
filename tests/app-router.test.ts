@@ -3505,28 +3505,29 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("hasBasePath(__redir.destination, __basePath)");
   });
 
-  it("generates CSRF origin validation code for server actions", () => {
+  it("generated RSC entry delegates server action requests to the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    // Should import the CSRF validation function from request-pipeline
-    expect(code).toContain("validateCsrfOrigin");
-    // Should call CSRF validation before processing server actions
-    const csrfIdx = code.indexOf("validateCsrfOrigin(request");
-    const actionIdx = code.indexOf("loadServerAction(actionId)");
-    expect(csrfIdx).toBeGreaterThan(-1);
-    expect(actionIdx).toBeGreaterThan(-1);
-    expect(csrfIdx).toBeLessThan(actionIdx);
+    expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
+    expect(code).toContain("const serverActionResponse = await __handleServerActionRscRequest({");
+    expect(code).toContain("allowedOrigins: __allowedOrigins");
+    expect(code).toContain("loadServerAction");
+    expect(code).toContain("decodeReply");
+
+    const actionStart = code.indexOf("const serverActionResponse");
+    const routingStart = code.indexOf("// ── Apply afterFiles rewrites", actionStart);
+    expect(actionStart).toBeGreaterThan(-1);
+    expect(routingStart).toBeGreaterThan(actionStart);
   });
 
-  it("generates server action payload validation before decodeReply", () => {
+  it("generated RSC entry wires server action body readers into the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    expect(code).toContain("validateServerActionPayload(body)");
-
-    const payloadValidationIdx = code.indexOf("validateServerActionPayload(body)");
-    const decodeIdx = code.indexOf("decodeReply(body, { temporaryReferences })");
-
-    expect(payloadValidationIdx).toBeGreaterThan(-1);
-    expect(decodeIdx).toBeGreaterThan(-1);
-    expect(payloadValidationIdx).toBeLessThan(decodeIdx);
+    const actionStart = code.indexOf("const serverActionResponse");
+    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionOptions = code.slice(actionStart, actionEnd);
+    expect(actionOptions).toContain("contentType: actionContentType");
+    expect(actionOptions).toContain("readBodyWithLimit: __readBodyWithLimit");
+    expect(actionOptions).toContain("readFormDataWithLimit: __readFormDataWithLimit");
+    expect(actionOptions).toContain("maxActionBodySize: __MAX_ACTION_BODY_SIZE");
   });
 
   it("embeds allowedOrigins when provided", () => {
@@ -3556,11 +3557,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 
   it("origin validation does not use x-forwarded-host", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    // validateCsrfOrigin is now imported from request-pipeline.ts rather than
-    // inlined. The imported function uses host header only (not x-forwarded-host).
-    // Verify the call site passes allowed origins to the imported function.
-    expect(code).toContain("validateCsrfOrigin(request, __allowedOrigins)");
-    // The generated code should NOT define an inline __validateCsrfOrigin function
+    const actionStart = code.indexOf("const serverActionResponse");
+    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionOptions = code.slice(actionStart, actionEnd);
+
+    // CSRF behavior belongs to the shared action helper. The generated entry
+    // should only pass the original Request and configured origins through.
+    expect(actionOptions).toContain("request,");
+    expect(actionOptions).toContain("allowedOrigins: __allowedOrigins");
+    expect(actionOptions).not.toContain("x-forwarded-host");
+    expect(code).not.toContain("validateCsrfOrigin(request, __allowedOrigins)");
     expect(code).not.toContain("function __validateCsrfOrigin");
   });
 
@@ -4760,13 +4766,13 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code merges middleware headers into server action re-render responses", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The server action re-render path must call mergeMiddlewareResponseHeaders
-    // to apply middleware headers to the RSC response containing the re-rendered page.
-    // Find the action response construction area (after actionHeaders, before catch)
-    const actionHeadersIdx = code.indexOf("const actionHeaders =");
-    const actionCatchIdx = code.indexOf("} catch (err)", actionHeadersIdx);
-    const actionResponseBody = code.slice(actionHeadersIdx, actionCatchIdx);
-    expect(actionResponseBody).toContain("mergeMiddlewareResponseHeaders");
+    // The shared action helper owns response construction; generated code must
+    // pass the middleware response state into that helper.
+    const actionStart = code.indexOf("const serverActionResponse");
+    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionOptions = code.slice(actionStart, actionEnd);
+    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
+    expect(actionOptions).toContain("middlewareStatus: _mwCtx.status");
   });
 
   it("generated code accepts both vinext and Next.js action header names", () => {
@@ -4778,36 +4784,19 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code merges middleware headers into server action redirect responses", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The server action redirect path must call mergeMiddlewareResponseHeaders
-    // to apply middleware headers to the redirect response.
-    const redirectStart = code.indexOf("if (actionRedirect)");
-    const redirectEnd = code.indexOf('return new Response(""', redirectStart);
-    const redirectBody = code.slice(redirectStart, redirectEnd);
-    expect(redirectBody).toContain("mergeMiddlewareResponseHeaders");
-    // Framework-owned redirect headers must be written after the middleware merge
-    // so middleware cannot clobber the target URL or redirect type.
-    const mergeIndex = redirectBody.indexOf("__mergeMiddlewareResponseHeaders");
-    const redirectHeaderIndex = redirectBody.indexOf('redirectHeaders.set("x-action-redirect"');
-    expect(mergeIndex).toBeGreaterThan(-1);
-    expect(redirectHeaderIndex).toBeGreaterThan(-1);
-    expect(mergeIndex).toBeLessThan(redirectHeaderIndex);
+    const actionStart = code.indexOf("const serverActionResponse");
+    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionOptions = code.slice(actionStart, actionEnd);
+    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
   });
 
   // Ported from Next.js: packages/next/src/client/components/redirect.ts
   // In Next.js, redirect() defaults to "push" in Server Action context so
   // the Back button works after form submissions. The empty sentinel in the
   // digest (parts[1] === "") should resolve to "push" in the action handler.
-  it("generated action handler defaults empty redirect type to 'push'", () => {
+  it("generated RSC entry leaves server action redirect digest handling to the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Find the action redirect digest parsing block
-    const digestStart = code.indexOf('if (digest.startsWith("NEXT_REDIRECT;"))');
-    const actionRedirectEnd = code.indexOf(
-      "returnValue = { ok: true, data: undefined }",
-      digestStart,
-    );
-    const digestBlock = code.slice(digestStart, actionRedirectEnd);
-    // The fallback for empty type must be "push", not "replace"
-    expect(digestBlock).toContain('parts[1] || "push"');
-    expect(digestBlock).not.toContain('parts[1] || "replace"');
+    expect(code).not.toContain('digest.startsWith("NEXT_REDIRECT;")');
+    expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
   });
 });

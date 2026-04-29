@@ -1,9 +1,30 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  handleServerActionRscRequest,
   handleProgressiveServerActionRequest,
   isProgressiveServerActionRequest,
+  type HandleServerActionRscRequestOptions,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
+
+type TestRoute = {
+  id: string;
+  params: readonly string[];
+  pattern: string;
+};
+
+type TestInterceptOptions = {
+  slot: string;
+};
+
+type TestTemporaryReferences = {
+  marker: string;
+};
+
+type TestActionModel = {
+  returnValue: unknown;
+  root: string;
+};
 
 function createMultipartRequest(headers?: HeadersInit): Request {
   const requestHeaders = new Headers({
@@ -61,6 +82,119 @@ function createOptions(
     request: createMultipartRequest(),
     setHeadersAccessPhase() {
       return "render";
+    },
+    ...overrides,
+  };
+}
+
+function createFetchActionRequest(headers?: HeadersInit): Request {
+  const requestHeaders = new Headers({
+    "content-type": "text/plain;charset=UTF-8",
+    host: "example.com",
+    origin: "https://example.com",
+    "x-rsc-action": "action-id",
+  });
+  if (headers) {
+    for (const [key, value] of new Headers(headers)) {
+      requestHeaders.set(key, value);
+    }
+  }
+
+  return new Request("https://example.com/dashboard?tab=activity", {
+    body: "encoded-flight-body",
+    method: "POST",
+    headers: requestHeaders,
+  });
+}
+
+function createRscOptions(
+  overrides: Partial<
+    HandleServerActionRscRequestOptions<
+      string,
+      TestRoute,
+      TestInterceptOptions,
+      TestTemporaryReferences
+    >
+  > = {},
+): HandleServerActionRscRequestOptions<
+  string,
+  TestRoute,
+  TestInterceptOptions,
+  TestTemporaryReferences
+> {
+  const route: TestRoute = { id: "dashboard", params: [], pattern: "/dashboard" };
+
+  return {
+    actionId: "action-id",
+    allowedOrigins: [],
+    buildPageElement({ route: matchedRoute, params, interceptOpts }) {
+      return `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`;
+    },
+    cleanPathname: "/dashboard",
+    clearRequestContext() {},
+    contentType: "text/plain;charset=UTF-8",
+    createNotFoundElement(routeId) {
+      return `not-found:${routeId}`;
+    },
+    createPayloadRouteId(pathname, interceptionContext) {
+      return `${pathname}:${interceptionContext ?? "none"}`;
+    },
+    createRscOnErrorHandler(_request, pathname, pattern) {
+      return () => `${pathname}:${pattern}`;
+    },
+    createTemporaryReferenceSet() {
+      return { marker: "refs" };
+    },
+    decodeReply() {
+      return Promise.resolve([]);
+    },
+    findIntercept() {
+      return null;
+    },
+    getAndClearPendingCookies() {
+      return [];
+    },
+    getDraftModeCookieHeader() {
+      return null;
+    },
+    getRouteParamNames(matchedRoute) {
+      return matchedRoute.params;
+    },
+    getSourceRoute() {
+      return undefined;
+    },
+    isRscRequest: true,
+    loadServerAction() {
+      return Promise.resolve(() => "action-result");
+    },
+    matchRoute() {
+      return { params: {}, route };
+    },
+    maxActionBodySize: 1024,
+    middlewareHeaders: null,
+    middlewareStatus: null,
+    mountedSlotsHeader: null,
+    readBodyWithLimit() {
+      return Promise.resolve("encoded-flight-body");
+    },
+    readFormDataWithLimit() {
+      return Promise.resolve(new FormData());
+    },
+    renderToReadableStream(model) {
+      return new Response(JSON.stringify(model)).body;
+    },
+    reportRequestError() {},
+    request: createFetchActionRequest(),
+    sanitizeErrorForClient(error) {
+      return error;
+    },
+    searchParams: new URLSearchParams("tab=activity"),
+    setHeadersAccessPhase() {
+      return "render";
+    },
+    setNavigationContext() {},
+    toInterceptOpts(intercept) {
+      return { slot: intercept.slotKey };
     },
     ...overrides,
   };
@@ -292,5 +426,152 @@ describe("app server action execution helpers", () => {
     expect(clearContext).toHaveBeenCalledTimes(1);
 
     errorSpy.mockRestore();
+  });
+
+  it("returns null for non-fetch RSC action requests", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: null,
+        loadServerAction: vi.fn(),
+      }),
+    );
+
+    expect(response).toBeNull();
+  });
+
+  it("executes fetch actions and returns a rerendered RSC payload", async () => {
+    const phaseCalls: string[] = [];
+    const navigationContexts: Array<{
+      params: Record<string, string | string[]>;
+      pathname: string;
+    }> = [];
+    const temporaryReferences = { marker: "test-refs" };
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        createTemporaryReferenceSet() {
+          return temporaryReferences;
+        },
+        decodeReply(body, options) {
+          expect(body).toBe("encoded-flight-body");
+          expect(options.temporaryReferences).toBe(temporaryReferences);
+          return Promise.resolve(["first", "second"]);
+        },
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        getDraftModeCookieHeader() {
+          return "draft=1; Path=/";
+        },
+        loadServerAction(actionId) {
+          expect(actionId).toBe("action-id");
+          return Promise.resolve((first, second) => `${String(first)}:${String(second)}`);
+        },
+        middlewareHeaders: new Headers([["x-middleware", "present"]]),
+        renderToReadableStream(model, options) {
+          renderedModel = model;
+          expect(options.temporaryReferences).toBe(temporaryReferences);
+          return new Response("flight-payload").body;
+        },
+        setHeadersAccessPhase(phase) {
+          phaseCalls.push(phase);
+          return "render";
+        },
+        setNavigationContext(context) {
+          navigationContexts.push({
+            params: context.params,
+            pathname: context.pathname,
+          });
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response?.headers.get("vary")).toBe("RSC, Accept");
+    expect(response?.headers.get("x-middleware")).toBe("present");
+    expect(response?.headers.getSetCookie()).toEqual(["action=1; Path=/", "draft=1; Path=/"]);
+    expect(await response?.text()).toBe("flight-payload");
+    expect(renderedModel).toEqual({
+      root: "dashboard:{}:none",
+      returnValue: { ok: true, data: "first:second" },
+    });
+    expect(phaseCalls).toEqual(["action", "render"]);
+    expect(navigationContexts).toEqual([{ params: {}, pathname: "/dashboard" }]);
+  });
+
+  it("rejects malformed fetch-action payloads before decodeReply", async () => {
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        readBodyWithLimit() {
+          return Promise.resolve('{"0":"$Q1"}');
+        },
+        decodeReply,
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("encodes fetch-action redirects as RSC control headers", async () => {
+    const clearContext = vi.fn();
+    const renderToReadableStream = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext: clearContext,
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw { digest: "NEXT_REDIRECT;;%2Ftarget%3Fok%3D1;308" };
+          });
+        },
+        middlewareHeaders: new Headers([["x-middleware", "present"]]),
+        renderToReadableStream,
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-action-redirect")).toBe("/target?ok=1");
+    expect(response?.headers.get("x-action-redirect-type")).toBe("push");
+    expect(response?.headers.get("x-action-redirect-status")).toBe("308");
+    expect(response?.headers.get("x-middleware")).toBe("present");
+    expect(response?.headers.getSetCookie()).toEqual(["action=1; Path=/"]);
+    expect(await response?.text()).toBe("");
+    expect(clearContext).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+  });
+
+  it("packages access fallback digests into the action return payload", async () => {
+    let renderedModel: TestActionModel | null = null;
+    const notFoundError = { digest: "NEXT_NOT_FOUND" };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw notFoundError;
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("fallback-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("fallback-flight");
+    expect(renderedModel).toEqual({
+      root: "dashboard:{}:none",
+      returnValue: { ok: false, data: notFoundError },
+    });
   });
 });

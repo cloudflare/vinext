@@ -31,7 +31,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -47,6 +47,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -88,7 +89,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -1251,227 +1251,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
@@ -2151,7 +2014,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -2167,6 +2030,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -2208,7 +2072,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -3377,227 +3240,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
@@ -4277,7 +4003,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -4293,6 +4019,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -4334,7 +4061,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -5498,227 +5224,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
@@ -6398,7 +5987,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -6414,6 +6003,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -6455,7 +6045,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -7651,227 +7240,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
@@ -8551,7 +8003,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -8567,6 +8019,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -8608,7 +8061,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -9778,227 +9230,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
@@ -10678,7 +9993,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from "<ROOT>/packages/vinext/src/server/normalize-path.js";
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from "<ROOT>/packages/vinext/src/routing/utils.js";
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { applyAppMiddleware as __applyAppMiddleware } from "<ROOT>/packages/vinext/src/server/app-middleware.js";
 import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
@@ -10694,6 +10009,7 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-route-handler-execution.js";
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
+  handleServerActionRscRequest as __handleServerActionRscRequest,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
 import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse } from "<ROOT>/packages/vinext/src/server/app-route-handler-cache.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
@@ -10735,7 +10051,6 @@ import {
 } from "<ROOT>/packages/vinext/src/server/app-page-response.js";
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from "<ROOT>/packages/vinext/src/server/csp.js";
 import {
-  resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget,
   buildAppPageElement as __buildAppPageElement,
   resolveAppPageIntercept as __resolveAppPageIntercept,
   validateAppPageDynamicParams as __validateAppPageDynamicParams,
@@ -11913,227 +11228,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   });
   if (progressiveActionResponse) return progressiveActionResponse;
 
-  if (request.method === "POST" && actionId) {
-    // ── CSRF protection ─────────────────────────────────────────────────
-    // Verify that the Origin header matches the Host header to prevent
-    // cross-site request forgery, matching Next.js server action behavior.
-    const csrfResponse = validateCsrfOrigin(request, __allowedOrigins);
-    if (csrfResponse) return csrfResponse;
-
-    // ── Body size limit ─────────────────────────────────────────────────
-    // Reject payloads larger than the configured limit.
-    // Check Content-Length as a fast path, then enforce on the actual
-    // stream to prevent bypasses via chunked transfer-encoding.
-    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-    if (contentLength > __MAX_ACTION_BODY_SIZE) {
-      __clearRequestContext();
-      return new Response("Payload Too Large", { status: 413 });
-    }
-
-    try {
-      let body;
-      try {
-        body = actionContentType.startsWith("multipart/form-data")
-          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
-          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
-      } catch (sizeErr) {
-        if (sizeErr && sizeErr.message === "Request body too large") {
-          __clearRequestContext();
-          return new Response("Payload Too Large", { status: 413 });
-        }
-        throw sizeErr;
-      }
-      const payloadResponse = await validateServerActionPayload(body);
-      if (payloadResponse) {
-        __clearRequestContext();
-        return payloadResponse;
-      }
-      const temporaryReferences = createTemporaryReferenceSet();
-      const args = await decodeReply(body, { temporaryReferences });
-      const action = await loadServerAction(actionId);
-      let returnValue;
-      let actionRedirect = null;
-      const previousHeadersPhase = setHeadersAccessPhase("action");
-      try {
-        try {
-          const data = await action.apply(null, args);
-          returnValue = { ok: true, data };
-        } catch (e) {
-          // Detect redirect() / permanentRedirect() called inside the action.
-          // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
-          // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
-          // from corrupting the delimiter-based digest format.
-          if (e && typeof e === "object" && "digest" in e) {
-            const digest = String(e.digest);
-            if (digest.startsWith("NEXT_REDIRECT;")) {
-              const parts = digest.split(";");
-              actionRedirect = {
-                url: decodeURIComponent(parts[2]),
-                type: parts[1] || "push",          // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
-              };
-              returnValue = { ok: true, data: undefined };
-            } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              // notFound() / forbidden() / unauthorized() in action — package as error
-              returnValue = { ok: false, data: e };
-            } else {
-              // Non-navigation digest error — sanitize in production to avoid
-              // leaking internal details (connection strings, paths, etc.)
-              console.error("[vinext] Server action error:", e);
-              returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-            }
-          } else {
-            // Unhandled error — sanitize in production to avoid leaking
-            // internal details (database errors, file paths, stack traces, etc.)
-            console.error("[vinext] Server action error:", e);
-            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
-          }
-        }
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
-
-      // If the action called redirect(), signal the client to navigate.
-      // We can't use a real HTTP redirect (the fetch would follow it automatically
-      // and receive a page HTML instead of RSC stream). Instead, we return a 200
-      // with x-action-redirect header that the client entry detects and handles.
-      if (actionRedirect) {
-        const actionPendingCookies = getAndClearPendingCookies();
-        const actionDraftCookie = getDraftModeCookieHeader();
-        __clearRequestContext();
-        const redirectHeaders = new Headers({
-          "Content-Type": "text/x-component; charset=utf-8",
-          "Vary": "RSC, Accept",
-        });
-        __mergeMiddlewareResponseHeaders(redirectHeaders, _mwCtx.headers);
-        redirectHeaders.set("x-action-redirect", actionRedirect.url);
-        redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-        redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
-        for (const cookie of actionPendingCookies) {
-          redirectHeaders.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
-        // Send an empty RSC-like body (client will navigate instead of parsing)
-        return new Response("", { status: 200, headers: redirectHeaders });
-      }
-
-      // After the action, re-render the current page so the client
-      // gets an updated React tree reflecting any mutations.
-      //
-      // When the original request came from inside an intercepted modal
-      // (X-Vinext-Interception-Context present + source route still
-      // matches), rebuild the intercepted tree — otherwise the modal would
-      // unmount and the direct route would render in its place. Mirrors
-      // the interception resolution used by the GET path.
-      const match = matchRoute(cleanPathname);
-      let element;
-      let errorPattern = match ? match.route.pattern : cleanPathname;
-      if (match) {
-        const { route: actionRoute, params: actionParams } = match;
-        const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({
-          cleanPathname,
-          currentParams: actionParams,
-          currentRoute: actionRoute,
-          findIntercept(pathname) {
-            return findIntercept(pathname, interceptionContextHeader);
-          },
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return routes[sourceRouteIndex];
-          },
-          isRscRequest,
-          toInterceptOpts(intercept) {
-            return {
-              interceptionContext: interceptionContextHeader,
-              interceptLayouts: intercept.interceptLayouts,
-              interceptSlotKey: intercept.slotKey,
-              interceptPage: intercept.page,
-              interceptParams: intercept.matchedParams,
-            };
-          },
-        });
-
-        setNavigationContext({
-          pathname: cleanPathname,
-          searchParams: url.searchParams,
-          params: __actionRerenderTarget.navigationParams,
-        });
-        element = buildPageElements(
-          __actionRerenderTarget.route,
-          __actionRerenderTarget.params,
-          cleanPathname,
-          {
-            opts: __actionRerenderTarget.interceptOpts,
-            searchParams: url.searchParams,
-            isRscRequest,
-            request,
-            mountedSlotsHeader: __mountedSlotsHeader,
-          },
-        );
-        errorPattern = __actionRerenderTarget.route.pattern;
-      } else {
-        const _actionRouteId = __createAppPayloadRouteId(cleanPathname, null);
-        element = {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: _actionRouteId,
-          __rootLayout: null,
-          [_actionRouteId]: createElement("div", null, "Page not found"),
-        };
-      }
-
-      const onRenderError = createRscOnErrorHandler(
-        request,
-        cleanPathname,
-        errorPattern,
-      );
-      const rscStream = renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
-      );
-
-      // Collect cookies set during the action synchronously (before stream is consumed).
-      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
-      // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
-      // handles cleanup naturally when all async continuations complete.
-      const actionPendingCookies = getAndClearPendingCookies();
-      const actionDraftCookie = getDraftModeCookieHeader();
-
-      const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
-        "Vary": "RSC, Accept",
+  const serverActionResponse = await __handleServerActionRscRequest({
+    actionId,
+    allowedOrigins: __allowedOrigins,
+    buildPageElement({
+      route: actionRoute,
+      params: actionParams,
+      cleanPathname: actionCleanPathname,
+      interceptOpts,
+      searchParams,
+      isRscRequest: actionIsRscRequest,
+      request: actionRequest,
+      mountedSlotsHeader,
+    }) {
+      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+        opts: interceptOpts,
+        searchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader,
       });
-      __mergeMiddlewareResponseHeaders(actionHeaders, _mwCtx.headers);
-      const actionResponse = new Response(rscStream, {
-        status: _mwCtx.status ?? 200,
-        headers: actionHeaders,
-      });
-      if (actionPendingCookies.length > 0 || actionDraftCookie) {
-        for (const cookie of actionPendingCookies) {
-          actionResponse.headers.append("Set-Cookie", cookie);
-        }
-        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
-      }
-      return actionResponse;
-    } catch (err) {
-      getAndClearPendingCookies(); // Clear pending cookies on error
-      console.error("[vinext] Server action error:", err);
-      _reportRequestError(
-        err instanceof Error ? err : new Error(String(err)),
-        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      );
+    },
+    cleanPathname,
+    clearRequestContext() {
       __clearRequestContext();
-      return new Response(
-        process.env.NODE_ENV === "production"
-          ? "Internal Server Error"
-          : "Server action failed: " + (err && err.message ? err.message : String(err)),
-        { status: 500 },
-      );
-    }
-  }
+    },
+    contentType: actionContentType,
+    createNotFoundElement(actionRouteId) {
+      return {
+        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+        __route: actionRouteId,
+        __rootLayout: null,
+        [actionRouteId]: createElement("div", null, "Page not found"),
+      };
+    },
+    createPayloadRouteId(pathnameToRender, interceptionContext) {
+      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
+    },
+    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+    },
+    createTemporaryReferenceSet,
+    decodeReply,
+    findIntercept(pathnameToMatch) {
+      return findIntercept(pathnameToMatch, interceptionContextHeader);
+    },
+    getAndClearPendingCookies,
+    getDraftModeCookieHeader,
+    getRouteParamNames(sourceRoute) {
+      return sourceRoute.params;
+    },
+    getSourceRoute(sourceRouteIndex) {
+      return routes[sourceRouteIndex];
+    },
+    isRscRequest,
+    loadServerAction,
+    matchRoute(pathnameToMatch) {
+      return matchRoute(pathnameToMatch);
+    },
+    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+    middlewareHeaders: _mwCtx.headers,
+    middlewareStatus: _mwCtx.status,
+    mountedSlotsHeader: __mountedSlotsHeader,
+    readBodyWithLimit: __readBodyWithLimit,
+    readFormDataWithLimit: __readFormDataWithLimit,
+    renderToReadableStream,
+    reportRequestError: _reportRequestError,
+    request,
+    sanitizeErrorForClient(error) {
+      return __sanitizeErrorForClient(error);
+    },
+    searchParams: url.searchParams,
+    setHeadersAccessPhase,
+    setNavigationContext,
+    toInterceptOpts(intercept) {
+      return {
+        interceptionContext: interceptionContextHeader,
+        interceptLayouts: intercept.interceptLayouts,
+        interceptSlotKey: intercept.slotKey,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    },
+  });
+  if (serverActionResponse) return serverActionResponse;
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {

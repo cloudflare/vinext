@@ -1,6 +1,9 @@
 import type { HeadersAccessPhase } from "../shims/headers.js";
+import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
+
+type AppPageParams = Record<string, string | string[]>;
 
 type AppServerActionErrorReporter = (
   error: Error,
@@ -11,6 +14,67 @@ type AppServerActionErrorReporter = (
 type AppServerActionDecoder = (body: FormData) => Promise<unknown>;
 
 type ReadFormDataWithLimit = (request: Request, maxBytes: number) => Promise<FormData>;
+
+type ReadBodyWithLimit = (request: Request, maxBytes: number) => Promise<string>;
+
+type AppServerActionFunction = (...args: unknown[]) => unknown;
+
+type AppServerActionReturnValue =
+  | {
+      data: unknown;
+      ok: true;
+    }
+  | {
+      data: unknown;
+      ok: false;
+    };
+
+type AppServerActionRedirect = {
+  status: number;
+  type: string;
+  url: string;
+};
+
+type AppServerActionRoute = {
+  pattern: string;
+};
+
+type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
+  params: AppPageParams;
+  route: TRoute;
+};
+
+type AppServerActionIntercept<TPage = unknown> = {
+  matchedParams: AppPageParams;
+  page: TPage;
+  slotKey: string;
+  sourceRouteIndex: number;
+};
+
+type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TInterceptOpts> = {
+  cleanPathname: string;
+  interceptOpts: TInterceptOpts | undefined;
+  isRscRequest: boolean;
+  mountedSlotsHeader: string | null;
+  params: AppPageParams;
+  request: Request;
+  route: TRoute;
+  searchParams: URLSearchParams;
+};
+
+type AppServerActionRscModel<TElement> = {
+  returnValue: AppServerActionReturnValue;
+  root: TElement;
+};
+
+type RenderServerActionRscStreamOptions<TTemporaryReferences> = {
+  onError: (error: unknown) => unknown;
+  temporaryReferences: TTemporaryReferences;
+};
+
+type DecodeServerActionReplyOptions<TTemporaryReferences> = {
+  temporaryReferences: TTemporaryReferences;
+};
 
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
@@ -27,6 +91,64 @@ export type HandleProgressiveServerActionRequestOptions = {
   reportRequestError: AppServerActionErrorReporter;
   request: Request;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
+};
+
+export type HandleServerActionRscRequestOptions<
+  TElement,
+  TRoute extends AppServerActionRoute,
+  TInterceptOpts,
+  TTemporaryReferences,
+  TPage = unknown,
+> = {
+  actionId: string | null;
+  allowedOrigins: string[];
+  buildPageElement: (
+    options: BuildServerActionPageElementOptions<TRoute, TInterceptOpts>,
+  ) => TElement;
+  cleanPathname: string;
+  clearRequestContext: () => void;
+  contentType: string;
+  createNotFoundElement: (routeId: string) => TElement;
+  createPayloadRouteId: (pathname: string, interceptionContext: string | null) => string;
+  createRscOnErrorHandler: (
+    request: Request,
+    pathname: string,
+    pattern: string,
+  ) => (error: unknown) => unknown;
+  createTemporaryReferenceSet: () => TTemporaryReferences;
+  decodeReply: (
+    body: string | FormData,
+    options: DecodeServerActionReplyOptions<TTemporaryReferences>,
+  ) => Promise<unknown[]> | unknown[];
+  findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
+  getAndClearPendingCookies: () => string[];
+  getDraftModeCookieHeader: () => string | null | undefined;
+  getRouteParamNames: (route: TRoute) => readonly string[];
+  getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  isRscRequest: boolean;
+  loadServerAction: (actionId: string) => Promise<AppServerActionFunction>;
+  matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
+  maxActionBodySize: number;
+  middlewareHeaders: Headers | null;
+  middlewareStatus: number | null | undefined;
+  mountedSlotsHeader: string | null;
+  readBodyWithLimit: ReadBodyWithLimit;
+  readFormDataWithLimit: ReadFormDataWithLimit;
+  renderToReadableStream: (
+    model: AppServerActionRscModel<TElement>,
+    options: RenderServerActionRscStreamOptions<TTemporaryReferences>,
+  ) => BodyInit | null | Promise<BodyInit | null>;
+  reportRequestError: AppServerActionErrorReporter;
+  request: Request;
+  sanitizeErrorForClient: (error: unknown) => unknown;
+  searchParams: URLSearchParams;
+  setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
+  setNavigationContext: (context: {
+    params: AppPageParams;
+    pathname: string;
+    searchParams: URLSearchParams;
+  }) => void;
+  toInterceptOpts: (intercept: AppServerActionIntercept<TPage>) => TInterceptOpts;
 };
 
 type ActionControlResponse =
@@ -51,12 +173,18 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
-function getActionControlResponse(error: unknown): ActionControlResponse | null {
+function getErrorDigest(error: unknown): string | null {
   if (!error || typeof error !== "object" || !("digest" in error)) {
     return null;
   }
 
-  const digest = String(error.digest);
+  return String(error.digest);
+}
+
+function getActionControlResponse(error: unknown): ActionControlResponse | null {
+  const digest = getErrorDigest(error);
+  if (!digest) return null;
+
   if (digest.startsWith("NEXT_REDIRECT;")) {
     const parts = digest.split(";");
     const encodedUrl = parts[2];
@@ -83,6 +211,60 @@ function getActionControlResponse(error: unknown): ActionControlResponse | null 
   }
 
   return null;
+}
+
+function getActionRedirect(error: unknown): AppServerActionRedirect | null {
+  const digest = getErrorDigest(error);
+  if (!digest?.startsWith("NEXT_REDIRECT;")) {
+    return null;
+  }
+
+  const parts = digest.split(";");
+  const encodedUrl = parts[2];
+  if (!encodedUrl) {
+    return null;
+  }
+
+  return {
+    status: parts[3] ? parseInt(parts[3], 10) : 307,
+    type: parts[1] || "push",
+    url: decodeURIComponent(encodedUrl),
+  };
+}
+
+function isActionHttpFallback(error: unknown): boolean {
+  const digest = getErrorDigest(error);
+  return digest === "NEXT_NOT_FOUND" || digest?.startsWith("NEXT_HTTP_ERROR_FALLBACK;") === true;
+}
+
+function createServerActionErrorResponse(
+  error: unknown,
+  options: {
+    cleanPathname: string;
+    clearRequestContext: () => void;
+    getAndClearPendingCookies: () => string[];
+    reportRequestError: AppServerActionErrorReporter;
+    request: Request;
+  },
+): Response {
+  options.getAndClearPendingCookies();
+  console.error("[vinext] Server action error:", error);
+  options.reportRequestError(
+    normalizeError(error),
+    {
+      path: options.cleanPathname,
+      method: options.request.method,
+      headers: Object.fromEntries(options.request.headers.entries()),
+    },
+    { routerKind: "App Router", routePath: options.cleanPathname, routeType: "action" },
+  );
+  options.clearRequestContext();
+  return new Response(
+    process.env.NODE_ENV === "production"
+      ? "Internal Server Error"
+      : "Server action failed: " + getErrorMessage(error),
+    { status: 500 },
+  );
 }
 
 export function isProgressiveServerActionRequest(
@@ -206,5 +388,174 @@ export async function handleProgressiveServerActionRequest(
         : "Server action failed: " + getErrorMessage(error),
       { status: 500 },
     );
+  }
+}
+
+export async function handleServerActionRscRequest<
+  TElement,
+  TRoute extends AppServerActionRoute,
+  TInterceptOpts,
+  TTemporaryReferences,
+  TPage = unknown,
+>(
+  options: HandleServerActionRscRequestOptions<
+    TElement,
+    TRoute,
+    TInterceptOpts,
+    TTemporaryReferences,
+    TPage
+  >,
+): Promise<Response | null> {
+  if (options.request.method.toUpperCase() !== "POST" || !options.actionId) {
+    return null;
+  }
+
+  const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
+  if (csrfResponse) return csrfResponse;
+
+  const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
+  if (contentLength > options.maxActionBodySize) {
+    options.clearRequestContext();
+    return new Response("Payload Too Large", { status: 413 });
+  }
+
+  try {
+    let body: string | FormData;
+    try {
+      body = options.contentType.startsWith("multipart/form-data")
+        ? await options.readFormDataWithLimit(options.request, options.maxActionBodySize)
+        : await options.readBodyWithLimit(options.request, options.maxActionBodySize);
+    } catch (error) {
+      if (isRequestBodyTooLarge(error)) {
+        options.clearRequestContext();
+        return new Response("Payload Too Large", { status: 413 });
+      }
+      throw error;
+    }
+
+    const payloadResponse = await validateServerActionPayload(body);
+    if (payloadResponse) {
+      options.clearRequestContext();
+      return payloadResponse;
+    }
+
+    const temporaryReferences = options.createTemporaryReferenceSet();
+    const args = await options.decodeReply(body, { temporaryReferences });
+    const action = await options.loadServerAction(options.actionId);
+    let returnValue: AppServerActionReturnValue;
+    let actionRedirect: AppServerActionRedirect | null = null;
+    const previousHeadersPhase = options.setHeadersAccessPhase("action");
+    try {
+      try {
+        const data = await action.apply(null, args);
+        returnValue = { ok: true, data };
+      } catch (error) {
+        actionRedirect = getActionRedirect(error);
+        if (actionRedirect) {
+          returnValue = { ok: true, data: undefined };
+        } else if (isActionHttpFallback(error)) {
+          returnValue = { ok: false, data: error };
+        } else {
+          console.error("[vinext] Server action error:", error);
+          returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
+        }
+      }
+    } finally {
+      options.setHeadersAccessPhase(previousHeadersPhase);
+    }
+
+    if (actionRedirect) {
+      const actionPendingCookies = options.getAndClearPendingCookies();
+      const actionDraftCookie = options.getDraftModeCookieHeader();
+      options.clearRequestContext();
+      const redirectHeaders = new Headers({
+        "Content-Type": "text/x-component; charset=utf-8",
+        Vary: "RSC, Accept",
+      });
+      mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
+      redirectHeaders.set("x-action-redirect", actionRedirect.url);
+      redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
+      redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
+      for (const cookie of actionPendingCookies) {
+        redirectHeaders.append("Set-Cookie", cookie);
+      }
+      if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
+      return new Response("", { status: 200, headers: redirectHeaders });
+    }
+
+    const match = options.matchRoute(options.cleanPathname);
+    let element: TElement;
+    let errorPattern = match ? match.route.pattern : options.cleanPathname;
+    if (match) {
+      const { route: actionRoute, params: actionParams } = match;
+      const actionRerenderTarget = resolveAppPageActionRerenderTarget({
+        cleanPathname: options.cleanPathname,
+        currentParams: actionParams,
+        currentRoute: actionRoute,
+        findIntercept: options.findIntercept,
+        getRouteParamNames: options.getRouteParamNames,
+        getSourceRoute: options.getSourceRoute,
+        isRscRequest: options.isRscRequest,
+        toInterceptOpts: options.toInterceptOpts,
+      });
+
+      options.setNavigationContext({
+        pathname: options.cleanPathname,
+        searchParams: options.searchParams,
+        params: actionRerenderTarget.navigationParams,
+      });
+      element = options.buildPageElement({
+        cleanPathname: options.cleanPathname,
+        interceptOpts: actionRerenderTarget.interceptOpts,
+        isRscRequest: options.isRscRequest,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        params: actionRerenderTarget.params,
+        request: options.request,
+        route: actionRerenderTarget.route,
+        searchParams: options.searchParams,
+      });
+      errorPattern = actionRerenderTarget.route.pattern;
+    } else {
+      const actionRouteId = options.createPayloadRouteId(options.cleanPathname, null);
+      element = options.createNotFoundElement(actionRouteId);
+    }
+
+    const onRenderError = options.createRscOnErrorHandler(
+      options.request,
+      options.cleanPathname,
+      errorPattern,
+    );
+    const rscStream = await options.renderToReadableStream(
+      { root: element, returnValue },
+      { temporaryReferences, onError: onRenderError },
+    );
+
+    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionDraftCookie = options.getDraftModeCookieHeader();
+
+    const actionHeaders = new Headers({
+      "Content-Type": "text/x-component; charset=utf-8",
+      Vary: "RSC, Accept",
+    });
+    mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
+    const actionResponse = new Response(rscStream, {
+      status: options.middlewareStatus ?? 200,
+      headers: actionHeaders,
+    });
+    if (actionPendingCookies.length > 0 || actionDraftCookie) {
+      for (const cookie of actionPendingCookies) {
+        actionResponse.headers.append("Set-Cookie", cookie);
+      }
+      if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
+    }
+    return actionResponse;
+  } catch (error) {
+    return createServerActionErrorResponse(error, {
+      cleanPathname: options.cleanPathname,
+      clearRequestContext: options.clearRequestContext,
+      getAndClearPendingCookies: options.getAndClearPendingCookies,
+      reportRequestError: options.reportRequestError,
+      request: options.request,
+    });
   }
 }

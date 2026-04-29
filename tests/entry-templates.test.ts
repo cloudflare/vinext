@@ -247,25 +247,22 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("function mergeMatchedParams(");
   });
 
-  it("generateRscEntry uses buildPageElements in the server-action re-render path", () => {
+  it("generateRscEntry wires buildPageElements into the server-action helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
-    // PR 2c returns the flat elements payload instead of the monolithic page
-    // element, so the action re-render path should rebuild the keyed map.
-    const actionRerenderIdx = code.indexOf(
-      "// After the action, re-render the current page so the client",
-    );
-    expect(actionRerenderIdx).toBeGreaterThan(-1);
-    const rerenderSlice = code.slice(actionRerenderIdx, actionRerenderIdx + 2500);
-    expect(rerenderSlice).toContain("element = buildPageElements(");
+    const actionStart = code.indexOf("const serverActionResponse");
+    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const helperOptions = code.slice(actionStart, actionEnd);
+
+    expect(helperOptions).toContain("buildPageElement({");
+    expect(helperOptions).toContain("return buildPageElements(actionRoute, actionParams");
   });
 
-  it("generateRscEntry delegates action rerender target selection to the shared helper", () => {
+  it("generateRscEntry delegates server action flow to the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain(
-      "resolveAppPageActionRerenderTarget as __resolveAppPageActionRerenderTarget",
-    );
-    expect(code).toContain("const __actionRerenderTarget = __resolveAppPageActionRerenderTarget({");
+    expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
+    expect(code).toContain("const serverActionResponse = await __handleServerActionRscRequest({");
+    expect(code).not.toContain("const __actionRerenderTarget =");
   });
 
   it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
