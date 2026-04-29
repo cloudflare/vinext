@@ -167,19 +167,18 @@ function createFontIdentity(
   family: string,
   options: FontLoaderOptions,
   cssVarName: string,
-  fontFamily: string,
+  fallback: string[],
 ): string {
   return hashString(
     [
       family,
-      fontFamily,
       cssVarName,
       normalizeWeightOption(options.weight),
       normalizeStyleOption(options.style),
       normalizeStringSetOption(options.subsets),
       options.display ?? "swap",
       normalizeBooleanOption(options.preload),
-      normalizeFallbackOption(options.fallback),
+      normalizeFallbackOption(fallback),
       normalizeStringOrBooleanOption(options.adjustFontFallback),
       normalizeStringSetOption(options.axes),
       options._selfHostedCSS ?? "",
@@ -448,7 +447,7 @@ export function createFontLoader(family: string): FontLoader {
     const cssVarName = options.variable
       ? (sanitizeCSSVarName(options.variable) ?? defaultVarName)
       : defaultVarName;
-    const id = createFontIdentity(family, options, cssVarName, fontFamily);
+    const id = createFontIdentity(family, options, cssVarName, fallback);
     const classSegment = fontClassSegment(family);
     const className = `__font_${classSegment}_${id}`;
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.

@@ -253,19 +253,34 @@ describe("next/font/google shim", () => {
     expect(equivalent.variable).toBe(canonical.variable);
   });
 
+  it("normalizes the default fallback to the same identity as an explicit fallback", async () => {
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const DefaultFallback = createFontLoader("Default Fallback");
+    const implicit = DefaultFallback({ weight: ["400"], subsets: ["latin"] });
+    const explicit = DefaultFallback({
+      weight: ["400"],
+      subsets: ["latin"],
+      fallback: ["sans-serif"],
+    });
+
+    expect(explicit.className).toBe(implicit.className);
+    expect(explicit.variable).toBe(implicit.variable);
+  });
+
   it("does not emit Next-incompatible :root font variable rules", async () => {
     const { createFontLoader, getSSRFontStyles } =
       await import("../packages/vinext/src/shims/font-google.js");
-    const Sen = createFontLoader("Sen");
-    const Outfit = createFontLoader("Outfit");
+    const beforeStyles = getSSRFontStyles();
+    const Sen = createFontLoader("Root Rule Sen");
+    const Outfit = createFontLoader("Root Rule Outfit");
 
     Sen({ subsets: ["latin"], variable: "--font-primary" });
     Outfit({ subsets: ["latin"], variable: "--font-primary" });
 
-    const styles = getSSRFontStyles().join("\n");
+    const styles = getSSRFontStyles().slice(beforeStyles.length).join("\n");
     expect(styles).not.toContain(":root");
-    expect(styles).toContain("--font-primary: 'Sen'");
-    expect(styles).toContain("--font-primary: 'Outfit'");
+    expect(styles).toContain("--font-primary: 'Root Rule Sen'");
+    expect(styles).toContain("--font-primary: 'Root Rule Outfit'");
   });
 
   it("does not grow SSR style output for repeated equivalent font calls", async () => {
