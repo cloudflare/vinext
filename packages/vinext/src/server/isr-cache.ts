@@ -180,6 +180,53 @@ export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?:
   return `${prefix}:__hash:${fnv1a64(normalized)}`;
 }
 
+/**
+ * Normalize the App Router mounted-slot header before it participates in cache
+ * keys. The client can send mounted slot ids in different orders as navigation
+ * state changes, but equivalent slot sets must map to the same RSC cache entry.
+ */
+export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
+    .sort()
+    .join(" ");
+  return normalized || null;
+}
+
+/**
+ * Compute an App Router ISR key for one cache artifact.
+ *
+ * App pages store HTML, RSC payloads, and route-handler responses separately.
+ * The suffix mirrors Next.js's separate on-disk app artifacts while keeping the
+ * Cloudflare KV key under its 512-byte limit for long pathnames.
+ */
+function appIsrCacheKey(
+  pathname: string,
+  suffix: string,
+  buildId = process.env.__VINEXT_BUILD_ID,
+): string {
+  const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  const prefix = buildId ? `app:${buildId}` : "app";
+  const key = `${prefix}:${normalized}:${suffix}`;
+  if (key.length <= 200) return key;
+  return `${prefix}:__hash:${fnv1a64(normalized)}:${suffix}`;
+}
+
+export function appIsrHtmlKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "html");
+}
+
+export function appIsrRscKey(pathname: string, mountedSlotsHeader?: string | null): string {
+  const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
+  if (!normalizedMountedSlotsHeader) return appIsrCacheKey(pathname, "rsc");
+  return appIsrCacheKey(pathname, `rsc:${fnv1a64(normalizedMountedSlotsHeader)}`);
+}
+
+export function appIsrRouteKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "route");
+}
+
 // ---------------------------------------------------------------------------
 // Revalidate duration tracking — remembers how long each ISR key's TTL is
 // so we can emit correct Cache-Control headers on cache hits.

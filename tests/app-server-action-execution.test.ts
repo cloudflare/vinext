@@ -4,6 +4,8 @@ import {
   handleProgressiveServerActionRequest,
   isProgressiveServerActionRequest,
   type HandleServerActionRscRequestOptions,
+  readActionBodyWithLimit,
+  readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
 
@@ -53,6 +55,24 @@ function createMultipartBodyRequest(body: FormData): Request {
       origin: "https://example.com",
     },
   });
+}
+
+function createStreamBodyRequest(body: string, headers?: HeadersInit): Request {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(body));
+      controller.close();
+    },
+  });
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    body: stream,
+    duplex: "half",
+    headers,
+  };
+
+  return new Request("https://example.com/action", init);
 }
 
 function createOptions(
@@ -201,6 +221,41 @@ function createRscOptions(
 }
 
 describe("app server action execution helpers", () => {
+  it("reads streamed action text bodies and enforces the byte limit", async () => {
+    const validRequest = new Request("https://example.com/action", {
+      method: "POST",
+      body: "hello",
+    });
+
+    await expect(readActionBodyWithLimit(validRequest, 5)).resolves.toBe("hello");
+
+    const oversizedRequest = createStreamBodyRequest("hello!");
+
+    await expect(readActionBodyWithLimit(oversizedRequest, 5)).rejects.toThrow(
+      "Request body too large",
+    );
+  });
+
+  it("reads multipart action form data and enforces the streamed byte limit", async () => {
+    const body = new FormData();
+    body.set("field", "value");
+    const validRequest = new Request("https://example.com/action", {
+      method: "POST",
+      body,
+    });
+
+    const formData = await readActionFormDataWithLimit(validRequest, 1024);
+    expect(formData.get("field")).toBe("value");
+
+    const oversizedRequest = createStreamBodyRequest("x".repeat(64), {
+      "content-type": validRequest.headers.get("content-type") ?? "",
+    });
+
+    await expect(readActionFormDataWithLimit(oversizedRequest, 16)).rejects.toThrow(
+      "Request body too large",
+    );
+  });
+
   it("identifies progressive multipart server action submissions", () => {
     expect(
       isProgressiveServerActionRequest(

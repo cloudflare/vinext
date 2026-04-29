@@ -39,7 +39,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -90,7 +96,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -101,6 +107,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -142,25 +157,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -171,82 +167,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -278,110 +198,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -393,9 +209,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -868,63 +686,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -1541,7 +1302,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -1893,7 +1658,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -1944,7 +1715,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -1955,6 +1726,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -1996,25 +1776,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -2025,82 +1786,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -2132,110 +1817,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -2247,9 +1828,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -2722,63 +2305,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -3401,7 +2927,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -3753,7 +3283,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -3804,7 +3340,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -3815,6 +3351,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -3856,25 +3401,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -3885,82 +3411,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -3992,110 +3442,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -4107,9 +3453,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -4583,63 +3931,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -5256,7 +4547,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -5608,7 +4903,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -5659,7 +4960,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -5670,6 +4971,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -5711,25 +5021,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -5740,82 +5031,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -5847,110 +5062,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -5962,9 +5073,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -6467,63 +5580,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -7143,7 +6199,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -7495,7 +6555,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -7546,7 +6612,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -7557,6 +6623,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -7598,25 +6673,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -7627,82 +6683,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -7734,110 +6714,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -7849,9 +6725,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -8331,63 +7209,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -9004,7 +7825,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -9356,7 +8181,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from "<ROOT>/packages/vinext/src/server/app-server-action-execution.js";
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from "<ROOT>/packages/vinext/src/server/app-rsc-errors.js";
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from "<ROOT>/packages/vinext/src/server/app-page-cache.js";
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -9407,7 +8238,7 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from "<ROOT>/packages/vinext/src/server/app-static-generation.js";
 import { buildPageCacheTags } from "<ROOT>/packages/vinext/src/server/implicit-tags.js";
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from "<ROOT>/packages/vinext/src/shims/root-params.js";
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
@@ -9418,6 +8249,15 @@ import {
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -9459,25 +8299,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -9488,82 +8309,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -9595,110 +8340,6 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -9710,9 +8351,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 import * as mod_0 from "/tmp/test/app/page.tsx";
@@ -10185,63 +8828,6 @@ function __buildPostMwRequestContext(request) {
  * Prevents unbounded request body buffering.
  */
 var __MAX_ACTION_BODY_SIZE = 1048576;
-
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
 
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
@@ -10873,7 +9459,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {

@@ -8,11 +8,15 @@
  * These complement the integration-level ISR tests in features.test.ts
  * by testing the ISR cache layer in isolation.
  */
-import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  appIsrHtmlKey,
+  appIsrRscKey,
+  appIsrRouteKey,
   buildPagesCacheValue,
   buildAppPageCacheValue,
+  normalizeMountedSlotsHeader,
   setRevalidateDuration,
   getRevalidateDuration,
   triggerBackgroundRegeneration,
@@ -106,6 +110,64 @@ describe("isrCacheKey", () => {
   it("without buildId format is unchanged (backward compat)", () => {
     expect(isrCacheKey("pages", "/about")).toBe("pages:/about");
     expect(isrCacheKey("app", "/dashboard")).toBe("app:/dashboard");
+  });
+});
+
+describe("App Router ISR cache key primitives", () => {
+  const originalBuildId = process.env.__VINEXT_BUILD_ID;
+
+  afterEach(() => {
+    if (originalBuildId === undefined) {
+      delete process.env.__VINEXT_BUILD_ID;
+      return;
+    }
+
+    process.env.__VINEXT_BUILD_ID = originalBuildId;
+  });
+
+  it("builds separate html, rsc, and route keys from the normalized pathname", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrHtmlKey("/about/")).toBe("app:/about:html");
+    expect(appIsrRscKey("/about/")).toBe("app:/about:rsc");
+    expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route");
+  });
+
+  it("includes the build id when present", () => {
+    process.env.__VINEXT_BUILD_ID = "build-42";
+
+    expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
+  });
+
+  it("hashes long pathname keys while preserving the cache entry suffix", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const key = appIsrRscKey("/" + "a".repeat(250));
+
+    expect(key).toMatch(/^app:__hash:[a-z0-9]+:rsc$/);
+  });
+
+  it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const first = appIsrRscKey("/feed", "modal sidebar");
+    const second = appIsrRscKey("/feed", "sidebar modal");
+
+    expect(first).toBe(second);
+    expect(first).toMatch(/^app:\/feed:rsc:[a-z0-9]+$/);
+  });
+});
+
+describe("normalizeMountedSlotsHeader", () => {
+  it("returns null for missing or blank mounted-slot headers", () => {
+    expect(normalizeMountedSlotsHeader(null)).toBeNull();
+    expect(normalizeMountedSlotsHeader("   \t\n  ")).toBeNull();
+  });
+
+  it("deduplicates and sorts whitespace-separated slot ids", () => {
+    expect(normalizeMountedSlotsHeader(" sidebar  modal sidebar\tcart ")).toBe(
+      "cart modal sidebar",
+    );
   });
 });
 
