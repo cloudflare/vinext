@@ -278,6 +278,7 @@ describe("app page render lifecycle", () => {
       expect.objectContaining({ kind: "APP_PAGE" }),
       60,
       ["_N_T_/posts/post"],
+      undefined,
     );
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
@@ -324,6 +325,7 @@ describe("app page render lifecycle", () => {
       expect.objectContaining({ kind: "APP_PAGE" }),
       30,
       ["_N_T_/posts/post"],
+      undefined,
     );
     expect(common.isrSet).toHaveBeenNthCalledWith(
       2,
@@ -331,7 +333,117 @@ describe("app page render lifecycle", () => {
       expect.objectContaining({ kind: "APP_PAGE" }),
       30,
       ["_N_T_/posts/post"],
+      undefined,
     );
+  });
+
+  it("captures prerender cache metadata before building non-production HTML responses", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: false,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 3 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: 1,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(common.waitUntilPromises).toHaveLength(0);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("captures prerender cache metadata when cacheLife provides the only revalidate value", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: false,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 3 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("preserves prerender cache metadata headers in production mode without ISR writes", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: true,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 3 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(common.waitUntilPromises).toHaveLength(0);
+    expect(common.isrSet).not.toHaveBeenCalled();
   });
 
   it("disables HTML ISR caching when the response carries a script nonce", async () => {

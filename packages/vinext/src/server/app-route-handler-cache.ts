@@ -43,6 +43,7 @@ type ReadAppRouteHandlerCacheOptions = {
   params: AppRouteParams;
   requestUrl: string;
   revalidateSearchParams: URLSearchParams;
+  expireSeconds?: number;
   revalidateSeconds: number;
   routePattern: string;
   runInRevalidationContext: RouteHandlerRevalidationContextRunner;
@@ -76,6 +77,8 @@ export async function readAppRouteHandlerCacheResponse(
       return applyRouteHandlerMiddlewareContext(
         buildRouteHandlerCachedResponse(cachedValue, {
           cacheState: "HIT",
+          cacheControl: cached?.value.cacheControl,
+          expireSeconds: options.expireSeconds,
           isHead: options.isAutoHead,
           revalidateSeconds: options.revalidateSeconds,
         }),
@@ -122,7 +125,13 @@ export async function readAppRouteHandlerCacheResponse(
             options.getCollectedFetchTags(),
           );
           const routeCacheValue = await buildAppRouteCacheValue(response);
-          await options.isrSet(routeKey, routeCacheValue, options.revalidateSeconds, routeTags);
+          await options.isrSet(
+            routeKey,
+            routeCacheValue,
+            options.revalidateSeconds,
+            routeTags,
+            options.expireSeconds,
+          );
           options.isrDebug?.("route regen complete", routeKey);
         });
       });
@@ -132,6 +141,8 @@ export async function readAppRouteHandlerCacheResponse(
       return applyRouteHandlerMiddlewareContext(
         buildRouteHandlerCachedResponse(staleValue, {
           cacheState: "STALE",
+          cacheControl: cached.value.cacheControl,
+          expireSeconds: options.expireSeconds,
           isHead: options.isAutoHead,
           revalidateSeconds: options.revalidateSeconds,
         }),

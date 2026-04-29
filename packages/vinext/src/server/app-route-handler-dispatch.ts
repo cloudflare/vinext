@@ -61,6 +61,7 @@ type DispatchAppRouteHandlerOptions = {
   basePath?: string;
   cleanPathname: string;
   clearRequestContext: () => void;
+  expireSeconds?: number;
   i18n?: NextI18nConfig | null;
   isDevelopment?: boolean;
   isProduction?: boolean;
@@ -192,6 +193,7 @@ export async function dispatchAppRouteHandler(
       params: options.params,
       requestUrl: options.request.url,
       revalidateSearchParams: options.searchParams,
+      expireSeconds: options.expireSeconds,
       revalidateSeconds,
       routePattern: route.pattern,
       runInRevalidationContext(renderFn) {
@@ -248,6 +250,7 @@ export async function dispatchAppRouteHandler(
       params: makeThenableParams(options.params),
       reportRequestError,
       request: options.request,
+      expireSeconds: options.expireSeconds,
       revalidateSeconds,
       routePattern: route.pattern,
       setHeadersAccessPhase,

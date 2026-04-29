@@ -40,6 +40,9 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   const handler = getCacheHandler();
   const result = await handler.get(key);
   if (!result || !result.value) return null;
+  // Built-in handlers hard-delete expired entries and return null, but custom
+  // CacheHandler implementations may surface expiry explicitly.
+  if (result.cacheState === "expired") return null;
 
   return {
     value: result,
@@ -55,10 +58,14 @@ export async function isrSet(
   data: IncrementalCacheValue,
   revalidateSeconds: number,
   tags?: string[],
+  expireSeconds?: number,
 ): Promise<void> {
   const handler = getCacheHandler();
   await handler.set(key, data, {
-    revalidate: revalidateSeconds,
+    cacheControl:
+      expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: expireSeconds },
     tags: tags ?? [],
   });
 }

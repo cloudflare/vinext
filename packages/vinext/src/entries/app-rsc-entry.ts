@@ -1195,6 +1195,7 @@ ${prerenderPagesLoaderOption}
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,

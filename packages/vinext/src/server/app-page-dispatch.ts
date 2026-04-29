@@ -58,6 +58,7 @@ type AppPageCacheSetter = (
   data: CachedAppPageValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type AppPageBackgroundRegenerationErrorContext = {
@@ -146,6 +147,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   params: AppPageParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
+  expireSeconds?: number;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -188,9 +190,8 @@ function shouldReadAppPageCache(options: {
     options.isProduction &&
     !options.isForceDynamic &&
     (options.isRscRequest || !options.scriptNonce) &&
-    options.revalidateSeconds !== null &&
-    options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity
+    (options.revalidateSeconds === null ||
+      (options.revalidateSeconds > 0 && options.revalidateSeconds !== Infinity))
   );
 }
 
@@ -333,6 +334,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      expireSeconds: options.expireSeconds,
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () =>
         runAppPageRevalidationContext(
@@ -378,15 +380,24 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
                   }
                 : undefined,
             );
-            options.clearRequestContext();
             const html = await readAppPageTextStream(revalidatedHtmlStream);
             const rscData = await getCapturedRscDataPromise(revalidatedCapturedRscRef.value);
+            const cacheLife = _consumeRequestScopedCacheLife();
+            options.clearRequestContext();
             const tags = buildAppPageTags(
               options.cleanPathname,
               getCollectedFetchTags(),
               route.routeSegments,
             );
-            return { html, rscData, tags };
+            return {
+              html,
+              rscData,
+              tags,
+              cacheControl:
+                typeof cacheLife?.revalidate === "number"
+                  ? { revalidate: cacheLife.revalidate, expire: cacheLife.expire }
+                  : undefined,
+            };
           },
         ),
       scheduleBackgroundRegeneration(key, renderFn) {
@@ -522,6 +533,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
+    expireSeconds: options.expireSeconds,
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,

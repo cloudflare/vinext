@@ -33,6 +33,7 @@ import { Buffer } from "node:buffer";
 import type {
   CacheHandler,
   CacheHandlerValue,
+  CacheControlMetadata,
   CachedAppPageValue,
   CachedRouteValue,
   CachedImageValue,
@@ -42,6 +43,7 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
+import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 
 // ---------------------------------------------------------------------------
 // Serialized cache value types — ArrayBuffer fields replaced with base64 strings
@@ -89,6 +91,10 @@ type KVCacheEntry = {
   lastModified: number;
   /** Absolute timestamp (ms) after which the entry is "stale" (but still served). */
   revalidateAt: number | null;
+  /** Absolute timestamp (ms) after which the entry must block on fresh render. */
+  expireAt?: number | null;
+  /** Effective cache-control policy used for response headers. */
+  cacheControl?: CacheControlMetadata;
 };
 
 /** Key prefix for tag invalidation timestamps. */
@@ -223,18 +229,25 @@ export class KVCacheHandler implements CacheHandler {
       return null;
     }
 
-    // Check time-based expiry — return stale with cacheState
+    if (entry.expireAt !== undefined && entry.expireAt !== null && Date.now() > entry.expireAt) {
+      this._deleteInBackground(kvKey);
+      return null;
+    }
+
+    // Check time-based revalidation — return stale with cacheState
     if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
       return {
         lastModified: entry.lastModified,
         value: restoredValue,
         cacheState: "stale",
+        cacheControl: entry.cacheControl,
       };
     }
 
     return {
       lastModified: entry.lastModified,
       value: restoredValue,
+      cacheControl: entry.cacheControl,
     };
   }
 
@@ -314,22 +327,29 @@ export class KVCacheHandler implements CacheHandler {
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
-    if (ctx) {
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
-      if (typeof revalidate === "number") {
-        effectiveRevalidate = revalidate;
-      }
-    }
+    let effectiveExpire: number | undefined;
+    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    effectiveExpire = readCacheControlNumberField(ctx, "expire");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
+    const now = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? Date.now() + effectiveRevalidate * 1000
+        ? now + effectiveRevalidate * 1000
         : null;
+    const expireAt =
+      typeof effectiveExpire === "number" && effectiveExpire > 0
+        ? now + effectiveExpire * 1000
+        : null;
+    const cacheControl =
+      typeof effectiveRevalidate === "number"
+        ? effectiveExpire === undefined
+          ? { revalidate: effectiveRevalidate }
+          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        : undefined;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
     const serializable = data ? serializeForJSON(data) : null;
@@ -337,8 +357,10 @@ export class KVCacheHandler implements CacheHandler {
     const entry: KVCacheEntry = {
       value: serializable,
       tags,
-      lastModified: Date.now(),
+      lastModified: now,
       revalidateAt,
+      expireAt,
+      cacheControl,
     };
 
     // KV TTL is decoupled from the revalidation period.
@@ -508,6 +530,16 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   if (typeof obj.lastModified !== "number") return null;
   if (!Array.isArray(obj.tags)) return null;
   if (obj.revalidateAt !== null && typeof obj.revalidateAt !== "number") return null;
+  if (obj.expireAt !== undefined && obj.expireAt !== null && typeof obj.expireAt !== "number") {
+    return null;
+  }
+  if (obj.cacheControl !== undefined) {
+    if (!isUnknownRecord(obj.cacheControl)) return null;
+    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
+      return null;
+    }
+  }
 
   // value must be null or a valid cache value object with a known kind
   if (obj.value !== null) {

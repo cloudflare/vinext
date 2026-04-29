@@ -4605,8 +4605,12 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
   });
 
-  it("generated code leaves cache handler access to the ISR cache module", () => {
+  it("generated code delegates ISR cache access to shared runtime helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("isrGet as __sharedIsrGet");
+    expect(code).toContain("isrSet as __sharedIsrSet");
+    expect(code).toContain("return __sharedIsrGet(key);");
+    expect(code).toContain("return __sharedIsrSet(");
     expect(code).not.toContain("getCacheHandler");
     expect(code).toContain("server/isr-cache.js");
     expect(code).toContain("isrGet as __isrGet");

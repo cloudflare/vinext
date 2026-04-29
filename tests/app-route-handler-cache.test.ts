@@ -110,6 +110,7 @@ describe("app route handler cache helpers", () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrSetCalls: Array<{
       key: string;
+      expireSeconds: number | undefined;
       revalidateSeconds: number;
       tags: string[];
     }> = [];
@@ -139,15 +140,16 @@ describe("app route handler cache helpers", () => {
       isrRouteKey(pathname) {
         return "route:" + pathname;
       },
-      async isrSet(key, value, revalidateSeconds, tags) {
+      async isrSet(key, value, revalidateSeconds, tags, expireSeconds) {
         expect(value.kind).toBe("APP_ROUTE");
-        isrSetCalls.push({ key, revalidateSeconds, tags });
+        isrSetCalls.push({ key, expireSeconds, revalidateSeconds, tags });
       },
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       middlewareContext: { headers: null, status: null },
       params: { slug: "demo" },
       requestUrl: "https://example.com/base/api/stale?ping=pong",
       revalidateSearchParams: new URLSearchParams("ping=pong"),
+      expireSeconds: 300,
       revalidateSeconds: 60,
       routePattern: "/api/stale",
       async runInRevalidationContext(renderFn) {
@@ -173,6 +175,7 @@ describe("app route handler cache helpers", () => {
     expect(isrSetCalls).toEqual([
       {
         key: "route:/api/stale",
+        expireSeconds: 300,
         revalidateSeconds: 60,
         tags: ["/api/stale", "tag:regen"],
       },

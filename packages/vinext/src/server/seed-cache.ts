@@ -47,6 +47,7 @@ type PrerenderManifestRoute = {
   route: string;
   status: string;
   revalidate?: number | false;
+  expire?: number;
   path?: string;
   router?: "app" | "pages";
 };
@@ -89,11 +90,20 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
     const pathname = route.path ?? route.route;
     const baseKey = isrCacheKey("app", pathname, buildId);
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
     if (
-      await seedHtml(handler, prerenderDir, baseKey, pathname, trailingSlash, revalidateSeconds)
+      await seedHtml(
+        handler,
+        prerenderDir,
+        baseKey,
+        pathname,
+        trailingSlash,
+        revalidateSeconds,
+        expireSeconds,
+      )
     ) {
-      await seedRsc(handler, prerenderDir, baseKey, pathname, revalidateSeconds);
+      await seedRsc(handler, prerenderDir, baseKey, pathname, revalidateSeconds, expireSeconds);
       seeded++;
     }
   }
@@ -107,8 +117,14 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
  * Build the CacheHandler context object from a revalidate value.
  * `revalidate: undefined` (static routes) → empty context → no expiry.
  */
-function revalidateCtx(seconds: number | undefined): Record<string, unknown> {
-  return seconds !== undefined ? { revalidate: seconds } : {};
+function revalidateCtx(
+  revalidateSeconds: number | undefined,
+  expireSeconds: number | undefined,
+): Record<string, unknown> {
+  if (revalidateSeconds === undefined) return {};
+  return expireSeconds === undefined
+    ? { cacheControl: { revalidate: revalidateSeconds } }
+    : { cacheControl: { revalidate: revalidateSeconds, expire: expireSeconds } };
 }
 
 /**
@@ -122,6 +138,7 @@ async function seedHtml(
   pathname: string,
   trailingSlash: boolean,
   revalidateSeconds: number | undefined,
+  expireSeconds: number | undefined,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
   const fullPath = path.join(prerenderDir, relPath);
@@ -137,7 +154,7 @@ async function seedHtml(
   };
 
   const key = baseKey + ":html";
-  await handler.set(key, htmlValue, revalidateCtx(revalidateSeconds));
+  await handler.set(key, htmlValue, revalidateCtx(revalidateSeconds, expireSeconds));
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);
@@ -156,6 +173,7 @@ async function seedRsc(
   baseKey: string,
   pathname: string,
   revalidateSeconds: number | undefined,
+  expireSeconds: number | undefined,
 ): Promise<void> {
   const relPath = getRscOutputPath(pathname);
   const fullPath = path.join(prerenderDir, relPath);
@@ -175,7 +193,7 @@ async function seedRsc(
   };
 
   const key = baseKey + ":rsc";
-  await handler.set(key, rscValue, revalidateCtx(revalidateSeconds));
+  await handler.set(key, rscValue, revalidateCtx(revalidateSeconds, expireSeconds));
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);

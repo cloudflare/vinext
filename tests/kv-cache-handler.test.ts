@@ -216,6 +216,22 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-reval");
     });
 
+    it("rejects entry with invalid expireAt type", async () => {
+      store.set(
+        "cache:bad-expire",
+        JSON.stringify({
+          value: null,
+          tags: [],
+          lastModified: 123,
+          revalidateAt: null,
+          expireAt: "not-a-number",
+        }),
+      );
+      const result = await handler.get("bad-expire");
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:bad-expire");
+    });
+
     it("rejects entry with unknown value kind", async () => {
       store.set("cache:bad-kind", validEntry({ kind: "UNKNOWN_KIND", data: {} }));
       const result = await handler.get("bad-kind");
@@ -358,6 +374,10 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("set and get round-trip", () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+
     it("round-trips APP_ROUTE with ArrayBuffer body", async () => {
       const bodyBytes = new TextEncoder().encode("response body");
       await handler.set("rt-route", {
@@ -414,6 +434,32 @@ describe("KVCacheHandler", () => {
         "_N_T_/revalidate-tag-test",
         "test-data",
       ]);
+    });
+
+    it("serves stale within expire and returns a hard miss beyond expire", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "expire-test",
+        {
+          kind: "PAGES",
+          html: "<html>cached</html>",
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 1, expire: 3 } },
+      );
+
+      vi.setSystemTime(2_500);
+      const stale = await handler.get("expire-test");
+      expect(stale?.cacheState).toBe("stale");
+      expect(stale?.value?.kind).toBe("PAGES");
+
+      vi.setSystemTime(4_500);
+      await expect(handler.get("expire-test")).resolves.toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
     });
   });
 

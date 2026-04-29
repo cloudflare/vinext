@@ -32,7 +32,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getCacheHandler,
   cacheLifeProfiles,
+  _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
+  type CacheControlMetadata,
   type CacheLifeConfig,
 } from "./cache.js";
 import {
@@ -388,10 +390,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
     // In dev mode, always execute fresh — skip shared cache lookup/storage.
     // This ensures HMR changes are reflected immediately.
     if (isDev) {
-      return cacheContextStorage.run(
-        { tags: [], lifeConfigs: [], variant: cacheVariant || "default" },
-        () => fn(...args),
-      );
+      return executeWithContext(fn, args, cacheVariant);
     }
 
     // Shared cache ("use cache" / "use cache: remote")
@@ -405,10 +404,14 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
           const stream = uint8ToStream(bytes);
-          return await rsc.createFromReadableStream(stream);
+          const result = await rsc.createFromReadableStream(stream);
+          recordRequestScopedCacheControl(existing.cacheControl);
+          return result;
         }
         // JSON-serialized entry (legacy or no RSC available)
-        return JSON.parse(existing.value.data.body);
+        const result = JSON.parse(existing.value.data.body);
+        recordRequestScopedCacheControl(existing.cacheControl);
+        return result;
       } catch {
         // Corrupted entry, fall through to re-execute
       }
@@ -425,6 +428,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // Resolve effective cache life from collected configs
     const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
+    recordRequestScopedCacheLife(effectiveLife);
     const revalidateSeconds =
       effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
@@ -462,7 +466,10 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
       await handler.set(cacheKey, cacheValue, {
         fetchCache: true,
         tags: ctx.tags,
-        revalidate: revalidateSeconds,
+        cacheControl: {
+          revalidate: revalidateSeconds,
+          expire: effectiveLife.expire,
+        },
       });
     } catch {
       // Result not serializable — skip caching, still return the result
@@ -472,6 +479,18 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   };
 
   return cachedFn as T;
+}
+
+function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
+  if (cacheControl === undefined) return;
+  _setRequestScopedCacheLife({
+    revalidate: cacheControl.revalidate,
+    expire: cacheControl.expire,
+  });
+}
+
+function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
+  _setRequestScopedCacheLife(cacheLife);
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +510,9 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
     variant: variant || "default",
   };
 
-  return cacheContextStorage.run(ctx, () => fn(...args));
+  const result = await cacheContextStorage.run(ctx, () => fn(...args));
+  recordRequestScopedCacheLife(resolveCacheLife(ctx.lifeConfigs));
+  return result;
 }
 
 // ---------------------------------------------------------------------------

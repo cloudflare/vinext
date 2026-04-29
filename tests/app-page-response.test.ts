@@ -35,6 +35,7 @@ describe("app page response helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
+        expireSeconds: 300,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -42,7 +43,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "s-maxage=60, stale-while-revalidate",
+      cacheControl: "s-maxage=60, stale-while-revalidate=240",
       cacheState: "MISS",
     });
   });

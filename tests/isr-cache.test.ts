@@ -14,6 +14,8 @@ import {
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
+  isrGet,
+  isrSet,
   buildPagesCacheValue,
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
@@ -235,6 +237,46 @@ describe("setRevalidateDuration / getRevalidateDuration", () => {
   it("handles zero duration", () => {
     setRevalidateDuration("test-key-3", 0);
     expect(getRevalidateDuration("test-key-3")).toBe(0);
+  });
+});
+
+// ─── Expire ceiling handling ────────────────────────────────────────────
+
+describe("ISR expire ceiling", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("serves stale within expire and treats entries beyond expire as hard misses", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await isrSet("expire-test", buildPagesCacheValue("<html>cached</html>", {}), 1, [], 3);
+
+    vi.setSystemTime(2_500);
+    const stale = await isrGet("expire-test");
+    expect(stale?.isStale).toBe(true);
+    expect(stale?.value.value?.kind).toBe("PAGES");
+
+    vi.setSystemTime(4_500);
+    await expect(isrGet("expire-test")).resolves.toBeNull();
+  });
+
+  it("treats cache handlers that report expired entries as hard misses", async () => {
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 10_000,
+          cacheState: "expired",
+          value: buildPagesCacheValue("<html>expired</html>", {}),
+        };
+      },
+      async set() {},
+      async revalidateTag() {},
+    });
+
+    await expect(isrGet("expired-handler-entry")).resolves.toBeNull();
   });
 });
 

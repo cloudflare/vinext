@@ -1,5 +1,6 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { buildRevalidateCacheControl } from "./cache-control.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 
 type PagesFontPreload = {
@@ -37,6 +38,7 @@ type RenderPagesPageResponseOptions = {
   getSSRHeadHTML?: (() => string) | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
+  expireSeconds?: number;
   isrRevalidateSeconds: number | null;
   isrSet: (
     key: string,
@@ -48,6 +50,8 @@ type RenderPagesPageResponseOptions = {
       status: undefined;
     },
     revalidateSeconds: number,
+    tags?: string[],
+    expireSeconds?: number,
   ) => Promise<void>;
   i18n: PagesI18nRenderContext;
   pageProps: Record<string, unknown>;
@@ -294,6 +298,8 @@ export async function renderPagesPageResponse(
         status: undefined,
       },
       options.isrRevalidateSeconds,
+      undefined,
+      options.expireSeconds,
     );
   }
 
@@ -305,7 +311,7 @@ export async function renderPagesPageResponse(
   } else if (options.isrRevalidateSeconds) {
     responseHeaders.set(
       "Cache-Control",
-      `s-maxage=${options.isrRevalidateSeconds}, stale-while-revalidate`,
+      buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
     responseHeaders.set("X-Vinext-Cache", "MISS");
   }

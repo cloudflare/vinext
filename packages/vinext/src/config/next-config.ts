@@ -180,6 +180,8 @@ export type NextConfig = {
   pageExtensions?: string[];
   /** Extra origins allowed to access the dev server. */
   allowedDevOrigins?: string[];
+  /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
+  expireTime?: number;
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -261,6 +263,8 @@ export type ResolvedNextConfig = {
   optimizePackageImports: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
+  expireTime: number;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
@@ -291,6 +295,7 @@ export type ResolvedNextConfig = {
 };
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+const DEFAULT_EXPIRE_TIME = 31_536_000;
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -514,6 +519,7 @@ export async function resolveNextConfig(
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      expireTime: DEFAULT_EXPIRE_TIME,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -693,6 +699,7 @@ export async function resolveNextConfig(
     serverActionsAllowedOrigins,
     optimizePackageImports,
     serverActionsBodySizeLimit,
+    expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,

@@ -144,13 +144,14 @@ describe("pages page response", () => {
     const response = await renderPagesPageResponse({
       ...common.options,
       DocumentComponent: null,
+      expireSeconds: 300,
       getSSRHeadHTML: undefined,
       isrRevalidateSeconds: 60,
       routeUrl: "/posts/post?draft=0",
     });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("<div>live-body</div>");
 
@@ -165,6 +166,8 @@ describe("pages page response", () => {
         pageData: { title: "hello" },
       }),
       60,
+      undefined,
+      300,
     );
   });
 

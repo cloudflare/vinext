@@ -44,10 +44,12 @@ type AppPageCacheSetter = (
   data: CachedAppPageValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 
 type AppPageRequestCacheLife = {
   revalidate?: number;
+  expire?: number;
 };
 
 type RenderAppPageLifecycleOptions = {
@@ -69,6 +71,7 @@ type RenderAppPageLifecycleOptions = {
   isDynamicError: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
+  isPrerender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
@@ -81,6 +84,7 @@ type RenderAppPageLifecycleOptions = {
   params: Record<string, unknown>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
+  expireSeconds?: number;
   revalidateSeconds: number | null;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderLayoutSpecialError: (
@@ -229,14 +233,12 @@ export async function renderAppPageLifecycle(
   });
 
   let revalidateSeconds = options.revalidateSeconds;
-  const rscCapture = teeAppPageRscStreamForCapture(
-    rscStream,
-    options.isProduction &&
-      revalidateSeconds !== null &&
-      revalidateSeconds > 0 &&
-      revalidateSeconds !== Infinity &&
-      !options.isForceDynamic,
-  );
+  let expireSeconds = options.expireSeconds;
+  const shouldCaptureRscForCacheMetadata =
+    (options.isProduction || options.isPrerender === true) &&
+    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    !options.isForceDynamic;
+  const rscCapture = teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
   const rscForResponse = rscCapture.ssrStream;
 
   // When the fused tee (#981) is active, the sideStream carries both the embed
@@ -250,6 +252,18 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
+    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    const requestCacheLife = options.getRequestCacheLife();
+    if (requestCacheLife?.revalidate !== undefined) {
+      revalidateSeconds =
+        revalidateSeconds === null
+          ? requestCacheLife.revalidate
+          : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+    }
+    if (requestCacheLife?.expire !== undefined) {
+      expireSeconds = requestCacheLife.expire;
+    }
+
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();
     const rscResponsePolicy = resolveAppPageRscResponsePolicy({
       dynamicUsedDuringBuild,
@@ -257,6 +271,7 @@ export async function renderAppPageLifecycle(
       isForceDynamic: options.isForceDynamic,
       isForceStatic: options.isForceStatic,
       isProduction: options.isProduction,
+      expireSeconds,
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
@@ -290,7 +305,13 @@ export async function renderAppPageLifecycle(
         : rscResponse;
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
-      capturedRscDataPromise: options.isProduction ? capturedRscDataRef.value : null,
+      capturedRscDataPromise:
+        options.isProduction &&
+        revalidateSeconds !== null &&
+        revalidateSeconds > 0 &&
+        revalidateSeconds !== Infinity
+          ? capturedRscDataRef.value
+          : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
       dynamicUsedDuringBuild,
@@ -301,6 +322,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      expireSeconds,
       revalidateSeconds: revalidateSeconds ?? 0,
       waitUntil(promise) {
         options.waitUntil?.(promise);
@@ -365,11 +387,18 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
+  await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
   const draftCookie = options.getDraftModeCookieHeader();
   const dynamicUsedDuringRender = options.consumeDynamicUsage();
   const requestCacheLife = options.getRequestCacheLife();
-  if (requestCacheLife?.revalidate !== undefined && revalidateSeconds === null) {
-    revalidateSeconds = requestCacheLife.revalidate;
+  if (requestCacheLife?.revalidate !== undefined) {
+    revalidateSeconds =
+      revalidateSeconds === null
+        ? requestCacheLife.revalidate
+        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+  }
+  if (requestCacheLife?.expire !== undefined) {
+    expireSeconds = requestCacheLife.expire;
   }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
@@ -389,6 +418,7 @@ export async function renderAppPageLifecycle(
     isForceDynamic: options.isForceDynamic,
     isForceStatic: options.isForceStatic,
     isProduction: options.isProduction,
+    expireSeconds,
     revalidateSeconds,
   });
   const htmlResponseTiming = buildResponseTiming({
@@ -407,6 +437,11 @@ export async function renderAppPageLifecycle(
       policy: htmlResponsePolicy,
       timing: htmlResponseTiming,
     });
+
+    if (options.isPrerender === true) {
+      return isrResponse;
+    }
+
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
@@ -418,6 +453,7 @@ export async function renderAppPageLifecycle(
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      expireSeconds,
       revalidateSeconds: revalidateSeconds ?? 0,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
@@ -432,4 +468,20 @@ export async function renderAppPageLifecycle(
     policy: htmlResponsePolicy,
     timing: htmlResponseTiming,
   });
+}
+
+async function settleCapturedRscRenderForCacheMetadata(
+  capturedRscDataPromise: Promise<ArrayBuffer> | null,
+): Promise<void> {
+  if (!capturedRscDataPromise) {
+    return;
+  }
+
+  try {
+    await capturedRscDataPromise;
+  } catch {
+    // The response stream and cache-write path own render error propagation.
+    // This pre-read only makes "use cache" metadata available before headers
+    // and ISR seed metadata are finalized.
+  }
 }
