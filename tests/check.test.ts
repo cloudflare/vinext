@@ -392,6 +392,18 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
+  it.each([
+    ["experimental.ppr", "experimental", "ppr: true"],
+    ["experimental.typedRoutes", "experimental", "typedRoutes: true"],
+    ["experimental.serverActions", "experimental", "serverActions: { allowedOrigins: [] }"],
+    ["experimental.prefetchInlining", "experimental", "prefetchInlining: true"],
+    ["i18n.domains", "i18n", "domains: []"],
+  ])("detects %s via generic dot-notation handling", (name, parent, body) => {
+    writeFile("next.config.mjs", `export default { ${parent}: { ${body} } };`);
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === name)).toBeDefined();
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 
