@@ -2231,6 +2231,25 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
+  it("route handler ISR: cached HIT responses do not replay Set-Cookie headers", async () => {
+    const res1 = await fetch(`${baseUrl}/api/static-set-cookie`);
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+    const missSetCookies = res1.headers.getSetCookie();
+    expect(missSetCookies.length).toBeGreaterThan(0);
+    expect(missSetCookies[0]).toContain("session=");
+
+    const body1 = await res1.json();
+
+    const res2 = await fetch(`${baseUrl}/api/static-set-cookie`);
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(res2.headers.getSetCookie()).toEqual([]);
+
+    const body2 = await res2.json();
+    expect(body2.timestamp).toBe(body1.timestamp);
+  });
+
   it("route handler ISR: STALE serves stale data and triggers background regen", async () => {
     // /api/static-data has revalidate=1
     // Cache may already be warm from earlier tests — ensure we have a known timestamp

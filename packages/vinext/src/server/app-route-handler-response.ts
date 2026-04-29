@@ -166,13 +166,12 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
   const headers: CachedRouteValue["headers"] = {};
 
   response.headers.forEach((value, key) => {
+    // Never persist Set-Cookie into shared ISR cache entries. Cached route
+    // handler responses are replayed across requests, so Set-Cookie would leak
+    // per-request state to later visitors.
     if (key === "set-cookie" || key === "x-vinext-cache" || key === "cache-control") return;
     headers[key] = value;
   });
-  const setCookies = response.headers.getSetCookie?.() ?? [];
-  if (setCookies.length > 0) {
-    headers["set-cookie"] = setCookies;
-  }
 
   return {
     kind: "APP_ROUTE",
