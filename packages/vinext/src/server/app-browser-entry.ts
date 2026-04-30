@@ -77,6 +77,10 @@ import {
 import { ElementsContext, Slot } from "../shims/slot.js";
 import { devOnCaughtError } from "./app-browser-error.js";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "../shims/url-safety.js";
+import {
+  getServerActionNotFoundClientMessage,
+  isServerActionNotFoundResponse,
+} from "./server-action-not-found.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
@@ -1008,6 +1012,10 @@ function registerServerActionCallback(): void {
       headers,
       body,
     });
+
+    if (isServerActionNotFoundResponse(fetchResponse)) {
+      throw new Error(getServerActionNotFoundClientMessage(id));
+    }
 
     const actionRedirect = fetchResponse.headers.get("x-action-redirect");
     if (actionRedirect) {

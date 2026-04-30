@@ -1481,8 +1481,8 @@ describe("App Router integration", () => {
   });
 
   it("allows server action POST with matching Origin header", async () => {
-    // This will fail with 500 (action not found) rather than 403,
-    // proving the CSRF check passed and execution reached the action handler.
+    // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
       headers: {
@@ -1493,9 +1493,9 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Should NOT be 403 — the CSRF check passes for same-origin.
-    // It may be 500 because the action ID doesn't exist, which is fine.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
   });
 
   it("allows server action POST without Origin header (non-fetch navigation)", async () => {
@@ -1508,8 +1508,8 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Should NOT be 403 — missing Origin is allowed.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
   it("rejects cyclic multipart server action payloads before decodeReply", async () => {

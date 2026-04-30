@@ -2,6 +2,11 @@ import type { HeadersAccessPhase } from "../shims/headers.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
+import {
+  createServerActionNotFoundResponse,
+  getServerActionNotFoundMessage,
+  isServerActionNotFoundError,
+} from "./server-action-not-found.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -126,7 +131,7 @@ export type HandleServerActionRscRequestOptions<
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   isRscRequest: boolean;
-  loadServerAction: (actionId: string) => Promise<AppServerActionFunction>;
+  loadServerAction: (actionId: string) => Promise<unknown>;
   matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
@@ -163,6 +168,10 @@ type ActionControlResponse =
 
 function isRequestBodyTooLarge(error: unknown): boolean {
   return error instanceof Error && error.message === "Request body too large";
+}
+
+function isAppServerActionFunction(action: unknown): action is AppServerActionFunction {
+  return typeof action === "function";
 }
 
 function normalizeError(error: unknown): Error {
@@ -267,6 +276,19 @@ function createServerActionErrorResponse(
   );
 }
 
+function createActionNotFoundResponse(
+  actionId: string | null,
+  options: {
+    clearRequestContext: () => void;
+    getAndClearPendingCookies: () => string[];
+  },
+): Response {
+  options.getAndClearPendingCookies();
+  console.warn(getServerActionNotFoundMessage(actionId));
+  options.clearRequestContext();
+  return createServerActionNotFoundResponse();
+}
+
 export function isProgressiveServerActionRequest(
   request: Pick<Request, "method">,
   contentType: string,
@@ -367,6 +389,13 @@ export async function handleProgressiveServerActionRequest(
       headers,
     });
   } catch (error) {
+    if (isServerActionNotFoundError(error, null)) {
+      return createActionNotFoundResponse(null, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     options.getAndClearPendingCookies();
     // Next.js rethrows generic MPA action errors into its page render path.
     // vinext does not yet implement that form-state render path, so unexpected
@@ -439,9 +468,29 @@ export async function handleServerActionRscRequest<
       return payloadResponse;
     }
 
+    let action: unknown;
+    try {
+      action = await options.loadServerAction(options.actionId);
+    } catch (error) {
+      if (isServerActionNotFoundError(error, options.actionId)) {
+        return createActionNotFoundResponse(options.actionId, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
+
+      throw error;
+    }
+
+    if (!isAppServerActionFunction(action)) {
+      return createActionNotFoundResponse(options.actionId, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     const temporaryReferences = options.createTemporaryReferenceSet();
     const args = await options.decodeReply(body, { temporaryReferences });
-    const action = await options.loadServerAction(options.actionId);
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
