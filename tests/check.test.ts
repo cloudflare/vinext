@@ -379,7 +379,7 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     const item = items.find((i) => i.name === "experimental.swcEnvOptions");
     expect(item?.status).toBe("unsupported");
-    expect(item?.detail).toContain("polyfill injection");
+    expect(item?.detail).toContain("not applicable");
   });
 
   it("detects allowedDevOrigins as supported", () => {
