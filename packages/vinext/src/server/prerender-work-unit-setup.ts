@@ -14,16 +14,17 @@ import { workUnitAsyncStorage } from "../shims/internal/work-unit-async-storage.
 
 export function runWithPrerenderWorkUnit<T>(
   fn: () => Promise<T>,
-  options?: { route?: string },
+  options?: { route?: string | (() => string) },
 ): Promise<T> {
   if (process.env.VINEXT_PRERENDER === "1") {
     const controller = new AbortController();
+    const route = typeof options?.route === "function" ? options.route() : options?.route;
     return workUnitAsyncStorage
       .run(
         {
           type: "prerender",
           renderSignal: controller.signal,
-          route: options?.route,
+          route,
         },
         fn,
       )

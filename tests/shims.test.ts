@@ -2001,6 +2001,42 @@ describe("next/cache shim", () => {
     await expect(promise).rejects.toThrow(/prerendering/i);
   });
 
+  it("unstable_io does not emit unhandled rejection when signal already aborted", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const controller = new AbortController();
+      controller.abort(); // already aborted
+
+      const promise = workUnitAsyncStorage.run(
+        { type: "prerender", renderSignal: controller.signal, route: "/test" },
+        unstable_io,
+      );
+
+      // Wait a tick for potential unhandled rejection to be detected
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Await the promise to handle the rejection
+      try {
+        await promise;
+      } catch {
+        // expected
+      }
+
+      expect(unhandledRejections.length).toBe(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
   it("setCacheHandler swaps the active handler", async () => {
     const { setCacheHandler, getCacheHandler, unstable_cache } =
       await import("../packages/vinext/src/shims/cache.js");

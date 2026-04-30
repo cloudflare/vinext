@@ -32,7 +32,9 @@ export function makeHangingPromise<T>(
   expression: string,
 ): Promise<T> {
   if (signal.aborted) {
-    return Promise.reject(new HangingPromiseRejectionError(route, expression));
+    const rejected = Promise.reject(new HangingPromiseRejectionError(route, expression));
+    rejected.catch(suppressUnhandledRejection);
+    return rejected;
   }
   const hangingPromise = new Promise<T>((_, reject) => {
     const boundRejection = reject.bind(null, new HangingPromiseRejectionError(route, expression));
@@ -48,6 +50,7 @@ export function makeHangingPromise<T>(
           for (let i = 0; i < listeners.length; i++) {
             listeners[i]();
           }
+          listeners.length = 0;
         },
         { once: true },
       );

@@ -978,8 +978,6 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  // Extract pathname for prerender work unit store (used by unstable_io() for error messages)
-  const __pathname = new URL(request.url).pathname;
   return _runWithUnifiedCtx(__uCtx, () =>
     __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
@@ -1032,7 +1030,7 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-    }, { route: __pathname })
+    }, { route: () => new URL(request.url).pathname })
   );
 }
 
