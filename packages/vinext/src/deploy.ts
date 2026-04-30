@@ -1365,6 +1365,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       console.log(`\n  ${label}`);
       if (nextConfig.enablePrerenderSourceMaps) {
         process.setSourceMapsEnabled(true);
+        Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
       }
       await runPrerender({ root: info.root });
     }

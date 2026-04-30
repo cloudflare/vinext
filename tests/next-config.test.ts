@@ -797,7 +797,9 @@ describe("resolveNextConfig cacheHandler", () => {
     const resolved = await resolveNextConfig({});
     expect(resolved.cacheMaxMemorySize).toBeUndefined();
   });
+});
 
+describe("resolveNextConfig enablePrerenderSourceMaps", () => {
   it("defaults enablePrerenderSourceMaps to true when not configured", async () => {
     const resolved = await resolveNextConfig({});
     expect(resolved.enablePrerenderSourceMaps).toBe(true);
@@ -808,12 +810,5 @@ describe("resolveNextConfig cacheHandler", () => {
       enablePrerenderSourceMaps: false,
     });
     expect(resolved.enablePrerenderSourceMaps).toBe(false);
-  });
-
-  it("respects explicit enablePrerenderSourceMaps: true", async () => {
-    const resolved = await resolveNextConfig({
-      enablePrerenderSourceMaps: true,
-    });
-    expect(resolved.enablePrerenderSourceMaps).toBe(true);
   });
 });

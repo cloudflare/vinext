@@ -33,12 +33,11 @@ export { readPrerenderSecret } from "./server-manifest.js";
 
 function getErrorMessageWithStack(err: Error): string {
   // Include the full stack trace for sourcemap-aware error reporting during
-  // prerender. When Node.js is started with --enable-source-maps and the server
-  // bundle includes sourcemaps, this resolves bundled stack frames to original
-  // source files, matching Next.js's enablePrerenderSourceMaps behavior.
+  // prerender. When Node.js has sourcemaps enabled via process.setSourceMapsEnabled(true)
+  // and the server bundle includes sourcemaps, this resolves bundled stack frames to
+  // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
   const stack = err.stack ?? "";
-  if (stack.startsWith(err.message)) return stack;
-  return `${err.message}\n${stack}`;
+  return stack || err.message;
 }
 
 // ─── Public Types ─────────────────────────────────────────────────────────────

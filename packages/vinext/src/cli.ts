@@ -510,6 +510,7 @@ async function buildApp() {
     // source files. Matches Next.js's enablePrerenderSourceMaps default.
     if (resolvedNextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
+      Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
     const label = parsed.prerenderAll
       ? "Pre-rendering all routes..."
