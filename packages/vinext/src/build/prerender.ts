@@ -1245,7 +1245,7 @@ function resolveRenderedExpireSeconds(options: {
 function parseCacheControlSeconds(cacheControl: string, directive: string): number | undefined {
   for (const part of cacheControl.split(",")) {
     const [rawName, rawValue] = part.trim().split("=", 2);
-    if (rawName.toLowerCase() !== directive) continue;
+    if (rawName.trim().toLowerCase() !== directive) continue;
     if (rawValue === undefined) return undefined;
 
     const value = Number(rawValue.trim());

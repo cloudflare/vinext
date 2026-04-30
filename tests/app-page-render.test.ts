@@ -326,8 +326,8 @@ describe("app page render lifecycle", () => {
     ).resolves.toBe("returned");
 
     const response = await responsePromise;
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(common.waitUntilPromises).toHaveLength(1);
 
     releaseRsc.resolve();
@@ -428,8 +428,8 @@ describe("app page render lifecycle", () => {
     ).resolves.toBe("returned");
 
     const response = await responsePromise;
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(common.waitUntilPromises).toHaveLength(1);
 
     releaseRsc.resolve();
@@ -451,6 +451,43 @@ describe("app page render lifecycle", () => {
       ["_N_T_/posts/post"],
       9,
     );
+  });
+
+  it("preserves original production RSC response headers when speculative cacheLife never appears", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(common.waitUntilPromises).toHaveLength(1);
+
+    await expect(response.text()).resolves.toBe("flight-data");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("preserves original production HTML response headers when speculative cacheLife never appears", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(common.waitUntilPromises).toHaveLength(1);
+
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
   });
 
   it("captures prerender cache metadata before building non-production HTML responses", async () => {

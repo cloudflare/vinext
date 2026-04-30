@@ -59,6 +59,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
+  preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
@@ -75,6 +76,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
   mountedSlotsHeader?: string | null;
+  preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
@@ -306,11 +308,13 @@ export function finalizeAppPageHtmlCacheResponse(
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
   const rscKey = options.isrRscKey(options.cleanPathname, null);
   const clientHeaders = new Headers(response.headers);
-  // HTML Server Components can access request APIs while the stream is being
-  // consumed. Until that late dynamic check finishes, downstream shared caches
-  // must not cache the speculative MISS response.
-  clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-  clientHeaders.set("X-Vinext-Cache", "MISS");
+  if (options.preserveClientResponseHeaders !== true) {
+    // HTML Server Components can access request APIs while the stream is being
+    // consumed. Until that late dynamic check finishes, downstream shared caches
+    // must not cache a response whose ISR policy was known before streaming.
+    clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+    clientHeaders.set("X-Vinext-Cache", "MISS");
+  }
 
   const cachePromise = (async () => {
     try {
@@ -391,10 +395,14 @@ export function finalizeAppPageRscCacheResponse(
     return response;
   }
 
+  if (options.preserveClientResponseHeaders === true) {
+    return response;
+  }
+
   const clientHeaders = new Headers(response.headers);
   // RSC payloads are also streamed lazily. Until the captured stream proves no
   // late request API was used, the client-facing MISS response must not enter a
-  // shared cache.
+  // shared cache when the ISR policy was known before streaming.
   clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
   clientHeaders.set("X-Vinext-Cache", "MISS");
 
