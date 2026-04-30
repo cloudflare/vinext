@@ -597,6 +597,15 @@ export async function resolveNextConfig(
       ? (legacyServerComponentsExternal as string[])
       : [];
 
+  // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
+  // transforms, not SWC, so automatic polyfill injection is not applicable.
+  if (experimental?.swcEnvOptions !== undefined) {
+    console.warn(
+      '[vinext] next.config option "experimental.swcEnvOptions" is not yet supported and will be ignored. ' +
+        "vinext uses Vite for transforms, not SWC, so automatic polyfill injection via core-js is not applicable.",
+    );
+  }
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {

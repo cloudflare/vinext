@@ -173,6 +173,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail:
       "config recognized; vinext uses unified RSC navigation payloads so per-segment prefetch inlining is a no-op",
   },
+  "experimental.swcEnvOptions": {
+    status: "unsupported",
+    detail: "polyfill injection via SWC not applicable; vinext uses Vite for transforms",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
