@@ -115,13 +115,17 @@ describe("buildRouteTrie + trieMatch", () => {
   });
 
   describe("optional catch-all routes", () => {
-    it("matches optional catch-all with zero segments", () => {
+    it("matches optional catch-all with zero segments without materializing the param", () => {
+      // Next.js route-regex makes the optional catch-all capture group optional, and
+      // route-matcher only writes params for defined capture groups:
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-regex.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts
       const routes = [r("/docs/:path*")];
       const trie = buildRouteTrie(routes);
 
       const result = trieMatch(trie, ["docs"]);
       expect(result).not.toBeNull();
-      expect(result!.params).toEqual({ path: [] });
+      expect(result!.params).toEqual({});
     });
 
     it("matches optional catch-all with one segment", () => {
@@ -140,6 +144,16 @@ describe("buildRouteTrie + trieMatch", () => {
       const result = trieMatch(trie, ["docs", "api", "ref"]);
       expect(result).not.toBeNull();
       expect(result!.params).toEqual({ path: ["api", "ref"] });
+    });
+
+    it("matches root-level optional catch-all with zero segments without materializing the param", () => {
+      const routes = [r("/:path*")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, []);
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/:path*");
+      expect(result!.params).toEqual({});
     });
   });
 
@@ -280,7 +294,10 @@ describe("buildRouteTrie + trieMatch", () => {
         if (pp.endsWith("*")) {
           if (i !== patternParts.length - 1) return null;
           const paramName = pp.slice(1, -1);
-          params[paramName] = urlParts.slice(i);
+          const remaining = urlParts.slice(i);
+          if (remaining.length > 0) {
+            params[paramName] = remaining;
+          }
           return params;
         }
         if (pp.startsWith(":")) {
