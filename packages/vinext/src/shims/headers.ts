@@ -687,6 +687,7 @@ export function getAndClearPendingCookies(): string[] {
 
 // Draft mode cookie name (matches Next.js convention)
 const DRAFT_MODE_COOKIE = "__prerender_bypass";
+const DRAFT_MODE_EXPIRED_DATE = new Date(0).toUTCString();
 
 // Draft mode secret — generated once at build time via Vite `define` so the
 // __prerender_bypass cookie is consistent across all server instances (e.g.
@@ -722,6 +723,13 @@ type DraftModeResult = {
   disable(): void;
 };
 
+function draftModeCookieAttributes(): string {
+  if (typeof process !== "undefined" && process.env?.NODE_ENV === "development") {
+    return "Path=/; HttpOnly; SameSite=Lax";
+  }
+  return "Path=/; HttpOnly; SameSite=None; Secure";
+}
+
 /**
  * Draft mode — check/toggle via a `__prerender_bypass` cookie.
  *
@@ -751,9 +759,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       if (state.headersContext) {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       }
-      const secure =
-        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
     disable(): void {
       if (state.headersContext?.accessError) {
@@ -762,9 +768,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       if (state.headersContext) {
         state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
-      const secure =
-        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
+      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; ${draftModeCookieAttributes()}; Expires=${DRAFT_MODE_EXPIRED_DATE}`;
     },
   };
 }
