@@ -36,8 +36,7 @@ function getErrorMessageWithStack(err: Error): string {
   // prerender. When Node.js has sourcemaps enabled via process.setSourceMapsEnabled(true)
   // and the server bundle includes sourcemaps, this resolves bundled stack frames to
   // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
-  const stack = err.stack ?? "";
-  return stack || err.message;
+  return err.stack || err.message;
 }
 
 // ─── Public Types ─────────────────────────────────────────────────────────────

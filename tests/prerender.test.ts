@@ -262,6 +262,15 @@ describe("prerenderPages — export mode (pages-basic)", () => {
       expect(ssr.error).toMatch(/getServerSideProps/);
     }
   });
+
+  it("includes stack trace in error when enablePrerenderSourceMaps is true", () => {
+    const errorRoute = findRoute(results, "/error-throw");
+    expect(errorRoute).toMatchObject({ status: "error" });
+    if (errorRoute?.status === "error") {
+      // Verify the error includes a stack trace (multiple lines with "at " frames)
+      expect(errorRoute.error).toMatch(/\n\s+at /);
+    }
+  });
 });
 
 // ─── App Router ───────────────────────────────────────────────────────────────
