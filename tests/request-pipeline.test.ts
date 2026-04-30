@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  applyConfigHeadersToHeaderRecord,
+  applyConfigHeadersToResponse,
+  createStaticFileSignal,
   guardProtocolRelativeUrl,
   isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
   normalizeTrailingSlash,
+  resolvePublicFileRoute,
   validateCsrfOrigin,
   validateServerActionPayload,
   validateImageUrl,
@@ -153,6 +157,158 @@ describe("stripBasePath", () => {
     expect(stripBasePath("/application/about", "/app")).toBe("/application/about");
     expect(stripBasePath("/app2", "/app")).toBe("/app2");
     expect(stripBasePath("/apple", "/app")).toBe("/apple");
+  });
+});
+
+// ── config headers ──────────────────────────────────────────────────────
+
+describe("applyConfigHeadersToResponse", () => {
+  it("matches against the original request context and preserves middleware response precedence", () => {
+    const response = new Response("ok", {
+      headers: {
+        "x-middleware": "winner",
+        vary: "RSC",
+      },
+    });
+    const request = new Request("https://example.com/about?preview=1", {
+      headers: {
+        cookie: "mode=preview",
+        "x-enable-header": "yes",
+      },
+    });
+
+    applyConfigHeadersToResponse(response.headers, {
+      configHeaders: [
+        {
+          source: "/about",
+          has: [
+            { type: "header", key: "x-enable-header", value: "yes" },
+            { type: "cookie", key: "mode", value: "preview" },
+            { type: "query", key: "preview", value: "1" },
+          ],
+          headers: [
+            { key: "x-middleware", value: "config-loses" },
+            { key: "x-added", value: "config" },
+            { key: "vary", value: "Accept" },
+            { key: "set-cookie", value: "from=config; Path=/" },
+          ],
+        },
+      ],
+      pathname: "/about",
+      requestContext: {
+        headers: request.headers,
+        cookies: { mode: "preview" },
+        query: new URL(request.url).searchParams,
+        host: "example.com",
+      },
+    });
+
+    expect(response.headers.get("x-middleware")).toBe("winner");
+    expect(response.headers.get("x-added")).toBe("config");
+    expect(response.headers.get("vary")).toBe("RSC, Accept");
+    expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
+  });
+});
+
+describe("applyConfigHeadersToHeaderRecord", () => {
+  it("adds config headers into the early response header record without overwriting middleware", () => {
+    const headers: Record<string, string | string[]> = {
+      "x-middleware": "winner",
+      vary: "RSC",
+      "set-cookie": ["mw=1; Path=/"],
+    };
+
+    applyConfigHeadersToHeaderRecord(headers, {
+      configHeaders: [
+        {
+          source: "/logo.svg",
+          headers: [
+            { key: "x-middleware", value: "config-loses" },
+            { key: "x-added", value: "config" },
+            { key: "vary", value: "Accept" },
+            { key: "set-cookie", value: "cfg=1; Path=/" },
+          ],
+        },
+      ],
+      pathname: "/logo.svg",
+      requestContext: {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "example.com",
+      },
+    });
+
+    expect(headers["x-middleware"]).toBe("winner");
+    expect(headers["x-added"]).toBe("config");
+    expect(headers.vary).toBe("RSC, Accept");
+    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/", "cfg=1; Path=/"]);
+  });
+});
+
+// ── public file routing ─────────────────────────────────────────────────
+
+describe("resolvePublicFileRoute", () => {
+  it("signals GET public files and preserves middleware headers/status", () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        status: 203,
+      },
+      pathname: "/logo.svg",
+      publicFiles: new Set(["/logo.svg"]),
+      request: new Request("https://example.com/logo.svg"),
+    });
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(203);
+    expect(response!.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(response!.headers.get("x-from-middleware")).toBe("1");
+  });
+
+  it("does not signal non-GET/HEAD, RSC, or missing public file requests", () => {
+    const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
+    const middlewareContext = { headers: null, status: null };
+
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/logo.svg",
+        middlewareContext,
+        pathname: "/logo.svg",
+        publicFiles,
+        request: new Request("https://example.com/logo.svg", { method: "POST" }),
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/about.rsc",
+        middlewareContext,
+        pathname: "/about.rsc",
+        publicFiles,
+        request: new Request("https://example.com/about.rsc"),
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/missing.svg",
+        middlewareContext,
+        pathname: "/missing.svg",
+        publicFiles,
+        request: new Request("https://example.com/missing.svg"),
+      }),
+    ).toBeNull();
+  });
+
+  it("creates standalone static file signals from normal modules", () => {
+    const response = createStaticFileSignal("/robots.txt", {
+      headers: new Headers({ "cache-control": "no-store" }),
+      status: 202,
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-vinext-static-file")).toBe("%2Frobots.txt");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
 

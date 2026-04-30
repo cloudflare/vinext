@@ -28,7 +28,6 @@ import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-f
 import {
   matchRedirect,
   matchRewrite,
-  matchHeaders,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
   isExternalUrl,
@@ -46,7 +45,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { applyConfigHeadersToHeaderRecord, isOpenRedirectShaped } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
@@ -1535,26 +1534,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // This runs before step 5b so config headers are included in static
       // public directory file responses (matching Next.js behavior).
       if (configHeaders.length) {
-        const matched = matchHeaders(pathname, configHeaders, reqCtx);
-        for (const h of matched) {
-          const lk = h.key.toLowerCase();
-          if (lk === "set-cookie") {
-            const existing = middlewareHeaders[lk];
-            if (Array.isArray(existing)) {
-              existing.push(h.value);
-            } else if (existing) {
-              middlewareHeaders[lk] = [existing as string, h.value];
-            } else {
-              middlewareHeaders[lk] = [h.value];
-            }
-          } else if (lk === "vary" && middlewareHeaders[lk]) {
-            middlewareHeaders[lk] += ", " + h.value;
-          } else if (!(lk in middlewareHeaders)) {
-            // Middleware headers take precedence: only set if middleware
-            // did not already place this key on the response.
-            middlewareHeaders[lk] = h.value;
-          }
-        }
+        applyConfigHeadersToHeaderRecord(middlewareHeaders, {
+          configHeaders,
+          pathname,
+          requestContext: reqCtx,
+        });
       }
 
       if (isExternalUrl(resolvedUrl)) {

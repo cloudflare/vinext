@@ -187,11 +187,11 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
 ${metaRouteEntries.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
-import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
+import { applyConfigHeadersToResponse, resolvePublicFileRoute, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
@@ -720,21 +720,6 @@ function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
 }
 
-function __createStaticFileSignal(pathname, _mwCtx) {
-  const headers = new Headers({
-    "x-vinext-static-file": encodeURIComponent(pathname),
-  });
-  if (_mwCtx.headers) {
-    for (const [key, value] of _mwCtx.headers) {
-      headers.append(key, value);
-    }
-  }
-  return new Response(null, {
-    status: _mwCtx.status ?? 200,
-    headers,
-  });
-}
-
 /**
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
@@ -1006,21 +991,11 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
-        for (const h of extraHeaders) {
-          // Use append() for headers where multiple values must coexist
-          // (Vary, Set-Cookie). Using set() on these would destroy
-          // existing values like "Vary: RSC, Accept" which are critical
-          // for correct CDN caching behavior.
-          const lk = h.key.toLowerCase();
-          if (lk === "vary" || lk === "set-cookie") {
-            response.headers.append(h.key, h.value);
-          } else if (!response.headers.has(lk)) {
-            // Middleware headers take precedence: skip config keys already
-            // set by middleware so middleware headers always win.
-            response.headers.set(h.key, h.value);
-          }
-        }
+        applyConfigHeadersToResponse(response.headers, {
+          configHeaders: __configHeaders,
+          pathname,
+          requestContext: __reqCtx,
+        });
       }
     }
     return response;
@@ -1246,13 +1221,16 @@ ${prerenderPagesLoaderOption}
 
   // Serve public/ files as filesystem routes after middleware and before
   // afterFiles/fallback rewrites, matching Next.js routing semantics.
-  if (
-    (request.method === "GET" || request.method === "HEAD") &&
-    !pathname.endsWith(".rsc") &&
-    __publicFiles.has(cleanPathname)
-  ) {
+  const __publicFileResponse = resolvePublicFileRoute({
+    cleanPathname,
+    middlewareContext: _mwCtx,
+    pathname,
+    publicFiles: __publicFiles,
+    request,
+  });
+  if (__publicFileResponse) {
     __clearRequestContext();
-    return __createStaticFileSignal(cleanPathname, _mwCtx);
+    return __publicFileResponse;
   }
 
   // Set navigation context for Server Components.

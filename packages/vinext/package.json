@@ -41,6 +41,10 @@
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"
     },
+    "./server/request-pipeline": {
+      "types": "./dist/server/request-pipeline.d.ts",
+      "import": "./dist/server/request-pipeline.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"

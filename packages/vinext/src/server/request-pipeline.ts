@@ -1,12 +1,15 @@
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import type { NextHeader } from "../config/next-config.js";
+import type { RequestContext } from "../config/config-matchers.js";
+import { matchHeaders } from "../config/config-matchers.js";
 
 /**
  * Shared request pipeline utilities.
  *
- * Extracted from the App Router RSC entry (entries/app-rsc-entry.ts) to enable
- * reuse across entry points. Currently consumed by app-rsc-entry.ts;
- * dev-server.ts, prod-server.ts, and index.ts still have inline versions
- * that should be migrated in follow-up work.
+ * Extracted from generated entries and server hot paths to keep codegen focused
+ * on app shape while normal modules own request behavior. Some dev-server and
+ * worker-template setup code still has inline normalization that should be
+ * migrated in follow-up work.
  *
  * These utilities handle the common request lifecycle steps: protocol-
  * relative URL guards, basePath stripping, trailing slash normalization,
@@ -96,6 +99,137 @@ export function isOpenRedirectShaped(rawPathname: string): boolean {
  * @returns The pathname with basePath removed
  */
 export { hasBasePath, stripBasePath };
+
+export type HeaderRecord = Record<string, string | string[]>;
+
+type ApplyConfigHeadersOptions = {
+  configHeaders: NextHeader[];
+  pathname: string;
+  requestContext: RequestContext;
+};
+
+type StaticFileSignalContext = {
+  headers: Headers | null;
+  status: number | null;
+};
+
+type ResolvePublicFileRouteOptions = {
+  cleanPathname: string;
+  middlewareContext: StaticFileSignalContext;
+  pathname: string;
+  publicFiles: ReadonlySet<string>;
+  request: Request;
+};
+
+function findHeaderRecordKey(headers: HeaderRecord, lowerName: string): string | undefined {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) return key;
+  }
+  return undefined;
+}
+
+function appendHeaderRecord(headers: HeaderRecord, lowerName: string, value: string): void {
+  const key = findHeaderRecordKey(headers, lowerName) ?? lowerName;
+  const existing = headers[key];
+  if (existing === undefined) {
+    headers[key] = value;
+    return;
+  }
+  if (Array.isArray(existing)) {
+    existing.push(value);
+    return;
+  }
+  headers[key] = [existing, value];
+}
+
+function appendVaryHeaderRecord(headers: HeaderRecord, value: string): void {
+  const key = findHeaderRecordKey(headers, "vary") ?? "vary";
+  const existing = headers[key];
+  if (existing === undefined) {
+    headers[key] = value;
+    return;
+  }
+  if (Array.isArray(existing)) {
+    existing.push(value);
+    return;
+  }
+  headers[key] = existing + ", " + value;
+}
+
+/**
+ * Apply matched next.config.js headers to a Web Headers object.
+ *
+ * Next.js evaluates config header match conditions against the original
+ * request snapshot. Middleware response headers still win for the same
+ * response key, while multi-value headers are additive.
+ */
+export function applyConfigHeadersToResponse(
+  responseHeaders: Headers,
+  options: ApplyConfigHeadersOptions,
+): void {
+  const matched = matchHeaders(options.pathname, options.configHeaders, options.requestContext);
+  for (const header of matched) {
+    const lowerName = header.key.toLowerCase();
+    if (lowerName === "vary" || lowerName === "set-cookie") {
+      responseHeaders.append(header.key, header.value);
+    } else if (!responseHeaders.has(lowerName)) {
+      responseHeaders.set(header.key, header.value);
+    }
+  }
+}
+
+/**
+ * Apply matched next.config.js headers to the early response header record used
+ * by Node and Worker Pages Router pipelines before a concrete response exists.
+ */
+export function applyConfigHeadersToHeaderRecord(
+  headers: HeaderRecord,
+  options: ApplyConfigHeadersOptions,
+): void {
+  const matched = matchHeaders(options.pathname, options.configHeaders, options.requestContext);
+  for (const header of matched) {
+    const lowerName = header.key.toLowerCase();
+    if (lowerName === "set-cookie") {
+      appendHeaderRecord(headers, lowerName, header.value);
+    } else if (lowerName === "vary") {
+      appendVaryHeaderRecord(headers, header.value);
+    } else if (findHeaderRecordKey(headers, lowerName) === undefined) {
+      headers[lowerName] = header.value;
+    }
+  }
+}
+
+export function createStaticFileSignal(
+  pathname: string,
+  context: StaticFileSignalContext,
+): Response {
+  const headers = new Headers({
+    "x-vinext-static-file": encodeURIComponent(pathname),
+  });
+  if (context.headers) {
+    for (const [key, value] of context.headers) {
+      headers.append(key, value);
+    }
+  }
+  return new Response(null, {
+    status: context.status ?? 200,
+    headers,
+  });
+}
+
+/**
+ * Resolve the public/ filesystem-route slot in the Next.js routing order.
+ *
+ * Public files are checked after middleware and before afterFiles/fallback
+ * rewrites. The generated App Router entry provides the public-file set; this
+ * helper owns the request-method and RSC exclusions plus static-file signaling.
+ */
+export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
+  if (options.request.method !== "GET" && options.request.method !== "HEAD") return null;
+  if (options.pathname.endsWith(".rsc")) return null;
+  if (!options.publicFiles.has(options.cleanPathname)) return null;
+  return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
+}
 
 /**
  * Check if the pathname needs a trailing slash redirect, and return the

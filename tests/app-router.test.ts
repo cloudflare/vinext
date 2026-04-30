@@ -3283,7 +3283,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
-    expect(code).toContain("matchHeaders");
+    expect(code).toContain("applyConfigHeadersToResponse");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
   });
