@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import type { AppRoute } from "../routing/app-router.js";
+import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
 type AppRscManifestCode = {
@@ -22,6 +22,7 @@ type BuildAppRscManifestCodeOptions = {
 
 type ImportAllocator = {
   getImportVar(filePath: string): string;
+  importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
 
@@ -31,6 +32,7 @@ function createImportAllocator(): ImportAllocator {
   let importIdx = 0;
 
   return {
+    importMap,
     imports,
     getImportVar(filePath) {
       const existing = importMap.get(filePath);
@@ -163,59 +165,6 @@ ${slotEntries.join(",\n")}
   });
 }
 
-function buildMetadataPatternParts(route: MetadataFileRoute): string | null {
-  if (!route.isDynamic || !route.servedUrl.includes("[")) return null;
-
-  return JSON.stringify(
-    route.servedUrl
-      .split("/")
-      .filter(Boolean)
-      .map((seg) => {
-        if (seg.startsWith("[[...") && seg.endsWith("]]")) return ":" + seg.slice(5, -2) + "*";
-        if (seg.startsWith("[...") && seg.endsWith("]")) return ":" + seg.slice(4, -1) + "+";
-        if (seg.startsWith("[") && seg.endsWith("]")) return ":" + seg.slice(1, -1);
-        return seg;
-      }),
-  );
-}
-
-function readStaticMetadataFileBase64(route: MetadataFileRoute): string {
-  try {
-    return fs.readFileSync(route.filePath).toString("base64");
-  } catch (error) {
-    throw new Error(`[vinext] Failed to read static metadata route file: ${route.filePath}`, {
-      cause: error,
-    });
-  }
-}
-
-function buildMetadataRouteEntries(
-  metadataRoutes: MetadataFileRoute[],
-  imports: ImportAllocator,
-): string[] {
-  return metadataRoutes.map((mr) => {
-    const patternParts = buildMetadataPatternParts(mr);
-
-    if (mr.isDynamic) {
-      return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: true,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    module: ${imports.getImportVar(mr.filePath)},${patternParts ? `\n    patternParts: ${patternParts},` : ""}
-  }`;
-    }
-
-    return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: false,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    fileDataBase64: ${JSON.stringify(readStaticMetadataFileBase64(mr))},
-  }`;
-  });
-}
-
 function buildGenerateStaticParamsEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
   const entries: string[] = [];
   for (const route of routes) {
@@ -259,7 +208,7 @@ export function buildAppRscManifestCode(
   return {
     imports: imports.imports,
     routeEntries,
-    metaRouteEntries: buildMetadataRouteEntries(metadataRoutes, imports),
+    metaRouteEntries: createMetadataRouteEntriesSource(metadataRoutes, imports.importMap),
     generateStaticParamsEntries: buildGenerateStaticParamsEntries(options.routes, imports),
     rootNotFoundVar,
     rootForbiddenVar,

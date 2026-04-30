@@ -42,6 +42,8 @@ export default {
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
+        "src/server/app-page-head.ts",
+        "src/server/app-prerender-static-params.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)

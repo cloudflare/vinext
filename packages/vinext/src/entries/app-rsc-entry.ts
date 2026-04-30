@@ -75,9 +75,13 @@ const appPrerenderEndpointsPath = resolveEntryPath(
   import.meta.url,
 );
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
-const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
+const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
+const metadataRouteResponsePath = resolveEntryPath(
+  "../server/metadata-route-response.js",
+  import.meta.url,
+);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 
 /**
@@ -188,7 +192,7 @@ import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader,
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
-${metaRouteEntries.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
+import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
@@ -237,6 +241,7 @@ import {
 } from ${JSON.stringify(appPageParamsPath)};
 import {
   collectAppPageSearchParams as __collectAppPageSearchParams,
+  resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead as __resolveAppPageHead,
 } from ${JSON.stringify(appPageHeadPath)};
 import {
@@ -261,10 +266,10 @@ import { buildPageCacheTags } from ${JSON.stringify(implicitTagsPath)};
 import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from ${JSON.stringify(rootParamsShimPath)};
+import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
-  matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
@@ -345,20 +350,6 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
       console.debug("[vinext] CLS:", layoutId, reason);
     }
   : undefined;
-
-// Normalize null-prototype objects from route-pattern matching into thenable objects
-// that work both as Promises (for Next.js 15+ async params) and as plain
-// objects with synchronous property access (for pre-15 code like params.id).
-//
-// route-pattern matching uses Object.create(null), producing objects without
-// Object.prototype. The RSC serializer rejects these. Spreading ({...obj})
-// restores a normal prototype. Object.assign onto the Promise preserves
-// synchronous property access (params.id, params.slug) that existing
-// components and test fixtures rely on.
-function makeThenableParams(obj) {
-  const plain = { ...obj };
-  return Object.assign(Promise.resolve(plain), plain);
-}
 
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
@@ -479,6 +470,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     makeThenableParams,
     matchedParams: opts?.matchedParams ?? route?.params ?? {},
     middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
     requestUrl: request.url,
     resolveChildSegments: __resolveAppPageChildSegments,
     rootForbiddenModule: rootForbiddenModule,
@@ -526,6 +518,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     makeThenableParams,
     matchedParams: matchedParams ?? route?.params ?? {},
     middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
     requestUrl: request.url,
     resolveChildSegments: __resolveAppPageChildSegments,
     rootLayouts: rootLayouts,
@@ -576,18 +569,30 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     };
   }
 
-  const __headResult = await __resolveAppPageHead({
+  const {
+    hasSearchParams,
+    metadata: resolvedMetadata,
+    pageSearchParams,
+    viewport: resolvedViewport,
+  } = await __resolveAppPageHead({
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
+    metadataRoutes,
     pageModule: route.page,
+    parallelRoutes: __resolveActiveParallelRouteHeadInputs({
+      interceptLayouts: opts?.interceptLayouts ?? null,
+      interceptPage: opts?.interceptPage ?? null,
+      interceptParams: opts?.interceptParams ?? null,
+      interceptSlotKey: opts?.interceptSlotKey ?? null,
+      params,
+      routeSegments: route.routeSegments,
+      slots: route.slots,
+    }),
     params,
+    routePath: route.pattern,
     routeSegments: route.routeSegments,
     searchParams,
   });
-  const spObj = __headResult.searchParamsObject;
-  const hasSearchParams = __headResult.hasSearchParams;
-  const resolvedMetadata = __headResult.metadata;
-  const resolvedViewport = __headResult.viewport;
 
   // Build the route tree from the leaf page, then delegate the boundary/layout/
   // template/segment wiring to a typed runtime helper so the generated entry
@@ -597,7 +602,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(pageSearchParams);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -704,6 +709,12 @@ export const generateStaticParamsMap = {
 // scanning layout.tsx files separately and including them in this map.
 ${generateStaticParamsEntries.join("\n")}
 };${loadPrerenderPagesRoutesCode}
+const rootParamNamesMap = {
+${routes
+  .filter((r) => r.isDynamic && r.pagePath && r.rootParamNames && r.rootParamNames.length > 0)
+  .map((r) => `  ${JSON.stringify(r.pattern)}: ${JSON.stringify(r.rootParamNames)},`)
+  .join("\n")}
+};
 
 export default async function handler(request, ctx) {
   ${
@@ -813,6 +824,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
 ${prerenderPagesLoaderOption}
     pathname,
+    rootParamNamesByPattern: rootParamNamesMap,
     staticParamsMap: generateStaticParamsMap,
   });
   if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
@@ -909,80 +921,12 @@ ${prerenderPagesLoaderOption}
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
-  // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)
-  for (const metaRoute of metadataRoutes) {
-    // generateSitemaps() support — paginated sitemaps at /{prefix}/sitemap/{id}.xml
-    // When a sitemap module exports generateSitemaps, the base URL (e.g. /products/sitemap.xml)
-    // is no longer served. Instead, individual sitemaps are served at /products/sitemap/{id}.xml.
-    if (
-      metaRoute.type === "sitemap" &&
-      metaRoute.isDynamic &&
-      typeof metaRoute.module.generateSitemaps === "function"
-    ) {
-      const sitemapPrefix = metaRoute.servedUrl.slice(0, -4); // strip ".xml"
-      // Match exactly /{prefix}/{id}.xml — one segment only (no slashes in id)
-      if (cleanPathname.startsWith(sitemapPrefix + "/") && cleanPathname.endsWith(".xml")) {
-        const rawId = cleanPathname.slice(sitemapPrefix.length + 1, -4);
-        if (rawId.includes("/")) continue; // multi-segment — not a paginated sitemap
-        const sitemaps = await metaRoute.module.generateSitemaps();
-        const matched = sitemaps.find(function(s) { return String(s.id) === rawId; });
-        if (!matched) return new Response("Not Found", { status: 404 });
-        // Pass the original typed id from generateSitemaps() so numeric IDs stay numeric.
-        // TODO: wrap with makeThenableParams-style Promise when upgrading to Next.js 16
-        // full-Promise param semantics (id becomes Promise<string> in v16).
-        const result = await metaRoute.module.default({ id: matched.id });
-        if (result instanceof Response) return result;
-        return new Response(sitemapToXml(result), {
-          headers: { "Content-Type": metaRoute.contentType },
-        });
-      }
-      // Skip — the base servedUrl is not served when generateSitemaps exists
-      continue;
-    }
-    // Match metadata route — use pattern matching for dynamic segments,
-    // strict equality for static paths.
-    var _metaParams = null;
-    if (metaRoute.patternParts) {
-      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
-      _metaParams = __matchAppRscRoutePattern(_metaUrlParts, metaRoute.patternParts);
-      if (!_metaParams) continue;
-    } else if (cleanPathname !== metaRoute.servedUrl) {
-      continue;
-    }
-    if (metaRoute.isDynamic) {
-      // Dynamic metadata route — call the default export and serialize
-      const metaFn = metaRoute.module.default;
-      if (typeof metaFn === "function") {
-        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
-        let body;
-        // If it's already a Response (e.g., ImageResponse), return directly
-        if (result instanceof Response) return result;
-        // Serialize based on type
-        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-        else if (metaRoute.type === "robots") body = robotsToText(result);
-        else if (metaRoute.type === "manifest") body = manifestToJson(result);
-        else body = JSON.stringify(result);
-        return new Response(body, {
-          headers: { "Content-Type": metaRoute.contentType },
-        });
-      }
-    } else {
-      // Static metadata file — decode from embedded base64 data
-      try {
-        const binary = atob(metaRoute.fileDataBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return new Response(bytes, {
-          headers: {
-            "Content-Type": metaRoute.contentType,
-            "Cache-Control": "public, max-age=0, must-revalidate",
-          },
-        });
-      } catch {
-        return new Response("Not Found", { status: 404 });
-      }
-    }
-  }
+  const metadataRouteResponse = await __handleMetadataRouteRequest({
+    metadataRoutes,
+    cleanPathname,
+    makeThenableParams,
+  });
+  if (metadataRouteResponse) return metadataRouteResponse;
 
   // Serve public/ files as filesystem routes after middleware and before
   // afterFiles/fallback rewrites, matching Next.js routing semantics.

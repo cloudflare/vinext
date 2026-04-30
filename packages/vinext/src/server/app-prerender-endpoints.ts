@@ -1,8 +1,10 @@
-type AppPrerenderParams = Record<string, unknown>;
+import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
+import type { RootParams } from "../shims/root-params.js";
 
-type GenerateStaticParams = (args: { params: AppPrerenderParams }) => unknown;
+type GenerateStaticParams = (args: { params: RootParams }) => unknown;
 
 type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | null | undefined>;
+type RootParamNamesMap = Record<string, readonly string[] | undefined>;
 
 type AppPrerenderPageRoute = {
   pattern: string;
@@ -15,6 +17,7 @@ type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
+  rootParamNamesByPattern?: RootParamNamesMap;
   staticParamsMap: AppPrerenderStaticParamsMap;
 };
 
@@ -57,7 +60,12 @@ async function handleStaticParamsEndpoint(
 
   try {
     const params = parseParentParams(url.searchParams.get("parentParams"));
-    const result = await generateStaticParams({ params });
+    const result = await callAppPrerenderStaticParams({
+      fn: generateStaticParams,
+      params,
+      pattern,
+      rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
+    });
     return jsonResponse(result);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
@@ -111,13 +119,19 @@ function jsonNullResponse(): Response {
   });
 }
 
-function parseParentParams(raw: string | null): AppPrerenderParams {
+function parseParentParams(raw: string | null): RootParams {
   if (!raw) return {};
 
   const value = JSON.parse(raw);
   if (!isPlainObject(value)) return {};
 
-  return Object.fromEntries(Object.entries(value));
+  const params: RootParams = {};
+  for (const [key, paramValue] of Object.entries(value)) {
+    if (typeof paramValue === "string" || paramValue === undefined || isStringArray(paramValue)) {
+      params[key] = paramValue;
+    }
+  }
+  return params;
 }
 
 function parseLocales(raw: string | null): string[] {
@@ -153,4 +167,8 @@ function isPageRoute(value: unknown): value is AppPrerenderPageRoute {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }

@@ -66,6 +66,7 @@
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "image-size": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"

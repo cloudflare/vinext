@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 
 type TestPageRoute = {
   pattern: string;
@@ -56,6 +57,32 @@ describe("App prerender endpoint helpers", () => {
     expect(generateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
     expect(response?.status).toBe(200);
     await expect(response?.json()).resolves.toEqual([{ category: "docs", slug: "hello" }]);
+  });
+
+  it("seeds root params while calling generateStaticParams", async () => {
+    const generateStaticParams = vi.fn(async ({ params }) => [
+      { locale: await getRootParam("locale"), slug: params.slug },
+    ]);
+
+    const response = await handleAppPrerenderEndpoint(
+      new Request(
+        "http://localhost/__vinext/prerender/static-params?pattern=/:locale/blog/:slug&parentParams=%7B%22locale%22%3A%22en%22%2C%22slug%22%3A%22hello%22%7D",
+      ),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        rootParamNamesByPattern: {
+          "/:locale/blog/:slug": ["locale"],
+        },
+        staticParamsMap: {
+          "/:locale/blog/:slug": generateStaticParams,
+        },
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual([{ locale: "en", slug: "hello" }]);
+    await expect(getRootParam("locale")).resolves.toBeUndefined();
   });
 
   it("passes empty parent params when static param input is not an object", async () => {

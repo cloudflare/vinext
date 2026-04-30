@@ -234,9 +234,6 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.17(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.5(react@19.2.5))(react-server-dom-webpack@19.2.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
-      image-size:
-        specifier: 'catalog:'
-        version: 2.0.2
       knip:
         specifier: 'catalog:'
         version: 6.6.2(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)
@@ -782,6 +779,9 @@ importers:
       '@vercel/og':
         specifier: 'catalog:'
         version: 0.8.6
+      image-size:
+        specifier: 'catalog:'
+        version: 2.0.2
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21

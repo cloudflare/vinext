@@ -134,6 +134,7 @@ const minimalAppRoutes: AppRoute[] = [
 // Pages Router snapshots below. Run `pnpm test tests/entry-templates.test.ts -u`
 // to update them after intentional fixture changes.
 const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
 
 // ── App Router manifest construction ─────────────────────────────────
 
@@ -248,7 +249,10 @@ describe("App Router generated manifest construction", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
     try {
       const staticManifestPath = path.join(tmpDir, "manifest.webmanifest");
+      const dynamicOgPath = path.join(tmpDir, "blog", "[slug]", "opengraph-image.tsx");
+      fs.mkdirSync(path.dirname(dynamicOgPath), { recursive: true });
       fs.writeFileSync(staticManifestPath, '{"name":"Vinext"}');
+      fs.writeFileSync(dynamicOgPath, "export default function Image() {}");
 
       const manifest = buildAppRscManifestCode({
         routes: minimalAppRoutes,
@@ -257,13 +261,17 @@ describe("App Router generated manifest construction", () => {
             type: "manifest",
             isDynamic: false,
             filePath: staticManifestPath,
+            routePrefix: "",
+            routeSegments: [],
             servedUrl: "/manifest.webmanifest",
             contentType: "application/manifest+json",
           },
           {
             type: "opengraph-image",
             isDynamic: true,
-            filePath: "/tmp/test/app/blog/[slug]/opengraph-image.tsx",
+            filePath: dynamicOgPath,
+            routePrefix: "/blog/[slug]",
+            routeSegments: ["blog", "[slug]"],
             servedUrl: "/blog/[slug]/opengraph-image",
             contentType: "image/png",
           },
@@ -293,13 +301,15 @@ describe("App Router generated manifest construction", () => {
             type: "manifest",
             isDynamic: false,
             filePath: "/tmp/test/app/missing-manifest.webmanifest",
+            routePrefix: "",
+            routeSegments: [],
             servedUrl: "/manifest.webmanifest",
             contentType: "application/manifest+json",
           },
         ],
         globalErrorPath: null,
       }),
-    ).toThrow("[vinext] Failed to read static metadata route file");
+    ).toThrow("[vinext] Failed to read metadata route file");
   });
 });
 
@@ -395,7 +405,8 @@ describe("App Router entry templates", () => {
       {
         type: "sitemap",
         isDynamic: true,
-        filePath: "/tmp/test/app/sitemap.ts",
+        filePath: path.join(APP_FIXTURE_DIR, "sitemap.ts"),
+        routePrefix: "",
         servedUrl: "/sitemap.xml",
         contentType: "application/xml",
       },
@@ -410,6 +421,88 @@ describe("App Router entry templates", () => {
       false,
     );
     expect(stabilize(code)).toMatchSnapshot();
+  });
+
+  it("generateRscEntry fails with a path-specific error when a static metadata file cannot be read", () => {
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath: "/tmp/test/app/missing-icon.png",
+        routePrefix: "",
+        servedUrl: "/icon.png",
+        contentType: "image/png",
+      },
+    ];
+
+    expect(() =>
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, metadataRoutes, null, "", false),
+    ).toThrow("[vinext] Failed to read metadata route file /tmp/test/app/missing-icon.png");
+  });
+
+  it("generateRscEntry fails with a path-specific error when a dynamic metadata file hash cannot be read", () => {
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/test/app/missing-icon.tsx",
+        routePrefix: "",
+        servedUrl: "/icon",
+        contentType: "image/png",
+      },
+    ];
+
+    expect(() =>
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, metadataRoutes, null, "", false),
+    ).toThrow("[vinext] Failed to read metadata route file /tmp/test/app/missing-icon.tsx");
+  });
+
+  it("generateRscEntry fails with a path-specific error when static image dimensions cannot be read", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-"));
+    const filePath = path.join(tmpDir, "icon.png");
+    fs.writeFileSync(filePath, "not a png");
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: false,
+        filePath,
+        routePrefix: "",
+        servedUrl: "/icon.png",
+        contentType: "image/png",
+      },
+    ];
+
+    try {
+      expect(() =>
+        generateRscEntry("/tmp/test/app", minimalAppRoutes, null, metadataRoutes, null, "", false),
+      ).toThrow(`[vinext] Failed to read metadata image dimensions for ${filePath} (/icon.png)`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("generateRscEntry does not read image dimensions for static text metadata files", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-"));
+    const filePath = path.join(tmpDir, "manifest.json");
+    fs.writeFileSync(filePath, JSON.stringify({ name: "test" }));
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "manifest",
+        isDynamic: false,
+        filePath,
+        routePrefix: "",
+        servedUrl: "/manifest.webmanifest",
+        contentType: "application/manifest+json",
+      },
+    ];
+
+    try {
+      expect(() =>
+        generateRscEntry("/tmp/test/app", minimalAppRoutes, null, metadataRoutes, null, "", false),
+      ).not.toThrow();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("generateRscEntry delegates route matching to the shared helper", () => {

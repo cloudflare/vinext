@@ -2109,10 +2109,12 @@ describe("basePath + trailingSlash interaction", () => {
 
 describe("metadata title templates", () => {
   let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+  let mergeMetadataEntries: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadataEntries;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     mergeMetadata = mod.mergeMetadata;
+    mergeMetadataEntries = mod.mergeMetadataEntries;
   });
 
   it("applies layout template to child page string title", () => {
@@ -2188,6 +2190,31 @@ describe("metadata title templates", () => {
   it("handles empty metadata list", () => {
     const result = mergeMetadata([]);
     expect(result).toEqual({});
+  });
+
+  it("uses explicit page markers instead of assuming the last entry is the page", () => {
+    const result = mergeMetadataEntries([
+      {
+        metadata: { title: { default: "Root", template: "%s | Root" } },
+      },
+      {
+        isPage: true,
+        metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
+      },
+      {
+        contributesTitle: false,
+        metadata: {
+          openGraph: { title: "Slot OG title" },
+          title: { default: "Slot", template: "%s | Slot" },
+        },
+      },
+    ]);
+
+    expect(result).toEqual({
+      description: "Page",
+      openGraph: { title: "Slot OG title" },
+      title: "Page",
+    });
   });
 });
 
@@ -2295,6 +2322,37 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('rel="apple-touch-icon"');
     expect(html).toContain('sizes="180x180"');
     expect(html).toContain('rel="shortcut icon"');
+  });
+
+  it("renders single descriptor icon objects", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            apple: { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+            icon: { url: "/icon.png", sizes: "96x96", type: "image/png" },
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/icon.png"');
+    expect(html).toContain('sizes="96x96"');
+    expect(html).toContain('rel="apple-touch-icon"');
+    expect(html).toContain('href="/apple-icon.png"');
+    expect(html).toContain('sizes="180x180"');
+  });
+
+  it("renders top-level icon shorthand metadata", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { icons: "/manual-icon.png" },
+      }),
+    );
+
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/manual-icon.png"');
   });
 
   it("renders alternate hreflang links", () => {

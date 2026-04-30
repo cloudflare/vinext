@@ -379,7 +379,7 @@ export async function revalidateTag(
  * Revalidate cached data associated with a specific path.
  *
  * Invalidation works through implicit tags generated at render time by
- * `__pageCacheTags` (in app-rsc-entry.ts), matching Next.js's getDerivedTags:
+ * `buildAppPageCacheTags`, matching Next.js's getDerivedTags:
  *
  * - `type: "layout"` → invalidates `_N_T_<path>/layout`, cascading to all
  *   descendant pages (they carry ancestor layout tags from render time).

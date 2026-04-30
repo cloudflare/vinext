@@ -68,6 +68,27 @@ type ScheduleAppPageRscCacheWriteOptions = {
 
 const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
+export function buildAppPageCacheTags(pathname: string, extraTags: readonly string[]): string[] {
+  const tags = [pathname, `_N_T_${pathname}`, "_N_T_/layout"];
+  const segments = pathname.split("/");
+  let built = "";
+  for (let index = 1; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment) {
+      built += `/${segment}`;
+      tags.push(`_N_T_${built}/layout`);
+    }
+  }
+
+  tags.push(`_N_T_${built}/page`);
+  for (const tag of extraTags) {
+    if (!tags.includes(tag)) {
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
 function buildAppPageCacheControl(
   cacheState: BuildAppPageCachedResponseOptions["cacheState"],
   revalidateSeconds: number,
