@@ -5,6 +5,7 @@ import {
   resolveAppPageActionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptMatch,
+  resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
 
@@ -27,6 +28,22 @@ describe("app page request helpers", () => {
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
+  it("returns 404 when dynamicParams=false has no static params sources", async () => {
+    const clearRequestContext = vi.fn();
+
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: true,
+      generateStaticParams: undefined,
+      isDynamicRoute: true,
+      params: { slug: "anything" },
+    });
+
+    expect(response?.status).toBe(404);
+    await expect(response?.text()).resolves.toBe("Not Found");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
   it("allows matching static params, including nested parent params", async () => {
     const clearRequestContext = vi.fn();
 
@@ -42,6 +59,54 @@ describe("app page request helpers", () => {
 
     expect(response).toBeNull();
     expect(clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("requires every segment generateStaticParams source to allow the params", async () => {
+    const clearRequestContext = vi.fn();
+    const layoutGenerateStaticParams = async () => [{ category: "docs" }];
+    const pageGenerateStaticParams = async () => [{ slug: "intro" }];
+
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: true,
+      generateStaticParams: [layoutGenerateStaticParams, pageGenerateStaticParams],
+      isDynamicRoute: true,
+      params: { category: "docs", slug: "missing" },
+    });
+
+    expect(response?.status).toBe(404);
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes parent-only params to each generateStaticParams source", async () => {
+    const clearRequestContext = vi.fn();
+    const categoryGenerateStaticParams = vi.fn(() => [{ category: "docs" }]);
+    const itemGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) => {
+        if (params.category !== "docs" || params.slug !== undefined) {
+          return [];
+        }
+        return [{ slug: "intro" }];
+      },
+    );
+
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
+        layoutTreePositions: [0, 1],
+        page: { generateStaticParams: itemGenerateStaticParams },
+        routeSegments: ["[category]", "[slug]"],
+      }),
+      isDynamicRoute: true,
+      params: { category: "docs", slug: "intro" },
+    });
+
+    expect(response).toBeNull();
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    expect(categoryGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
+    expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
   it("logs and falls through when generateStaticParams throws", async () => {

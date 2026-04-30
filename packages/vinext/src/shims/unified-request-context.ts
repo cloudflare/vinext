@@ -99,6 +99,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     _privateCache: null,
     currentRequestTags: [],
     currentFetchSoftTags: [],
+    currentFetchCacheMode: null,
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestCache: new WeakMap(),
     ssrContext: null,

@@ -1,4 +1,5 @@
 import type { HeadersAccessPhase } from "vinext/shims/headers";
+import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
@@ -144,6 +145,7 @@ export type HandleServerActionRscRequestOptions<
     options: RenderServerActionRscStreamOptions<TTemporaryReferences>,
   ) => BodyInit | null | Promise<BodyInit | null>;
   reportRequestError: AppServerActionErrorReporter;
+  resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   request: Request;
   sanitizeErrorForClient: (error: unknown) => unknown;
   searchParams: URLSearchParams;
@@ -611,6 +613,9 @@ export async function handleServerActionRscRequest<
         searchParams: options.searchParams,
         params: actionRerenderTarget.navigationParams,
       });
+      setCurrentFetchCacheMode(
+        options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+      );
       element = options.buildPageElement({
         cleanPathname: options.cleanPathname,
         interceptOpts: actionRerenderTarget.interceptOpts,

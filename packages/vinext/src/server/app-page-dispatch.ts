@@ -16,7 +16,9 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
+  type FetchCacheMode,
   getCollectedFetchTags,
+  setCurrentFetchCacheMode,
   setCurrentFetchSoftTags,
 } from "vinext/shims/fetch-cache";
 import type { AppOutgoingElements } from "./app-elements.js";
@@ -126,6 +128,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   dynamicConfig?: string;
   dynamicParamsConfig?: boolean;
+  fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
   generateStaticParams?: ((args: { params: AppPageParams }) => unknown) | null;
   getFontLinks: () => string[];
@@ -168,6 +171,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ) => ReadableStream<Uint8Array>;
   request: Request;
   revalidateSeconds: number | null;
+  resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
@@ -210,6 +214,7 @@ function buildAppPageTags(
 async function runAppPageRevalidationContext(
   options: {
     cleanPathname: string;
+    currentFetchCacheMode?: FetchCacheMode | null;
     dynamicConfig?: string;
     params: AppPageParams;
     routePattern: string;
@@ -233,6 +238,7 @@ async function runAppPageRevalidationContext(
   });
   const requestContext = createRequestContext({
     headersContext,
+    currentFetchCacheMode: options.currentFetchCacheMode ?? null,
     executionContext: getRequestExecutionContext(),
     unstableCacheRevalidation: "foreground",
   });
@@ -285,6 +291,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
+  setCurrentFetchCacheMode(options.fetchCache ?? null);
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
     options.clearRequestContext();
@@ -346,6 +353,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
         runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
+            currentFetchCacheMode: options.fetchCache ?? null,
             dynamicConfig,
             params: options.params,
             routePattern: route.pattern,
@@ -440,6 +448,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     AppPageElement
   >({
     buildPageElement(interceptRoute, interceptParams, interceptOpts, interceptSearchParams) {
+      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       return options.buildPageElement(
         interceptRoute,
         interceptParams,

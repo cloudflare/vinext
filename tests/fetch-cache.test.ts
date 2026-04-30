@@ -37,6 +37,7 @@ const {
   withFetchCache,
   runWithFetchCache,
   getCollectedFetchTags,
+  setCurrentFetchCacheMode,
   setCurrentFetchSoftTags,
   getOriginalFetch,
   _resetPendingRefetches,
@@ -99,6 +100,156 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Cached
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("segment fetchCache default-cache caches fetches without per-fetch options", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/segment-default-cache");
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/segment-default-cache");
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("segment fetchCache default-cache caches Request inputs without per-fetch options", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch(new Request("https://api.example.com/segment-request-default-cache"));
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch(new Request("https://api.example.com/segment-request-default-cache"));
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("segment fetchCache default-cache caches fetches with metadata-only next options", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/segment-default-cache-tags", {
+      next: { tags: ["segment-default-cache-tags"] },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/segment-default-cache-tags", {
+      next: { tags: ["segment-default-cache-tags"] },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("segment fetchCache default-cache does not override explicit no-store", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/segment-explicit-no-store", {
+      cache: "no-store",
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/segment-explicit-no-store", {
+      cache: "no-store",
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("segment fetchCache default-no-store bypasses cache with metadata-only next options", async () => {
+    setCurrentFetchCacheMode("default-no-store");
+
+    const res1 = await fetch("https://api.example.com/segment-default-no-store-tags", {
+      next: { tags: ["segment-default-no-store-tags"] },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/segment-default-no-store-tags", {
+      next: { tags: ["segment-default-no-store-tags"] },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("segment fetchCache force-no-store overrides explicit force-cache", async () => {
+    setCurrentFetchCacheMode("force-no-store");
+
+    const res1 = await fetch("https://api.example.com/segment-force-no-store", {
+      cache: "force-cache",
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/segment-force-no-store", {
+      cache: "force-cache",
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("segment fetchCache force-no-store forwards no-store to the real fetch", async () => {
+    setCurrentFetchCacheMode("force-no-store");
+
+    await fetch("https://api.example.com/segment-force-no-store-init", {
+      cache: "force-cache",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("https://api.example.com/segment-force-no-store-init", {
+      cache: "no-store",
+    });
+  });
+
+  it("segment fetchCache only-cache rejects no-store fetches", async () => {
+    setCurrentFetchCacheMode("only-cache");
+
+    await expect(
+      fetch("https://api.example.com/segment-only-cache", {
+        cache: "no-store",
+      }),
+    ).rejects.toThrow(/only-cache/);
+  });
+
+  it("segment fetchCache only-cache rejects no-store Request inputs", async () => {
+    setCurrentFetchCacheMode("only-cache");
+
+    await expect(
+      fetch(
+        new Request("https://api.example.com/segment-only-cache-request", {
+          cache: "no-store",
+        }),
+      ),
+    ).rejects.toThrow(/only-cache/);
+  });
+
+  it("segment fetchCache only-no-store rejects cacheable fetches", async () => {
+    setCurrentFetchCacheMode("only-no-store");
+
+    await expect(
+      fetch("https://api.example.com/segment-only-no-store", {
+        cache: "force-cache",
+      }),
+    ).rejects.toThrow(/only-no-store/);
+  });
+
+  it("segment fetchCache only-no-store rejects cacheable Request inputs", async () => {
+    setCurrentFetchCacheMode("only-no-store");
+
+    await expect(
+      fetch(
+        new Request("https://api.example.com/segment-only-no-store-request", {
+          cache: "force-cache",
+        }),
+      ),
+    ).rejects.toThrow(/only-no-store/);
   });
 
   // ── No caching (no-store, revalidate: 0, revalidate: false) ─────────

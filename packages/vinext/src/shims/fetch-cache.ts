@@ -469,7 +469,17 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 export type FetchCacheState = {
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
+  currentFetchCacheMode: FetchCacheMode | null;
 };
+
+export type FetchCacheMode =
+  | "auto"
+  | "default-cache"
+  | "default-no-store"
+  | "force-cache"
+  | "force-no-store"
+  | "only-cache"
+  | "only-no-store";
 
 const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
@@ -480,6 +490,7 @@ const _als = (_g[_ALS_KEY] ??=
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
   currentFetchSoftTags: [],
+  currentFetchCacheMode: null,
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
@@ -496,6 +507,7 @@ function _getState(): FetchCacheState {
 function _resetFallbackState(): void {
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
+  _fallbackState.currentFetchCacheMode = null;
 }
 
 /**
@@ -518,6 +530,90 @@ export function setCurrentFetchSoftTags(tags: string[]): void {
   _getState().currentFetchSoftTags = [...tags];
 }
 
+export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
+  _getState().currentFetchCacheMode = mode;
+}
+
+function isNoStoreFetch(
+  cacheDirective: RequestCache | undefined,
+  nextOpts: NextFetchOptions | undefined,
+): boolean {
+  return (
+    cacheDirective === "no-store" ||
+    cacheDirective === "no-cache" ||
+    nextOpts?.revalidate === false ||
+    nextOpts?.revalidate === 0
+  );
+}
+
+function isCacheableFetch(
+  cacheDirective: RequestCache | undefined,
+  nextOpts: NextFetchOptions | undefined,
+): boolean {
+  return (
+    cacheDirective === "force-cache" ||
+    (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0)
+  );
+}
+
+function hasExplicitRevalidateValue(nextOpts: NextFetchOptions | undefined): boolean {
+  return nextOpts?.revalidate !== undefined;
+}
+
+function resolveSegmentCacheDirective(
+  cacheDirective: RequestCache | undefined,
+  nextOpts: NextFetchOptions | undefined,
+  mode: FetchCacheMode | null,
+): RequestCache | undefined {
+  if (!mode || mode === "auto") {
+    return cacheDirective;
+  }
+
+  switch (mode) {
+    case "force-cache":
+      return "force-cache";
+    case "force-no-store":
+      return "no-store";
+    case "only-cache": {
+      if (isNoStoreFetch(cacheDirective, nextOpts)) {
+        throw new Error(
+          'Route segment config `fetchCache = "only-cache"` conflicts with no-store fetch.',
+        );
+      }
+      return cacheDirective ?? "force-cache";
+    }
+    case "only-no-store": {
+      if (isCacheableFetch(cacheDirective, nextOpts)) {
+        throw new Error(
+          'Route segment config `fetchCache = "only-no-store"` conflicts with cacheable fetch.',
+        );
+      }
+      return cacheDirective ?? "no-store";
+    }
+    case "default-cache":
+      return cacheDirective ?? (hasExplicitRevalidateValue(nextOpts) ? undefined : "force-cache");
+    case "default-no-store":
+      return cacheDirective ?? (hasExplicitRevalidateValue(nextOpts) ? undefined : "no-store");
+  }
+
+  return cacheDirective;
+}
+
+function getFetchCacheDirective(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): RequestCache | undefined {
+  if (init?.cache !== undefined) {
+    return init.cache;
+  }
+  // Request.cache defaults to "default" even when the caller did not pass a
+  // cache mode, so keep segment defaults free to apply in that case.
+  if (!(input instanceof Request) || input.cache === "default") {
+    return undefined;
+  }
+  return input.cache;
+}
+
 /**
  * Create a patched fetch function with Next.js caching semantics.
  *
@@ -536,7 +632,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
       | NextFetchOptions
       | undefined;
-    const cacheDirective = init?.cache;
+    const cacheDirective = resolveSegmentCacheDirective(
+      getFetchCacheDirective(input, init),
+      nextOpts,
+      _getState().currentFetchCacheMode,
+    );
 
     // Determine caching behavior:
     // - cache: 'no-store' → skip cache entirely
@@ -559,7 +659,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       nextOpts?.revalidate === 0
     ) {
       // Strip the `next` property before passing to real fetch
-      const cleanInit = stripNextFromInit(init);
+      const cleanInit = stripNextFromInit(init, cacheDirective);
       return originalFetch(input, cleanInit);
     }
 
@@ -572,7 +672,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       cacheDirective === "force-cache" ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
-      const cleanInit = stripNextFromInit(init);
+      const cleanInit = stripNextFromInit(init, cacheDirective);
       return originalFetch(input, cleanInit);
     }
 
@@ -594,23 +694,27 @@ function createPatchedFetch(): typeof globalThis.fetch {
         revalidateSeconds = 31536000;
       } else {
         // next: {} with no revalidate or tags — pass through
-        const cleanInit = stripNextFromInit(init);
+        const cleanInit = stripNextFromInit(init, cacheDirective);
         return originalFetch(input, cleanInit);
       }
     }
 
     const tags = nextOpts?.tags ?? [];
     const softTags = _getState().currentFetchSoftTags;
+    let fetchInit = stripNextFromInit(init, cacheDirective);
     let cacheKey: string;
     try {
-      cacheKey = await buildFetchCacheKey(input, init);
+      cacheKey = await buildFetchCacheKey(input, fetchInit);
+      // Cache-key generation may consume and stash request bodies on fetchInit;
+      // normalize again so the real fetch receives the restored body.
+      fetchInit = stripNextFromInit(fetchInit, cacheDirective);
     } catch (err) {
       if (
         err instanceof BodyTooLargeForCacheKeyError ||
         err instanceof SkipCacheKeyGenerationError
       ) {
-        const cleanInit = stripNextFromInit(init);
-        return originalFetch(input, cleanInit);
+        fetchInit = stripNextFromInit(fetchInit, cacheDirective);
+        return originalFetch(input, fetchInit);
       }
       throw err;
     }
@@ -647,8 +751,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // Background refetch — deduped so only one in-flight refetch runs
         // per cache key, preventing thundering herd on popular endpoints.
         if (!pendingRefetches.has(cacheKey)) {
-          const cleanInit = stripNextFromInit(init);
-          const refetchPromise = originalFetch(input, cleanInit)
+          const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
               // Only cache 200 responses — a transient error or unexpected
               // status must not overwrite previously-good cached data.
@@ -730,8 +833,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const cleanInit = stripNextFromInit(init);
-    const response = await originalFetch(input, cleanInit);
+    const response = await originalFetch(input, fetchInit);
 
     // Only cache 200 responses
     if (response.status === 200) {
@@ -780,10 +882,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
  * The `next` property is not a standard fetch option and would cause warnings
  * in some environments.
  */
-function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
-  if (!init) return init;
+function stripNextFromInit(
+  init?: RequestInit,
+  cacheOverride?: RequestCache,
+): RequestInit | undefined {
+  if (!init) {
+    return cacheOverride === undefined ? undefined : { cache: cacheOverride };
+  }
   const castInit = init as ExtendedRequestInit;
   const { next: _next, _ogBody, ...rest } = castInit;
+  if (cacheOverride !== undefined) {
+    rest.cache = cacheOverride;
+  }
   // Restore the original body if it was stashed by serializeBody (e.g. after
   // consuming a ReadableStream for cache key generation).
   if (_ogBody !== undefined) {
@@ -844,7 +954,10 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       uCtx.currentFetchSoftTags = [];
     }, fn);
   }
-  return _als.run({ currentRequestTags: [], currentFetchSoftTags: [] }, fn);
+  return _als.run(
+    { currentRequestTags: [], currentFetchSoftTags: [], currentFetchCacheMode: null },
+    fn,
+  );
 }
 
 /**

@@ -1,14 +1,35 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 
 type AppPageParams = Record<string, string | string[]>;
+type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
+
+type GenerateStaticParamsModule = {
+  generateStaticParams?: GenerateStaticParams | null;
+};
+
+type GenerateStaticParamsSource = {
+  generateStaticParams: GenerateStaticParams;
+  parentParamNames: readonly string[];
+};
 
 type ValidateAppPageDynamicParamsOptions = {
   clearRequestContext: () => void;
   enforceStaticParamsOnly: boolean;
-  generateStaticParams?: ((args: { params: AppPageParams }) => unknown) | null;
+  generateStaticParams?:
+    | GenerateStaticParams
+    | GenerateStaticParamsSource
+    | readonly (GenerateStaticParams | GenerateStaticParamsSource | null | undefined)[]
+    | null;
   isDynamicRoute: boolean;
   logGenerateStaticParamsError?: (error: unknown) => void;
   params: AppPageParams;
+};
+
+type ResolveAppPageGenerateStaticParamsSourcesOptions = {
+  layouts?: readonly (GenerateStaticParamsModule | null | undefined)[];
+  layoutTreePositions?: readonly number[];
+  page?: GenerateStaticParamsModule | null;
+  routeSegments: readonly string[];
 };
 
 type BuildAppPageElementOptions<TElement> = {
@@ -114,6 +135,71 @@ function pickRouteParams(
   return params;
 }
 
+function dynamicParamNameFromRouteSegment(segment: string): string | null {
+  if (segment.startsWith("[[...") && segment.endsWith("]]")) return segment.slice(5, -2);
+  if (segment.startsWith("[...") && segment.endsWith("]")) return segment.slice(4, -1);
+  if (segment.startsWith("[") && segment.endsWith("]")) return segment.slice(1, -1);
+
+  if (!segment.startsWith(":")) return null;
+
+  const name = segment.slice(1).replace(/[+*?]$/, "");
+  return name || null;
+}
+
+function collectParentParamNames(
+  routeSegments: readonly string[],
+  boundaryPosition: number,
+): string[] {
+  const limit = Math.max(0, Math.min(boundaryPosition, routeSegments.length));
+  const names: string[] = [];
+
+  for (const segment of routeSegments.slice(0, limit)) {
+    const name = dynamicParamNameFromRouteSegment(segment);
+    if (name && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+
+  return names;
+}
+
+function getLayoutGenerateStaticParamsBoundary(layoutTreePosition: number | undefined): number {
+  // A layout at app/[id]/layout.tsx has tree position 1, but its
+  // generateStaticParams belongs to the [id] segment and receives only parent
+  // params from segments before [id].
+  return (layoutTreePosition ?? 0) - 1;
+}
+
+export function resolveAppPageGenerateStaticParamsSources(
+  options: ResolveAppPageGenerateStaticParamsSourcesOptions,
+): GenerateStaticParamsSource[] {
+  const sources: GenerateStaticParamsSource[] = [];
+
+  options.layouts?.forEach((layout, index) => {
+    if (typeof layout?.generateStaticParams !== "function") return;
+
+    sources.push({
+      generateStaticParams: layout.generateStaticParams,
+      parentParamNames: collectParentParamNames(
+        options.routeSegments,
+        getLayoutGenerateStaticParamsBoundary(options.layoutTreePositions?.[index]),
+      ),
+    });
+  });
+
+  if (typeof options.page?.generateStaticParams === "function") {
+    sources.push({
+      generateStaticParams: options.page.generateStaticParams,
+      parentParamNames: collectParentParamNames(
+        options.routeSegments,
+        Math.max(0, options.routeSegments.length - 1),
+      ),
+    });
+  }
+
+  return sources;
+}
+
 function areStaticParamsAllowed(
   params: AppPageParams,
   staticParams: readonly Record<string, unknown>[],
@@ -148,22 +234,48 @@ function areStaticParamsAllowed(
   );
 }
 
+function normalizeGenerateStaticParams(
+  generateStaticParams: ValidateAppPageDynamicParamsOptions["generateStaticParams"],
+): GenerateStaticParamsSource[] {
+  const sources = Array.isArray(generateStaticParams)
+    ? generateStaticParams
+    : [generateStaticParams];
+
+  return sources.flatMap((source) => {
+    if (typeof source === "function") {
+      return [{ generateStaticParams: source, parentParamNames: [] }];
+    }
+
+    if (typeof source?.generateStaticParams === "function") {
+      return [source];
+    }
+
+    return [];
+  });
+}
+
 export async function validateAppPageDynamicParams(
   options: ValidateAppPageDynamicParamsOptions,
 ): Promise<Response | null> {
-  if (
-    !options.enforceStaticParamsOnly ||
-    !options.isDynamicRoute ||
-    typeof options.generateStaticParams !== "function"
-  ) {
+  if (!options.enforceStaticParamsOnly || !options.isDynamicRoute) {
     return null;
   }
 
+  const generateStaticParamsSources = normalizeGenerateStaticParams(options.generateStaticParams);
+  if (generateStaticParamsSources.length === 0) {
+    options.clearRequestContext();
+    return new Response("Not Found", { status: 404 });
+  }
+
   try {
-    const staticParams = await options.generateStaticParams({ params: options.params });
-    if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
-      options.clearRequestContext();
-      return new Response("Not Found", { status: 404 });
+    for (const source of generateStaticParamsSources) {
+      const staticParams = await source.generateStaticParams({
+        params: pickRouteParams(options.params, source.parentParamNames),
+      });
+      if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
+        options.clearRequestContext();
+        return new Response("Not Found", { status: 404 });
+      }
     }
   } catch (error) {
     options.logGenerateStaticParamsError?.(error);

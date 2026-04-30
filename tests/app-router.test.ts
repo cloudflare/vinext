@@ -1335,6 +1335,53 @@ describe("App Router integration", () => {
     expect(html).toContain("any-random-slug");
   });
 
+  it("applies dynamicParams = false exported from a layout to child pages", async () => {
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic/known`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain('data-testid="layout-segment-config-dynamic"');
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
+  it("uses layout-level generateStaticParams when enforcing dynamicParams = false", async () => {
+    const known = await fetch(`${baseUrl}/layout-segment-config/layout-gsp/known`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain('data-testid="layout-segment-config-layout-gsp"');
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/layout-gsp/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
+  it("returns 404 when dynamicParams = false has no generateStaticParams sources", async () => {
+    const res = await fetch(`${baseUrl}/layout-segment-config/no-gsp/anything`);
+    expect(res.status).toBe(404);
+  });
+
+  it("passes parent-only params to nested generateStaticParams during dynamicParams validation", async () => {
+    const known = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/docs/intro`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain('data-testid="layout-segment-config-nested-gsp"');
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/docs/missing`);
+    expect(unknown.status).toBe(404);
+  });
+
+  it("defaults dynamicParams to false under a dynamic = 'error' layout", async () => {
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/known`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain('data-testid="layout-segment-config-dynamic-error"');
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
+  it("applies dynamic = 'error' as only-cache fetch policy", async () => {
+    const res = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-fetch`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("only-cache");
+  });
+
   it("generateStaticParams receives parent params in nested dynamic routes", async () => {
     // /shop/[category]/[item] — the item page's generateStaticParams receives { category }
     const res = await fetch(`${baseUrl}/shop/electronics/phone`);
@@ -1375,6 +1422,23 @@ describe("App Router integration", () => {
     const cacheControl = res.headers.get("cache-control");
     expect(cacheControl).toContain("s-maxage=60");
     expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("applies revalidate exported from a layout to child pages", async () => {
+    const res = await fetch(`${baseUrl}/layout-segment-config/revalidate`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="layout-segment-config-revalidate"');
+
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("s-maxage=30");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("applies dynamic = 'force-dynamic' exported from a layout to child pages", async () => {
+    const res = await fetch(`${baseUrl}/layout-segment-config/force-dynamic`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="layout-segment-config-force-dynamic"');
+    expect(res.headers.get("cache-control")).toContain("no-store");
   });
 
   it("search page renders Form component with SSR", async () => {

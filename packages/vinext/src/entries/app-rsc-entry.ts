@@ -59,6 +59,8 @@ const appPageHeadPath = resolveEntryPath("../server/app-page-head.js", import.me
 const appPageParamsPath = resolveEntryPath("../server/app-page-params.js", import.meta.url);
 const appPageResponsePath = resolveEntryPath("../server/app-page-response.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
+const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
+const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
 const cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const appRscRouteMatchingPath = resolveEntryPath(
   "../server/app-rsc-route-matching.js",
@@ -253,6 +255,13 @@ import {
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
+import {
+  resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
+} from ${JSON.stringify(appPageRequestPath)};
+import {
+  resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
+  resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
+} from ${JSON.stringify(appSegmentConfigPath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(cspPath)};
 import { buildPageCacheTags } from ${JSON.stringify(implicitTagsPath)};
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
@@ -314,6 +323,13 @@ function __clearRequestContext() {
   setHeadersContext(null);
   setNavigationContext(null);
   // setNavigationContext(null) already clears root params internally
+}
+
+function __resolveRouteFetchCacheMode(route) {
+  return __resolveAppPageFetchCacheMode({
+    layouts: route.layouts,
+    page: route.page,
+  });
 }
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
@@ -853,6 +869,9 @@ ${prerenderPagesLoaderOption}
     readFormDataWithLimit: __readFormDataWithLimit,
     renderToReadableStream,
     reportRequestError: _reportRequestError,
+    resolveRouteFetchCacheMode(actionRoute) {
+      return __resolveRouteFetchCacheMode(actionRoute);
+    },
     request,
     sanitizeErrorForClient(error) {
       return __sanitizeErrorForClient(error);
@@ -992,6 +1011,16 @@ ${prerenderPagesLoaderOption}
   }
 
   const PageComponent = route.page?.default;
+  const __segmentConfig = __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    page: route.page,
+  });
+  const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    routeSegments: route.routeSegments,
+  });
   const _asyncRouteParams = makeThenableParams(params);
   return __dispatchAppPage({
     buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
@@ -1011,12 +1040,13 @@ ${prerenderPagesLoaderOption}
       return createRscOnErrorHandler(request, pathname, routePath);
     },
     debugClassification: __classDebug,
-    dynamicConfig: route.page?.dynamic,
-    dynamicParamsConfig: route.page?.dynamicParams,
+    dynamicConfig: __segmentConfig.dynamicConfig,
+    dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+    fetchCache: __segmentConfig.fetchCache ?? null,
     findIntercept(pathname) {
       return findIntercept(pathname, interceptionContextHeader);
     },
-    generateStaticParams: route.page?.generateStaticParams,
+    generateStaticParams: __generateStaticParams,
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
@@ -1024,7 +1054,7 @@ ${prerenderPagesLoaderOption}
     getSourceRoute(sourceRouteIndex) {
       return routes[sourceRouteIndex];
     },
-    hasGenerateStaticParams: typeof route.page?.generateStaticParams === "function",
+    hasGenerateStaticParams: __generateStaticParams.length > 0,
     hasPageDefaultExport: !!PageComponent,
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
@@ -1070,7 +1100,10 @@ ${prerenderPagesLoaderOption}
     },
     renderToReadableStream,
     request,
-    revalidateSeconds: typeof route.page?.revalidate === "number" ? route.page.revalidate : null,
+    revalidateSeconds: __segmentConfig.revalidateSeconds,
+    resolveRouteFetchCacheMode(targetRoute) {
+      return __resolveRouteFetchCacheMode(targetRoute);
+    },
     rootForbiddenModule,
     rootNotFoundModule,
     rootUnauthorizedModule,

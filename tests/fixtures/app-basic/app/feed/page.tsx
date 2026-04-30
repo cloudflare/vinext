@@ -1,6 +1,8 @@
 import Link from "next/link";
 
-export default function FeedPage() {
+export default async function FeedPage() {
+  await fetch("data:text/plain,feed-source", { cache: "no-store" });
+
   return (
     <div data-testid="feed-page">
       <h1>Photo Feed</h1>
