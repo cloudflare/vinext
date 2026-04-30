@@ -1032,7 +1032,7 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-    })
+    }, { route: __pathname })
   );
 }
 
@@ -1951,7 +1951,7 @@ ${prerenderPagesLoaderOption}
       _getRequestExecutionContext()?.waitUntil(__cachePromise);
     },
   });
-}, { route: __pathname })
+}
 
 if (import.meta.hot) {
   import.meta.hot.accept();
