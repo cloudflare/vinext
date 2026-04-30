@@ -31,7 +31,6 @@ import {
   snapshotRscResponse,
   setMountedSlotsHeader,
   setNavigationContext,
-  toRscUrl,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
 } from "vinext/shims/navigation";
@@ -76,6 +75,12 @@ import {
   getServerActionNotFoundClientMessage,
   isServerActionNotFoundResponse,
 } from "./server-action-not-found.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
+} from "./app-rsc-cache-busting.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
@@ -390,14 +395,6 @@ function getRequestState(
   }
 }
 
-function createRscRequestHeaders(interceptionContext: string | null): Headers {
-  const headers = new Headers({ Accept: "text/x-component" });
-  if (interceptionContext !== null) {
-    headers.set("X-Vinext-Interception-Context", interceptionContext);
-  }
-  return headers;
-}
-
 // Dev-only callback invoked when DevRecoveryBoundary catches. The replaced
 // subtree means NavigationCommitSignal's useLayoutEffect never fires, so the
 // URL update for the in-flight navigation would otherwise be lost. Force-drain
@@ -696,7 +693,11 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     return createProgressiveRscStream();
   }
 
-  const rscResponse = await fetch(toRscUrl(window.location.pathname + window.location.search));
+  const rscHeaders = createRscRequestHeaders();
+  const rscResponse = await fetch(
+    await createRscRequestUrl(window.location.pathname + window.location.search, rscHeaders),
+    { credentials: "include", headers: rscHeaders },
+  );
 
   if (!rscResponse.ok) {
     return recoverFromBadInitialRscResponse(`returned ${rscResponse.status}`);
@@ -706,7 +707,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
   // parsed as RSC and would throw the same opaque parse error this fallback
   // exists to prevent.
   const contentType = rscResponse.headers.get("content-type") ?? "";
-  if (!contentType.startsWith("text/x-component")) {
+  if (!contentType.startsWith(VINEXT_RSC_CONTENT_TYPE)) {
     return recoverFromBadInitialRscResponse(
       `returned non-RSC content-type "${contentType || "(missing)"}"`,
     );
@@ -755,11 +756,14 @@ function registerServerActionCallback(): void {
       previousNextUrl: currentState.previousNextUrl,
     });
 
-    const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
-      method: "POST",
-      headers,
-      body,
-    });
+    const fetchResponse = await fetch(
+      await createRscRequestUrl(window.location.pathname + window.location.search, headers),
+      {
+        method: "POST",
+        headers,
+        body,
+      },
+    );
 
     if (isServerActionNotFoundResponse(fetchResponse)) {
       throw new Error(getServerActionNotFoundClientMessage(id));
@@ -910,7 +914,6 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         }
 
         const url = new URL(currentHref, window.location.origin);
-        const rscUrl = toRscUrl(url.pathname + url.search);
         const requestState = getRequestState(navigationKind, currentPrevNextUrl);
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
@@ -932,6 +935,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         const elementsAtNavStart = getBrowserRouterState().elements;
         const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
+        const requestHeaders = createRscRequestHeaders({
+          interceptionContext: requestInterceptionContext,
+        });
+        if (mountedSlotsHeader) {
+          requestHeaders.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+        }
+        const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const cachedRoute = getVisitedResponse(
           rscUrl,
           requestInterceptionContext,
@@ -995,10 +1005,6 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         }
 
         if (!navResponse) {
-          const requestHeaders = createRscRequestHeaders(requestInterceptionContext);
-          if (mountedSlotsHeader) {
-            requestHeaders.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
-          }
           navResponse = await fetch(rscUrl, {
             headers: requestHeaders,
             credentials: "include",
@@ -1218,10 +1224,17 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // Interception context on HMR re-renders is intentionally deferred:
         // preserving intercepted modal state across HMR reloads is out of scope
         // for the previousNextUrl mechanism.
+        const hmrHeaders = createRscRequestHeaders();
         await browserNavigationController.hmrReplaceTree(
           normalizeAppElementsPromise(
             createFromFetch<AppWireElements>(
-              fetch(toRscUrl(window.location.pathname + window.location.search)),
+              fetch(
+                await createRscRequestUrl(
+                  window.location.pathname + window.location.search,
+                  hmrHeaders,
+                ),
+                { headers: hmrHeaders },
+              ),
             ),
           ),
           navigationSnapshot,

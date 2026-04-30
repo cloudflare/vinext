@@ -1,4 +1,5 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type AppPageFontData = {
@@ -164,7 +165,7 @@ export async function renderAppPageHtmlResponse(
 
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
-    Vary: "RSC, Accept",
+    Vary: VINEXT_RSC_VARY_HEADER,
   });
 
   if (options.fontLinkHeader) {

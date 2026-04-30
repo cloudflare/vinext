@@ -1,5 +1,28 @@
 const ADDITIVE_RESPONSE_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 
+function mergeVaryHeader(target: Headers, value: string): void {
+  const existing = target.get("Vary");
+  if (!existing) {
+    target.set("Vary", value);
+    return;
+  }
+
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const token of `${existing}, ${value}`.split(",")) {
+    const trimmed = token.trim();
+    if (!trimmed) continue;
+
+    const normalized = trimmed.toLowerCase();
+    if (seen.has(normalized)) continue;
+
+    seen.add(normalized);
+    merged.push(trimmed);
+  }
+
+  target.set("Vary", merged.join(", "));
+}
+
 /**
  * Merge middleware response headers into a target Headers object.
  *
@@ -16,6 +39,11 @@ export function mergeMiddlewareResponseHeaders(
   }
 
   for (const [key, value] of middlewareHeaders) {
+    if (key.toLowerCase() === "vary") {
+      mergeVaryHeader(target, value);
+      continue;
+    }
+
     if (ADDITIVE_RESPONSE_HEADER_NAMES.has(key.toLowerCase())) {
       target.append(key, value);
       continue;

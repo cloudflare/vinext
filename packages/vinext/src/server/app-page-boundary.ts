@@ -1,4 +1,5 @@
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 export type AppPageParams = Record<string, string | string[]>;
@@ -226,7 +227,7 @@ export async function renderAppPageBoundaryResponse<TElement>(
     // their ALS-backed state while the stream is being read.
     const headers = new Headers({
       "Content-Type": "text/x-component; charset=utf-8",
-      Vary: "RSC, Accept",
+      Vary: VINEXT_RSC_VARY_HEADER,
     });
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
 

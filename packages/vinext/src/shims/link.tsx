@@ -22,13 +22,17 @@ import React, {
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import {
   getCurrentInterceptionContext,
-  toRscUrl,
   getPrefetchedUrls,
   getMountedSlotsHeader,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
 import { createAppPayloadCacheKey } from "../server/app-elements.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
+} from "../server/app-rsc-cache-busting.js";
 import { isDangerousScheme } from "./url-safety.js";
 import {
   resolveRelativeHref,
@@ -127,50 +131,50 @@ function prefetchUrl(href: string): void {
 
   const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
 
-  // Distinguish the same visible URL when it is prefetched from different
-  // interception sources such as /feed vs /gallery.
-  const rscUrl = toRscUrl(fullHref);
-  const interceptionContext = getCurrentInterceptionContext();
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
-  const prefetched = getPrefetchedUrls();
-  if (prefetched.has(cacheKey)) return;
-  prefetched.add(cacheKey);
-
   const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
-    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      const mountedSlotsHeader = getMountedSlotsHeader();
-      const headers = new Headers({ Accept: "text/x-component" });
-      if (mountedSlotsHeader) {
-        headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+    void (async () => {
+      if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+        const interceptionContext = getCurrentInterceptionContext();
+        const mountedSlotsHeader = getMountedSlotsHeader();
+        const headers = createRscRequestHeaders({ interceptionContext });
+        if (mountedSlotsHeader) {
+          headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+        }
+        // Distinguish the same visible URL when it is prefetched from different
+        // request contexts such as /feed vs /gallery or different mounted slots.
+        const rscUrl = await createRscRequestUrl(fullHref, headers);
+        const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+        const prefetched = getPrefetchedUrls();
+        if (prefetched.has(cacheKey)) return;
+        prefetched.add(cacheKey);
+        prefetchRscResponse(
+          rscUrl,
+          fetch(rscUrl, {
+            headers,
+            credentials: "include",
+            priority: "low" as const,
+            // @ts-expect-error — purpose is a valid fetch option in some browsers
+            purpose: "prefetch",
+          }),
+          interceptionContext,
+          mountedSlotsHeader,
+        );
+      } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
+        // Pages Router: inject a prefetch link for the target page module
+        // We can't easily resolve the target page's module URL from the Link,
+        // so we create a <link rel="prefetch"> for the HTML page which helps
+        // the browser's preload scanner.
+        const link = document.createElement("link");
+        link.rel = "prefetch";
+        link.href = fullHref;
+        link.as = "document";
+        document.head.appendChild(link);
       }
-      if (interceptionContext !== null) {
-        headers.set("X-Vinext-Interception-Context", interceptionContext);
-      }
-      prefetchRscResponse(
-        rscUrl,
-        fetch(rscUrl, {
-          headers,
-          credentials: "include",
-          priority: "low" as const,
-          // @ts-expect-error — purpose is a valid fetch option in some browsers
-          purpose: "prefetch",
-        }),
-        interceptionContext,
-        mountedSlotsHeader,
-      );
-    } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
-      // Pages Router: inject a prefetch link for the target page module
-      // We can't easily resolve the target page's module URL from the Link,
-      // so we create a <link rel="prefetch"> for the HTML page which helps
-      // the browser's preload scanner.
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.href = fullHref;
-      link.as = "document";
-      document.head.appendChild(link);
-    }
+    })().catch((error) => {
+      console.error("[vinext] RSC prefetch setup error:", error);
+    });
   });
 }
 

@@ -946,7 +946,7 @@ describe("mounted slot helpers", () => {
 });
 
 describe("resolveServerActionRequestState", () => {
-  it("includes only Accept and x-rsc-action when previousNextUrl is null and no slots are mounted", () => {
+  it("includes only the RSC markers and x-rsc-action when previousNextUrl is null and no slots are mounted", () => {
     const elements = createResolvedElements("route:/settings", "/");
 
     const { headers } = resolveServerActionRequestState({
@@ -956,8 +956,9 @@ describe("resolveServerActionRequestState", () => {
       previousNextUrl: null,
     });
 
-    expect(Array.from(headers.keys()).sort()).toEqual(["accept", "x-rsc-action"]);
+    expect(Array.from(headers.keys()).sort()).toEqual(["accept", "rsc", "x-rsc-action"]);
     expect(headers.get("accept")).toBe("text/x-component");
+    expect(headers.get("rsc")).toBe("1");
     expect(headers.get("x-rsc-action")).toBe("action-abc");
   });
 

@@ -45,6 +45,7 @@ import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
@@ -479,7 +480,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
       });
       const interceptHeaders = new Headers({
         "Content-Type": "text/x-component; charset=utf-8",
-        Vary: "RSC, Accept",
+        Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       return new Response(interceptStream, {

@@ -13,6 +13,11 @@
 import * as React from "react";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { createAppPayloadCacheKey } from "../server/app-elements.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
+} from "../server/app-rsc-cache-busting.js";
 import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
@@ -1285,34 +1290,35 @@ const _appRouter = {
   prefetch(href: string): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    // Prefetch the RSC payload for the target route and store in cache.
-    // We must add to prefetchedUrls manually for deduplication.
-    // prefetchRscResponse only manages the cache Map, not the URL set.
-    const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
-    const rscUrl = toRscUrl(fullHref);
-    const interceptionContext = getCurrentInterceptionContext();
-    const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
-    const prefetched = getPrefetchedUrls();
-    if (prefetched.has(cacheKey)) return;
-    prefetched.add(cacheKey);
-    const mountedSlotsHeader = getMountedSlotsHeader();
-    const headers = new Headers({ Accept: "text/x-component" });
-    if (mountedSlotsHeader) {
-      headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
-    }
-    if (interceptionContext !== null) {
-      headers.set("X-Vinext-Interception-Context", interceptionContext);
-    }
-    prefetchRscResponse(
-      rscUrl,
-      fetch(rscUrl, {
-        headers,
-        credentials: "include",
-        priority: "low" as RequestInit["priority"],
-      }),
-      interceptionContext,
-      mountedSlotsHeader,
-    );
+    void (async () => {
+      // Prefetch the RSC payload for the target route and store in cache.
+      // We must add to prefetchedUrls manually for deduplication.
+      // prefetchRscResponse only manages the cache Map, not the URL set.
+      const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
+      const interceptionContext = getCurrentInterceptionContext();
+      const mountedSlotsHeader = getMountedSlotsHeader();
+      const headers = createRscRequestHeaders({ interceptionContext });
+      if (mountedSlotsHeader) {
+        headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+      }
+      const rscUrl = await createRscRequestUrl(fullHref, headers);
+      const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+      const prefetched = getPrefetchedUrls();
+      if (prefetched.has(cacheKey)) return;
+      prefetched.add(cacheKey);
+      prefetchRscResponse(
+        rscUrl,
+        fetch(rscUrl, {
+          headers,
+          credentials: "include",
+          priority: "low" as RequestInit["priority"],
+        }),
+        interceptionContext,
+        mountedSlotsHeader,
+      );
+    })().catch((error) => {
+      console.error("[vinext] RSC prefetch setup error:", error);
+    });
   },
 };
 

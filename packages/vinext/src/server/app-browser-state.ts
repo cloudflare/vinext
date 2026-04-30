@@ -6,6 +6,7 @@ import {
   type AppElements,
   type LayoutFlags,
 } from "./app-elements.js";
+import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -120,10 +121,8 @@ type ResolveServerActionRequestStateResult = {
 export function resolveServerActionRequestState(
   options: ResolveServerActionRequestStateOptions,
 ): ResolveServerActionRequestStateResult {
-  const headers = new Headers({
-    Accept: "text/x-component",
-    "x-rsc-action": options.actionId,
-  });
+  const headers = createRscRequestHeaders();
+  headers.set("x-rsc-action", options.actionId);
 
   const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
     options.previousNextUrl,

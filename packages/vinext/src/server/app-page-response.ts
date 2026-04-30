@@ -4,6 +4,7 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
@@ -191,7 +192,7 @@ export function buildAppPageRscResponse(
 ): Response {
   const headers = new Headers({
     "Content-Type": "text/x-component; charset=utf-8",
-    Vary: "RSC, Accept",
+    Vary: VINEXT_RSC_VARY_HEADER,
   });
 
   if (options.params && Object.keys(options.params).length > 0) {
@@ -225,7 +226,7 @@ export function buildAppPageHtmlResponse(
 ): Response {
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
-    Vary: "RSC, Accept",
+    Vary: VINEXT_RSC_VARY_HEADER,
   });
 
   if (options.policy.cacheControl) {

@@ -1,4 +1,5 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 
@@ -157,7 +158,7 @@ export function buildAppPageCachedResponse(
       : (options.cacheControl.expire ?? options.expireSeconds);
   const headers = {
     "Cache-Control": buildAppPageCacheControl(options.cacheState, revalidateSeconds, expireSeconds),
-    Vary: "RSC, Accept",
+    Vary: VINEXT_RSC_VARY_HEADER,
     "X-Vinext-Cache": options.cacheState,
   };
 

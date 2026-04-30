@@ -1,5 +1,6 @@
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
@@ -579,7 +580,7 @@ export async function handleServerActionRscRequest<
       options.clearRequestContext();
       const redirectHeaders = new Headers({
         "Content-Type": "text/x-component; charset=utf-8",
-        Vary: "RSC, Accept",
+        Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
       redirectHeaders.set("x-action-redirect", actionRedirect.url);
@@ -647,7 +648,7 @@ export async function handleServerActionRscRequest<
 
     const actionHeaders = new Headers({
       "Content-Type": "text/x-component; charset=utf-8",
-      Vary: "RSC, Accept",
+      Vary: VINEXT_RSC_VARY_HEADER,
     });
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     const actionResponse = new Response(rscStream, {

@@ -8,6 +8,7 @@ import {
   readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 type TestRoute = {
   id: string;
@@ -588,7 +589,7 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(response?.headers.get("vary")).toBe("RSC, Accept");
+    expect(response?.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response?.headers.get("x-middleware")).toBe("present");
     expect(response?.headers.getSetCookie()).toEqual(["action=1; Path=/", "draft=1; Path=/"]);
     expect(await response?.text()).toBe("flight-payload");
