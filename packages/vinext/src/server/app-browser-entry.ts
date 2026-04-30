@@ -78,6 +78,7 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  stripRscCacheBustingSearchParam,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_MOUNTED_SLOTS_HEADER,
 } from "./app-rsc-cache-busting.js";
@@ -1039,6 +1040,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           let hardNavTarget = currentHref;
           if (responseUrl) {
             const parsed = new URL(responseUrl, window.location.origin);
+            stripRscCacheBustingSearchParam(parsed);
             const origUrl = new URL(currentHref, window.location.origin);
             let pathname = parsed.pathname.replace(/\.rsc$/, "");
             // toRscUrl strips trailing slash before appending .rsc, so the
@@ -1063,6 +1065,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         }
 
         const finalUrl = new URL(navResponseUrl ?? navResponse.url, window.location.origin);
+        stripRscCacheBustingSearchParam(finalUrl);
         const requestedUrl = new URL(rscUrl, window.location.origin);
 
         if (finalUrl.pathname !== requestedUrl.pathname) {

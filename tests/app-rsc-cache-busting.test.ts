@@ -5,6 +5,7 @@ import {
   createRscRequestUrl,
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
+  stripRscCacheBustingSearchParam,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
@@ -49,6 +50,22 @@ describe("App Router RSC cache-busting", () => {
     setRscCacheBustingSearchParam(url, "fresh");
 
     expect(`${url.pathname}${url.search}`).toBe("/photos/42.rsc?tab=latest&_rsc=fresh");
+  });
+
+  it("strips internal _rsc params before exposing response URLs to browser navigation", () => {
+    const url = new URL("https://example.com/photos/42.rsc?tab=latest&_rsc=fresh&view=modal");
+
+    stripRscCacheBustingSearchParam(url);
+
+    expect(`${url.pathname}${url.search}`).toBe("/photos/42.rsc?tab=latest&view=modal");
+  });
+
+  it("strips bare internal _rsc params without rewriting unrelated query encoding", () => {
+    const url = new URL("https://example.com/search.rsc?q=custom%20spacing&_rsc");
+
+    stripRscCacheBustingSearchParam(url);
+
+    expect(`${url.pathname}${url.search}`).toBe("/search.rsc?q=custom%20spacing");
   });
 
   it("redirects RSC requests with missing cache-busting params to the canonical URL", async () => {
