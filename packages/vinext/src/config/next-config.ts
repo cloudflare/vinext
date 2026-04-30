@@ -601,8 +601,8 @@ export async function resolveNextConfig(
   // transforms, not SWC, so automatic polyfill injection is not applicable.
   if (experimental?.swcEnvOptions !== undefined) {
     console.warn(
-      '[vinext] next.config option "experimental.swcEnvOptions" is not yet supported and will be ignored. ' +
-        "vinext uses Vite for transforms, not SWC, so automatic polyfill injection via core-js is not applicable.",
+      '[vinext] next.config option "experimental.swcEnvOptions" is not applicable and will be ignored (vinext uses Vite, not SWC). ' +
+        "A Vite-compatible polyfill solution may be explored in the future.",
     );
   }
 

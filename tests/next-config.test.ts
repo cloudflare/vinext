@@ -753,6 +753,42 @@ describe("resolveNextConfig external rewrite warning", () => {
   });
 });
 
+describe("resolveNextConfig swcEnvOptions warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.swcEnvOptions is set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { swcEnvOptions: { mode: "usage" } },
+    });
+
+    const swcWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("swcEnvOptions"),
+    );
+
+    expect(swcWarning).toBeDefined();
+    expect(swcWarning![0]).toContain("swcEnvOptions");
+    expect(swcWarning![0]).toContain("not applicable");
+    expect(swcWarning![0]).toContain("vinext uses Vite");
+  });
+
+  it("does not warn when experimental.swcEnvOptions is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {},
+    });
+
+    const swcWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("swcEnvOptions"),
+    );
+    expect(swcWarning).toBeUndefined();
+  });
+});
+
 describe("resolveNextConfig cacheHandler", () => {
   it("resolves file:// URLs to filesystem paths", async () => {
     const resolved = await resolveNextConfig({

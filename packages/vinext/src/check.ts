@@ -175,7 +175,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.swcEnvOptions": {
     status: "unsupported",
-    detail: "polyfill injection via SWC not applicable; vinext uses Vite for transforms",
+    detail:
+      "not applicable; vinext uses Vite instead of SWC. A Vite-compatible polyfill solution may be explored in the future.",
   },
   "i18n.domains": {
     status: "partial",
