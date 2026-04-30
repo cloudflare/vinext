@@ -264,6 +264,7 @@ describe("prerenderPages — export mode (pages-basic)", () => {
   });
 
   it("includes stack trace in error when enablePrerenderSourceMaps is true", () => {
+    // enablePrerenderSourceMaps defaults to true in resolveNextConfig (line 230)
     const errorRoute = findRoute(results, "/error-throw");
     expect(errorRoute).toMatchObject({ status: "error" });
     if (errorRoute?.status === "error") {
