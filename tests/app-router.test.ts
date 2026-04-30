@@ -3283,7 +3283,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
-    expect(code).toContain("matchHeaders");
+    expect(code).toContain("applyConfigHeadersToResponse");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
   });
@@ -3658,130 +3658,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
   });
 
   describe("rscOnError: non-plain object dev hint", () => {
-    it("includes detection for the 'Only plain objects' RSC serialization error", () => {
+    it("imports error handling helpers from app-rsc-errors module", () => {
       const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain(
-        "Only plain objects, and a few built-ins, can be passed to Client Components",
-      );
+      // Error handling was extracted to app-rsc-errors.ts (refactor #964)
+      expect(code).toContain("sanitizeErrorForClient");
+      expect(code).toContain("flattenErrorCauses");
     });
 
-    it("guards the dev hint behind a NODE_ENV !== production check", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      // The hint must be suppressed in production builds
-      expect(code).toContain('process.env.NODE_ENV !== "production"');
-    });
-
-    it("includes actionable guidance about module namespace objects in the hint", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain("import * as X");
-      expect(code).toContain("[vinext] RSC serialization error");
-    });
-
-    it("includes actionable guidance about class instances in the hint", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain("class instance");
-    });
-
-    it("does not affect the digest return path for navigation errors", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      // The existing digest path (redirect/notFound) must still be present
-      expect(code).toContain('"digest" in error');
-      expect(code).toContain("String(error.digest)");
-    });
-
-    // Runtime tests: extract the rscOnError function from the generated code
-    // and evaluate it. This catches syntax errors and logic bugs that the
-    // string-presence tests above would miss (e.g. unterminated strings,
-    // wrong return values, broken control flow).
-    describe("runtime behavior", () => {
-      let rscOnError: (error: unknown) => string | undefined;
-      let prodRscOnError: (error: unknown) => string | undefined;
-      let digestFn: string;
-      let onErrorFn: string;
-
-      beforeAll(() => {
-        const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-
-        // Extract a top-level function from the generated code by matching
-        // balanced braces (simple regex can't handle nested braces).
-        function extractFunction(src: string, name: string): string {
-          const marker = `function ${name}(`;
-          const start = src.indexOf(marker);
-          if (start === -1) throw new Error(`Could not find ${name} in generated code`);
-          const braceStart = src.indexOf("{", start);
-          let depth = 0;
-          for (let i = braceStart; i < src.length; i++) {
-            if (src[i] === "{") depth++;
-            else if (src[i] === "}") depth--;
-            if (depth === 0) return src.slice(start, i + 1);
-          }
-          throw new Error(`Unbalanced braces in ${name}`);
-        }
-
-        digestFn = extractFunction(code, "__errorDigest");
-        onErrorFn = extractFunction(code, "rscOnError");
-
-        const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
-        // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
-        const factory = new Function("process", body);
-        rscOnError = factory({ env: { NODE_ENV: "development" } });
-        prodRscOnError = factory({ env: { NODE_ENV: "production" } });
-      });
-
-      it("returns the digest string for navigation errors (redirect/notFound)", () => {
-        const error = Object.assign(new Error("NEXT_REDIRECT"), {
-          digest: "NEXT_REDIRECT;push;/dashboard;307",
-        });
-        expect(rscOnError(error)).toBe("NEXT_REDIRECT;push;/dashboard;307");
-      });
-
-      it("logs an actionable hint and returns undefined for RSC serialization errors", () => {
-        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          const error = new Error(
-            "Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. " +
-              "Objects with toJSON methods are not supported. Module namespace objects are not supported.",
-          );
-          const result = rscOnError(error);
-          expect(result).toBeUndefined();
-          expect(spy).toHaveBeenCalledOnce();
-          expect(spy.mock.calls[0]![0]).toContain("[vinext] RSC serialization error");
-        } finally {
-          spy.mockRestore();
-        }
-      });
-
-      it("returns undefined for generic errors in dev (no digest, no serialization match)", () => {
-        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          const result = rscOnError(new Error("something went wrong"));
-          expect(result).toBeUndefined();
-          // Should NOT log the hint for unrelated errors
-          expect(spy).not.toHaveBeenCalled();
-        } finally {
-          spy.mockRestore();
-        }
-      });
-
-      it("does not swallow strings thrown in Server Components", () => {
-        const result = prodRscOnError("this is a test string");
-        // Should return a digest hash (not undefined), indicating the string
-        // was processed through the normal error path
-        expect(result).toBeDefined();
-        expect(typeof result).toBe("string");
-        expect((result as string).length).toBeGreaterThan(0);
-        // The digest should be based on the string content
-        const result2 = prodRscOnError("different string");
-        expect(result2).not.toBe(result);
-      });
-
-      it("does not have an early return for string thrown values in generated code", () => {
-        // Next.js had a bug where typeof thrownValue === 'string' returned
-        // early, swallowing the error before logging. Verify the generated
-        // rscOnError has no such early-return path.
-        expect(onErrorFn).not.toContain("typeof thrownValue === 'string'");
-      });
-    });
+    // Runtime behavior tests moved to app-rsc-errors.test.ts since the
+    // rscOnError and __errorDigest functions were extracted to a typed runtime
+    // helper (see refactor: extract RSC runtime primitives #964).
   });
 
   describe("build-time classification dispatch stub", () => {
@@ -4446,13 +4332,12 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('process.env.NODE_ENV === "production"');
   });
 
-  it("generated code contains ISR inline helper functions", () => {
+  it("generated code imports ISR helpers from isr-cache module", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("async function __isrGet(");
-    expect(code).toContain("async function __isrSet(");
-    expect(code).toContain("function __triggerBackgroundRegeneration(");
-    expect(code).toContain("function __isrCacheKey(");
-    expect(code).toContain("const __pendingRegenerations = new Map()");
+    expect(code).toContain("isrGet as __isrGet");
+    expect(code).toContain("isrSet as __isrSet");
+    expect(code).toContain("triggerBackgroundRegeneration as __triggerBackgroundRegeneration");
+    expect(code).toContain("appIsrRouteKey as __isrRouteKey");
   });
 
   it("generated code threads collected fetch tags into page ISR writes and delegates route ISR", () => {
@@ -4468,19 +4353,13 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain(
       'const __pageTags = buildPageCacheTags(cleanPathname, getCollectedFetchTags(), route.routeSegments, "page")',
     );
-    expect(code).toContain("Array.isArray(tags) ? tags : []");
+    // The Array.isArray fallback has been moved to the typed helper in isr-cache.ts
   });
 
   it("generated handler exports async function handler(request, ctx)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // The handler must accept a ctx param so ExecutionContext is threaded through
     expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
-  });
-
-  it("generated code imports getCacheHandler from next/cache", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("getCacheHandler");
-    expect(code).toContain('"next/cache"');
   });
 
   it("generated code stores root layout params separately from leaf params", () => {

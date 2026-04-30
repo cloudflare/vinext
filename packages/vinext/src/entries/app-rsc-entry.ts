@@ -41,6 +41,7 @@ const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
 );
+const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
 const implicitTagsPath = resolveEntryPath("../server/implicit-tags.js", import.meta.url);
 const appPageCachePath = resolveEntryPath("../server/app-page-cache.js", import.meta.url);
 const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
@@ -73,11 +74,16 @@ const appPrerenderEndpointsPath = resolveEntryPath(
   "../server/app-prerender-endpoints.js",
   import.meta.url,
 );
-const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
-const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
-const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
 const prerenderWorkUnitSetupPath = resolveEntryPath(
   "../server/prerender-work-unit-setup.js",
+  import.meta.url,
+);
+const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
+const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
+const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
+const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
+const metadataRouteResponsePath = resolveEntryPath(
+  "../server/metadata-route-response.js",
   import.meta.url,
 );
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
@@ -186,16 +192,16 @@ function renderToReadableStream(model, options) {
 }
 import { createElement } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
-${metaRouteEntries.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(metadataRoutesPath)};` : ""}
-import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
+import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
+import { applyConfigHeadersToResponse, resolvePublicFileRoute, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
@@ -203,7 +209,13 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  readActionBodyWithLimit as __readBodyWithLimit,
+  readActionFormDataWithLimit as __readFormDataWithLimit,
 } from ${JSON.stringify(appServerActionExecutionPath)};
+import {
+  createRscOnErrorHandler as __createRscOnErrorHandler,
+  sanitizeErrorForClient as __sanitizeErrorForClient,
+} from ${JSON.stringify(appRscErrorsPath)};
 import { readAppPageCacheResponse as __readAppPageCacheResponse } from ${JSON.stringify(appPageCachePath)};
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
@@ -233,6 +245,7 @@ import {
 } from ${JSON.stringify(appPageParamsPath)};
 import {
   collectAppPageSearchParams as __collectAppPageSearchParams,
+  resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead as __resolveAppPageHead,
 } from ${JSON.stringify(appPageHeadPath)};
 import {
@@ -254,23 +267,32 @@ import {
   createStaticGenerationHeadersContext as __createStaticGenerationHeadersContext,
 } from ${JSON.stringify(appStaticGenerationPath)};
 import { buildPageCacheTags } from ${JSON.stringify(implicitTagsPath)};
-import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from ${JSON.stringify(rootParamsShimPath)};
+import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
-  matchAppRscRoutePattern as __matchAppRscRoutePattern,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
   handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
 } from ${JSON.stringify(appPrerenderEndpointsPath)};
+import {
+  appIsrHtmlKey as __isrHtmlKey,
+  appIsrRscKey as __isrRscKey,
+  appIsrRouteKey as __isrRouteKey,
+  isrGet as __isrGet,
+  isrSet as __isrSet,
+  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
+  triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+} from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from ${JSON.stringify(prerenderWorkUnitSetupPath)};
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from ${JSON.stringify(errorCausePath)};
-import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from ${JSON.stringify(prerenderWorkUnitSetupPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -307,25 +329,6 @@ function __clearRequestContext() {
   // setNavigationContext(null) already clears root params internally
 }
 
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR uses the MemoryCacheHandler (or configured KV handler).
-//
-// These helpers are inlined instead of imported from isr-cache.js because
-// the virtual RSC entry module runs in the RSC Vite environment which
-// cannot use dynamic imports at the module-evaluation level for server-only
-// modules, and direct imports must use the pre-computed absolute paths.
-async function __isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function __isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
-}
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
 // cache entry so they can be replayed on HIT. We don't do this because:
@@ -336,82 +339,6 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 // In practice this means ISR-cached responses won't replay render-time set-cookie
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
-const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  if (__pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => {
-      console.error("[vinext] ISR regen failed for " + key + ":", err);
-      if (errorContext) {
-        void _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: key, method: "GET", headers: {} },
-          {
-            routerKind: "App Router",
-            routePath: errorContext.routePath,
-            routeType: errorContext.routeType,
-            revalidateReason: "stale",
-          },
-        );
-      }
-    })
-    .finally(() => __pendingRegenerations.delete(key));
-  __pendingRegenerations.set(key, promise);
-  const ctx = _getRequestExecutionContext();
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
-}
-// HTML and RSC are stored under separate keys — matching Next.js's file-system
-// layout (.html / .rsc) — so each request type reads and writes its own key
-// independently with no races or partial-entry sentinels.
-//
-// Key format: "app:<buildId>:<pathname>:<suffix>"
-// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
-// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
-// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
-// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
-// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
-// realistic pathname lengths.
-// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
-function __isrFnv1a64(s) {
-  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
-  let h1 = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
-  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
-  // so the two rounds are independently seeded and their outputs are decorrelated.
-  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
-  // 64-bit hash. A random non-standard seed would also work; we derive it from a
-  // fixed string so the choice is auditable and deterministic across rebuilds.
-  let h2 = 0x050c5d1f;
-  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
-  return h1.toString(36) + h2.toString(36);
-}
-function __isrCacheKey(pathname, suffix) {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
-  const buildId = process.env.__VINEXT_BUILD_ID;
-  const prefix = buildId ? "app:" + buildId : "app";
-  const key = prefix + ":" + normalized + ":" + suffix;
-  if (key.length <= 200) return key;
-  // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
-}
-function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
-function __isrRscKey(pathname, mountedSlotsHeader) {
-  if (!mountedSlotsHeader) return __isrCacheKey(pathname, "rsc");
-  return __isrCacheKey(pathname, "rsc:" + __isrFnv1a64(mountedSlotsHeader));
-}
-function __normalizeMountedSlotsHeader(raw) {
-  if (!raw) return null;
-  const normalized = Array.from(
-    new Set(
-      raw
-        .split(/\\s+/)
-        .filter(Boolean),
-    ),
-  ).sort().join(" ");
-  return normalized || null;
-}
-function __isrRouteKey(pathname) { return __isrCacheKey(pathname, "route"); }
 // Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
 // Matches the env var Next.js uses for its own cache debug output so operators
 // have a single knob for all cache tracing.
@@ -429,124 +356,6 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
     }
   : undefined;
 
-// Normalize null-prototype objects from route-pattern matching into thenable objects
-// that work both as Promises (for Next.js 15+ async params) and as plain
-// objects with synchronous property access (for pre-15 code like params.id).
-//
-// route-pattern matching uses Object.create(null), producing objects without
-// Object.prototype. The RSC serializer rejects these. Spreading ({...obj})
-// restores a normal prototype. Object.assign onto the Promise preserves
-// synchronous property access (params.id, params.slug) that existing
-// components and test fixtures rely on.
-function makeThenableParams(obj) {
-  const plain = { ...obj };
-  return Object.assign(Promise.resolve(plain), plain);
-}
-
-// djb2 hash — matches Next.js's stringHash for digest generation.
-// Produces a stable numeric string from error message + stack.
-function __errorDigest(str) {
-  let hash = 5381;
-  for (let i = str.length - 1; i >= 0; i--) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return (hash >>> 0).toString();
-}
-
-// Sanitize an error for client consumption. In production, replaces the error
-// with a generic Error that only carries a digest hash (matching Next.js
-// behavior). In development, returns the original error for debugging.
-// Navigation errors (redirect, notFound, etc.) are always passed through
-// unchanged since their digests are used for client-side routing.
-function __sanitizeErrorForClient(error) {
-  // Navigation errors must pass through with their digest intact
-  if (__resolveAppPageSpecialError(error)) {
-    return error;
-  }
-  // In development, pass through the original error for debugging
-  if (process.env.NODE_ENV !== "production") {
-    return error;
-  }
-  // In production, create a sanitized error with only a digest hash
-  const msg = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? (error.stack || "") : "";
-  const sanitized = new Error(
-    "An error occurred in the Server Components render. " +
-    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-    "A digest property is included on this error instance which may provide additional details about the nature of the error."
-  );
-  sanitized.digest = __errorDigest(msg + stack);
-  return sanitized;
-}
-
-// onError callback for renderToReadableStream — preserves the digest for
-// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
-// thrown during RSC streaming (e.g. inside Suspense boundaries).
-// For non-navigation errors in production, generates a digest hash so the
-// error can be correlated with server logs without leaking details.
-function rscOnError(error, requestInfo, errorContext) {
-  if (error && typeof error === "object" && "digest" in error) {
-    return String(error.digest);
-  }
-
-  // In dev, detect the "Only plain objects" RSC serialization error and emit
-  // an actionable hint. This error occurs when a Server Component passes a
-  // class instance, ES module namespace object, or null-prototype object as a
-  // prop to a Client Component.
-  //
-  // Root cause: Vite bundles modules as true ESM (module namespace objects
-  // have a null-like internal slot), while Next.js's webpack build produces
-  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
-  // accepts the latter as plain objects but rejects the former — which means
-  // code that accidentally passes "import * as X" works in webpack/Next.js
-  // but correctly fails in vinext.
-  //
-  // Common triggers:
-  //   - "import * as utils from './utils'" passed as a prop
-  //   - class instances (new Foo()) passed as props
-  //   - Date / Map / Set instances passed as props
-  //   - Objects with Object.create(null) (null prototype)
-  if (
-    process.env.NODE_ENV !== "production" &&
-    error instanceof Error &&
-    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
-  ) {
-    console.error(
-      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
-      "\\n" +
-      "Common causes:\\n" +
-      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
-      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
-      "    which are not serializable. Fix: pass individual values instead,\\n" +
-      "    e.g. <Comp value={module.value} />\\n" +
-      "  * Passing a class instance (new Foo()) as a prop.\\n" +
-      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
-      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
-      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
-      "\\n" +
-      "Original error:",
-      error.message,
-    );
-    return undefined;
-  }
-
-  if (requestInfo && errorContext && error) {
-    _reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
-      requestInfo,
-      errorContext,
-    );
-  }
-
-  // In production, generate a digest hash for non-navigation errors
-  if (process.env.NODE_ENV === "production" && error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? (error.stack || "") : "";
-    return __errorDigest(msg + stack);
-  }
-  return undefined;
-}
-
 function createRscOnErrorHandler(request, pathname, routePath) {
   const requestInfo = {
     path: pathname,
@@ -558,9 +367,11 @@ function createRscOnErrorHandler(request, pathname, routePath) {
     routePath: routePath || pathname,
     routeType: "render",
   };
-  return function(error) {
-    return rscOnError(error, requestInfo, errorContext);
-  };
+  return __createRscOnErrorHandler({
+    errorContext,
+    reportRequestError: _reportRequestError,
+    requestInfo,
+  });
 }
 
 ${imports.join("\n")}
@@ -664,6 +475,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     makeThenableParams,
     matchedParams: opts?.matchedParams ?? route?.params ?? {},
     middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
     requestUrl: request.url,
     resolveChildSegments: __resolveAppPageChildSegments,
     rootForbiddenModule: rootForbiddenModule,
@@ -711,6 +523,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     makeThenableParams,
     matchedParams: matchedParams ?? route?.params ?? {},
     middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
     requestUrl: request.url,
     resolveChildSegments: __resolveAppPageChildSegments,
     rootLayouts: rootLayouts,
@@ -723,21 +536,6 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
-}
-
-function __createStaticFileSignal(pathname, _mwCtx) {
-  const headers = new Headers({
-    "x-vinext-static-file": encodeURIComponent(pathname),
-  });
-  if (_mwCtx.headers) {
-    for (const [key, value] of _mwCtx.headers) {
-      headers.append(key, value);
-    }
-  }
-  return new Response(null, {
-    status: _mwCtx.status ?? 200,
-    headers,
-  });
 }
 
 /**
@@ -776,18 +574,30 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     };
   }
 
-  const __headResult = await __resolveAppPageHead({
+  const {
+    hasSearchParams,
+    metadata: resolvedMetadata,
+    pageSearchParams,
+    viewport: resolvedViewport,
+  } = await __resolveAppPageHead({
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
+    metadataRoutes,
     pageModule: route.page,
+    parallelRoutes: __resolveActiveParallelRouteHeadInputs({
+      interceptLayouts: opts?.interceptLayouts ?? null,
+      interceptPage: opts?.interceptPage ?? null,
+      interceptParams: opts?.interceptParams ?? null,
+      interceptSlotKey: opts?.interceptSlotKey ?? null,
+      params,
+      routeSegments: route.routeSegments,
+      slots: route.slots,
+    }),
     params,
+    routePath: route.pattern,
     routeSegments: route.routeSegments,
     searchParams,
   });
-  const spObj = __headResult.searchParamsObject;
-  const hasSearchParams = __headResult.hasSearchParams;
-  const resolvedMetadata = __headResult.metadata;
-  const resolvedViewport = __headResult.viewport;
 
   // Build the route tree from the leaf page, then delegate the boundary/layout/
   // template/segment wiring to a typed runtime helper so the generated entry
@@ -797,7 +607,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(pageSearchParams);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -828,6 +638,8 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     interceptionContext: opts?.interceptionContext ?? null,
     routePath,
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
+    rootForbiddenModule: ${rootForbiddenVar ? rootForbiddenVar : "null"},
+    rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
     route,
     slotOverrides:
       opts && opts.interceptSlotKey && opts.interceptPage
@@ -891,63 +703,6 @@ function __buildPostMwRequestContext(request) {
  */
 var __MAX_ACTION_BODY_SIZE = ${JSON.stringify(bodySizeLimit)};
 
-/**
- * Read a request body as text with a size limit.
- * Enforces the limit on the actual byte stream to prevent bypasses
- * via chunked transfer-encoding where Content-Length is absent or spoofed.
- */
-async function __readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-/**
- * Read a request body as FormData with a size limit.
- * Consumes the body stream with a byte counter and then parses the
- * collected bytes as multipart form data via the Response constructor.
- */
-async function __readFormDataWithLimit(request, maxBytes) {
-  if (!request.body) return new FormData();
-  var reader = request.body.getReader();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(result.value);
-  }
-  // Reconstruct a Response with the original Content-Type so that
-  // the FormData parser can handle multipart boundaries correctly.
-  var combined = new Uint8Array(totalSize);
-  var offset = 0;
-  for (var chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
-}
-
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
 // loading route modules via the dev server.
@@ -959,6 +714,12 @@ export const generateStaticParamsMap = {
 // scanning layout.tsx files separately and including them in this map.
 ${generateStaticParamsEntries.join("\n")}
 };${loadPrerenderPagesRoutesCode}
+const rootParamNamesMap = {
+${routes
+  .filter((r) => r.isDynamic && r.pagePath && r.rootParamNames && r.rootParamNames.length > 0)
+  .map((r) => `  ${JSON.stringify(r.pattern)}: ${JSON.stringify(r.rootParamNames)},`)
+  .join("\n")}
+};
 
 export default async function handler(request, ctx) {
   ${
@@ -1012,21 +773,11 @@ export default async function handler(request, ctx) {
         let pathname;
         try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
-        for (const h of extraHeaders) {
-          // Use append() for headers where multiple values must coexist
-          // (Vary, Set-Cookie). Using set() on these would destroy
-          // existing values like "Vary: RSC, Accept" which are critical
-          // for correct CDN caching behavior.
-          const lk = h.key.toLowerCase();
-          if (lk === "vary" || lk === "set-cookie") {
-            response.headers.append(h.key, h.value);
-          } else if (!response.headers.has(lk)) {
-            // Middleware headers take precedence: skip config keys already
-            // set by middleware so middleware headers always win.
-            response.headers.set(h.key, h.value);
-          }
-        }
+        applyConfigHeadersToResponse(response.headers, {
+          configHeaders: __configHeaders,
+          pathname,
+          requestContext: __reqCtx,
+        });
       }
     }
     return response;
@@ -1080,6 +831,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     },
 ${prerenderPagesLoaderOption}
     pathname,
+    rootParamNamesByPattern: rootParamNamesMap,
     staticParamsMap: generateStaticParamsMap,
   });
   if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
@@ -1176,90 +928,25 @@ ${prerenderPagesLoaderOption}
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
-  // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)
-  for (const metaRoute of metadataRoutes) {
-    // generateSitemaps() support — paginated sitemaps at /{prefix}/sitemap/{id}.xml
-    // When a sitemap module exports generateSitemaps, the base URL (e.g. /products/sitemap.xml)
-    // is no longer served. Instead, individual sitemaps are served at /products/sitemap/{id}.xml.
-    if (
-      metaRoute.type === "sitemap" &&
-      metaRoute.isDynamic &&
-      typeof metaRoute.module.generateSitemaps === "function"
-    ) {
-      const sitemapPrefix = metaRoute.servedUrl.slice(0, -4); // strip ".xml"
-      // Match exactly /{prefix}/{id}.xml — one segment only (no slashes in id)
-      if (cleanPathname.startsWith(sitemapPrefix + "/") && cleanPathname.endsWith(".xml")) {
-        const rawId = cleanPathname.slice(sitemapPrefix.length + 1, -4);
-        if (rawId.includes("/")) continue; // multi-segment — not a paginated sitemap
-        const sitemaps = await metaRoute.module.generateSitemaps();
-        const matched = sitemaps.find(function(s) { return String(s.id) === rawId; });
-        if (!matched) return new Response("Not Found", { status: 404 });
-        // Pass the original typed id from generateSitemaps() so numeric IDs stay numeric.
-        // TODO: wrap with makeThenableParams-style Promise when upgrading to Next.js 16
-        // full-Promise param semantics (id becomes Promise<string> in v16).
-        const result = await metaRoute.module.default({ id: matched.id });
-        if (result instanceof Response) return result;
-        return new Response(sitemapToXml(result), {
-          headers: { "Content-Type": metaRoute.contentType },
-        });
-      }
-      // Skip — the base servedUrl is not served when generateSitemaps exists
-      continue;
-    }
-    // Match metadata route — use pattern matching for dynamic segments,
-    // strict equality for static paths.
-    var _metaParams = null;
-    if (metaRoute.patternParts) {
-      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
-      _metaParams = __matchAppRscRoutePattern(_metaUrlParts, metaRoute.patternParts);
-      if (!_metaParams) continue;
-    } else if (cleanPathname !== metaRoute.servedUrl) {
-      continue;
-    }
-    if (metaRoute.isDynamic) {
-      // Dynamic metadata route — call the default export and serialize
-      const metaFn = metaRoute.module.default;
-      if (typeof metaFn === "function") {
-        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
-        let body;
-        // If it's already a Response (e.g., ImageResponse), return directly
-        if (result instanceof Response) return result;
-        // Serialize based on type
-        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-        else if (metaRoute.type === "robots") body = robotsToText(result);
-        else if (metaRoute.type === "manifest") body = manifestToJson(result);
-        else body = JSON.stringify(result);
-        return new Response(body, {
-          headers: { "Content-Type": metaRoute.contentType },
-        });
-      }
-    } else {
-      // Static metadata file — decode from embedded base64 data
-      try {
-        const binary = atob(metaRoute.fileDataBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return new Response(bytes, {
-          headers: {
-            "Content-Type": metaRoute.contentType,
-            "Cache-Control": "public, max-age=0, must-revalidate",
-          },
-        });
-      } catch {
-        return new Response("Not Found", { status: 404 });
-      }
-    }
-  }
+  const metadataRouteResponse = await __handleMetadataRouteRequest({
+    metadataRoutes,
+    cleanPathname,
+    makeThenableParams,
+  });
+  if (metadataRouteResponse) return metadataRouteResponse;
 
   // Serve public/ files as filesystem routes after middleware and before
   // afterFiles/fallback rewrites, matching Next.js routing semantics.
-  if (
-    (request.method === "GET" || request.method === "HEAD") &&
-    !pathname.endsWith(".rsc") &&
-    __publicFiles.has(cleanPathname)
-  ) {
+  const __publicFileResponse = resolvePublicFileRoute({
+    cleanPathname,
+    middlewareContext: _mwCtx,
+    pathname,
+    publicFiles: __publicFiles,
+    request,
+  });
+  if (__publicFileResponse) {
     __clearRequestContext();
-    return __createStaticFileSignal(cleanPathname, _mwCtx);
+    return __publicFileResponse;
   }
 
   // Set navigation context for Server Components.
@@ -1642,7 +1329,11 @@ ${prerenderPagesLoaderOption}
         });
       },
       scheduleBackgroundRegeneration(key, renderFn) {
-        __triggerBackgroundRegeneration(key, renderFn, { routePath: route.pattern, routeType: "render" });
+        __triggerBackgroundRegeneration(key, renderFn, {
+          routerKind: "App Router",
+          routePath: route.pattern,
+          routeType: "render",
+        });
       },
     });
     if (__cachedPageResponse) {
@@ -1794,6 +1485,7 @@ ${prerenderPagesLoaderOption}
       __clearRequestContext();
     },
     consumeDynamicUsage,
+    consumeInvalidDynamicUsageError,
     createRscOnErrorHandler(pathname, routePath) {
       return createRscOnErrorHandler(request, pathname, routePath);
     },
