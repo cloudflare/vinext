@@ -2172,6 +2172,26 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html2).not.toContain('"filter">alpha<');
   });
 
+  it("page ISR + searchParams: empty-query first request does not cache and poison later query requests", async () => {
+    // First request with NO query params. The page reads searchParams, so it
+    // must NOT be cached even though the query string is empty.
+    const res1 = await fetch(`${baseUrl}/search-params-page`);
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("x-vinext-cache")).toBeNull();
+    const html1 = await res1.text();
+    // React inserts <!-- --> between text nodes, so match the id + content pattern
+    expect(html1).toContain('id="filter"');
+    expect(html1).toContain("none");
+
+    // Second request WITH query params must see its own searchParams, not
+    // a cached empty-query response.
+    const res2 = await fetch(`${baseUrl}/search-params-page?filter=violet`);
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get("x-vinext-cache")).toBeNull();
+    const html2 = await res2.text();
+    expect(html2).toContain("violet");
+  });
+
   // Route handler ISR caching tests
   // These tests are ORDER-DEPENDENT: they share a single production server and
   // /api/static-data cache state persists across tests. HIT depends on MISS
