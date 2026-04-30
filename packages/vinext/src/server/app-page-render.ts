@@ -252,18 +252,20 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
-    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
-    const requestCacheLife = options.getRequestCacheLife();
-    if (requestCacheLife?.revalidate !== undefined) {
-      revalidateSeconds =
-        revalidateSeconds === null
-          ? requestCacheLife.revalidate
-          : Math.min(revalidateSeconds, requestCacheLife.revalidate);
-    }
-    if (requestCacheLife?.expire !== undefined) {
-      // cacheLife() supplies the effective hard-expire ceiling for this render,
-      // so it replaces the config fallback instead of min-merging with it.
-      expireSeconds = requestCacheLife.expire;
+    if (options.isPrerender === true) {
+      await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+      const requestCacheLife = options.getRequestCacheLife();
+      if (requestCacheLife?.revalidate !== undefined) {
+        revalidateSeconds =
+          revalidateSeconds === null
+            ? requestCacheLife.revalidate
+            : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+      }
+      if (requestCacheLife?.expire !== undefined) {
+        // cacheLife() supplies the effective hard-expire ceiling for this render,
+        // so it replaces the config fallback instead of min-merging with it.
+        expireSeconds = requestCacheLife.expire;
+      }
     }
 
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();
@@ -308,24 +310,22 @@ export async function renderAppPageLifecycle(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction &&
-        revalidateSeconds !== null &&
-        revalidateSeconds > 0 &&
-        revalidateSeconds !== Infinity
-          ? capturedRscDataRef.value
-          : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
       dynamicUsedDuringBuild,
       getPageTags() {
         return options.getPageTags();
       },
+      getRequestCacheLife() {
+        return options.getRequestCacheLife();
+      },
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
       expireSeconds,
-      revalidateSeconds: revalidateSeconds ?? 0,
+      revalidateSeconds,
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -389,20 +389,24 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
-  await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+  if (options.isPrerender === true) {
+    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+  }
   const draftCookie = options.getDraftModeCookieHeader();
   const dynamicUsedDuringRender = options.consumeDynamicUsage();
-  const requestCacheLife = options.getRequestCacheLife();
-  if (requestCacheLife?.revalidate !== undefined) {
-    revalidateSeconds =
-      revalidateSeconds === null
-        ? requestCacheLife.revalidate
-        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
-  }
-  if (requestCacheLife?.expire !== undefined) {
-    // cacheLife() supplies the effective hard-expire ceiling for this render,
-    // so it replaces the config fallback instead of min-merging with it.
-    expireSeconds = requestCacheLife.expire;
+  if (options.isPrerender === true) {
+    const requestCacheLife = options.getRequestCacheLife();
+    if (requestCacheLife?.revalidate !== undefined) {
+      revalidateSeconds =
+        revalidateSeconds === null
+          ? requestCacheLife.revalidate
+          : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+    }
+    if (requestCacheLife?.expire !== undefined) {
+      // cacheLife() supplies the effective hard-expire ceiling for this render,
+      // so it replaces the config fallback instead of min-merging with it.
+      expireSeconds = requestCacheLife.expire;
+    }
   }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
@@ -433,7 +437,16 @@ export async function renderAppPageLifecycle(
     responseKind: "html",
   });
 
-  if (htmlResponsePolicy.shouldWriteToCache) {
+  const shouldSpeculativelyWriteCache =
+    options.isProduction &&
+    shouldCaptureRscForCacheMetadata &&
+    revalidateSeconds === null &&
+    !options.isDynamicError &&
+    !options.isForceStatic &&
+    !options.scriptNonce &&
+    !dynamicUsedDuringRender;
+
+  if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       fontLinkHeader,
@@ -453,12 +466,15 @@ export async function renderAppPageLifecycle(
       getPageTags() {
         return options.getPageTags();
       },
+      getRequestCacheLife() {
+        return options.getRequestCacheLife();
+      },
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       expireSeconds,
-      revalidateSeconds: revalidateSeconds ?? 0,
+      revalidateSeconds,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },

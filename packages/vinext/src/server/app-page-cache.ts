@@ -12,6 +12,10 @@ type AppPageCacheSetter = (
   expireSeconds?: number,
 ) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
+type AppPageRequestCacheLife = {
+  revalidate?: number;
+  expire?: number;
+};
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
@@ -50,12 +54,13 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   getPageTags: () => string[];
+  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
   expireSeconds?: number;
-  revalidateSeconds: number;
+  revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -65,12 +70,13 @@ type ScheduleAppPageRscCacheWriteOptions = {
   consumeDynamicUsage: () => boolean;
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
+  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
   isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
   isrSet: AppPageCacheSetter;
   mountedSlotsHeader?: string | null;
   expireSeconds?: number;
-  revalidateSeconds: number;
+  revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -107,6 +113,32 @@ function buildAppPageCacheControl(
 
 function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue | null {
   return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
+}
+
+function resolveAppPageCacheWritePolicy(options: {
+  expireSeconds?: number;
+  requestCacheLife?: AppPageRequestCacheLife | null;
+  revalidateSeconds: number | null;
+}): { expireSeconds?: number; revalidateSeconds: number } | null {
+  let revalidateSeconds = options.revalidateSeconds;
+  let expireSeconds = options.expireSeconds;
+  const requestCacheLife = options.requestCacheLife;
+
+  if (requestCacheLife?.revalidate !== undefined) {
+    revalidateSeconds =
+      revalidateSeconds === null
+        ? requestCacheLife.revalidate
+        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+  }
+  if (requestCacheLife?.expire !== undefined) {
+    expireSeconds = requestCacheLife.expire;
+  }
+
+  if (revalidateSeconds === null || revalidateSeconds <= 0 || revalidateSeconds === Infinity) {
+    return null;
+  }
+
+  return { expireSeconds, revalidateSeconds };
 }
 
 export function buildAppPageCachedResponse(
@@ -278,6 +310,7 @@ export function finalizeAppPageHtmlCacheResponse(
   // consumed. Until that late dynamic check finishes, downstream shared caches
   // must not cache the speculative MISS response.
   clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+  clientHeaders.set("X-Vinext-Cache", "MISS");
 
   const cachePromise = (async () => {
     try {
@@ -298,14 +331,24 @@ export function finalizeAppPageHtmlCacheResponse(
         return;
       }
 
+      const cachePolicy = resolveAppPageCacheWritePolicy({
+        expireSeconds: options.expireSeconds,
+        requestCacheLife: options.getRequestCacheLife?.(),
+        revalidateSeconds: options.revalidateSeconds,
+      });
+      if (!cachePolicy) {
+        options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
+        return;
+      }
+
       const pageTags = options.getPageTags();
       const writes = [
         options.isrSet(
           htmlKey,
           buildAppPageCacheValue(chunks.join(""), undefined, 200),
-          options.revalidateSeconds,
+          cachePolicy.revalidateSeconds,
           pageTags,
-          options.expireSeconds,
+          cachePolicy.expireSeconds,
         ),
       ];
 
@@ -315,9 +358,9 @@ export function finalizeAppPageHtmlCacheResponse(
             options.isrSet(
               rscKey,
               buildAppPageCacheValue("", rscData, 200),
-              options.revalidateSeconds,
+              cachePolicy.revalidateSeconds,
               pageTags,
-              options.expireSeconds,
+              cachePolicy.expireSeconds,
             ),
           ),
         );
@@ -353,6 +396,7 @@ export function finalizeAppPageRscCacheResponse(
   // late request API was used, the client-facing MISS response must not enter a
   // shared cache.
   clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+  clientHeaders.set("X-Vinext-Cache", "MISS");
 
   return new Response(response.body, {
     status: response.status,
@@ -384,12 +428,22 @@ export function scheduleAppPageRscCacheWrite(
         return;
       }
 
+      const cachePolicy = resolveAppPageCacheWritePolicy({
+        expireSeconds: options.expireSeconds,
+        requestCacheLife: options.getRequestCacheLife?.(),
+        revalidateSeconds: options.revalidateSeconds,
+      });
+      if (!cachePolicy) {
+        options.isrDebug?.("RSC cache write skipped (no cache policy)", rscKey);
+        return;
+      }
+
       await options.isrSet(
         rscKey,
         buildAppPageCacheValue("", rscData, 200),
-        options.revalidateSeconds,
+        cachePolicy.revalidateSeconds,
         options.getPageTags(),
-        options.expireSeconds,
+        cachePolicy.expireSeconds,
       );
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {

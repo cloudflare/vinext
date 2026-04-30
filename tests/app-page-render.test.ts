@@ -27,6 +27,16 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
+
 function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
   const renderToReadableStream = vi.fn(() => createStream(["flight-data"]));
@@ -283,6 +293,55 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it("does not wait for the full captured RSC payload before returning production RSC responses", async () => {
+    const common = createCommonOptions();
+    const releaseRsc = createDeferred();
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        return { revalidate: 7, expire: 11 };
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (sent) {
+              await releaseRsc.promise;
+              controller.close();
+              return;
+            }
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("flight"));
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    await expect(
+      Promise.race([responsePromise.then(() => "returned"), releaseRsc.promise.then(() => "done")]),
+    ).resolves.toBe("returned");
+
+    const response = await responsePromise;
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(common.waitUntilPromises).toHaveLength(1);
+
+    releaseRsc.resolve();
+    await expect(response.text()).resolves.toBe("flight");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "rsc:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE" }),
+      7,
+      ["_N_T_/posts/post"],
+      11,
+    );
+  });
+
   it("rerenders HTML responses with the error boundary when a global RSC error was captured", async () => {
     const common = createCommonOptions();
 
@@ -334,6 +393,63 @@ describe("app page render lifecycle", () => {
       30,
       ["_N_T_/posts/post"],
       undefined,
+    );
+  });
+
+  it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
+    const common = createCommonOptions();
+    const releaseRsc = createDeferred();
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        return { revalidate: 5, expire: 9 };
+      },
+      isProduction: true,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (sent) {
+              await releaseRsc.promise;
+              controller.close();
+              return;
+            }
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("flight"));
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    await expect(
+      Promise.race([responsePromise.then(() => "returned"), releaseRsc.promise.then(() => "done")]),
+    ).resolves.toBe("returned");
+
+    const response = await responsePromise;
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(common.waitUntilPromises).toHaveLength(1);
+
+    releaseRsc.resolve();
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenNthCalledWith(
+      1,
+      "html:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE" }),
+      5,
+      ["_N_T_/posts/post"],
+      9,
+    );
+    expect(common.isrSet).toHaveBeenNthCalledWith(
+      2,
+      "rsc:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE" }),
+      5,
+      ["_N_T_/posts/post"],
+      9,
     );
   });
 
