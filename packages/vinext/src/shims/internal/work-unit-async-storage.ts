@@ -21,6 +21,8 @@ export type PrerenderStore = {
   readonly type: "prerender" | "prerender-client" | "prerender-runtime";
   /** AbortSignal that fires when the prerender is cancelled or completed. */
   readonly renderSignal: AbortSignal;
+  /** Optional route identifier for debugging and error messages. */
+  readonly route?: string;
 };
 
 export type CacheStore = {

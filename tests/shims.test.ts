@@ -1932,8 +1932,13 @@ describe("next/cache shim", () => {
 
     // The promise should not be resolved or rejected (it's "hanging")
     expect(hanging).toBeInstanceOf(Promise);
-    // It should NOT be a fulfilled thenable
-    expect((hanging as any).status).toBeUndefined();
+
+    // Verify it's still hanging using Promise.race (more portable than V8 internals)
+    const result = await Promise.race([
+      hanging.then(() => "resolved"),
+      new Promise((r) => setTimeout(() => r("still-hanging"), 50)),
+    ]);
+    expect(result).toBe("still-hanging");
 
     // Clean up by aborting the signal
     controller.abort();

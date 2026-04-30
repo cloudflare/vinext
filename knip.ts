@@ -61,9 +61,6 @@ export default {
         // Imported via template string in app-rsc-entry.ts (generated code),
         // so knip cannot trace the import statically.
         "src/server/prerender-work-unit-setup.ts",
-        // makeHangingPromise is imported by cache.ts, but knip sometimes loses
-        // the trace through barrel-free internal modules.
-        "src/shims/internal/make-hanging-promise.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

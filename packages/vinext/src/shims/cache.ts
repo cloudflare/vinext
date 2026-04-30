@@ -485,7 +485,7 @@ export function unstable_io(): Promise<void> {
         // the prerender is aborted or completed.
         return makeHangingPromise(
           workUnitStore.renderSignal,
-          /* route */ "unknown",
+          /* route */ workUnitStore.route ?? "unknown",
           "`unstable_io()`",
         );
       case "cache":
@@ -496,6 +496,7 @@ export function unstable_io(): Promise<void> {
         return _resolvedIOPromise;
       default:
         workUnitStore satisfies never;
+        return _resolvedIOPromise;
     }
   }
 
