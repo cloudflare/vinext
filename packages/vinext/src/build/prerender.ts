@@ -1219,15 +1219,22 @@ function resolveRenderedCacheControl(
     requestCacheLife.revalidate ?? (staleWhileRevalidate === undefined ? undefined : sMaxage);
   return {
     expire:
-      requestCacheLife.expire ?? resolveRenderedExpireSeconds(cacheControl, fallbackExpireSeconds),
+      requestCacheLife.expire ??
+      resolveRenderedExpireSeconds({
+        fallbackExpireSeconds,
+        sMaxage,
+        staleWhileRevalidate,
+      }),
     ...(revalidate === undefined ? {} : { revalidate }),
   };
 }
 
-function resolveRenderedExpireSeconds(cacheControl: string, fallbackExpireSeconds: number): number {
-  const sMaxage = parseCacheControlSeconds(cacheControl, "s-maxage");
-  const staleWhileRevalidate = parseCacheControlSeconds(cacheControl, "stale-while-revalidate");
-
+function resolveRenderedExpireSeconds(options: {
+  fallbackExpireSeconds: number;
+  sMaxage?: number;
+  staleWhileRevalidate?: number;
+}): number {
+  const { fallbackExpireSeconds, sMaxage, staleWhileRevalidate } = options;
   if (sMaxage === undefined || staleWhileRevalidate === undefined) {
     return fallbackExpireSeconds;
   }

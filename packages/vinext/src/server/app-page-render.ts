@@ -261,6 +261,8 @@ export async function renderAppPageLifecycle(
           : Math.min(revalidateSeconds, requestCacheLife.revalidate);
     }
     if (requestCacheLife?.expire !== undefined) {
+      // cacheLife() supplies the effective hard-expire ceiling for this render,
+      // so it replaces the config fallback instead of min-merging with it.
       expireSeconds = requestCacheLife.expire;
     }
 
@@ -398,6 +400,8 @@ export async function renderAppPageLifecycle(
         : Math.min(revalidateSeconds, requestCacheLife.revalidate);
   }
   if (requestCacheLife?.expire !== undefined) {
+    // cacheLife() supplies the effective hard-expire ceiling for this render,
+    // so it replaces the config fallback instead of min-merging with it.
     expireSeconds = requestCacheLife.expire;
   }
 

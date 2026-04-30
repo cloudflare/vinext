@@ -164,6 +164,9 @@ function buildPagesCacheResponse(
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
 ): Response {
+  // Legacy cache entries written before cacheControl metadata existed can still
+  // hit this path without a persisted revalidate value; keep the historic
+  // 60-second fallback for that migration window.
   const effectiveRevalidateSeconds = cacheControl?.revalidate ?? revalidateSeconds ?? 60;
   const effectiveExpireSeconds = cacheControl?.expire ?? expireSeconds;
   const headers: Record<string, string> = {
