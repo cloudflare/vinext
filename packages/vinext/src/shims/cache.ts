@@ -25,6 +25,8 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
+import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -447,17 +449,57 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
 (_resolvedIOPromise as unknown as Record<string, unknown>).value = undefined;
 
 /**
- * Marks an IO boundary in server components by returning a resolved promise.
+ * Marks an IO boundary in server components by returning a resolved promise
+ * during requests and a hanging promise during prerendering.
  *
  * See: https://github.com/vercel/next.js/pull/92521
  * Guard removed: https://github.com/vercel/next.js/pull/92923
  *
- * In Next.js, `unstable_io()` during prerendering contexts returns a hanging
- * promise to prevent execution past the IO boundary. vinext does support
- * prerendering (static export, --prerender-all, TPR), but the hanging IO
- * boundary behavior is not yet implemented, so this always resolves immediately.
+ * Ported from Next.js: packages/next/src/server/request/io.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+ *
+ * Behavior by work unit type:
+ * - request → resolve immediately (no delay needed for dynamic SSR)
+ * - prerender / prerender-client / prerender-runtime → hang (prevent
+ *   execution past IO boundary during static generation)
+ * - cache / private-cache / unstable-cache → resolve immediately
+ *   (caches capture IO results at fill time)
+ * - generate-static-params → resolve immediately (build time, no prerender to stall)
+ * - prerender-legacy → resolve immediately (no cache components)
+ *
+ * When no work unit store is present (e.g. client-side, standalone script),
+ * resolves immediately — matching the browser/client implementation.
  */
 export function unstable_io(): Promise<void> {
+  const workUnitStore = workUnitAsyncStorage.getStore();
+
+  if (workUnitStore) {
+    switch (workUnitStore.type) {
+      case "request":
+        return _resolvedIOPromise;
+      case "prerender":
+      case "prerender-client":
+      case "prerender-runtime":
+        // Prevent execution past the IO boundary during prerendering.
+        // The hanging promise suspends React's render indefinitely until
+        // the prerender is aborted or completed.
+        return makeHangingPromise(
+          workUnitStore.renderSignal,
+          /* route */ "unknown",
+          "`unstable_io()`",
+        );
+      case "cache":
+      case "private-cache":
+      case "unstable-cache":
+      case "generate-static-params":
+      case "prerender-legacy":
+        return _resolvedIOPromise;
+      default:
+        workUnitStore satisfies never;
+    }
+  }
+
+  // No work store — outside rendering context (client, standalone script).
   return _resolvedIOPromise;
 }
 

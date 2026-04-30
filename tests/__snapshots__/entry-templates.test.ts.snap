@@ -106,6 +106,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -949,7 +950,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -1000,7 +1002,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -1960,6 +1963,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -2803,7 +2807,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -2854,7 +2859,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -3820,6 +3826,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -4664,7 +4671,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -4715,7 +4723,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -5675,6 +5684,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -6551,7 +6561,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -6602,7 +6613,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -7562,6 +7574,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -8412,7 +8425,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -8463,7 +8477,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -9423,6 +9438,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from "<ROOT>/packages/vinext/src/utils/error-cause.js";
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from "<ROOT>/packages/vinext/src/server/prerender-work-unit-setup.js";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -10266,7 +10282,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -10317,7 +10334,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {

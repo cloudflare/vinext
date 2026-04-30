@@ -76,6 +76,10 @@ const appPrerenderEndpointsPath = resolveEntryPath(
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const metadataRoutesPath = resolveEntryPath("../server/metadata-routes.js", import.meta.url);
 const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
+const prerenderWorkUnitSetupPath = resolveEntryPath(
+  "../server/prerender-work-unit-setup.js",
+  import.meta.url,
+);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 
 /**
@@ -266,6 +270,7 @@ import "vinext/navigation-state";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { flattenErrorCauses as __flattenErrorCauses } from ${JSON.stringify(errorCausePath)};
+import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from ${JSON.stringify(prerenderWorkUnitSetupPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -973,7 +978,8 @@ export default async function handler(request, ctx) {
     executionContext: ctx ?? _getRequestExecutionContext() ?? null,
     unstableCacheRevalidation: "background",
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
+  return _runWithUnifiedCtx(__uCtx, () =>
+    __runWithPrerenderWorkUnit(async () => {
     _ensureFetchPatch();
     const __reqCtx = requestContextFromRequest(request);
     // Per-request container for middleware state. Passed into
@@ -1024,7 +1030,8 @@ export default async function handler(request, ctx) {
       }
     }
     return response;
-  });
+    })
+  );
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
