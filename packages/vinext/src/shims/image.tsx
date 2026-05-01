@@ -236,6 +236,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const lastLoadedSrcRef = useRef<string | undefined>(undefined);
   const lastErrorSrcRef = useRef<string | undefined>(undefined);
 
+  const {
+    src,
+    width: imgWidth,
+    height: imgHeight,
+    blurDataURL: imgBlurDataURL,
+  } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
+
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
   const handleLoad = onLoadingComplete
@@ -260,13 +267,6 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         onError(e);
       }
     : undefined;
-
-  const {
-    src,
-    width: imgWidth,
-    height: imgHeight,
-    blurDataURL: imgBlurDataURL,
-  } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
