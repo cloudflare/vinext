@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _consumeRequestScopedCacheLife, type CachedAppPageValue } from "vinext/shims/cache";
+import {
+  _consumeRequestScopedCacheLife,
+  _peekRequestScopedCacheLife,
+  type CachedAppPageValue,
+} from "vinext/shims/cache";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
@@ -523,6 +527,9 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     },
     getRequestCacheLife() {
       return _consumeRequestScopedCacheLife();
+    },
+    peekRequestCacheLife() {
+      return _peekRequestScopedCacheLife();
     },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: Boolean(route.loading?.default),

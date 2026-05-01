@@ -615,6 +615,17 @@ export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
 }
 
 /**
+ * Read the request-scoped cache life without clearing it. Prerender response
+ * shaping needs the metadata before the manifest writer consumes it after the
+ * body has been fully rendered.
+ * @internal
+ */
+export function _peekRequestScopedCacheLife(): CacheLifeConfig | null {
+  const config = _getCacheState().requestScopedCacheLife;
+  return config === null ? null : { ...config };
+}
+
+/**
  * Consume and reset the request-scoped cache life. Returns null if none was set.
  * @internal
  */

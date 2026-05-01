@@ -562,6 +562,45 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("preserves prerender cache metadata for the manifest writer after shaping headers", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+    const consumeRequestCacheLife = () => {
+      const value = requestCacheLife;
+      requestCacheLife = null;
+      return value;
+    };
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife: consumeRequestCacheLife,
+      isPrerender: true,
+      isProduction: false,
+      peekRequestCacheLife() {
+        return requestCacheLife;
+      },
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 1 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(consumeRequestCacheLife()).toEqual({ revalidate: 1, expire: 1 });
+  });
+
   it("preserves prerender cache metadata headers in production mode without ISR writes", async () => {
     const common = createCommonOptions();
     let requestCacheLife: { revalidate: number; expire: number } | null = null;

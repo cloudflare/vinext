@@ -65,6 +65,7 @@ type RenderAppPageLifecycleOptions = {
   getNavigationContext: () => unknown;
   getPageTags: () => string[];
   getRequestCacheLife: () => AppPageRequestCacheLife | null;
+  peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
   hasLoadingBoundary: boolean;
@@ -123,6 +124,36 @@ function buildResponseTiming(
     renderEnd: options.renderEnd,
     responseKind: options.responseKind,
   };
+}
+
+function readRequestCacheLifeForPrerender(
+  options: Pick<RenderAppPageLifecycleOptions, "getRequestCacheLife" | "peekRequestCacheLife">,
+): AppPageRequestCacheLife | null {
+  return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+}
+
+function applyRequestCacheLife(options: {
+  expireSeconds?: number;
+  requestCacheLife: AppPageRequestCacheLife | null;
+  revalidateSeconds: number | null;
+}): { expireSeconds?: number; revalidateSeconds: number | null } {
+  let revalidateSeconds = options.revalidateSeconds;
+  let expireSeconds = options.expireSeconds;
+  const requestCacheLife = options.requestCacheLife;
+
+  if (requestCacheLife?.revalidate !== undefined) {
+    revalidateSeconds =
+      revalidateSeconds === null
+        ? requestCacheLife.revalidate
+        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+  }
+  if (requestCacheLife?.expire !== undefined) {
+    // cacheLife() supplies the effective hard-expire ceiling for this render,
+    // so it replaces the config fallback instead of min-merging with it.
+    expireSeconds = requestCacheLife.expire;
+  }
+
+  return { expireSeconds, revalidateSeconds };
 }
 
 /**
@@ -254,18 +285,11 @@ export async function renderAppPageLifecycle(
   if (options.isRscRequest) {
     if (options.isPrerender === true) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
-      const requestCacheLife = options.getRequestCacheLife();
-      if (requestCacheLife?.revalidate !== undefined) {
-        revalidateSeconds =
-          revalidateSeconds === null
-            ? requestCacheLife.revalidate
-            : Math.min(revalidateSeconds, requestCacheLife.revalidate);
-      }
-      if (requestCacheLife?.expire !== undefined) {
-        // cacheLife() supplies the effective hard-expire ceiling for this render,
-        // so it replaces the config fallback instead of min-merging with it.
-        expireSeconds = requestCacheLife.expire;
-      }
+      ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+        expireSeconds,
+        requestCacheLife: readRequestCacheLifeForPrerender(options),
+        revalidateSeconds,
+      }));
     }
 
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();
@@ -392,23 +416,14 @@ export async function renderAppPageLifecycle(
   // Eagerly read values that must be captured before the stream is consumed.
   if (options.isPrerender === true) {
     await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+      expireSeconds,
+      requestCacheLife: readRequestCacheLifeForPrerender(options),
+      revalidateSeconds,
+    }));
   }
   const draftCookie = options.getDraftModeCookieHeader();
   const dynamicUsedDuringRender = options.consumeDynamicUsage();
-  if (options.isPrerender === true) {
-    const requestCacheLife = options.getRequestCacheLife();
-    if (requestCacheLife?.revalidate !== undefined) {
-      revalidateSeconds =
-        revalidateSeconds === null
-          ? requestCacheLife.revalidate
-          : Math.min(revalidateSeconds, requestCacheLife.revalidate);
-    }
-    if (requestCacheLife?.expire !== undefined) {
-      // cacheLife() supplies the effective hard-expire ceiling for this render,
-      // so it replaces the config fallback instead of min-merging with it.
-      expireSeconds = requestCacheLife.expire;
-    }
-  }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
   // HTTP layer. The RSC/SSR pipeline is lazy — Server Components execute while

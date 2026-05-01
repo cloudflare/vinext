@@ -1098,6 +1098,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -2263,6 +2264,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -3423,6 +3425,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -4615,6 +4618,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -5784,6 +5788,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -6958,6 +6963,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -7191,13 +7197,13 @@ const i18nConfig = null;
 const buildId = "test-build-id";
 
 // Full resolved config for production server (embedded at build time)
-export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false},{"source":"/redirect-before-middleware-rewrite","destination":"/about","permanent":false},{"source":"/redirect-before-middleware-response","destination":"/about","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]},{"source":"/headers-before-middleware-rewrite","headers":[{"key":"X-Rewrite-Source-Header","value":"1"}]}],"i18n":null,"images":{}};
+export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false},{"source":"/redirect-before-middleware-rewrite","destination":"/about","permanent":false},{"source":"/redirect-before-middleware-response","destination":"/about","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]},{"source":"/headers-before-middleware-rewrite","headers":[{"key":"X-Rewrite-Source-Header","value":"1"}]}],"expireTime":31536000,"i18n":null,"images":{}};
 
 function isrGet(key) {
   return __sharedIsrGet(key);
 }
-function isrSet(key, data, revalidateSeconds, tags) {
-  return __sharedIsrSet(key, data, revalidateSeconds, tags);
+function isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
+  return __sharedIsrSet(key, data, revalidateSeconds, tags, expireSeconds);
 }
 function triggerBackgroundRegeneration(key, renderFn, errorContext) {
   return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);
@@ -7652,6 +7658,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         isrCacheKey,
         isrGet,
         isrSet,
+        expireSeconds: vinextConfig.expireTime,
         pageModule,
         params,
         query,
@@ -7724,6 +7731,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         gsspRes,
         isrCacheKey,
+        expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,
         i18n: {
