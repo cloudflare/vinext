@@ -1,4 +1,4 @@
-import { resolveAppPageSpecialError } from "./app-page-execution.js";
+import { resolveAppPageSpecialError } from "vinext/server/app-page-execution";
 
 type DigestError = Error & { digest?: string };
 

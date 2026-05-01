@@ -29,6 +29,10 @@
       "types": "./dist/shims/*.d.ts",
       "import": "./dist/shims/*.js"
     },
+    "./server/*": {
+      "types": "./dist/server/*.d.ts",
+      "import": "./dist/server/*.js"
+    },
     "./server/prod-server": {
       "types": "./dist/server/prod-server.d.ts",
       "import": "./dist/server/prod-server.js"

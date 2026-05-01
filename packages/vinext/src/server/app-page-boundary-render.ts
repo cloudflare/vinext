@@ -3,30 +3,30 @@ import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
 import { ErrorBoundary } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
-import type { AppPageFontPreload } from "./app-page-execution.js";
-import type { AppPageMiddlewareContext } from "./app-page-response.js";
-import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead } from "./app-page-head.js";
+import type { AppPageFontPreload } from "vinext/server/app-page-execution";
+import type { AppPageMiddlewareContext } from "vinext/server/app-page-response";
+import type { MetadataFileRoute } from "vinext/server/metadata-routes";
+import { resolveAppPageHead } from "vinext/server/app-page-head";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryComponent,
   wrapAppPageBoundaryElement,
   type AppPageParams,
-} from "./app-page-boundary.js";
+} from "vinext/server/app-page-boundary";
 import {
   createAppPageFontData,
   renderAppPageHtmlResponse,
   type AppPageSsrHandler,
-} from "./app-page-stream.js";
+} from "vinext/server/app-page-stream";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   createAppPayloadRouteId,
   type AppElements,
-} from "./app-elements.js";
-import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
+} from "vinext/server/app-elements";
+import { createAppPageLayoutEntries } from "vinext/server/app-page-route-wiring";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;

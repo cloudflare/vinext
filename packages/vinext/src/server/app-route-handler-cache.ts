@@ -1,14 +1,14 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import type { ISRCacheEntry } from "./isr-cache.js";
-import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
+import type { ISRCacheEntry } from "vinext/server/isr-cache";
+import type { RouteHandlerMiddlewareContext } from "vinext/server/app-route-handler-response";
 import {
   applyRouteHandlerMiddlewareContext,
   assertSupportedAppRouteHandlerResponse,
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
-} from "./app-route-handler-response.js";
-import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+} from "vinext/server/app-route-handler-response";
+import { markKnownDynamicAppRoute } from "vinext/server/app-route-handler-runtime";
 import {
   runAppRouteHandler,
   type AppRouteDebugLogger,
@@ -17,7 +17,7 @@ import {
   type AppRouteParams,
   type MarkAppRouteDynamicUsageFn,
   type RouteHandlerCacheSetter,
-} from "./app-route-handler-execution.js";
+} from "vinext/server/app-route-handler-execution";
 
 type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type RouteHandlerBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;

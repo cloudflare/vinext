@@ -1,6 +1,6 @@
-import type { LayoutFlags } from "./app-elements.js";
+import type { LayoutFlags } from "vinext/server/app-elements";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
 
 export type { LayoutFlags };
 export type { ClassificationReason };

@@ -1,6 +1,6 @@
 import type { CachedRouteValue } from "vinext/shims/cache";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
+import { processMiddlewareHeaders } from "vinext/server/request-pipeline";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;

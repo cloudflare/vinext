@@ -7,10 +7,10 @@ import {
   type MetadataMergeEntry,
   type Viewport,
 } from "vinext/shims/metadata";
-import { applyFileBasedMetadata } from "./file-based-metadata.js";
-import type { AppPageParams } from "./app-page-boundary.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
-import type { MetadataFileRoute } from "./metadata-routes.js";
+import { applyFileBasedMetadata } from "vinext/server/file-based-metadata";
+import type { AppPageParams } from "vinext/server/app-page-boundary";
+import { resolveAppPageSegmentParams } from "vinext/server/app-page-params";
+import type { MetadataFileRoute } from "vinext/server/metadata-routes";
 
 type AppPageSearchParams = Record<string, string | string[]>;
 

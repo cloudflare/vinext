@@ -1,4 +1,4 @@
-import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
+import { callAppPrerenderStaticParams } from "vinext/server/app-prerender-static-params";
 import type { RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParams = (args: { params: RootParams }) => unknown;

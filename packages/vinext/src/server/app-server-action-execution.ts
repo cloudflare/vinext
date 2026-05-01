@@ -1,12 +1,12 @@
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
+import { resolveAppPageActionRerenderTarget } from "vinext/server/app-page-request";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
+import { validateCsrfOrigin, validateServerActionPayload } from "vinext/server/request-pipeline";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
   isServerActionNotFoundError,
-} from "./server-action-not-found.js";
+} from "vinext/server/server-action-not-found";
 
 type AppPageParams = Record<string, string | string[]>;
 

@@ -1,4 +1,4 @@
-import type { AppPageParams } from "./app-page-boundary.js";
+import type { AppPageParams } from "vinext/server/app-page-boundary";
 
 function getSegmentParamName(segment: string): string | null {
   if (segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7) {

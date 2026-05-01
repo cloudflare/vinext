@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getCacheHandler, type CachedAppPageValue } from "vinext/shims/cache";
-import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
+import { isrCacheKey, setRevalidateDuration } from "vinext/server/isr-cache";
 import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
 
 // ─── Manifest types ───────────────────────────────────────────────────────────

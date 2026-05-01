@@ -6,7 +6,7 @@ import {
   sealRequestHeaders,
   type NextURL,
 } from "vinext/shims/server";
-import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "vinext/server/middleware-request-headers";
 
 const ROUTE_HANDLER_HTTP_METHODS = [
   "GET",

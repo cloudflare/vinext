@@ -51,7 +51,7 @@ import {
   chunksToReadableStream,
   createProgressiveRscStream,
   getVinextBrowserGlobal,
-} from "./app-browser-stream.js";
+} from "vinext/server/app-browser-stream";
 import {
   createAppPayloadCacheKey,
   getMountedSlotIdsHeader,
@@ -61,7 +61,7 @@ import {
   type AppElements,
   type AppWireElements,
   type LayoutFlags,
-} from "./app-elements.js";
+} from "vinext/server/app-elements";
 import {
   createHistoryStateWithPreviousNextUrl,
   createPendingNavigationCommit,
@@ -73,14 +73,14 @@ import {
   routerReducer,
   type AppRouterAction,
   type AppRouterState,
-} from "./app-browser-state.js";
+} from "vinext/server/app-browser-state";
 import { ElementsContext, Slot } from "vinext/shims/slot";
-import { devOnCaughtError } from "./app-browser-error.js";
+import { devOnCaughtError } from "vinext/server/app-browser-error";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   getServerActionNotFoundClientMessage,
   isServerActionNotFoundResponse,
-} from "./server-action-not-found.js";
+} from "vinext/server/server-action-not-found";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 

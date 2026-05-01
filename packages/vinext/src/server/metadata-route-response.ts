@@ -8,7 +8,7 @@ import {
   type MetadataFileRoute,
   type RobotsConfig,
   type SitemapEntry,
-} from "./metadata-routes.js";
+} from "vinext/server/metadata-routes";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;

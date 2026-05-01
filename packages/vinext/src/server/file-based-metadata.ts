@@ -6,7 +6,7 @@ import {
   isValidMetadataImageId,
   type MetadataFileRoute,
   type MetadataRouteHeadData,
-} from "./metadata-routes.js";
+} from "vinext/server/metadata-routes";
 
 type AppPageParams = Record<string, string | string[]>;
 

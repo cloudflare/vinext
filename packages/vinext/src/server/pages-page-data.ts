@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
 import type { Route } from "../routing/pages-router.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
-import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import { buildPagesCacheValue, type ISRCacheEntry } from "vinext/server/isr-cache";
 import {
   buildPagesNextDataScript,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
-} from "./pages-page-response.js";
+} from "vinext/server/pages-page-response";
 
 type PagesRedirectResult = {
   destination: string;

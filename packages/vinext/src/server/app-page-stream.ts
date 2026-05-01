@@ -1,5 +1,5 @@
-import type { AppPageFontPreload } from "./app-page-execution.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import type { AppPageFontPreload } from "vinext/server/app-page-execution";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
 
 export type AppPageFontData = {
   links: string[];

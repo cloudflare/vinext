@@ -24,7 +24,11 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
-import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
+import {
+  StaticFileCache,
+  CONTENT_TYPES,
+  etagFromFilenameHash,
+} from "vinext/server/static-file-cache";
 import {
   matchRedirect,
   matchRewrite,
@@ -43,17 +47,20 @@ import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
-} from "./image-optimization.js";
-import { normalizePath } from "./normalize-path.js";
-import { applyConfigHeadersToHeaderRecord, isOpenRedirectShaped } from "./request-pipeline.js";
+} from "vinext/server/image-optimization";
+import { normalizePath } from "vinext/server/normalize-path";
+import {
+  applyConfigHeadersToHeaderRecord,
+  isOpenRedirectShaped,
+} from "vinext/server/request-pipeline";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
-import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
-import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import { seedMemoryCacheFromPrerender } from "vinext/server/seed-cache";
+import { installSocketErrorBackstop } from "vinext/server/socket-error-backstop";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {

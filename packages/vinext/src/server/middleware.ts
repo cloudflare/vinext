@@ -28,9 +28,9 @@ import {
   runGeneratedMiddleware,
   type MiddlewareModule,
   type MiddlewareResult,
-} from "./middleware-runtime.js";
+} from "vinext/server/middleware-runtime";
 
-export { matchPattern, matchesMiddleware } from "./middleware-matcher.js";
+export { matchPattern, matchesMiddleware } from "vinext/server/middleware-matcher";
 
 /**
  * Determine whether a middleware/proxy file path refers to a proxy file.

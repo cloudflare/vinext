@@ -34,7 +34,7 @@
  * ## Usage
  *
  * ```ts
- * import { createDirectRunner } from "./dev-module-runner.js";
+ * import { createDirectRunner } from "vinext/server/dev-module-runner";
  *
  * const runner = createDirectRunner(server.environments["ssr"]);
  * const mod = await runner.import("/abs/path/to/file.ts");

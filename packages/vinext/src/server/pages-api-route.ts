@@ -7,7 +7,7 @@ import {
   type PagesReqResRequest,
   type PagesReqResResponse,
   PagesApiBodyParseError,
-} from "./pages-node-compat.js";
+} from "vinext/server/pages-node-compat";
 
 type PagesApiRouteModule = {
   default?: (req: PagesReqResRequest, res: PagesReqResResponse) => void | Promise<void>;

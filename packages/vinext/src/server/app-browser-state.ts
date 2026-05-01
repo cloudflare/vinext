@@ -5,7 +5,7 @@ import {
   readAppElementsMetadata,
   type AppElements,
   type LayoutFlags,
-} from "./app-elements.js";
+} from "vinext/server/app-elements";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";

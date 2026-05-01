@@ -15,8 +15,8 @@
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
-import { resolveStaticAssetSignal } from "./worker-utils.js";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { resolveStaticAssetSignal } from "vinext/server/worker-utils";
+import { isOpenRedirectShaped } from "vinext/server/request-pipeline";
 
 type WorkerAssetEnv = {
   ASSETS?: {

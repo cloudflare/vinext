@@ -14,21 +14,21 @@ import {
   useServerInsertedHTML,
 } from "vinext/shims/navigation";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { isOpenRedirectShaped } from "vinext/server/request-pipeline";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
   createInlineScriptTag,
   createNonceAttribute,
   escapeHtmlAttr,
   safeJsonStringify,
-} from "./html.js";
-import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed } from "./app-page-stream.js";
+} from "vinext/server/html";
+import { createRscEmbedTransform, createTickBufferedTransform } from "vinext/server/app-ssr-stream";
+import { deferUntilStreamConsumed } from "vinext/server/app-page-stream";
 import {
   normalizeAppElements,
   readAppElementsMetadata,
   type AppWireElements,
-} from "./app-elements.js";
+} from "vinext/server/app-elements";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 
 export type FontPreload = {

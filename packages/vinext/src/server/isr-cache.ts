@@ -22,7 +22,7 @@ import {
 } from "vinext/shims/cache";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
+import { reportRequestError, type OnRequestErrorContext } from "vinext/server/instrumentation";
 
 export type ISRCacheEntry = {
   value: CacheHandlerValue;

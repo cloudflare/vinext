@@ -3,7 +3,7 @@ import {
   collectRouteHandlerMethods,
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
-} from "./app-route-handler-runtime.js";
+} from "vinext/server/app-route-handler-runtime";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;

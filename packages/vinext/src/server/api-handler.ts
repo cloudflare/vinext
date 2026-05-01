@@ -10,9 +10,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
+import {
+  reportRequestError,
+  importModule,
+  type ModuleImporter,
+} from "vinext/server/instrumentation";
 import { addQueryParam } from "../utils/query.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "vinext/server/pages-media-type";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.

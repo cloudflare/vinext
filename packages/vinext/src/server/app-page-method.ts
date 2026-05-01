@@ -1,5 +1,5 @@
-import { isPossibleAppRouteActionRequest } from "./app-route-handler-policy.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { isPossibleAppRouteActionRequest } from "vinext/server/app-route-handler-policy";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
 
 type AppPageMethodPolicyOptions = {
   dynamicConfig?: string;

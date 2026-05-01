@@ -14,30 +14,30 @@ import {
 import { setNavigationContext } from "vinext/shims/navigation";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import type { ISRCacheEntry } from "vinext/server/isr-cache";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
   resolveAppRouteHandlerMethod,
   shouldReadAppRouteHandlerCache,
   type AppRouteHandlerModule,
-} from "./app-route-handler-policy.js";
-import { readAppRouteHandlerCacheResponse } from "./app-route-handler-cache.js";
+} from "vinext/server/app-route-handler-policy";
+import { readAppRouteHandlerCacheResponse } from "vinext/server/app-route-handler-cache";
 import {
   executeAppRouteHandler,
   type AppRouteDebugLogger,
   type AppRouteHandlerFunction,
   type AppRouteParams,
   type RouteHandlerCacheSetter,
-} from "./app-route-handler-execution.js";
-import { isKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+} from "vinext/server/app-route-handler-execution";
+import { isKnownDynamicAppRoute } from "vinext/server/app-route-handler-runtime";
 import {
   applyRouteHandlerMiddlewareContext,
   type RouteHandlerMiddlewareContext,
-} from "./app-route-handler-response.js";
-import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
-import { buildPageCacheTags } from "./implicit-tags.js";
-import { reportRequestError } from "./instrumentation.js";
+} from "vinext/server/app-route-handler-response";
+import { createStaticGenerationHeadersContext } from "vinext/server/app-static-generation";
+import { buildPageCacheTags } from "vinext/server/implicit-tags";
+import { reportRequestError } from "vinext/server/instrumentation";
 
 type AppRouteHandlerDispatchRoute = {
   pattern: string;

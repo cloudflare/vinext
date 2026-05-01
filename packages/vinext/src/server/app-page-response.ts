@@ -1,4 +1,4 @@
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;

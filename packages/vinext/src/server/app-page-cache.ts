@@ -1,5 +1,5 @@
 import type { CachedAppPageValue } from "vinext/shims/cache";
-import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import { buildAppPageCacheValue, type ISRCacheEntry } from "vinext/server/isr-cache";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;

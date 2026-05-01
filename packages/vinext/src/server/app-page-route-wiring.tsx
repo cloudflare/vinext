@@ -7,7 +7,7 @@ import {
   createAppPayloadPageId,
   createAppPayloadRouteId,
   type AppElements,
-} from "./app-elements.js";
+} from "vinext/server/app-elements";
 import {
   ErrorBoundary,
   ForbiddenBoundary,
@@ -17,14 +17,14 @@ import {
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
-import type { AppPageParams } from "./app-page-boundary.js";
+import type { AppPageParams } from "vinext/server/app-page-boundary";
 import {
   createAppRenderDependency,
   renderAfterAppDependencies,
   renderWithAppDependencyBarrier,
   type AppRenderDependency,
-} from "./app-render-dependency.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
+} from "vinext/server/app-render-dependency";
+import { resolveAppPageSegmentParams } from "vinext/server/app-page-params";
 
 type AppPageComponentProps = {
   children?: ReactNode;

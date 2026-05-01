@@ -1,6 +1,6 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "vinext/server/pages-media-type";
 
 const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
 

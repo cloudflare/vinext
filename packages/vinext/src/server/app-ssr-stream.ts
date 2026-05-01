@@ -1,4 +1,4 @@
-import { createInlineScriptTag, safeJsonStringify } from "./html.js";
+import { createInlineScriptTag, safeJsonStringify } from "vinext/server/html";
 
 type RscEmbedTransform = {
   flush(): string;

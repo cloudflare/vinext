@@ -2,10 +2,10 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
-import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
-import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "vinext/server/middleware-request-headers";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
+import { executeMiddleware, type MiddlewareModule } from "vinext/server/middleware-runtime";
+import { processMiddlewareHeaders } from "vinext/server/request-pipeline";
 
 export type AppMiddlewareContext = {
   headers: Headers | null;

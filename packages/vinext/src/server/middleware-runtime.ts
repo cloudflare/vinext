@@ -6,10 +6,10 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextFetchEvent, NextRequest } from "vinext/shims/server";
-import { normalizePath } from "./normalize-path.js";
-import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
-import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
-import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { normalizePath } from "vinext/server/normalize-path";
+import { MatcherConfig, matchesMiddleware } from "vinext/server/middleware-matcher";
+import { shouldKeepMiddlewareHeader } from "vinext/server/middleware-request-headers";
+import { processMiddlewareHeaders } from "vinext/server/request-pipeline";
 
 export type MiddlewareModule = Record<string, unknown>;
 

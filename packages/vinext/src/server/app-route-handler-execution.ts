@@ -6,14 +6,14 @@ import type { NextRequest } from "vinext/shims/server";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
-} from "./app-static-generation.js";
+} from "vinext/server/app-static-generation";
 import {
   isPossibleAppRouteActionRequest,
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
   shouldWriteAppRouteHandlerCache,
   type AppRouteHandlerModule,
-} from "./app-route-handler-policy.js";
+} from "vinext/server/app-route-handler-policy";
 import {
   applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader,
@@ -22,11 +22,11 @@ import {
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
   type RouteHandlerMiddlewareContext,
-} from "./app-route-handler-response.js";
+} from "vinext/server/app-route-handler-response";
 import {
   createTrackedAppRouteRequest,
   markKnownDynamicAppRoute,
-} from "./app-route-handler-runtime.js";
+} from "vinext/server/app-route-handler-runtime";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;

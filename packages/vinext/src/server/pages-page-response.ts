@@ -1,6 +1,6 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "vinext/server/html";
 
 type PagesFontPreload = {
   href: string;

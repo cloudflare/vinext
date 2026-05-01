@@ -4,7 +4,7 @@ import {
   type AppPageSpecialError,
   type LayoutClassificationOptions,
   type LayoutFlags,
-} from "./app-page-execution.js";
+} from "vinext/server/app-page-execution";
 
 type ProbeAppPageBeforeRenderResult = {
   response: Response | null;

@@ -1,4 +1,4 @@
-import type { AppPageSpecialError } from "./app-page-execution.js";
+import type { AppPageSpecialError } from "vinext/server/app-page-execution";
 
 type AppPageParams = Record<string, string | string[]>;
 

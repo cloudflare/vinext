@@ -2,8 +2,8 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
-import type { ModuleImporter } from "./instrumentation.js";
-import { importModule, reportRequestError } from "./instrumentation.js";
+import type { ModuleImporter } from "vinext/server/instrumentation";
+import { importModule, reportRequestError } from "vinext/server/instrumentation";
 import type { NextI18nConfig } from "../config/next-config.js";
 import {
   isrGet,
@@ -13,7 +13,7 @@ import {
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
-} from "./isr-cache.js";
+} from "vinext/server/isr-cache";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { _runWithCacheState } from "vinext/shims/cache";
 import { runWithPrivateCache } from "vinext/shims/cache-runtime";
@@ -25,21 +25,21 @@ import "../shims/router-state.js";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
-import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
+import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "vinext/server/html";
+import { getScriptNonceFromNodeHeaderSources } from "vinext/server/csp";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
 import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { logRequest, now } from "./request-log.js";
+import { logRequest, now } from "vinext/server/request-log";
 import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
   detectLocaleFromAcceptLanguage,
   parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
-} from "./pages-i18n.js";
+} from "vinext/server/pages-i18n";
 
 /**
  * Render a React element to a string using renderToReadableStream.

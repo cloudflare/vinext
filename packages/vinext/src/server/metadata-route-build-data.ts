@@ -5,7 +5,7 @@ import {
   getMetadataRouteKind,
   type MetadataFileRoute,
   type MetadataRouteHeadData,
-} from "./metadata-routes.js";
+} from "vinext/server/metadata-routes";
 
 type ImageDimensions = {
   width?: number;

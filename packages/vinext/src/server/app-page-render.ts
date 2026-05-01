@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import type { CachedAppPageValue } from "vinext/shims/cache";
-import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
+import { buildOutgoingAppPayload, type AppOutgoingElements } from "vinext/server/app-elements";
 import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
-} from "./app-page-cache.js";
+} from "vinext/server/app-page-cache";
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
@@ -13,8 +13,8 @@ import {
   type AppPageFontPreload,
   type AppPageSpecialError,
   type LayoutClassificationOptions,
-} from "./app-page-execution.js";
-import { probeAppPageBeforeRender } from "./app-page-probe.js";
+} from "vinext/server/app-page-execution";
+import { probeAppPageBeforeRender } from "vinext/server/app-page-probe";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -22,7 +22,7 @@ import {
   resolveAppPageRscResponsePolicy,
   type AppPageMiddlewareContext,
   type AppPageResponseTiming,
-} from "./app-page-response.js";
+} from "vinext/server/app-page-response";
 import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
@@ -31,7 +31,7 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   shouldRerenderAppPageWithGlobalError,
   type AppPageSsrHandler,
-} from "./app-page-stream.js";
+} from "vinext/server/app-page-stream";
 
 type AppPageBoundaryOnError = (
   error: unknown,

@@ -9,7 +9,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "vinext": ["./packages/vinext/src/index.ts"],
+      "vinext/*": ["./packages/vinext/src/*"]
+    }
   },
   "exclude": ["node_modules", "dist", "fixtures", "tests/fixtures", "benchmarks", "examples"]
 }

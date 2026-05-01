@@ -1,5 +1,5 @@
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import { mergeMiddlewareResponseHeaders } from "vinext/server/middleware-response-headers";
+import { resolveAppPageSegmentParams } from "vinext/server/app-page-params";
 
 export type AppPageParams = Record<string, string | string[]>;
 
