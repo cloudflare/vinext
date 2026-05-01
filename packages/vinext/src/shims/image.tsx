@@ -10,7 +10,7 @@
  * `images.domains` from next.config.js. Unmatched URLs are blocked
  * in production and warn in development, matching Next.js behavior.
  */
-import React, { forwardRef } from "react";
+import React, { forwardRef, useRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
@@ -219,6 +219,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     style,
     onLoad,
     onLoadingComplete,
+    onError,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
@@ -226,14 +227,37 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   },
   ref,
 ) {
+  // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
+  // Matches Next.js behavior — prevents double-firing from React re-renders,
+  // strict-mode double-invocation, or state updates inside the handler itself.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const lastLoadedSrcRef = useRef<string | undefined>(undefined);
+  const lastErrorSrcRef = useRef<string | undefined>(undefined);
+
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
   const handleLoad = onLoadingComplete
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        if (lastLoadedSrcRef.current === src) return;
+        lastLoadedSrcRef.current = src;
         onLoad?.(e);
         onLoadingComplete(e.currentTarget);
       }
-    : onLoad;
+    : onLoad
+      ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+          if (lastLoadedSrcRef.current === src) return;
+          lastLoadedSrcRef.current = src;
+          onLoad(e);
+        }
+      : undefined;
+
+  const handleError = onError
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        if (lastErrorSrcRef.current === src) return;
+        lastErrorSrcRef.current = src;
+        onError(e);
+      }
+    : undefined;
 
   const {
     src,
@@ -257,6 +281,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         sizes={sizes}
         className={className}
         onLoad={handleLoad}
+        onError={handleError}
         style={
           fill
             ? {
@@ -307,6 +332,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           className={className}
           background={bg}
           onLoad={handleLoad}
+          onError={handleError}
         />
       );
     }
@@ -326,6 +352,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           className={className}
           background={bg}
           onLoad={handleLoad}
+          onError={handleError}
         />
       );
     }
@@ -392,6 +419,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       className={className}
       data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
+      onError={handleError}
       style={
         fill
           ? {
