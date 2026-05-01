@@ -37,8 +37,11 @@ import type {
   CachedRouteValue,
   CachedImageValue,
   IncrementalCacheValue,
-} from "../shims/cache.js";
-import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+} from "vinext/shims/cache";
+import {
+  getRequestExecutionContext,
+  type ExecutionContextLike,
+} from "vinext/shims/request-context";
 
 // ---------------------------------------------------------------------------
 // Serialized cache value types — ArrayBuffer fields replaced with base64 strings

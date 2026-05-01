@@ -1,8 +1,8 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { setHeadersContext, type HeadersAccessPhase } from "../shims/headers.js";
-import type { ExecutionContextLike } from "../shims/request-context.js";
-import type { CachedRouteValue } from "../shims/cache.js";
-import type { NextRequest } from "../shims/server.js";
+import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
+import type { CachedRouteValue } from "vinext/shims/cache";
+import type { NextRequest } from "vinext/shims/server";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,

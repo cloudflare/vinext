@@ -1,4 +1,4 @@
-import type { HeadersAccessPhase } from "../shims/headers.js";
+import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";

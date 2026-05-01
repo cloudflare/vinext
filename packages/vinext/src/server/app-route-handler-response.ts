@@ -1,4 +1,4 @@
-import type { CachedRouteValue } from "../shims/cache.js";
+import type { CachedRouteValue } from "vinext/shims/cache";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 

@@ -3,17 +3,17 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchSoftTags,
-} from "../shims/fetch-cache.js";
+} from "vinext/shims/fetch-cache";
 import {
   consumeDynamicUsage,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersAccessPhase,
-} from "../shims/headers.js";
-import { setNavigationContext } from "../shims/navigation.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+} from "vinext/shims/headers";
+import { setNavigationContext } from "vinext/shims/navigation";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,

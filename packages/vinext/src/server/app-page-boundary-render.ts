@@ -1,8 +1,8 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
-import { buildClientHookErrorMessage } from "../shims/client-hook-error.js";
-import { ErrorBoundary } from "../shims/error-boundary.js";
-import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
-import { MetadataHead, ViewportHead } from "../shims/metadata.js";
+import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
+import { ErrorBoundary } from "vinext/shims/error-boundary";
+import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
+import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";

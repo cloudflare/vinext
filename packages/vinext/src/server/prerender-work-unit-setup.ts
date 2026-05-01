@@ -10,7 +10,7 @@
  * TODO: If future dynamic APIs need request-scoped stores for normal (non-prerender)
  * requests, add a `{ type: "request" }` store during normal request handling.
  */
-import { workUnitAsyncStorage } from "../shims/internal/work-unit-async-storage.js";
+import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
 
 export function runWithPrerenderWorkUnit<T>(
   fn: () => Promise<T>,

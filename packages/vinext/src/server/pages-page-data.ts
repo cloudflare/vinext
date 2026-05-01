@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Route } from "../routing/pages-router.js";
-import type { CachedPagesValue } from "../shims/cache.js";
+import type { CachedPagesValue } from "vinext/shims/cache";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,

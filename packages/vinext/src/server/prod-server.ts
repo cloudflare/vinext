@@ -50,7 +50,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
-import type { ExecutionContextLike } from "../shims/request-context.js";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
