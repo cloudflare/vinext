@@ -281,6 +281,13 @@ export type ResolvedNextConfig = {
    * Set to 0 to disable in-memory caching entirely.
    */
   cacheMaxMemorySize: number | undefined;
+  /**
+   * Concatenated hash salt from `experimental.outputHashSalt` config option
+   * and `NEXT_HASH_SALT` environment variable. Empty string when neither is set.
+   * When non-empty, mix into content-addressed output filenames so hash values
+   * change without modifying source — useful for cache-busting after CDN poisoning.
+   */
+  hashSalt: string;
 };
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
@@ -511,6 +518,7 @@ export async function resolveNextConfig(
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
+      hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -590,6 +598,11 @@ export async function resolveNextConfig(
     serverActionsConfig?.bodySizeLimit as string | number | undefined,
   );
 
+  // Resolve hashSalt from experimental.outputHashSalt config + NEXT_HASH_SALT env var.
+  // Next.js concatenates them: config value first, then env var.
+  const configOutputHashSalt = experimental?.outputHashSalt as string | undefined;
+  const hashSalt = (configOutputHashSalt ?? "") + (process.env.NEXT_HASH_SALT ?? "");
+
   // Resolve optimizePackageImports from experimental config
   const rawOptimize = experimental?.optimizePackageImports;
   const optimizePackageImports = Array.isArray(rawOptimize)
@@ -605,6 +618,15 @@ export async function resolveNextConfig(
     : Array.isArray(legacyServerComponentsExternal)
       ? (legacyServerComponentsExternal as string[])
       : [];
+
+  // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
+  // transforms, not SWC, so automatic polyfill injection is not applicable.
+  if (experimental?.swcEnvOptions !== undefined) {
+    console.warn(
+      '[vinext] next.config option "experimental.swcEnvOptions" is not applicable and will be ignored (vinext uses Vite, not SWC). ' +
+        "A Vite-compatible polyfill solution may be explored in the future.",
+    );
+  }
 
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
@@ -675,6 +697,7 @@ export async function resolveNextConfig(
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
+    hashSalt,
     buildId,
   };
 
