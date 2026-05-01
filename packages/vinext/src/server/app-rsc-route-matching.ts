@@ -1,6 +1,11 @@
 import { buildRouteTrie, trieMatch } from "../routing/route-trie.js";
+import {
+  matchRoutePattern,
+  routePatternParts,
+  type RoutePatternParams,
+} from "../routing/route-pattern.js";
 
-type AppRscRouteParams = Record<string, string | string[]>;
+type AppRscRouteParams = RoutePatternParams;
 
 type AppRscInterceptForMatching = {
   targetPattern: string;
@@ -92,7 +97,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceRouteIndex: routeIndex,
           slotKey,
           targetPattern: intercept.targetPattern,
-          targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+          targetPatternParts: routePatternParts(intercept.targetPattern),
           interceptLayouts: intercept.interceptLayouts,
           page: intercept.page,
           params: intercept.params,
@@ -107,35 +112,7 @@ export function matchAppRscRoutePattern(
   urlParts: string[],
   patternParts: string[],
 ): AppRscRouteParams | null {
-  const params = createRouteParams();
-  for (let i = 0; i < patternParts.length; i++) {
-    const patternPart = patternParts[i];
-    if (patternPart.startsWith(":") && patternPart.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = patternPart.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-    if (patternPart.startsWith(":") && patternPart.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = patternPart.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length > 0) {
-        params[paramName] = remaining;
-      }
-      return params;
-    }
-    if (patternPart.startsWith(":")) {
-      if (i >= urlParts.length) return null;
-      params[patternPart.slice(1)] = urlParts[i];
-      continue;
-    }
-    if (i >= urlParts.length || urlParts[i] !== patternPart) return null;
-  }
-  if (urlParts.length !== patternParts.length) return null;
-  return params;
+  return matchRoutePattern(urlParts, patternParts);
 }
 
 function mergeMatchedParams(

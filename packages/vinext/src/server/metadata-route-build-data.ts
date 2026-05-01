@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { imageSize } from "image-size";
+import { routePatternParts } from "../routing/route-pattern.js";
 import {
   getMetadataRouteKind,
   type MetadataFileRoute,
@@ -190,24 +191,11 @@ function pushEntryProperty(lines: string[], key: string, value: unknown): void {
   }
 }
 
-function metadataRoutePatternPart(segment: string): string {
-  if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-    return `:${segment.slice(5, -2)}*`;
-  }
-  if (segment.startsWith("[...") && segment.endsWith("]")) {
-    return `:${segment.slice(4, -1)}+`;
-  }
-  if (segment.startsWith("[") && segment.endsWith("]")) {
-    return `:${segment.slice(1, -1)}`;
-  }
-  return segment;
-}
-
 function createMetadataRoutePatternParts(route: MetadataFileRoute): readonly string[] | null {
   if (!route.isDynamic || !route.servedUrl.includes("[")) {
     return null;
   }
-  return route.servedUrl.split("/").filter(Boolean).map(metadataRoutePatternPart);
+  return routePatternParts(route.servedUrl);
 }
 
 function getDynamicMetadataRouteModuleName(

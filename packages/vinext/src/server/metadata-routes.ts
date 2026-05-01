@@ -17,6 +17,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 
 // -------------------------------------------------------------------
 // Types matching Next.js MetadataRoute
@@ -530,47 +531,7 @@ export function matchMetadataRoutePattern(
   urlParts: string[],
   patternParts: string[],
 ): Record<string, string | string[]> | null {
-  const params: Record<string, string | string[]> = Object.create(null);
-
-  function matchFrom(urlIndex: number, patternIndex: number): boolean {
-    if (patternIndex === patternParts.length) {
-      return urlIndex === urlParts.length;
-    }
-
-    const patternPart = patternParts[patternIndex];
-    if (patternPart.startsWith(":") && (patternPart.endsWith("+") || patternPart.endsWith("*"))) {
-      const paramName = patternPart.slice(1, -1);
-      const minLength = patternPart.endsWith("+") ? 1 : 0;
-      for (let endIndex = urlIndex + minLength; endIndex <= urlParts.length; endIndex++) {
-        params[paramName] = urlParts.slice(urlIndex, endIndex);
-        if (matchFrom(endIndex, patternIndex + 1)) {
-          return true;
-        }
-      }
-      delete params[paramName];
-      return false;
-    }
-
-    if (patternPart.startsWith(":")) {
-      if (urlIndex >= urlParts.length) {
-        return false;
-      }
-      const paramName = patternPart.slice(1);
-      params[paramName] = urlParts[urlIndex];
-      if (matchFrom(urlIndex + 1, patternIndex + 1)) {
-        return true;
-      }
-      delete params[paramName];
-      return false;
-    }
-
-    if (urlIndex >= urlParts.length || urlParts[urlIndex] !== patternPart) {
-      return false;
-    }
-    return matchFrom(urlIndex + 1, patternIndex + 1);
-  }
-
-  return matchFrom(0, 0) ? params : null;
+  return matchRoutePattern(urlParts, patternParts);
 }
 
 function metadataRouteSuffix(parentSegments: string[], metaType: string): string {

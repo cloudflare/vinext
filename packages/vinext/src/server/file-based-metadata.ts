@@ -1,5 +1,6 @@
 import type { Metadata } from "../shims/metadata.js";
 import { makeThenableParams } from "../shims/thenable-params.js";
+import { fillRoutePatternSegments, routePattern } from "../routing/route-pattern.js";
 import {
   getMetadataImageRouteKind,
   getMetadataRouteKind,
@@ -111,26 +112,6 @@ function routeSpecificity(route: MetadataFileRoute): number {
   return route.routeSegments?.length ?? routeScore(route.routePrefix);
 }
 
-function normalizeRoutePrefixPattern(routePrefix: string): string {
-  const segments = routePrefix
-    .split("/")
-    .filter(Boolean)
-    .map((segment) => {
-      if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-        return `:${segment.slice(5, -2)}*`;
-      }
-      if (segment.startsWith("[...") && segment.endsWith("]")) {
-        return `:${segment.slice(4, -1)}+`;
-      }
-      if (segment.startsWith("[") && segment.endsWith("]")) {
-        return `:${segment.slice(1, -1)}`;
-      }
-      return segment;
-    });
-
-  return segments.length > 0 ? `/${segments.join("/")}` : "";
-}
-
 function selectDeepestRoutes(
   metadataRoutes: readonly MetadataFileRoute[] | null | undefined,
   kind: MetadataRouteHeadData["kind"],
@@ -173,8 +154,8 @@ function selectDeepestRoutes(
     }
 
     const routePrefix = route.routePrefix;
-    const resolvedRoutePrefix = fillMetadataRouteSegments(routePrefix, params);
-    const normalizedRoutePrefix = normalizeRoutePrefixPattern(routePrefix);
+    const resolvedRoutePrefix = fillRoutePatternSegments(routePrefix, params);
+    const normalizedRoutePrefix = routePattern(routePrefix);
     if (
       !routeApplies(routePath, routePrefix) &&
       !routeApplies(routePath, normalizedRoutePrefix) &&
@@ -241,25 +222,25 @@ function normalizeIconValue(value: unknown): IconEntry | null {
   return normalizeIconDescriptor(value);
 }
 
+function normalizeIconValueList(values: readonly unknown[]): IconEntry[] {
+  const normalizedEntries: IconEntry[] = [];
+  for (const value of values) {
+    const normalizedValue = normalizeIconValue(value);
+    if (normalizedValue) {
+      normalizedEntries.push(normalizedValue);
+    }
+  }
+  return normalizedEntries;
+}
+
 function normalizeIconEntries(icon: NonNullable<Metadata["icons"]>): IconEntry[] {
-  if (isStringOrUrl(icon)) {
-    return [{ url: icon }];
+  const normalizedTopLevelValue = normalizeIconValue(icon);
+  if (normalizedTopLevelValue) {
+    return [normalizedTopLevelValue];
   }
 
   if (Array.isArray(icon)) {
-    const normalizedEntries: IconEntry[] = [];
-    for (const value of icon) {
-      const normalizedValue = normalizeIconValue(value);
-      if (normalizedValue) {
-        normalizedEntries.push(normalizedValue);
-      }
-    }
-    return normalizedEntries;
-  }
-
-  const normalizedTopLevelValue = normalizeIconDescriptor(icon);
-  if (normalizedTopLevelValue) {
-    return [normalizedTopLevelValue];
+    return normalizeIconValueList(icon);
   }
 
   if (!isIconMap(icon)) {
@@ -272,14 +253,7 @@ function normalizeIconEntries(icon: NonNullable<Metadata["icons"]>): IconEntry[]
   }
 
   if (Array.isArray(iconValue)) {
-    const normalizedEntries: IconEntry[] = [];
-    for (const value of iconValue) {
-      const normalizedValue = normalizeIconValue(value);
-      if (normalizedValue) {
-        normalizedEntries.push(normalizedValue);
-      }
-    }
-    return normalizedEntries;
+    return normalizeIconValueList(iconValue);
   }
 
   const normalizedValue = normalizeIconValue(iconValue);
@@ -290,7 +264,7 @@ function isIconMap(value: Metadata["icons"]): value is IconMap {
   if (!value || typeof value !== "object" || value instanceof URL || Array.isArray(value)) {
     return false;
   }
-  return normalizeIconDescriptor(value) === null;
+  return normalizeIconValue(value) === null;
 }
 
 function cloneIconMap(value: Metadata["icons"]): IconMap {
@@ -368,67 +342,6 @@ function buildSocialEntry(headData: MetadataRouteHeadData): SocialImageEntry | n
     socialEntry.type = headData.type;
   }
   return socialEntry;
-}
-
-function appendParamValue(target: string[], value: string | string[]): void {
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      target.push(entry);
-    }
-    return;
-  }
-
-  target.push(value);
-}
-
-function fillMetadataRouteSegments(servedUrl: string, params: AppPageParams): string | null {
-  const segments = servedUrl.split("/").filter(Boolean);
-  const resolvedSegments: string[] = [];
-
-  for (const segment of segments) {
-    if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-      const paramName = segment.slice(5, -2);
-      const value = params[paramName];
-      if (value !== undefined && value !== "") {
-        if (Array.isArray(value) && value.length === 0) {
-          continue;
-        }
-        appendParamValue(resolvedSegments, value);
-      }
-      continue;
-    }
-
-    if (segment.startsWith("[...") && segment.endsWith("]")) {
-      const paramName = segment.slice(4, -1);
-      const value = params[paramName];
-      if (value === undefined || (Array.isArray(value) ? value.length === 0 : value === "")) {
-        return null;
-      }
-      appendParamValue(resolvedSegments, value);
-      continue;
-    }
-
-    if (segment.startsWith("[") && segment.endsWith("]")) {
-      const paramName = segment.slice(1, -1);
-      const value = params[paramName];
-      if (typeof value === "string") {
-        resolvedSegments.push(value);
-        continue;
-      }
-      if (Array.isArray(value) && value.length > 0) {
-        if (value.length > 1) {
-          return null;
-        }
-        resolvedSegments.push(value[0]);
-        continue;
-      }
-      return null;
-    }
-
-    resolvedSegments.push(segment);
-  }
-
-  return resolvedSegments.length > 0 ? `/${resolvedSegments.join("/")}` : "/";
 }
 
 function normalizeMetadataImageId(route: MetadataFileRoute, id: string | number): string | null {
@@ -600,7 +513,7 @@ async function resolveRouteHeadData(
   }
 
   // servedUrl must stay query-free here; content hashes are appended after dynamic segment filling.
-  const resolvedUrl = fillMetadataRouteSegments(route.servedUrl, params);
+  const resolvedUrl = fillRoutePatternSegments(route.servedUrl, params);
   if (!resolvedUrl) {
     console.warn(
       `[vinext] Skipping metadata route ${route.servedUrl} because params did not fill all dynamic segments.`,
