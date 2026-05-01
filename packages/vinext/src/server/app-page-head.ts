@@ -6,7 +6,7 @@ import {
   type Metadata,
   type MetadataMergeEntry,
   type Viewport,
-} from "../shims/metadata.js";
+} from "vinext/shims/metadata";
 import { applyFileBasedMetadata } from "./file-based-metadata.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";

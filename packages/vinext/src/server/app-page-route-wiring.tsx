@@ -13,10 +13,10 @@ import {
   ForbiddenBoundary,
   NotFoundBoundary,
   UnauthorizedBoundary,
-} from "../shims/error-boundary.js";
-import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
-import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "../shims/metadata.js";
-import { Children, ParallelSlot, Slot } from "../shims/slot.js";
+} from "vinext/shims/error-boundary";
+import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
+import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
+import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
   createAppRenderDependency,

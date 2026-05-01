@@ -5,7 +5,7 @@ import {
   sealRequestCookies,
   sealRequestHeaders,
   type NextURL,
-} from "../shims/server.js";
+} from "vinext/shims/server";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 
 const ROUTE_HANDLER_HTTP_METHODS = [

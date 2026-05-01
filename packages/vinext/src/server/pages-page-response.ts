@@ -1,5 +1,5 @@
 import React, { type ComponentType, type ReactNode } from "react";
-import { withScriptNonce } from "../shims/script-nonce-context.js";
+import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 
 type PagesFontPreload = {

@@ -1,20 +1,20 @@
 import type { ReactNode } from "react";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _consumeRequestScopedCacheLife, type CachedAppPageValue } from "../shims/cache.js";
+import { _consumeRequestScopedCacheLife, type CachedAppPageValue } from "vinext/shims/cache";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersContext,
-} from "../shims/headers.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+} from "vinext/shims/headers";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
   getCollectedFetchTags,
   setCurrentFetchSoftTags,
-} from "../shims/fetch-cache.js";
+} from "vinext/shims/fetch-cache";
 import type { AppOutgoingElements } from "./app-elements.js";
 import { readAppPageCacheResponse } from "./app-page-cache.js";
 import { resolveAppPageParentHttpAccessBoundaryModule } from "./app-page-boundary.js";

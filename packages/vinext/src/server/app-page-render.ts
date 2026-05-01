@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { CachedAppPageValue } from "../shims/cache.js";
+import type { CachedAppPageValue } from "vinext/shims/cache";
 import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
 import {
   finalizeAppPageHtmlCacheResponse,

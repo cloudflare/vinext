@@ -1,4 +1,4 @@
-import type { HeadersContext } from "../shims/headers.js";
+import type { HeadersContext } from "vinext/shims/headers";
 
 type AppStaticGenerationRouteKind = "page" | "route";
 

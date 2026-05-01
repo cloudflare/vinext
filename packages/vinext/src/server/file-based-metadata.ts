@@ -1,5 +1,5 @@
-import type { Metadata } from "../shims/metadata.js";
-import { makeThenableParams } from "../shims/thenable-params.js";
+import type { Metadata } from "vinext/shims/metadata";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import { fillRoutePatternSegments, routePattern } from "../routing/route-pattern.js";
 import {
   getMetadataImageRouteKind,

@@ -1,5 +1,5 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import type { HeadersAccessPhase } from "../shims/headers.js";
+import type { HeadersAccessPhase } from "vinext/shims/headers";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {

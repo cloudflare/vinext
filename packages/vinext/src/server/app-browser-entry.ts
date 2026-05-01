@@ -45,7 +45,7 @@ import {
   toRscUrl,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
-} from "../shims/navigation.js";
+} from "vinext/shims/navigation";
 import { stripBasePath } from "../utils/base-path.js";
 import {
   chunksToReadableStream,
@@ -74,9 +74,9 @@ import {
   type AppRouterAction,
   type AppRouterState,
 } from "./app-browser-state.js";
-import { ElementsContext, Slot } from "../shims/slot.js";
+import { ElementsContext, Slot } from "vinext/shims/slot";
 import { devOnCaughtError } from "./app-browser-error.js";
-import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "../shims/url-safety.js";
+import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   getServerActionNotFoundClientMessage,
   isServerActionNotFoundResponse,

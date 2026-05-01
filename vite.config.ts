@@ -1,5 +1,8 @@
+import path from "node:path";
 import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
+
+const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
 
 export default defineConfig({
   staged: {
@@ -73,6 +76,9 @@ export default defineConfig({
 
     projects: [
       {
+        resolve: {
+          alias: { "vinext/shims": SHIMS_SRC },
+        },
         test: {
           name: "unit",
           include: ["tests/**/*.test.ts"],
@@ -105,6 +111,9 @@ export default defineConfig({
         },
       },
       {
+        resolve: {
+          alias: { "vinext/shims": SHIMS_SRC },
+        },
         test: {
           name: "integration",
           include: [

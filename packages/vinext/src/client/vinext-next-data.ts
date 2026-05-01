@@ -5,7 +5,7 @@
  * We can't augment the `NEXT_DATA` type alias, so we extend the vinext shim's
  * interface (shims/internal/utils.ts) and cast at the usage sites.
  */
-import type { NEXT_DATA } from "../shims/internal/utils.js";
+import type { NEXT_DATA } from "vinext/shims/internal/utils";
 
 export type VinextNextData = {
   /** vinext-specific additions (not part of Next.js upstream). */
