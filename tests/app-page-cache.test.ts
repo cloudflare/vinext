@@ -65,9 +65,7 @@ describe("app page cache helpers", () => {
     });
     expect(htmlResponse?.status).toBe(201);
     expect(htmlResponse?.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(htmlResponse?.headers.get("cache-control")).toBe(
-      "s-maxage=60, stale-while-revalidate=240",
-    );
+    expect(htmlResponse?.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
     expect(htmlResponse?.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(htmlResponse?.text()).resolves.toBe("<h1>cached</h1>");
 
@@ -78,9 +76,7 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
     });
     expect(rscResponse?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
-    expect(rscResponse?.headers.get("cache-control")).toBe(
-      "s-maxage=60, stale-while-revalidate=240",
-    );
+    expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
   });
 
@@ -108,6 +104,34 @@ describe("app page cache helpers", () => {
     });
 
     expect(response?.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
+  });
+
+  it("preserves legacy STALE headers when cached entries lack cache-control metadata", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>");
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      isrGet: vi.fn(async () => buildISRCacheEntry(cachedValue, true)),
+      isrHtmlKey(pathname) {
+        return `html:${pathname}`;
+      },
+      isrRscKey(pathname) {
+        return `rsc:${pathname}`;
+      },
+      isrSet: vi.fn(async () => {}),
+      expireSeconds: 31_536_000,
+      revalidateSeconds: 60,
+      renderFreshPageForCache: vi.fn(async () => ({
+        html: "<h1>fresh</h1>",
+        rscData: new ArrayBuffer(0),
+        tags: [],
+      })),
+      scheduleBackgroundRegeneration: vi.fn(),
+    });
+
+    expect(response?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
   });
 
   it("falls back to 200 for falsy cached status values", () => {

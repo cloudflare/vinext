@@ -96,7 +96,10 @@ export function buildRouteHandlerCachedResponse(
   }
   headers.set("X-Vinext-Cache", options.cacheState);
   const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds = options.cacheControl?.expire ?? options.expireSeconds;
+  const expireSeconds =
+    options.cacheControl === undefined
+      ? undefined
+      : (options.cacheControl.expire ?? options.expireSeconds);
   headers.set(
     "Cache-Control",
     buildRouteHandlerCacheControl(options.cacheState, revalidateSeconds, expireSeconds),

@@ -151,7 +151,10 @@ export function buildAppPageCachedResponse(
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const status = cachedValue.status || 200;
   const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds = options.cacheControl?.expire ?? options.expireSeconds;
+  const expireSeconds =
+    options.cacheControl === undefined
+      ? undefined
+      : (options.cacheControl.expire ?? options.expireSeconds);
   const headers = {
     "Cache-Control": buildAppPageCacheControl(options.cacheState, revalidateSeconds, expireSeconds),
     Vary: "RSC, Accept",

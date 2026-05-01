@@ -208,9 +208,7 @@ describe("pages page data", () => {
 
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(result.response.headers.get("cache-control")).toBe(
-      "s-maxage=60, stale-while-revalidate=240",
-    );
+    expect(result.response.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     expect(result.response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );

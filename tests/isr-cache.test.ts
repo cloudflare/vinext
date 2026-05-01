@@ -263,6 +263,27 @@ describe("ISR expire ceiling", () => {
     await expect(isrGet("expire-test")).resolves.toBeNull();
   });
 
+  it("preserves legacy revalidate context while writing cache-control metadata", async () => {
+    let setContext: Record<string, unknown> | undefined;
+    setCacheHandler({
+      async get() {
+        return null;
+      },
+      async set(_key, _data, ctx) {
+        setContext = ctx;
+      },
+      async revalidateTag() {},
+    });
+
+    await isrSet("compat-test", buildPagesCacheValue("<html>cached</html>", {}), 60, ["tag"], 300);
+
+    expect(setContext).toEqual({
+      cacheControl: { revalidate: 60, expire: 300 },
+      revalidate: 60,
+      tags: ["tag"],
+    });
+  });
+
   it("treats cache handlers that report expired entries as hard misses", async () => {
     setCacheHandler({
       async get() {

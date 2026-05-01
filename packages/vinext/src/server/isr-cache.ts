@@ -66,6 +66,7 @@ export async function isrSet(
       expireSeconds === undefined
         ? { revalidate: revalidateSeconds }
         : { revalidate: revalidateSeconds, expire: expireSeconds },
+    revalidate: revalidateSeconds,
     tags: tags ?? [],
   });
 }
