@@ -19,17 +19,13 @@ import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "./entries/app-browser-entry.js";
 import {
-  buildGenerateBundleReplacement,
-  buildReasonsReplacement,
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
 import {
-  classifyLayoutByModuleGraph,
-  isStaticModuleGraphResult,
-  moduleGraphReason,
-} from "./build/layout-classification.js";
-import type { ModuleGraphStaticReason } from "./build/layout-classification-types.js";
+  planRouteClassificationInjection,
+  type RouteClassificationChunk,
+} from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   findNextConfigPath,
@@ -1725,61 +1721,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
 
-        // The `?` after the semicolon is intentional: Rolldown may or may not
-        // emit the trailing semicolon depending on minification settings.
-        // This regex relies on `__VINEXT_CLASS` retaining its name, which holds
-        // because RSC entry chunk bindings are not subject to scope-hoisting renames.
-        const stubRe = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
-        const reasonsStubRe =
-          /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
-
-        // Skip the scan-phase build where the RSC entry code has been
-        // tree-shaken out entirely. In the real RSC build the chunk that
-        // carries our runtime code will reference `__VINEXT_CLASS` via the
-        // per-route literal `__buildTimeClassifications: __VINEXT_CLASS(N)`,
-        // which Rolldown emits verbatim.
-        //
-        // If we see a chunk that mentions __VINEXT_CLASS but none of them
-        // contain the stub body we recognise, something upstream reshaped the
-        // generated source and we would silently degrade back to the Layer 3
-        // runtime probe. Fail loudly instead so regressions surface at build
-        // time rather than as a mysterious perf cliff at request time.
-        const chunksMentioningStub: Array<{
-          chunk: Extract<(typeof bundle)[string], { type: "chunk" }>;
-          fileName: string;
-        }> = [];
-        const chunksWithStubBody: Array<{
-          chunk: Extract<(typeof bundle)[string], { type: "chunk" }>;
-          fileName: string;
-        }> = [];
+        const chunks: RouteClassificationChunk[] = [];
+        const chunksByFileName = new Map<
+          string,
+          Extract<(typeof bundle)[string], { type: "chunk" }>
+        >();
         for (const chunk of Object.values(bundle)) {
           if (chunk.type !== "chunk") continue;
-          if (!chunk.code.includes("__VINEXT_CLASS")) continue;
-          chunksMentioningStub.push({ chunk, fileName: chunk.fileName });
-          if (stubRe.test(chunk.code)) {
-            chunksWithStubBody.push({ chunk, fileName: chunk.fileName });
-          }
-        }
-
-        if (chunksMentioningStub.length === 0) return;
-        if (chunksWithStubBody.length === 0) {
-          throw new Error(
-            `vinext: build-time classification — __VINEXT_CLASS is referenced in ${chunksMentioningStub
-              .map((c) => c.fileName)
-              .join(
-                ", ",
-              )} but no chunk contains the stub body. The generator and generateBundle have drifted.`,
-          );
-        }
-        if (chunksWithStubBody.length > 1) {
-          throw new Error(
-            `vinext: build-time classification — expected __VINEXT_CLASS stub in exactly one RSC chunk, found ${chunksWithStubBody.length}`,
-          );
-        }
-        if (enableClassificationDebug && !reasonsStubRe.test(chunksWithStubBody[0]!.chunk.code)) {
-          throw new Error(
-            "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
-          );
+          chunks.push({
+            code: chunk.code,
+            fileName: chunk.fileName,
+          });
+          chunksByFileName.set(chunk.fileName, chunk);
         }
 
         // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
@@ -1804,61 +1757,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           },
         };
 
-        const layer2PerRoute = new Map<number, Map<number, ModuleGraphStaticReason>>();
-        const graphCache = new Map<string, ReturnType<typeof classifyLayoutByModuleGraph>>();
-        for (let routeIdx = 0; routeIdx < rscClassificationManifest.routes.length; routeIdx++) {
-          const route = rscClassificationManifest.routes[routeIdx]!;
-          const perRoute = new Map<number, ModuleGraphStaticReason>();
-          for (let layoutIdx = 0; layoutIdx < route.layoutPaths.length; layoutIdx++) {
-            // Skip layouts already decided by Layer 1 — segment config is
-            // authoritative, so there is no need to walk the module graph.
-            if (route.layer1.has(layoutIdx)) continue;
-            const layoutModuleId = canonicalize(route.layoutPaths[layoutIdx]!);
-            // If the layout module itself is not in the graph, we have no
-            // evidence either way — do NOT claim it static, or we would skip
-            // the runtime probe for a layout we never actually analysed.
-            // `classifyLayoutByModuleGraph` returns "static" for an empty
-            // traversal, so the seed presence check has to happen here.
-            if (!moduleInfo.getModuleInfo(layoutModuleId)) continue;
-            let graphResult = graphCache.get(layoutModuleId);
-            if (graphResult === undefined) {
-              graphResult = classifyLayoutByModuleGraph(
-                layoutModuleId,
-                dynamicShimPaths,
-                moduleInfo,
-              );
-              graphCache.set(layoutModuleId, graphResult);
-            }
-            if (isStaticModuleGraphResult(graphResult)) {
-              perRoute.set(layoutIdx, moduleGraphReason(graphResult));
-            }
-          }
-          if (perRoute.size > 0) {
-            layer2PerRoute.set(routeIdx, perRoute);
-          }
-        }
+        const patchPlan = planRouteClassificationInjection({
+          canonicalizeLayoutPath: canonicalize,
+          chunks,
+          dynamicShimPaths,
+          enableDebugReasons: enableClassificationDebug,
+          manifest: rscClassificationManifest,
+          moduleInfo,
+        });
+        if (patchPlan.kind === "skip") return;
 
-        const replacement = buildGenerateBundleReplacement(
-          rscClassificationManifest,
-          layer2PerRoute,
-        );
-        const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
-        const target = chunksWithStubBody[0]!.chunk;
-        target.code = target.code.replace(stubRe, patchedBody);
-
-        if (enableClassificationDebug) {
-          const reasonsReplacement = buildReasonsReplacement(
-            rscClassificationManifest,
-            layer2PerRoute,
+        const target = chunksByFileName.get(patchPlan.fileName);
+        if (!target) {
+          throw new Error(
+            `vinext: build-time classification — patch target ${patchPlan.fileName} disappeared from the RSC bundle`,
           );
-          const patchedReasonsBody = `function __VINEXT_CLASS_REASONS(routeIdx) { return (${reasonsReplacement})(routeIdx); }`;
-          target.code = target.code.replace(reasonsStubRe, patchedReasonsBody);
         }
+        target.code = patchPlan.code;
 
         // The patched body is longer than the stub, so any existing source map
         // would be stale. RSC entry source maps are not served or consumed, so
         // nulling the map is safe and prevents stale-map confusion in tooling.
-        target.map = null;
+        target.map = patchPlan.map;
         // Consume the manifest exactly once per RSC entry load. Clearing here
         // prevents a stale manifest from leaking into a subsequent generateBundle
         // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).
