@@ -90,7 +90,7 @@ export function matchRoutePattern(
   urlParts: readonly string[],
   patternParts: readonly string[],
 ): RoutePatternParams | null {
-  const params: RoutePatternParams = {};
+  const params: RoutePatternParams = Object.create(null);
 
   function matchFrom(urlIndex: number, patternIndex: number): boolean {
     if (patternIndex === patternParts.length) {
