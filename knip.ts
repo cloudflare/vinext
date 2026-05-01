@@ -42,6 +42,8 @@ export default {
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
+        "src/server/app-page-head.ts",
+        "src/server/app-prerender-static-params.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
@@ -55,6 +57,12 @@ export default {
         "src/shims/internal/api-utils.ts",
         "src/shims/internal/app-router-context.ts",
         "src/shims/internal/utils.ts",
+        // Typed WorkUnitStore exports consumed by cache.ts via AsyncLocalStorage
+        // generic — knip cannot trace type-only dependencies through ALS.
+        "src/shims/internal/work-unit-async-storage.ts",
+        // Imported via template string in app-rsc-entry.ts (generated code),
+        // so knip cannot trace the import statically.
+        "src/server/prerender-work-unit-setup.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

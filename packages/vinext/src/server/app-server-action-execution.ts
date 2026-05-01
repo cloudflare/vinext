@@ -2,6 +2,11 @@ import type { HeadersAccessPhase } from "../shims/headers.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
+import {
+  createServerActionNotFoundResponse,
+  getServerActionNotFoundMessage,
+  isServerActionNotFoundError,
+} from "./server-action-not-found.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -126,7 +131,7 @@ export type HandleServerActionRscRequestOptions<
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   isRscRequest: boolean;
-  loadServerAction: (actionId: string) => Promise<AppServerActionFunction>;
+  loadServerAction: (actionId: string) => Promise<unknown>;
   matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
@@ -165,12 +170,74 @@ function isRequestBodyTooLarge(error: unknown): boolean {
   return error instanceof Error && error.message === "Request body too large";
 }
 
+function isAppServerActionFunction(action: unknown): action is AppServerActionFunction {
+  return typeof action === "function";
+}
+
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function getErrorMessage(error: unknown): string {
+function getServerActionFailureMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
+}
+
+export async function readActionBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let totalSize = 0;
+
+  for (;;) {
+    const result = await reader.read();
+    if (result.done) break;
+
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      await reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(decoder.decode(result.value, { stream: true }));
+  }
+
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
+export async function readActionFormDataWithLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<FormData> {
+  if (!request.body) return new FormData();
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalSize = 0;
+
+  for (;;) {
+    const result = await reader.read();
+    if (result.done) break;
+
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      await reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(result.value);
+  }
+
+  const combined = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new Response(combined, {
+    headers: { "Content-Type": request.headers.get("content-type") || "" },
+  }).formData();
 }
 
 function getErrorDigest(error: unknown): string | null {
@@ -262,9 +329,22 @@ function createServerActionErrorResponse(
   return new Response(
     process.env.NODE_ENV === "production"
       ? "Internal Server Error"
-      : "Server action failed: " + getErrorMessage(error),
+      : "Server action failed: " + getServerActionFailureMessage(error),
     { status: 500 },
   );
+}
+
+function createActionNotFoundResponse(
+  actionId: string | null,
+  options: {
+    clearRequestContext: () => void;
+    getAndClearPendingCookies: () => string[];
+  },
+): Response {
+  options.getAndClearPendingCookies();
+  console.warn(getServerActionNotFoundMessage(actionId));
+  options.clearRequestContext();
+  return createServerActionNotFoundResponse();
 }
 
 export function isProgressiveServerActionRequest(
@@ -367,6 +447,13 @@ export async function handleProgressiveServerActionRequest(
       headers,
     });
   } catch (error) {
+    if (isServerActionNotFoundError(error, null)) {
+      return createActionNotFoundResponse(null, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     options.getAndClearPendingCookies();
     // Next.js rethrows generic MPA action errors into its page render path.
     // vinext does not yet implement that form-state render path, so unexpected
@@ -385,7 +472,7 @@ export async function handleProgressiveServerActionRequest(
     return new Response(
       process.env.NODE_ENV === "production"
         ? "Internal Server Error"
-        : "Server action failed: " + getErrorMessage(error),
+        : "Server action failed: " + getServerActionFailureMessage(error),
       { status: 500 },
     );
   }
@@ -439,9 +526,29 @@ export async function handleServerActionRscRequest<
       return payloadResponse;
     }
 
+    let action: unknown;
+    try {
+      action = await options.loadServerAction(options.actionId);
+    } catch (error) {
+      if (isServerActionNotFoundError(error, options.actionId)) {
+        return createActionNotFoundResponse(options.actionId, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
+
+      throw error;
+    }
+
+    if (!isAppServerActionFunction(action)) {
+      return createActionNotFoundResponse(options.actionId, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     const temporaryReferences = options.createTemporaryReferenceSet();
     const args = await options.decodeReply(body, { temporaryReferences });
-    const action = await options.loadServerAction(options.actionId);
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     const previousHeadersPhase = options.setHeadersAccessPhase("action");

@@ -3,6 +3,8 @@ import { createInlineScriptTag, safeJsonStringify } from "./html.js";
 type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
+  /** Resolves when all raw bytes from the embed stream have been read. */
+  getRawBuffer(): Promise<ArrayBuffer>;
 };
 
 type HtmlInsertion = string | (() => string);
@@ -27,6 +29,7 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   const decoder = new TextDecoder();
   let pendingChunks: string[] = [];
+  const rawChunks: Uint8Array[] = [];
   let reading = false;
 
   async function pumpReader(): Promise<void> {
@@ -36,6 +39,9 @@ export function createRscEmbedTransform(
       while (true) {
         const result = await reader.read();
         if (result.done) break;
+        // Accumulate raw bytes BEFORE fixFlightHints so the cache stores
+        // unmodified RSC data. The embed script path below applies fixes.
+        rawChunks.push(result.value);
         const text = decoder.decode(result.value, { stream: true });
         // The RSC entry already fixes HL hints at the source. Keep this second
         // pass as defense in depth for any embed stream that bypasses that
@@ -77,6 +83,22 @@ export function createRscEmbedTransform(
       let scripts = this.flush();
       scripts += createInlineScriptTag("self.__VINEXT_RSC_DONE__=true", scriptNonce);
       return scripts;
+    },
+
+    async getRawBuffer(): Promise<ArrayBuffer> {
+      await pumpPromise;
+      let totalLength = 0;
+      for (const chunk of rawChunks) {
+        totalLength += chunk.byteLength;
+      }
+      const buffer = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of rawChunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      rawChunks.length = 0;
+      return buffer.buffer;
     },
   };
 }

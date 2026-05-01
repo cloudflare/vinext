@@ -178,14 +178,28 @@ describe("app page execution helpers", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("reads streamed text and captures RSC bytes when teeing the response stream", async () => {
+  it("produces fused ssrStream + sideStream when capturing (#981)", async () => {
     const capture = teeAppPageRscStreamForCapture(createStream(["flight-", "chunk"]), true);
 
-    await expect(readAppPageTextStream(capture.responseStream)).resolves.toBe("flight-chunk");
-    const captured = await capture.capturedRscDataPromise;
-    expect(new TextDecoder().decode(captured ? new Uint8Array(captured) : undefined)).toBe(
-      "flight-chunk",
-    );
+    // ssrStream is for createFromReadableStream (SSR)
+    expect(capture.ssrStream).toBeInstanceOf(ReadableStream);
+    // sideStream is for embed+capture
+    expect(capture.sideStream).toBeInstanceOf(ReadableStream);
+
+    // Both streams should contain identical data (teed from same source)
+    const ssrText = await readAppPageTextStream(capture.ssrStream);
+    const sideText = await readAppPageTextStream(capture.sideStream!);
+    expect(ssrText).toBe("flight-chunk");
+    expect(sideText).toBe("flight-chunk");
+  });
+
+  it("bypasses tee when not capturing (#981)", async () => {
+    const stream = createStream(["no-capture"]);
+    const capture = teeAppPageRscStreamForCapture(stream, false);
+
+    // When not capturing, no tee — the original stream is returned as ssrStream
+    expect(capture.ssrStream).toBe(stream);
+    expect(capture.sideStream).toBeUndefined();
   });
 
   it("tracks per-layout dynamic usage when classification options are provided", async () => {

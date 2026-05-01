@@ -5,19 +5,11 @@
  * Resolves metadata from layouts and pages (pages override layouts).
  */
 import React from "react";
+import { makeThenableParams } from "./thenable-params.js";
 
 // ---------------------------------------------------------------------------
 // Viewport types and resolution
 // ---------------------------------------------------------------------------
-
-/**
- * Normalize null-prototype objects from matchPattern() into thenable objects.
- * See entries/app-rsc-entry.ts makeThenableParams() for full explanation.
- */
-function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<T> & T {
-  const plain = { ...obj } as T;
-  return Object.assign(Promise.resolve(plain), plain);
-}
 
 export type Viewport = {
   /** Viewport width (default: "device-width") */
@@ -150,8 +142,12 @@ export type Metadata = {
     images?:
       | string
       | URL
-      | { url: string | URL; width?: number; height?: number; alt?: string }
-      | Array<string | URL | { url: string | URL; width?: number; height?: number; alt?: string }>;
+      | { url: string | URL; width?: number; height?: number; alt?: string; type?: string }
+      | Array<
+          | string
+          | URL
+          | { url: string | URL; width?: number; height?: number; alt?: string; type?: string }
+        >;
     videos?: Array<{ url: string | URL; width?: number; height?: number }>;
     audio?: Array<{ url: string | URL }>;
     locale?: string;
@@ -169,22 +165,18 @@ export type Metadata = {
     images?:
       | string
       | URL
-      | { url: string | URL; alt?: string; width?: number; height?: number }
-      | Array<string | URL | { url: string | URL; alt?: string; width?: number; height?: number }>;
+      | { url: string | URL; alt?: string; width?: number; height?: number; type?: string }
+      | Array<
+          | string
+          | URL
+          | { url: string | URL; alt?: string; width?: number; height?: number; type?: string }
+        >;
     creator?: string;
     creatorId?: string;
     players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
     app?: TwitterAppDescriptor;
   };
-  icons?: {
-    icon?:
-      | string
-      | URL
-      | Array<{ url: string | URL; sizes?: string; type?: string; media?: string }>;
-    shortcut?: string | URL | Array<string | URL>;
-    apple?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string }>;
-    other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
-  };
+  icons?: IconsMetadata;
   manifest?: string | URL;
   alternates?: {
     canonical?: string | URL;
@@ -274,6 +266,37 @@ type TwitterAppDescriptor = {
   name?: string;
 };
 
+type IconDescriptor = {
+  url: string | URL;
+  sizes?: string;
+  type?: string;
+  media?: string;
+};
+
+type AppleIconDescriptor = {
+  url: string | URL;
+  sizes?: string;
+  type?: string;
+};
+
+type IconInput = string | URL | IconDescriptor;
+type AppleIconInput = string | URL | AppleIconDescriptor;
+
+type IconsMap = {
+  icon?: IconInput | IconInput[];
+  shortcut?: string | URL | Array<string | URL>;
+  apple?: AppleIconInput | AppleIconInput[];
+  other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
+};
+
+type IconsMetadata = IconInput | IconInput[] | IconsMap;
+
+export type MetadataMergeEntry = {
+  contributesTitle?: boolean;
+  isPage?: boolean;
+  metadata: Metadata;
+};
+
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
@@ -286,20 +309,35 @@ type TwitterAppDescriptor = {
  * Shallow merge: later entries override earlier ones (per Next.js docs).
  */
 export function mergeMetadata(metadataList: Metadata[]): Metadata {
-  if (metadataList.length === 0) return {};
+  return mergeMetadataEntries(
+    metadataList.map((metadata, index) => ({
+      isPage: index === metadataList.length - 1,
+      metadata,
+    })),
+  );
+}
+
+export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
+  if (entries.length === 0) return {};
 
   const merged: Metadata = {};
 
   // Track the most recent title template from LAYOUTS (not from page).
-  // The page is always the last entry in metadataList.
   let parentTemplate: string | undefined;
 
-  for (let i = 0; i < metadataList.length; i++) {
-    const meta = metadataList[i];
-    const isPage = i === metadataList.length - 1;
+  for (const entry of entries) {
+    const meta = entry.metadata;
+    const isPage = Boolean(entry.isPage);
+    const contributesTitle = entry.contributesTitle !== false;
 
     // Collect template from layouts only (page templates are ignored per Next.js spec)
-    if (!isPage && meta.title && typeof meta.title === "object" && meta.title.template) {
+    if (
+      contributesTitle &&
+      !isPage &&
+      meta.title &&
+      typeof meta.title === "object" &&
+      meta.title.template
+    ) {
       parentTemplate = meta.title.template;
     }
 
@@ -310,7 +348,7 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
     }
 
     // Title resolution
-    if (meta.title !== undefined) {
+    if (contributesTitle && meta.title !== undefined) {
       merged.title = meta.title;
     }
   }
@@ -361,9 +399,11 @@ export async function resolveModuleMetadata(
     // Next.js 16 passes params/searchParams as Promises (async pattern).
     // makeThenableParams() normalises null-prototype + preserves sync access.
     const asyncParams = makeThenableParams(params);
-    const sp = searchParams ?? {};
-    const asyncSp = makeThenableParams(sp);
-    return await mod.generateMetadata({ params: asyncParams, searchParams: asyncSp }, parent);
+    const props =
+      searchParams === undefined
+        ? { params: asyncParams }
+        : { params: asyncParams, searchParams: makeThenableParams(searchParams) };
+    return await mod.generateMetadata(props, parent);
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;
@@ -375,6 +415,63 @@ export async function resolveModuleMetadata(
  * React component that renders metadata as HTML head elements.
  * Used by the RSC entry to inject into the <head>.
  */
+function isIconDescriptor(value: unknown): value is IconDescriptor {
+  if (typeof value !== "object" || value === null || value instanceof URL || Array.isArray(value)) {
+    return false;
+  }
+  const urlValue = Reflect.get(value, "url");
+  return typeof urlValue === "string" || urlValue instanceof URL;
+}
+
+function isIconsMap(value: IconsMetadata): value is IconsMap {
+  return (
+    typeof value === "object" &&
+    !(value instanceof URL) &&
+    !Array.isArray(value) &&
+    !isIconDescriptor(value)
+  );
+}
+
+function normalizeIconHeadEntry(icon: IconInput): IconDescriptor {
+  if (typeof icon === "string" || icon instanceof URL) {
+    return { url: icon };
+  }
+  return icon;
+}
+
+function normalizeIconHeadEntries(icon: IconInput | IconInput[] | undefined): IconDescriptor[] {
+  if (!icon) {
+    return [];
+  }
+
+  if (Array.isArray(icon)) {
+    return icon.map(normalizeIconHeadEntry);
+  }
+
+  return [normalizeIconHeadEntry(icon)];
+}
+
+function normalizeAppleIconHeadEntry(apple: AppleIconInput): AppleIconDescriptor {
+  if (typeof apple === "string" || apple instanceof URL) {
+    return { url: apple };
+  }
+  return apple;
+}
+
+function normalizeAppleIconHeadEntries(
+  apple: AppleIconInput | AppleIconInput[] | undefined,
+): AppleIconDescriptor[] {
+  if (!apple) {
+    return [];
+  }
+
+  if (Array.isArray(apple)) {
+    return apple.map(normalizeAppleIconHeadEntry);
+  }
+
+  return [normalizeAppleIconHeadEntry(apple)];
+}
+
 export function MetadataHead({ metadata }: { metadata: Metadata }) {
   const elements: React.ReactElement[] = [];
   let key = 0;
@@ -549,6 +646,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
             elements.push(
               <meta key={key++} property="og:image:height" content={String(img.height)} />,
             );
+          if (img.type)
+            elements.push(<meta key={key++} property="og:image:type" content={img.type} />);
           if (img.alt)
             elements.push(<meta key={key++} property="og:image:alt" content={img.alt} />);
         }
@@ -596,8 +695,23 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       for (const img of imgList) {
         const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
         elements.push(<meta key={key++} name="twitter:image" content={resolveUrl(imgUrl)} />);
-        if (typeof img !== "string" && !(img instanceof URL) && img.alt) {
-          elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
+        if (typeof img !== "string" && !(img instanceof URL)) {
+          if (img.type) {
+            elements.push(<meta key={key++} name="twitter:image:type" content={img.type} />);
+          }
+          if (img.width) {
+            elements.push(
+              <meta key={key++} name="twitter:image:width" content={String(img.width)} />,
+            );
+          }
+          if (img.height) {
+            elements.push(
+              <meta key={key++} name="twitter:image:height" content={String(img.height)} />,
+            );
+          }
+          if (img.alt) {
+            elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
+          }
         }
       }
     }
@@ -649,18 +763,22 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Icons
   if (metadata.icons) {
-    const { icon, shortcut, apple, other } = metadata.icons;
+    const iconEntries = isIconsMap(metadata.icons)
+      ? normalizeIconHeadEntries(metadata.icons.icon)
+      : normalizeIconHeadEntries(metadata.icons);
+
     // Shortcut icon
-    if (shortcut) {
-      const shortcuts = Array.isArray(shortcut) ? shortcut : [shortcut];
+    if (isIconsMap(metadata.icons) && metadata.icons.shortcut) {
+      const shortcuts = Array.isArray(metadata.icons.shortcut)
+        ? metadata.icons.shortcut
+        : [metadata.icons.shortcut];
       for (const s of shortcuts) {
         elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s)} />);
       }
     }
     // Icon
-    if (icon) {
-      const icons = typeof icon === "string" || icon instanceof URL ? [{ url: icon }] : icon;
-      for (const i of icons) {
+    if (iconEntries.length > 0) {
+      for (const i of iconEntries) {
         elements.push(
           <link
             key={key++}
@@ -674,9 +792,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       }
     }
     // Apple touch icon
-    if (apple) {
-      const apples = typeof apple === "string" || apple instanceof URL ? [{ url: apple }] : apple;
-      for (const a of apples) {
+    if (isIconsMap(metadata.icons) && metadata.icons.apple) {
+      for (const a of normalizeAppleIconHeadEntries(metadata.icons.apple)) {
         elements.push(
           <link
             key={key++}
@@ -689,8 +806,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       }
     }
     // Other custom icon relations
-    if (other) {
-      for (const o of other) {
+    if (isIconsMap(metadata.icons) && metadata.icons.other) {
+      for (const o of metadata.icons.other) {
         elements.push(
           <link
             key={key++}

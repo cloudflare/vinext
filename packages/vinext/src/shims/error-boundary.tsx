@@ -132,7 +132,7 @@ class NotFoundBoundaryInner extends React.Component<
   static getDerivedStateFromError(error: Error): Partial<NotFoundBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
-      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;404")) {
+      if (digest === "NEXT_NOT_FOUND" || digest === "NEXT_HTTP_ERROR_FALLBACK;404") {
         return { notFound: true };
       }
     }
@@ -158,5 +158,133 @@ export function NotFoundBoundary({ fallback, children }: NotFoundBoundaryProps) 
     <NotFoundBoundaryInner pathname={pathname} fallback={fallback}>
       {children}
     </NotFoundBoundaryInner>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ForbiddenBoundary — catches forbidden() on the client and renders forbidden.tsx
+// ---------------------------------------------------------------------------
+
+type ForbiddenBoundaryProps = {
+  fallback: React.ReactNode;
+  children: React.ReactNode;
+};
+
+type ForbiddenBoundaryInnerProps = {
+  pathname: string;
+} & ForbiddenBoundaryProps;
+
+type ForbiddenBoundaryState = {
+  forbidden: boolean;
+  previousPathname: string;
+};
+
+export class ForbiddenBoundaryInner extends React.Component<
+  ForbiddenBoundaryInnerProps,
+  ForbiddenBoundaryState
+> {
+  constructor(props: ForbiddenBoundaryInnerProps) {
+    super(props);
+    this.state = { forbidden: false, previousPathname: props.pathname };
+  }
+
+  static getDerivedStateFromProps(
+    props: ForbiddenBoundaryInnerProps,
+    state: ForbiddenBoundaryState,
+  ): ForbiddenBoundaryState | null {
+    if (props.pathname !== state.previousPathname && state.forbidden) {
+      return { forbidden: false, previousPathname: props.pathname };
+    }
+    return { forbidden: state.forbidden, previousPathname: props.pathname };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<ForbiddenBoundaryState> {
+    if (error && typeof error === "object" && "digest" in error) {
+      const digest = String(error.digest);
+      if (digest === "NEXT_HTTP_ERROR_FALLBACK;403") {
+        return { forbidden: true };
+      }
+    }
+    throw error;
+  }
+
+  render() {
+    if (this.state.forbidden) {
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
+
+export function ForbiddenBoundary({ fallback, children }: ForbiddenBoundaryProps) {
+  const pathname = usePathname();
+  return (
+    <ForbiddenBoundaryInner pathname={pathname} fallback={fallback}>
+      {children}
+    </ForbiddenBoundaryInner>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// UnauthorizedBoundary — catches unauthorized() on the client and renders unauthorized.tsx
+// ---------------------------------------------------------------------------
+
+type UnauthorizedBoundaryProps = {
+  fallback: React.ReactNode;
+  children: React.ReactNode;
+};
+
+type UnauthorizedBoundaryInnerProps = {
+  pathname: string;
+} & UnauthorizedBoundaryProps;
+
+type UnauthorizedBoundaryState = {
+  unauthorized: boolean;
+  previousPathname: string;
+};
+
+export class UnauthorizedBoundaryInner extends React.Component<
+  UnauthorizedBoundaryInnerProps,
+  UnauthorizedBoundaryState
+> {
+  constructor(props: UnauthorizedBoundaryInnerProps) {
+    super(props);
+    this.state = { unauthorized: false, previousPathname: props.pathname };
+  }
+
+  static getDerivedStateFromProps(
+    props: UnauthorizedBoundaryInnerProps,
+    state: UnauthorizedBoundaryState,
+  ): UnauthorizedBoundaryState | null {
+    if (props.pathname !== state.previousPathname && state.unauthorized) {
+      return { unauthorized: false, previousPathname: props.pathname };
+    }
+    return { unauthorized: state.unauthorized, previousPathname: props.pathname };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<UnauthorizedBoundaryState> {
+    if (error && typeof error === "object" && "digest" in error) {
+      const digest = String(error.digest);
+      if (digest === "NEXT_HTTP_ERROR_FALLBACK;401") {
+        return { unauthorized: true };
+      }
+    }
+    throw error;
+  }
+
+  render() {
+    if (this.state.unauthorized) {
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
+
+export function UnauthorizedBoundary({ fallback, children }: UnauthorizedBoundaryProps) {
+  const pathname = usePathname();
+  return (
+    <UnauthorizedBoundaryInner pathname={pathname} fallback={fallback}>
+      {children}
+    </UnauthorizedBoundaryInner>
   );
 }

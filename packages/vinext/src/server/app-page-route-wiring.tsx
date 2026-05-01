@@ -8,7 +8,12 @@ import {
   createAppPayloadRouteId,
   type AppElements,
 } from "./app-elements.js";
-import { ErrorBoundary, NotFoundBoundary } from "../shims/error-boundary.js";
+import {
+  ErrorBoundary,
+  ForbiddenBoundary,
+  NotFoundBoundary,
+  UnauthorizedBoundary,
+} from "../shims/error-boundary.js";
 import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
 import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "../shims/metadata.js";
 import { Children, ParallelSlot, Slot } from "../shims/slot.js";
@@ -65,6 +70,10 @@ type AppPageRouteWiringRoute<
   loading?: TModule | null;
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
+  forbidden?: TModule | null;
+  forbiddens?: readonly (TModule | null | undefined)[] | null;
+  unauthorized?: TModule | null;
+  unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
   /**
    * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
@@ -86,9 +95,11 @@ type AppPageLayoutEntry<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
   errorModule?: TErrorModule | null | undefined;
+  forbiddenModule?: TModule | null | undefined;
   id: string;
   layoutModule?: TModule | null | undefined;
   notFoundModule?: TModule | null | undefined;
+  unauthorizedModule?: TModule | null | undefined;
   treePath: string;
   treePosition: number;
 };
@@ -103,7 +114,9 @@ type BuildAppPageRouteElementOptions<
   matchedParams: AppPageParams;
   resolvedMetadata: Metadata | null;
   resolvedViewport: Viewport;
+  rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
   route: AppPageRouteWiringRoute<TModule, TErrorModule>;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -155,16 +168,21 @@ export function createAppPageLayoutEntries<
   route: Pick<
     AppPageRouteWiringRoute<TModule, TErrorModule>,
     "errors" | "layoutTreePositions" | "layouts" | "notFounds" | "routeSegments"
-  >,
+  > & {
+    forbiddens?: readonly (TModule | null | undefined)[] | null;
+    unauthorizeds?: readonly (TModule | null | undefined)[] | null;
+  },
 ): AppPageLayoutEntry<TModule, TErrorModule>[] {
   return route.layouts.map((layoutModule, index) => {
     const treePosition = route.layoutTreePositions?.[index] ?? 0;
     const treePath = createAppPageTreePath(route.routeSegments, treePosition);
     return {
       errorModule: route.errors?.[index] ?? null,
+      forbiddenModule: route.forbiddens?.[index] ?? null,
       id: `layout:${treePath}`,
       layoutModule,
       notFoundModule: route.notFounds?.[index] ?? null,
+      unauthorizedModule: route.unauthorizeds?.[index] ?? null,
       treePath,
       treePosition,
     };
@@ -556,14 +574,35 @@ export function buildAppPageElements<
     options.route.errors && options.route.errors.length > 0
       ? options.route.errors[options.route.errors.length - 1]
       : null;
-  // Next.js nesting (outer to inner): Error > NotFound > children.
-  // Building bottom-up means NotFoundBoundary must wrap first, then ErrorBoundary.
+  // Next.js nesting (outer to inner): Error > Unauthorized > Forbidden > NotFound > children.
+  // Building bottom-up means NotFoundBoundary must wrap first, then Forbidden, Unauthorized, Error.
   const notFoundComponent =
     getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
       <NotFoundBoundary fallback={<NotFoundComponent />}>{routeChildren}</NotFoundBoundary>
+    );
+  }
+
+  const forbiddenComponent =
+    getDefaultExport(options.route.forbidden) ?? getDefaultExport(options.rootForbiddenModule);
+  if (forbiddenComponent) {
+    const ForbiddenComponent = forbiddenComponent;
+    routeChildren = (
+      <ForbiddenBoundary fallback={<ForbiddenComponent />}>{routeChildren}</ForbiddenBoundary>
+    );
+  }
+
+  const unauthorizedComponent =
+    getDefaultExport(options.route.unauthorized) ??
+    getDefaultExport(options.rootUnauthorizedModule);
+  if (unauthorizedComponent) {
+    const UnauthorizedComponent = unauthorizedComponent;
+    routeChildren = (
+      <UnauthorizedBoundary fallback={<UnauthorizedComponent />}>
+        {routeChildren}
+      </UnauthorizedBoundary>
     );
   }
 
@@ -578,7 +617,7 @@ export function buildAppPageElements<
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
 
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > NotFound > children.
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > children.
     // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
     // then ErrorBoundary, then Template, with the Layout slot outermost.
     if (layoutEntry) {
@@ -589,6 +628,26 @@ export function buildAppPageElements<
           <NotFoundBoundary fallback={<LayoutNotFoundComponent />}>
             {segmentChildren}
           </NotFoundBoundary>
+        );
+      }
+
+      const layoutForbiddenComponent = getDefaultExport(layoutEntry.forbiddenModule);
+      if (layoutForbiddenComponent) {
+        const LayoutForbiddenComponent = layoutForbiddenComponent;
+        segmentChildren = (
+          <ForbiddenBoundary fallback={<LayoutForbiddenComponent />}>
+            {segmentChildren}
+          </ForbiddenBoundary>
+        );
+      }
+
+      const layoutUnauthorizedComponent = getDefaultExport(layoutEntry.unauthorizedModule);
+      if (layoutUnauthorizedComponent) {
+        const LayoutUnauthorizedComponent = layoutUnauthorizedComponent;
+        segmentChildren = (
+          <UnauthorizedBoundary fallback={<LayoutUnauthorizedComponent />}>
+            {segmentChildren}
+          </UnauthorizedBoundary>
         );
       }
 

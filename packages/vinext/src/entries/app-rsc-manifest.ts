@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import type { AppRoute } from "../routing/app-router.js";
+import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
 type AppRscManifestCode = {
@@ -22,6 +22,7 @@ type BuildAppRscManifestCodeOptions = {
 
 type ImportAllocator = {
   getImportVar(filePath: string): string;
+  importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
 
@@ -31,6 +32,7 @@ function createImportAllocator(): ImportAllocator {
   let importIdx = 0;
 
   return {
+    importMap,
     imports,
     getImportVar(filePath) {
       const existing = importMap.get(filePath);
@@ -59,16 +61,22 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       }
     }
     if (route.notFoundPath) imports.getImportVar(route.notFoundPath);
-    for (const nfp of route.notFoundPaths || []) {
-      if (nfp) imports.getImportVar(nfp);
+    if (route.notFoundPaths) {
+      for (const nfp of route.notFoundPaths) {
+        if (nfp) imports.getImportVar(nfp);
+      }
     }
     if (route.forbiddenPath) imports.getImportVar(route.forbiddenPath);
-    for (const fp of route.forbiddenPaths || []) {
-      if (fp) imports.getImportVar(fp);
+    if (route.forbiddenPaths) {
+      for (const fp of route.forbiddenPaths) {
+        if (fp) imports.getImportVar(fp);
+      }
     }
     if (route.unauthorizedPath) imports.getImportVar(route.unauthorizedPath);
-    for (const up of route.unauthorizedPaths || []) {
-      if (up) imports.getImportVar(up);
+    if (route.unauthorizedPaths) {
+      for (const up of route.unauthorizedPaths) {
+        if (up) imports.getImportVar(up);
+      }
     }
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) imports.getImportVar(slot.pagePath);
@@ -90,13 +98,13 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
   return routes.map((route, routeIdx) => {
     const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
     const templateVars = route.templates.map((t) => imports.getImportVar(t));
-    const notFoundVars = (route.notFoundPaths || []).map((nf) =>
+    const notFoundVars = (route.notFoundPaths ?? []).map((nf) =>
       nf ? imports.getImportVar(nf) : "null",
     );
-    const forbiddenVars = (route.forbiddenPaths || []).map((fp) =>
+    const forbiddenVars = (route.forbiddenPaths ?? []).map((fp) =>
       fp ? imports.getImportVar(fp) : "null",
     );
-    const unauthorizedVars = (route.unauthorizedPaths || []).map((up) =>
+    const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
       up ? imports.getImportVar(up) : "null",
     );
     const slotEntries = route.parallelSlots.map((slot) => {
@@ -157,59 +165,6 @@ ${slotEntries.join(",\n")}
   });
 }
 
-function buildMetadataPatternParts(route: MetadataFileRoute): string | null {
-  if (!route.isDynamic || !route.servedUrl.includes("[")) return null;
-
-  return JSON.stringify(
-    route.servedUrl
-      .split("/")
-      .filter(Boolean)
-      .map((seg) => {
-        if (seg.startsWith("[[...") && seg.endsWith("]]")) return ":" + seg.slice(5, -2) + "*";
-        if (seg.startsWith("[...") && seg.endsWith("]")) return ":" + seg.slice(4, -1) + "+";
-        if (seg.startsWith("[") && seg.endsWith("]")) return ":" + seg.slice(1, -1);
-        return seg;
-      }),
-  );
-}
-
-function readStaticMetadataFileBase64(route: MetadataFileRoute): string {
-  try {
-    return fs.readFileSync(route.filePath).toString("base64");
-  } catch (error) {
-    throw new Error(`[vinext] Failed to read static metadata route file: ${route.filePath}`, {
-      cause: error,
-    });
-  }
-}
-
-function buildMetadataRouteEntries(
-  metadataRoutes: MetadataFileRoute[],
-  imports: ImportAllocator,
-): string[] {
-  return metadataRoutes.map((mr) => {
-    const patternParts = buildMetadataPatternParts(mr);
-
-    if (mr.isDynamic) {
-      return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: true,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    module: ${imports.getImportVar(mr.filePath)},${patternParts ? `\n    patternParts: ${patternParts},` : ""}
-  }`;
-    }
-
-    return `  {
-    type: ${JSON.stringify(mr.type)},
-    isDynamic: false,
-    servedUrl: ${JSON.stringify(mr.servedUrl)},
-    contentType: ${JSON.stringify(mr.contentType)},
-    fileDataBase64: ${JSON.stringify(readStaticMetadataFileBase64(mr))},
-  }`;
-  });
-}
-
 function buildGenerateStaticParamsEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
   const entries: string[] = [];
   for (const route of routes) {
@@ -253,7 +208,7 @@ export function buildAppRscManifestCode(
   return {
     imports: imports.imports,
     routeEntries,
-    metaRouteEntries: buildMetadataRouteEntries(metadataRoutes, imports),
+    metaRouteEntries: createMetadataRouteEntriesSource(metadataRoutes, imports.importMap),
     generateStaticParamsEntries: buildGenerateStaticParamsEntries(options.routes, imports),
     rootNotFoundVar,
     rootForbiddenVar,

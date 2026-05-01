@@ -1188,7 +1188,8 @@ describe("next/headers shim", () => {
     expect(dm2.isEnabled).toBe(false);
 
     const cookieHeader = getDraftModeCookieHeader();
-    expect(cookieHeader).toContain("Max-Age=0");
+    expect(cookieHeader).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    expect(cookieHeader).not.toContain("Max-Age=0");
     setHeadersContext(null);
   });
 
@@ -1913,6 +1914,128 @@ describe("next/cache shim", () => {
     const r1 = unstable_io();
     const r2 = unstable_io();
     expect(r1).toBe(r2);
+  });
+
+  // Ported from Next.js: packages/next/src/server/request/io.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+  it("unstable_io returns a hanging promise during prerender", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+
+    // run() returns whatever the callback returns — a hanging promise.
+    const hanging = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    // The promise should not be resolved or rejected (it's "hanging")
+    expect(hanging).toBeInstanceOf(Promise);
+
+    // Verify it's still hanging using Promise.race (more portable than V8 internals)
+    const result = await Promise.race([
+      hanging.then(() => "resolved"),
+      new Promise((r) => setTimeout(() => r("still-hanging"), 50)),
+    ]);
+    expect(result).toBe("still-hanging");
+
+    // Clean up by aborting the signal
+    controller.abort();
+  });
+
+  it("unstable_io resolves immediately with request store", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const promise = workUnitAsyncStorage.run({ type: "request" }, unstable_io);
+
+    expect(promise).toBeInstanceOf(Promise);
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("unstable_io resolves immediately with cache store", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const promise = workUnitAsyncStorage.run({ type: "cache" }, unstable_io);
+
+    expect(promise).toBeInstanceOf(Promise);
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("unstable_io rejects hanging promise on abort when prerendering", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+
+    const hanging = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    expect(hanging).toBeInstanceOf(Promise);
+
+    // Abort the signal — the hanging promise should reject
+    controller.abort();
+    await expect(hanging).rejects.toThrow(/unstable_io/i);
+  });
+
+  it("unstable_io returns rejected promise when signal already aborted", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+    controller.abort(); // already aborted
+
+    const promise = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    await expect(promise).rejects.toThrow(/prerendering/i);
+  });
+
+  it("unstable_io does not emit unhandled rejection when signal already aborted", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const controller = new AbortController();
+      controller.abort(); // already aborted
+
+      const promise = workUnitAsyncStorage.run(
+        { type: "prerender", renderSignal: controller.signal, route: "/test" },
+        unstable_io,
+      );
+
+      // Wait a tick for potential unhandled rejection to be detected
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Await the promise to handle the rejection
+      try {
+        await promise;
+      } catch {
+        // expected
+      }
+
+      expect(unhandledRejections.length).toBe(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
   });
 
   it("setCacheHandler swaps the active handler", async () => {
@@ -3617,7 +3740,9 @@ describe("double-encoded path handling in middleware", () => {
         layoutErrorPaths: [],
         notFoundPath: null,
         notFoundPaths: [],
+        forbiddenPaths: [],
         forbiddenPath: null,
+        unauthorizedPaths: [],
         unauthorizedPath: null,
         parallelSlots: [],
       },
@@ -12380,6 +12505,69 @@ describe("cache scope guards for dynamic APIs", () => {
     expect(callCount).toBe(1); // Cached, not called again
 
     setCacheHandler(new MemoryCacheHandler());
+  });
+
+  // Ported from Next.js: workStore.invalidDynamicUsageError in
+  // packages/next/src/server/app-render/app-render.tsx
+  // https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
+  it("records invalid dynamic usage error on request context (survives try/catch)", async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setHeadersContext, throwIfInsideCacheScope, consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const ctx = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    let recordedError: unknown = null;
+
+    await runWithRequestContext(ctx, async () => {
+      try {
+        await cacheContextStorage.run(
+          { tags: [], lifeConfigs: [], variant: "default" },
+          async () => {
+            throwIfInsideCacheScope("cookies()");
+          },
+        );
+      } catch {
+        // User try/catch — the error should still be recorded on the context
+      }
+      recordedError = consumeInvalidDynamicUsageError();
+    });
+
+    expect(recordedError).toBeInstanceOf(Error);
+    expect((recordedError as Error).message).toContain('cannot be called inside "use cache"');
+
+    // After consumption, the error is cleared
+    expect(consumeInvalidDynamicUsageError()).toBeNull();
+
+    setHeadersContext(null);
+  });
+
+  it("consumeInvalidDynamicUsageError returns null when no error was recorded", async () => {
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const ctx = createRequestContext();
+    let result: unknown;
+
+    await runWithRequestContext(ctx, async () => {
+      result = consumeInvalidDynamicUsageError();
+    });
+
+    expect(result!).toBeNull();
+  });
+
+  it("consumeInvalidDynamicUsageError works outside unified request scope", async () => {
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    // Should return null without throwing when no unified scope is active
+    expect(consumeInvalidDynamicUsageError()).toBeNull();
   });
 });
 

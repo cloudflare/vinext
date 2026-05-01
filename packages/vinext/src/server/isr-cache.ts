@@ -168,16 +168,69 @@ export function buildAppPageCacheValue(
   };
 }
 
+function normalizeCachePathname(pathname: string): string {
+  return pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+}
+
+function buildCacheKey(prefix: string, pathname: string, suffix?: string): string {
+  const normalized = normalizeCachePathname(pathname);
+  const suffixPart = suffix ? `:${suffix}` : "";
+  const key = `${prefix}:${normalized}${suffixPart}`;
+  if (key.length <= 200) return key;
+  return `${prefix}:__hash:${fnv1a64(normalized)}${suffixPart}`;
+}
+
 /**
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
 export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
   const prefix = buildId ? `${router}:${buildId}` : router;
-  const key = `${prefix}:${normalized}`;
-  if (key.length <= 200) return key;
-  return `${prefix}:__hash:${fnv1a64(normalized)}`;
+  return buildCacheKey(prefix, pathname);
+}
+
+/**
+ * Normalize the App Router mounted-slot header before it participates in cache
+ * keys. The client can send mounted slot ids in different orders as navigation
+ * state changes, but equivalent slot sets must map to the same RSC cache entry.
+ */
+export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
+    .sort()
+    .join(" ");
+  return normalized || null;
+}
+
+/**
+ * Compute an App Router ISR key for one cache artifact.
+ *
+ * App pages store HTML, RSC payloads, and route-handler responses separately.
+ * The suffix mirrors Next.js's separate on-disk app artifacts while keeping the
+ * Cloudflare KV key under its 512-byte limit for long pathnames.
+ */
+function appIsrCacheKey(
+  pathname: string,
+  suffix: string,
+  buildId = process.env.__VINEXT_BUILD_ID,
+): string {
+  const prefix = buildId ? `app:${buildId}` : "app";
+  return buildCacheKey(prefix, pathname, suffix);
+}
+
+export function appIsrHtmlKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "html");
+}
+
+export function appIsrRscKey(pathname: string, mountedSlotsHeader?: string | null): string {
+  const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
+  if (!normalizedMountedSlotsHeader) return appIsrCacheKey(pathname, "rsc");
+  return appIsrCacheKey(pathname, `rsc:${fnv1a64(normalizedMountedSlotsHeader)}`);
+}
+
+export function appIsrRouteKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "route");
 }
 
 // ---------------------------------------------------------------------------

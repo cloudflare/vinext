@@ -41,6 +41,10 @@
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"
     },
+    "./server/request-pipeline": {
+      "types": "./dist/server/request-pipeline.d.ts",
+      "import": "./dist/server/request-pipeline.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
@@ -62,6 +66,7 @@
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "image-size": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"

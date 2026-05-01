@@ -106,14 +106,18 @@ export type AppRoute = {
    * a layout is caught by the parent layout's boundary (matching Next.js behavior).
    */
   notFoundPaths: (string | null)[];
-  /** Forbidden component path (403) */
+  /**
+   * Forbidden component paths per layout level (aligned with layouts array).
+   * Each entry is the forbidden.tsx at that layout's directory, or null.
+   * Used to create per-layout ForbiddenBoundary.
+   */
+  forbiddenPaths: (string | null)[];
+  /** Forbidden component path (403) at the route's directory level */
   forbiddenPath: string | null;
-  /** Forbidden component paths per layout level (aligned with layouts array). */
-  forbiddenPaths?: (string | null)[];
-  /** Unauthorized component path (401) */
+  /** Unauthorized component path (401) at the route's directory level */
   unauthorizedPath: string | null;
   /** Unauthorized component paths per layout level (aligned with layouts array). */
-  unauthorizedPaths?: (string | null)[];
+  unauthorizedPaths: (string | null)[];
   /**
    * Filesystem segments from app/ root to the route's directory.
    * Includes route groups and dynamic segments (as template strings like "[id]").
@@ -435,8 +439,8 @@ function discoverSlotSubRoutes(
         layoutErrorPaths: parentRoute.layoutErrorPaths,
         notFoundPath: parentRoute.notFoundPath,
         notFoundPaths: parentRoute.notFoundPaths,
-        forbiddenPath: parentRoute.forbiddenPath,
         forbiddenPaths: parentRoute.forbiddenPaths,
+        forbiddenPath: parentRoute.forbiddenPath,
         unauthorizedPath: parentRoute.unauthorizedPath,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
@@ -580,8 +584,8 @@ function directoryToAppRoute(
     layoutErrorPaths,
     notFoundPath,
     notFoundPaths,
-    forbiddenPath,
     forbiddenPaths,
+    forbiddenPath,
     unauthorizedPath,
     unauthorizedPaths,
     routeSegments: segments,

@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { fixFlightHints, fixPreloadAs } from "../packages/vinext/src/server/app-ssr-stream.js";
+import { describe, it, expect } from "vite-plus/test";
+import {
+  createRscEmbedTransform,
+  fixFlightHints,
+  fixPreloadAs,
+} from "../packages/vinext/src/server/app-ssr-stream.js";
 
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
@@ -66,5 +70,52 @@ describe("App SSR stream helpers", () => {
         ':HL["/a.css","style"]\n:HL["/b.css","style"]',
       );
     });
+  });
+});
+
+function createTextStream(chunks: string[]): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(new TextEncoder().encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
+
+describe("createRscEmbedTransform raw buffer (#981)", () => {
+  it("accumulates raw bytes while producing embed scripts", async () => {
+    const sideStream = createTextStream(["chunk1", "chunk2"]);
+    const transform = createRscEmbedTransform(sideStream);
+
+    // Let the reader pump all chunks
+    const rawBuffer = await transform.getRawBuffer();
+    expect(rawBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(new TextDecoder().decode(rawBuffer)).toBe("chunk1chunk2");
+
+    // Embed scripts still work
+    const finalScripts = await transform.finalize();
+    expect(finalScripts).toContain("__VINEXT_RSC_DONE__");
+    expect(finalScripts).toContain("__VINEXT_RSC_CHUNKS__");
+  });
+
+  it("preserves raw bytes before fixFlightHints transform", async () => {
+    // Flight hints use as="stylesheet" which get fixed to as="style" in the
+    // embed transform. Raw bytes must be the unmodified originals.
+    const sideStream = createTextStream([':HL["/a.css","stylesheet"]']);
+    const transform = createRscEmbedTransform(sideStream);
+
+    const rawBuffer = await transform.getRawBuffer();
+    const rawText = new TextDecoder().decode(rawBuffer);
+    // Raw bytes: unmodified originals (not fixed)
+    expect(rawText).toBe(':HL["/a.css","stylesheet"]');
+
+    // finalize() returns the embed scripts with fixed hints
+    const finalScripts = await transform.finalize();
+    // The fixed text "as=\"style\"" appears in the embed script after JSON escaping.
+    // fixFlightHints turns "stylesheet" → "style" before the chunk is script-wrapped.
+    expect(finalScripts).not.toContain("stylesheet");
+    expect(finalScripts).toContain("__VINEXT_RSC_DONE__");
   });
 });

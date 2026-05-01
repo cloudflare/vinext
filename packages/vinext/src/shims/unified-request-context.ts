@@ -87,6 +87,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     dynamicUsageDetected: false,
+    invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
     phase: "render",

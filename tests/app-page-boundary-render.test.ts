@@ -6,6 +6,7 @@ import {
   renderAppPageHttpAccessFallback,
 } from "../packages/vinext/src/server/app-page-boundary-render.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
+import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -76,6 +77,7 @@ function createCommonOptions() {
       headers: null,
       status: null,
     },
+    metadataRoutes: [],
     renderToReadableStream: renderElementToStream,
     requestUrl: "https://example.com/posts/missing",
     resolveChildSegments() {
@@ -133,34 +135,33 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+type TestModule = {
+  default: React.ComponentType<any>;
+  metadata?: { description: string };
+  viewport?: { themeColor: string };
+};
+
 const rootLayoutModule = {
-  default: RootLayout as React.ComponentType<any>,
+  default: RootLayout,
   metadata: { description: "Root layout description" },
   viewport: { themeColor: "#111111" },
-};
+} satisfies TestModule;
 
 const leafLayoutModule = {
-  default: LeafLayout as React.ComponentType<any>,
-};
+  default: LeafLayout,
+} satisfies TestModule;
 
 const notFoundModule = {
-  default: NotFoundBoundary as React.ComponentType<any>,
-};
+  default: NotFoundBoundary,
+} satisfies TestModule;
 
 const routeErrorModule = {
-  default: RouteErrorBoundary as React.ComponentType<any>,
-};
+  default: RouteErrorBoundary,
+} satisfies TestModule;
 
 const globalErrorModule = {
-  default: GlobalErrorBoundary as React.ComponentType<any>,
-};
-
-type TestModule =
-  | typeof rootLayoutModule
-  | typeof leafLayoutModule
-  | typeof notFoundModule
-  | typeof routeErrorModule
-  | typeof globalErrorModule;
+  default: GlobalErrorBoundary,
+} satisfies TestModule;
 
 const EMPTY_ROOT_LAYOUTS: readonly TestModule[] = [];
 
@@ -168,7 +169,7 @@ describe("app page boundary render helpers", () => {
   it("returns null when no HTTP access fallback boundary exists", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       matchedParams: { slug: "missing" },
       route: {
@@ -186,7 +187,7 @@ describe("app page boundary render helpers", () => {
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       matchedParams: { slug: "missing" },
       rootLayouts: [rootLayoutModule],
@@ -217,10 +218,54 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {
+    const common = createCommonOptions();
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: false,
+        filePath: "/tmp/app/posts/[slug]/opengraph-image.png",
+        routePrefix: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+        servedUrl: "/posts/-/opengraph-image.png",
+        contentType: "image/png",
+        headData: {
+          kind: "openGraph",
+          href: "/posts/-/opengraph-image.png?hash",
+          type: "image/png",
+          width: 1200,
+          height: 630,
+        },
+      },
+    ];
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      layoutModules: [rootLayoutModule],
+      matchedParams: { slug: "missing" },
+      metadataRoutes,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const html = await response?.text();
+    expect(html).toContain('content="Root layout description"');
+    expect(html).not.toContain("opengraph-image");
+  });
+
   it("preserves middleware headers on HTTP access fallback HTML responses", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       matchedParams: { slug: "missing" },
       middlewareContext: createMiddlewareContext(),
@@ -242,7 +287,7 @@ describe("app page boundary render helpers", () => {
   it("renders HTTP access fallback RSC responses as flat payloads", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       isRscRequest: true,
       matchedParams: { slug: "missing" },
@@ -271,7 +316,7 @@ describe("app page boundary render helpers", () => {
   it("preserves middleware headers on HTTP access fallback RSC responses", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       isRscRequest: true,
       matchedParams: { slug: "missing" },
@@ -294,7 +339,7 @@ describe("app page boundary render helpers", () => {
   it("uses null root layout metadata when a boundary payload has no route context", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageHttpAccessFallback({
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
       ...common,
       boundaryComponent: NotFoundBoundary,
       isRscRequest: true,
@@ -317,7 +362,7 @@ describe("app page boundary render helpers", () => {
     const common = createCommonOptions();
     const sanitizeErrorForClient = vi.fn((error: Error) => new Error(`safe:${error.message}`));
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("secret"),
       matchedParams: { slug: "post" },
@@ -343,7 +388,7 @@ describe("app page boundary render helpers", () => {
   it("preserves middleware headers on error boundary responses", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("secret"),
       matchedParams: { slug: "post" },
@@ -364,10 +409,67 @@ describe("app page boundary render helpers", () => {
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
   });
 
+  it("renders error boundaries when dynamic file metadata resolution fails", async () => {
+    const error = new Error("metadata boom");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const common = createCommonOptions();
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/app/posts/[slug]/opengraph-image.tsx",
+        routePrefix: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+        servedUrl: "/posts/[slug]/opengraph-image",
+        contentType: "image/png",
+        contentHash: "hash",
+        module: {
+          generateImageMetadata() {
+            throw error;
+          },
+        },
+      },
+    ];
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error: new Error("secret"),
+        matchedParams: { slug: "post" },
+        metadataRoutes,
+        route: {
+          error: routeErrorModule,
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          params: { slug: "post" },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        sanitizeErrorForClient(error: Error) {
+          return error;
+        },
+      });
+
+      expect(response?.status).toBe(200);
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] File-based metadata resolution failed while rendering error boundary for /posts/[slug]:",
+        error,
+      );
+
+      const html = await response?.text();
+      expect(html).toContain('data-boundary="route-error"');
+      expect(html).toContain("route:secret");
+      expect(html).toContain('content="Root layout description"');
+      expect(html).not.toContain("opengraph-image");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("renders error boundary RSC responses as flat payloads", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("secret"),
       isRscRequest: true,
@@ -398,7 +500,7 @@ describe("app page boundary render helpers", () => {
   it("renders global-error boundaries without layout wrapping", async () => {
     const common = createCommonOptions();
 
-    const response = await renderAppPageErrorBoundary({
+    const response = await renderAppPageErrorBoundary<TestModule>({
       ...common,
       error: new Error("boom"),
       globalErrorModule,
@@ -419,5 +521,7 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-boundary="global-error"');
     expect(html).toContain("global:boom");
     expect(html).not.toContain('data-layout="root"');
+    expect(html).not.toContain("Root layout description");
+    expect(html).not.toContain('name="viewport"');
   });
 });

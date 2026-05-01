@@ -4,6 +4,8 @@ import {
   handleProgressiveServerActionRequest,
   isProgressiveServerActionRequest,
   type HandleServerActionRscRequestOptions,
+  readActionBodyWithLimit,
+  readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
 
@@ -53,6 +55,24 @@ function createMultipartBodyRequest(body: FormData): Request {
       origin: "https://example.com",
     },
   });
+}
+
+function createStreamBodyRequest(body: string, headers?: HeadersInit): Request {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(body));
+      controller.close();
+    },
+  });
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    body: stream,
+    duplex: "half",
+    headers,
+  };
+
+  return new Request("https://example.com/action", init);
 }
 
 function createOptions(
@@ -201,6 +221,41 @@ function createRscOptions(
 }
 
 describe("app server action execution helpers", () => {
+  it("reads streamed action text bodies and enforces the byte limit", async () => {
+    const validRequest = new Request("https://example.com/action", {
+      method: "POST",
+      body: "hello",
+    });
+
+    await expect(readActionBodyWithLimit(validRequest, 5)).resolves.toBe("hello");
+
+    const oversizedRequest = createStreamBodyRequest("hello!");
+
+    await expect(readActionBodyWithLimit(oversizedRequest, 5)).rejects.toThrow(
+      "Request body too large",
+    );
+  });
+
+  it("reads multipart action form data and enforces the streamed byte limit", async () => {
+    const body = new FormData();
+    body.set("field", "value");
+    const validRequest = new Request("https://example.com/action", {
+      method: "POST",
+      body,
+    });
+
+    const formData = await readActionFormDataWithLimit(validRequest, 1024);
+    expect(formData.get("field")).toBe("value");
+
+    const oversizedRequest = createStreamBodyRequest("x".repeat(64), {
+      "content-type": validRequest.headers.get("content-type") ?? "",
+    });
+
+    await expect(readActionFormDataWithLimit(oversizedRequest, 16)).rejects.toThrow(
+      "Request body too large",
+    );
+  });
+
   it("identifies progressive multipart server action submissions", () => {
     expect(
       isProgressiveServerActionRequest(
@@ -428,6 +483,48 @@ describe("app server action execution helpers", () => {
     errorSpy.mockRestore();
   });
 
+  // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  it("returns the action-not-found response for progressive action decode misses", async () => {
+    const reportedErrors: Error[] = [];
+    const clearContext = vi.fn();
+
+    const response = await handleProgressiveServerActionRequest(
+      createOptions({
+        clearRequestContext: clearContext,
+        async decodeAction() {
+          throw new Error(
+            "Failed to find Server Action. This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action",
+          );
+        },
+        reportRequestError(error) {
+          reportedErrors.push(error);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(reportedErrors).toEqual([]);
+    expect(clearContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns action-not-found for progressive decode misses that include an action id", async () => {
+    const response = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          throw new Error(
+            'Failed to find Server Action "stale-action-id". This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action',
+          );
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+  });
+
   it("returns null for non-fetch RSC action requests", async () => {
     const response = await handleServerActionRscRequest(
       createRscOptions({
@@ -466,7 +563,9 @@ describe("app server action execution helpers", () => {
         },
         loadServerAction(actionId) {
           expect(actionId).toBe("action-id");
-          return Promise.resolve((first, second) => `${String(first)}:${String(second)}`);
+          return Promise.resolve(
+            (first: unknown, second: unknown) => `${String(first)}:${String(second)}`,
+          );
         },
         middlewareHeaders: new Headers([["x-middleware", "present"]]),
         renderToReadableStream(model, options) {
@@ -516,6 +615,77 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(400);
     expect(await response?.text()).toBe("Invalid server action payload");
     expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  it("returns the Next.js action-not-found response for stale fetch action ids", async () => {
+    const decodeReply = vi.fn();
+    const renderToReadableStream = vi.fn();
+    const reportRequestError = vi.fn();
+    const clearRequestContext = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "stale-action-id",
+        clearRequestContext,
+        decodeReply,
+        loadServerAction() {
+          return Promise.reject(new Error("[vite-rsc] invalid server reference 'stale-action-id'"));
+        },
+        renderToReadableStream,
+        reportRequestError,
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(response?.headers.get("content-type")).toBe("text/plain");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(decodeReply).not.toHaveBeenCalled();
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+    expect(reportRequestError).not.toHaveBeenCalled();
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns action-not-found when a server action export is missing", async () => {
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        decodeReply,
+        loadServerAction() {
+          return Promise.resolve(undefined);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated server action loader failures on the generic error path", async () => {
+    const reportedErrors: Error[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.reject(new Error("module graph crashed"));
+        },
+        reportRequestError(error) {
+          reportedErrors.push(error);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(await response?.text()).toBe("Server action failed: module graph crashed");
+    expect(reportedErrors.map((error) => error.message)).toEqual(["module graph crashed"]);
+
+    errorSpy.mockRestore();
   });
 
   it("encodes fetch-action redirects as RSC control headers", async () => {

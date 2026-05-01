@@ -3207,6 +3207,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       };
     })(),
+    // Mix experimental.outputHashSalt / NEXT_HASH_SALT into chunk content hashes.
+    // This changes output filenames (e.g., index-[hash].js) without modifying source.
+    // Uses augmentChunkHash (supported by Rolldown) instead of the unsupported output.hashSalt.
+    {
+      name: "vinext:hash-salt",
+      apply: "build",
+      augmentChunkHash() {
+        // Only apply to client environment; SSR/RSC don't use content hashing
+        if (this.environment?.name !== "client") return;
+        const salt = nextConfig?.hashSalt;
+        if (salt) {
+          return salt;
+        }
+      },
+    },
+    // Note: augmentChunkHash only affects JS chunk hashes. CSS and static asset
+    // hashes are not salted, which is a known gap vs Next.js behavior.
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
     // The prerender secret is used by prod-server.ts to authenticate requests to
     // the internal /__vinext/prerender/* endpoints, which are only reachable during

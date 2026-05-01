@@ -5,6 +5,8 @@ import { LayoutSegmentProvider } from "../shims/layout-segment-context.js";
 import { MetadataHead, ViewportHead } from "../shims/metadata.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
+import type { MetadataFileRoute } from "./metadata-routes.js";
+import { resolveAppPageHead } from "./app-page-head.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -24,7 +26,6 @@ import {
   createAppPayloadRouteId,
   type AppElements,
 } from "./app-elements.js";
-import { resolveAppPageHead } from "./app-page-head.js";
 import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -70,6 +71,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   makeThenableParams: (params: AppPageParams) => unknown;
   middlewareContext: AppPageMiddlewareContext;
+  metadataRoutes: MetadataFileRoute[];
   renderToReadableStream: (
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
@@ -182,6 +184,38 @@ function resolveAppPageBoundaryRootLayoutTreePath<TModule extends AppPageModule>
   return null;
 }
 
+function resolveHttpAccessFallbackHeadRouteSegments<TModule extends AppPageModule>(
+  route: AppPageBoundaryRoute<TModule> | null | undefined,
+  layoutModules: readonly (TModule | null | undefined)[],
+): readonly string[] | undefined {
+  if (!route?.routeSegments) {
+    return undefined;
+  }
+
+  if (!route.layouts || layoutModules.length >= route.layouts.length) {
+    return route.routeSegments;
+  }
+
+  const lastIncludedLayoutIndex = layoutModules.length - 1;
+  if (lastIncludedLayoutIndex < 0) {
+    return [];
+  }
+
+  const segmentCount = route.layoutTreePositions?.[lastIncludedLayoutIndex] ?? 0;
+  return route.routeSegments.slice(0, segmentCount);
+}
+
+function resolveHttpAccessFallbackHeadLayoutTreePositions<TModule extends AppPageModule>(
+  route: AppPageBoundaryRoute<TModule> | null | undefined,
+  layoutModules: readonly (TModule | null | undefined)[],
+): readonly number[] | null | undefined {
+  if (!route?.layouts || layoutModules.length >= route.layouts.length) {
+    return route?.layoutTreePositions;
+  }
+
+  return route.layoutTreePositions?.slice(0, layoutModules.length);
+}
+
 function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
   options: AppPageBoundaryRscPayloadOptions<TModule>,
 ): AppElements {
@@ -262,11 +296,17 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   }
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
+  const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
     layoutModules,
-    layoutTreePositions: options.route?.layoutTreePositions,
+    layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+      options.route,
+      layoutModules,
+    ),
+    metadataRoutes: options.metadataRoutes,
     params: options.matchedParams,
-    routeSegments: options.route?.routeSegments,
+    routePath: options.route?.pattern ?? new URL(options.requestUrl).pathname,
+    routeSegments,
   });
 
   const headElements: ReactNode[] = [
@@ -320,11 +360,41 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   const errorObject = options.sanitizeErrorForClient(rawError);
   const matchedParams = options.matchedParams ?? options.route?.params ?? {};
   const layoutModules = options.route?.layouts ?? options.rootLayouts;
+  const pathname = new URL(options.requestUrl).pathname;
+
+  const headElements: ReactNode[] = [createElement("meta", { charSet: "utf-8", key: "charset" })];
+  if (!errorBoundary.isGlobalError) {
+    try {
+      const { metadata, viewport } = await resolveAppPageHead({
+        fallbackOnFileMetadataError: true,
+        layoutModules,
+        layoutTreePositions: options.route?.layoutTreePositions,
+        metadataRoutes: options.metadataRoutes,
+        params: matchedParams,
+        routePath: options.route?.pattern ?? pathname,
+        routeSegments: options.route?.routeSegments,
+      });
+      if (metadata) {
+        headElements.push(createElement(MetadataHead, { key: "metadata", metadata }));
+      }
+      headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
+    } catch (error) {
+      console.error(
+        `[vinext] App page error boundary head resolution failed for ${options.route?.pattern ?? pathname}:`,
+        error,
+      );
+    }
+  }
 
   const element = wrapRenderedBoundaryElement({
-    element: createElement(errorBoundary.component, {
-      error: errorObject,
-    }),
+    element: createElement(
+      Fragment,
+      null,
+      ...headElements,
+      createElement(errorBoundary.component, {
+        error: errorObject,
+      }),
+    ),
     globalErrorModule: options.globalErrorModule,
     includeGlobalErrorBoundary: !errorBoundary.isGlobalError,
     isRscRequest: options.isRscRequest,

@@ -363,6 +363,25 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.prefetchInlining")?.status).toBe("partial");
   });
 
+  it("detects experimental.swcEnvOptions as unsupported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          swcEnvOptions: {
+            mode: "usage",
+            coreJs: "3",
+          },
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const item = items.find((i) => i.name === "experimental.swcEnvOptions");
+    expect(item?.status).toBe("unsupported");
+    expect(item?.detail).toContain("not applicable");
+  });
+
   it("detects allowedDevOrigins as supported", () => {
     writeFile(
       "next.config.mjs",
@@ -397,6 +416,7 @@ describe("analyzeConfig", () => {
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],
     ["experimental.serverActions", "experimental", "serverActions: { allowedOrigins: [] }"],
     ["experimental.prefetchInlining", "experimental", "prefetchInlining: true"],
+    ["experimental.swcEnvOptions", "experimental", 'swcEnvOptions: { mode: "usage" }'],
     ["i18n.domains", "i18n", "domains: []"],
   ])("detects %s via generic dot-notation handling", (name, parent, body) => {
     writeFile("next.config.mjs", `export default { ${parent}: { ${body} } };`);

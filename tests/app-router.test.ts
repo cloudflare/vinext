@@ -1481,8 +1481,8 @@ describe("App Router integration", () => {
   });
 
   it("allows server action POST with matching Origin header", async () => {
-    // This will fail with 500 (action not found) rather than 403,
-    // proving the CSRF check passed and execution reached the action handler.
+    // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
       headers: {
@@ -1493,9 +1493,9 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Should NOT be 403 — the CSRF check passes for same-origin.
-    // It may be 500 because the action ID doesn't exist, which is fine.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
   });
 
   it("allows server action POST without Origin header (non-fetch navigation)", async () => {
@@ -1508,8 +1508,8 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Should NOT be 403 — missing Origin is allowed.
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
   it("rejects cyclic multipart server action payloads before decodeReply", async () => {
@@ -2269,11 +2269,19 @@ describe("App Router Production server (startProdServer)", () => {
     // Wait for cache entry to become stale (revalidate=1, generous margin for slow CI)
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // STALE — serves stale data, triggers background regen
+    // STALE — serves stale data, triggers background regen.
+    // The stale response must return quickly: it must NOT block on the
+    // background regeneration. Measure total duration to catch regressions.
+    const staleStart = Date.now();
     const staleRes = await fetch(`${baseUrl}/api/static-data`);
+    const staleDuration = Date.now() - staleStart;
     expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
     const staleBody = await staleRes.json();
     expect(staleBody.timestamp).toBe(cachedTimestamp); // Still the old data
+
+    // The stale response must arrive promptly; background regen runs
+    // out-of-band via ctx.waitUntil(). Allow 500ms for cold-start latency.
+    expect(staleDuration).toBeLessThan(500);
 
     // Poll until background regen completes (up to 5s)
     const deadline = Date.now() + 5000;
@@ -2288,6 +2296,48 @@ describe("App Router Production server (startProdServer)", () => {
     // HIT — fresh data from background regen
     expect(freshRes.headers.get("x-vinext-cache")).toBe("HIT");
     expect(freshBody.timestamp).not.toBe(cachedTimestamp); // New data
+  });
+
+  // Test pattern ported from Next.js:
+  // test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+  // (adapted from "use cache" SWR to route handler ISR with export const revalidate)
+  it("route handler ISR: STALE completes quickly without blocking on background regen", async () => {
+    // /api/slow-isr has revalidate=1 and a 1s handler delay.
+    // Populate the cache (cold request, takes ~1s).
+    const coldStart = Date.now();
+    const cold = await fetch(`${baseUrl}/api/slow-isr`);
+    expect(cold.status).toBe(200);
+    const coldBody = await cold.json();
+    const coldDuration = Date.now() - coldStart;
+    expect(coldDuration).toBeGreaterThanOrEqual(700); // roughly 1s handler delay
+
+    // Wait for the 1s revalidate window to expire.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    // Stale request: must return the cached value quickly (< 500ms), not
+    // the full 1s handler duration. If the response is blocked on background
+    // regeneration, this will take ≥ 1s and fail.
+    const staleStart = Date.now();
+    const stale = await fetch(`${baseUrl}/api/slow-isr`);
+    const staleDuration = Date.now() - staleStart;
+    expect(stale.headers.get("x-vinext-cache")).toBe("STALE");
+    const staleBody = await stale.json();
+    expect(staleBody.timestamp).toBe(coldBody.timestamp); // Still the old data
+    expect(staleDuration).toBeLessThan(500);
+
+    // Wait for background regen to complete, then verify fresh data.
+    const deadline = Date.now() + 5000;
+    let freshRes: Response;
+    let freshBody: { timestamp: number };
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      freshRes = await fetch(`${baseUrl}/api/slow-isr`);
+      freshBody = await freshRes.json();
+    } while (freshRes.headers.get("x-vinext-cache") !== "HIT" && Date.now() < deadline);
+
+    expect(freshRes.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(freshBody.timestamp).not.toBe(coldBody.timestamp);
   });
 
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {
@@ -2732,7 +2782,9 @@ describe("App Router Static export", () => {
         layoutErrorPaths: [],
         notFoundPath: null,
         notFoundPaths: [],
+        forbiddenPaths: [],
         forbiddenPath: null,
+        unauthorizedPaths: [],
         unauthorizedPath: null,
         isDynamic: true,
         params: ["id"],
@@ -2777,7 +2829,9 @@ describe("App Router Static export", () => {
         layoutErrorPaths: [],
         notFoundPath: null,
         notFoundPaths: [],
+        forbiddenPaths: [],
         forbiddenPath: null,
+        unauthorizedPaths: [],
         unauthorizedPath: null,
         isDynamic: false,
         params: [],
@@ -2865,9 +2919,10 @@ describe("metadata routes integration (App Router)", () => {
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
-    const iconRoute = routes.find((r: { type: string }) => r.type === "icon");
+    const iconRoute = routes.find(
+      (r: { type: string; isDynamic: boolean }) => r.type === "icon" && r.isDynamic,
+    );
     expect(iconRoute).toBeDefined();
-    // Dynamic icon.tsx should take priority over static icon.png at same URL
     expect(iconRoute!.isDynamic).toBe(true);
     expect(iconRoute!.servedUrl).toBe("/icon");
     expect(iconRoute!.contentType).toBe("image/png");
@@ -2881,7 +2936,7 @@ describe("metadata routes integration (App Router)", () => {
     const appleIcon = routes.find((r: { type: string }) => r.type === "apple-icon");
     expect(appleIcon).toBeDefined();
     expect(appleIcon!.isDynamic).toBe(false);
-    expect(appleIcon!.servedUrl).toBe("/apple-icon");
+    expect(appleIcon!.servedUrl).toBe("/apple-icon.png");
     expect(appleIcon!.contentType).toBe("image/png");
   });
 
@@ -2892,15 +2947,15 @@ describe("metadata routes integration (App Router)", () => {
 
     const ogImage = routes.find(
       (r: { type: string; servedUrl: string }) =>
-        r.type === "opengraph-image" && r.servedUrl === "/about/opengraph-image",
+        r.type === "opengraph-image" && r.servedUrl === "/about/opengraph-image.png",
     );
     expect(ogImage).toBeDefined();
     expect(ogImage!.isDynamic).toBe(false);
     expect(ogImage!.contentType).toBe("image/png");
   });
 
-  it("serves static /apple-icon as PNG with cache headers", async () => {
-    const res = await fetch(`${baseUrl}/apple-icon`);
+  it("serves static /apple-icon.png as PNG with cache headers", async () => {
+    const res = await fetch(`${baseUrl}/apple-icon.png`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(res.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
@@ -2913,14 +2968,128 @@ describe("metadata routes integration (App Router)", () => {
     expect(magic[3]).toBe(0x47); // G
   });
 
-  it("serves nested static /about/opengraph-image as PNG", async () => {
-    const res = await fetch(`${baseUrl}/about/opengraph-image`);
+  it("serves nested static /about/opengraph-image.png as PNG", async () => {
+    const res = await fetch(`${baseUrl}/about/opengraph-image.png`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     const buf = await res.arrayBuffer();
     const magic = new Uint8Array(buf.slice(0, 4));
     expect(magic[0]).toBe(0x89);
     expect(magic[1]).toBe(0x50);
+  });
+
+  it("injects file-based metadata into head tags for static metadata files", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-static-file/metadata-static-file-static-route.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-static-file/metadata-static-file-static-route.test.ts
+    const res = await fetch(`${baseUrl}/metadata-static`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(/<link[^>]+rel="icon"[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]+)?"[^>]*>/);
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon"[^>]+href="[^"]*\/metadata-static\/apple-icon\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-static\/icon\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+property="og:image"[^>]+content="[^"]*\/metadata-static\/opengraph-image\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+property="og:image:alt"[^>]+content="Static OG image alt text[^"]*"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+name="twitter:image"[^>]+content="[^"]*\/metadata-static\/twitter-image\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+name="twitter:image:alt"[^>]+content="Static Twitter image alt text[^"]*"[^>]*>/,
+    );
+    expect(html).toMatch(/<link[^>]+rel="manifest"[^>]+href="[^"]*\/manifest\.webmanifest"[^>]*>/);
+  });
+
+  it("injects sizes=any for static SVG icon metadata routes", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-svg-icon/metadata-svg-icon.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-svg-icon/metadata-svg-icon.test.ts
+    const res = await fetch(`${baseUrl}/metadata-svg-icon`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-svg-icon\/icon\.svg(?:\?[^"]+)?"[^>]+sizes="any"[^>]+type="image\/svg\+xml"[^>]*>/,
+    );
+  });
+
+  it("renders icons.icon descriptor object metadata without crashing", async () => {
+    const res = await fetch(`${baseUrl}/metadata-icons-object`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-icons-object\/object-icon\.png"[^>]+sizes="96x96"[^>]+type="image\/png"[^>]*>/,
+    );
+  });
+
+  it("injects dynamic metadata image routes into the head", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
+    const homeRes = await fetch(`${baseUrl}/`);
+    expect(homeRes.status).toBe(200);
+    const homeHtml = await homeRes.text();
+    expect(homeHtml).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(homeHtml).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/icon(?:\?[^"]+)?"[^>]+sizes="32x32"[^>]+type="image\/png"[^>]*>/,
+    );
+
+    const blogRes = await fetch(`${baseUrl}/blog/hello-world`);
+    expect(blogRes.status).toBe(200);
+    const blogHtml = await blogRes.text();
+    expect(blogHtml).toMatch(
+      /<meta[^>]+property="og:image"[^>]+content="[^"]*\/blog\/hello-world\/opengraph-image(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(blogHtml).toMatch(/<meta[^>]+property="og:image:width"[^>]+content="1200"[^>]*>/);
+    expect(blogHtml).toMatch(/<meta[^>]+property="og:image:height"[^>]+content="630"[^>]*>/);
+    expect(blogHtml).toMatch(/<meta[^>]+property="og:image:type"[^>]+content="image\/png"[^>]*>/);
+    expect(blogHtml).toMatch(
+      /<meta[^>]+property="og:image:alt"[^>]+content="Blog post open graph image"[^>]*>/,
+    );
+  });
+
+  it("injects multiple generateImageMetadata icon routes into the head", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const res = await fetch(`${baseUrl}/metadata-multi-image/big`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-multi-image\/big\/icon\/big-small(?:\?[^"]+)?"[^>]+sizes="48x48"[^>]+type="image\/png"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-multi-image\/big\/icon\/big-medium(?:\?[^"]+)?"[^>]+sizes="72x72"[^>]+type="image\/png"[^>]*>/,
+    );
+  });
+
+  it("uses placeholder urls for static metadata files in dynamic segments", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-static-file/metadata-static-file-dynamic-route.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-static-file/metadata-static-file-dynamic-route.test.ts
+    const res = await fetch(`${baseUrl}/metadata-dynamic-static/hello-world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon"[^>]+href="[^"]*\/metadata-dynamic-static\/-\/apple-icon\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="icon"[^>]+href="[^"]*\/metadata-dynamic-static\/-\/icon\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+property="og:image"[^>]+content="[^"]*\/metadata-dynamic-static\/-\/opengraph-image\.png(?:\?[^"]+)?"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<meta[^>]+name="twitter:image"[^>]+content="[^"]*\/metadata-dynamic-static\/-\/twitter-image\.png(?:\?[^"]+)?"[^>]*>/,
+    );
   });
 
   it("scanMetadataFiles discovers static favicon.ico at root", async () => {
@@ -3021,6 +3190,33 @@ describe("metadata routes integration (App Router)", () => {
     expect(ogImage!.isDynamic).toBe(true);
   });
 
+  it("scanMetadataFiles discovers static metadata files in dynamic segments with placeholders", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+    const icon = routes.find(
+      (r: { type: string; servedUrl: string }) =>
+        r.type === "icon" && r.servedUrl === "/metadata-dynamic-static/-/icon.png",
+    );
+    expect(icon).toBeDefined();
+    expect(icon!.isDynamic).toBe(false);
+  });
+
+  it("serves static metadata files in dynamic segments from placeholder urls", async () => {
+    const res = await fetch(`${baseUrl}/metadata-dynamic-static/-/icon.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("injects file-based metadata into not-found fallback pages", async () => {
+    const res = await fetch(`${baseUrl}/missing-metadata-page`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toMatch(/<link[^>]+rel="icon"[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]+)?"[^>]*>/);
+    expect(html).toMatch(/<link[^>]+rel="icon"[^>]+href="[^"]*\/icon(?:\?[^"]+)?"[^>]*>/);
+    expect(html).toMatch(/<link[^>]+rel="manifest"[^>]+href="[^"]*\/manifest\.webmanifest"[^>]*>/);
+  });
+
   it("serves dynamic opengraph-image in dynamic segment with params", async () => {
     const res = await fetch(`${baseUrl}/blog/hello-world/opengraph-image`);
     expect(res.status).toBe(200);
@@ -3034,6 +3230,33 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toBe("og:my-post");
+  });
+
+  it("serves dynamic icon routes generated by generateImageMetadata", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const res = await fetch(`${baseUrl}/metadata-multi-image/big/icon/big-small`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
+  });
+
+  it("returns 404 for unknown generateImageMetadata ids", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const res = await fetch(`${baseUrl}/metadata-multi-image/big/icon/missing`);
+    expect(res.status).toBe(404);
+  });
+
+  it("serves generateImageMetadata ids after catch-all metadata route params", async () => {
+    const res = await fetch(`${baseUrl}/metadata-multi-catchall/a/b/icon/a-b-small`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
+  });
+
+  it("serves valid generateImageMetadata ids when invalid siblings are present", async () => {
+    const res = await fetch(`${baseUrl}/metadata-invalid-id-sibling/icon/good`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
   });
 });
 
@@ -3201,7 +3424,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       errorPath: null,
       layoutErrorPaths: [null],
       notFoundPath: null,
+      forbiddenPaths: [],
       forbiddenPath: null,
+      unauthorizedPaths: [],
       unauthorizedPath: null,
       routeSegments: [],
       layoutTreePositions: [0],
@@ -3219,7 +3444,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       errorPath: null,
       layoutErrorPaths: [null],
       notFoundPath: null,
+      forbiddenPaths: [],
       forbiddenPath: null,
+      unauthorizedPaths: [],
       unauthorizedPath: null,
       routeSegments: [],
       layoutTreePositions: [0],
@@ -3237,7 +3464,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       errorPath: null,
       layoutErrorPaths: [null],
       notFoundPath: null,
+      forbiddenPaths: [],
       forbiddenPath: null,
+      unauthorizedPaths: [],
       unauthorizedPath: null,
       routeSegments: [],
       layoutTreePositions: [0],
@@ -3283,7 +3512,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
-    expect(code).toContain("matchHeaders");
+    expect(code).toContain("applyConfigHeadersToResponse");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
   });
@@ -3657,130 +3886,23 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     }
   });
 
-  describe("rscOnError: non-plain object dev hint", () => {
-    it("includes detection for the 'Only plain objects' RSC serialization error", () => {
+  describe("RSC error runtime delegation", () => {
+    it("imports RSC error helpers from a normal server module", () => {
       const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain(
-        "Only plain objects, and a few built-ins, can be passed to Client Components",
-      );
+
+      expect(code).toContain("createRscOnErrorHandler as __createRscOnErrorHandler");
+      expect(code).toContain("sanitizeErrorForClient as __sanitizeErrorForClient");
+      expect(code).toContain("server/app-rsc-errors.js");
     });
 
-    it("guards the dev hint behind a NODE_ENV !== production check", () => {
+    it("keeps request-specific onError wiring in the generated entry", () => {
       const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      // The hint must be suppressed in production builds
-      expect(code).toContain('process.env.NODE_ENV !== "production"');
-    });
 
-    it("includes actionable guidance about module namespace objects in the hint", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain("import * as X");
-      expect(code).toContain("[vinext] RSC serialization error");
-    });
-
-    it("includes actionable guidance about class instances in the hint", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain("class instance");
-    });
-
-    it("does not affect the digest return path for navigation errors", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      // The existing digest path (redirect/notFound) must still be present
-      expect(code).toContain('"digest" in error');
-      expect(code).toContain("String(error.digest)");
-    });
-
-    // Runtime tests: extract the rscOnError function from the generated code
-    // and evaluate it. This catches syntax errors and logic bugs that the
-    // string-presence tests above would miss (e.g. unterminated strings,
-    // wrong return values, broken control flow).
-    describe("runtime behavior", () => {
-      let rscOnError: (error: unknown) => string | undefined;
-      let prodRscOnError: (error: unknown) => string | undefined;
-      let digestFn: string;
-      let onErrorFn: string;
-
-      beforeAll(() => {
-        const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-
-        // Extract a top-level function from the generated code by matching
-        // balanced braces (simple regex can't handle nested braces).
-        function extractFunction(src: string, name: string): string {
-          const marker = `function ${name}(`;
-          const start = src.indexOf(marker);
-          if (start === -1) throw new Error(`Could not find ${name} in generated code`);
-          const braceStart = src.indexOf("{", start);
-          let depth = 0;
-          for (let i = braceStart; i < src.length; i++) {
-            if (src[i] === "{") depth++;
-            else if (src[i] === "}") depth--;
-            if (depth === 0) return src.slice(start, i + 1);
-          }
-          throw new Error(`Unbalanced braces in ${name}`);
-        }
-
-        digestFn = extractFunction(code, "__errorDigest");
-        onErrorFn = extractFunction(code, "rscOnError");
-
-        const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
-        // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- reconstructing emitted runtime code is the behavior under test
-        const factory = new Function("process", body);
-        rscOnError = factory({ env: { NODE_ENV: "development" } });
-        prodRscOnError = factory({ env: { NODE_ENV: "production" } });
-      });
-
-      it("returns the digest string for navigation errors (redirect/notFound)", () => {
-        const error = Object.assign(new Error("NEXT_REDIRECT"), {
-          digest: "NEXT_REDIRECT;push;/dashboard;307",
-        });
-        expect(rscOnError(error)).toBe("NEXT_REDIRECT;push;/dashboard;307");
-      });
-
-      it("logs an actionable hint and returns undefined for RSC serialization errors", () => {
-        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          const error = new Error(
-            "Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. " +
-              "Objects with toJSON methods are not supported. Module namespace objects are not supported.",
-          );
-          const result = rscOnError(error);
-          expect(result).toBeUndefined();
-          expect(spy).toHaveBeenCalledOnce();
-          expect(spy.mock.calls[0]![0]).toContain("[vinext] RSC serialization error");
-        } finally {
-          spy.mockRestore();
-        }
-      });
-
-      it("returns undefined for generic errors in dev (no digest, no serialization match)", () => {
-        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          const result = rscOnError(new Error("something went wrong"));
-          expect(result).toBeUndefined();
-          // Should NOT log the hint for unrelated errors
-          expect(spy).not.toHaveBeenCalled();
-        } finally {
-          spy.mockRestore();
-        }
-      });
-
-      it("does not swallow strings thrown in Server Components", () => {
-        const result = prodRscOnError("this is a test string");
-        // Should return a digest hash (not undefined), indicating the string
-        // was processed through the normal error path
-        expect(result).toBeDefined();
-        expect(typeof result).toBe("string");
-        expect((result as string).length).toBeGreaterThan(0);
-        // The digest should be based on the string content
-        const result2 = prodRscOnError("different string");
-        expect(result2).not.toBe(result);
-      });
-
-      it("does not have an early return for string thrown values in generated code", () => {
-        // Next.js had a bug where typeof thrownValue === 'string' returned
-        // early, swallowing the error before logging. Verify the generated
-        // rscOnError has no such early-return path.
-        expect(onErrorFn).not.toContain("typeof thrownValue === 'string'");
-      });
+      expect(code).toContain("return __createRscOnErrorHandler({");
+      expect(code).toContain("reportRequestError: _reportRequestError");
+      expect(code).toContain("requestInfo,");
+      expect(code).not.toContain("function rscOnError(");
+      expect(code).not.toContain("function __errorDigest(");
     });
   });
 
@@ -4023,7 +4145,9 @@ describe("RSC Flight hint fix", () => {
       layoutErrorPaths: [null],
       notFoundPath: null,
       notFoundPaths: [null],
+      forbiddenPaths: [],
       forbiddenPath: null,
+      unauthorizedPaths: [],
       unauthorizedPath: null,
       routeSegments: [],
       layoutTreePositions: [0],
@@ -4432,7 +4556,9 @@ describe("generateRscEntry ISR code generation", () => {
       errorPath: null,
       layoutErrorPaths: [null],
       notFoundPath: null,
+      forbiddenPaths: [],
       forbiddenPath: null,
+      unauthorizedPaths: [],
       unauthorizedPath: null,
       routeSegments: [],
       layoutTreePositions: [0],
@@ -4446,19 +4572,21 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('process.env.NODE_ENV === "production"');
   });
 
-  it("generated code contains ISR inline helper functions", () => {
+  it("generated code delegates ISR cache primitives to the typed cache module", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("async function __isrGet(");
-    expect(code).toContain("async function __isrSet(");
-    expect(code).toContain("function __triggerBackgroundRegeneration(");
-    expect(code).toContain("function __isrCacheKey(");
-    expect(code).toContain("const __pendingRegenerations = new Map()");
+    expect(code).toContain("isrGet as __isrGet");
+    expect(code).toContain("isrSet as __isrSet");
+    expect(code).toContain("triggerBackgroundRegeneration as __triggerBackgroundRegeneration");
+    expect(code).toContain("appIsrHtmlKey as __isrHtmlKey");
+    expect(code).toContain("normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader");
+    expect(code).not.toContain("async function __isrGet(");
+    expect(code).not.toContain("function __isrCacheKey(");
+    expect(code).not.toContain("const __pendingRegenerations = new Map()");
   });
 
   it("generated code threads collected fetch tags into page ISR writes and delegates route ISR", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("getCollectedFetchTags");
-    expect(code).toContain("buildPageCacheTags");
     expect(code).toContain(
       'buildPageCacheTags(cleanPathname, [], route.routeSegments, route.routeHandler ? "route" : "page")',
     );
@@ -4468,7 +4596,8 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain(
       'const __pageTags = buildPageCacheTags(cleanPathname, getCollectedFetchTags(), route.routeSegments, "page")',
     );
-    expect(code).toContain("Array.isArray(tags) ? tags : []");
+    expect(code).toContain("isrSet: __isrSet");
+    expect(code).not.toContain("function __pageCacheTags(");
   });
 
   it("generated handler exports async function handler(request, ctx)", () => {
@@ -4477,9 +4606,9 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
   });
 
-  it("generated code imports getCacheHandler from next/cache", () => {
+  it("generated code leaves cache handler access to the ISR cache module", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("getCacheHandler");
+    expect(code).not.toContain("getCacheHandler");
     expect(code).toContain('"next/cache"');
   });
 
@@ -4583,6 +4712,7 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated code threads intercept layout modules through slot overrides", () => {
     const routeWithInterceptLayouts: AppRoute = {
       errorPath: null,
+      forbiddenPaths: [],
       forbiddenPath: null,
       isDynamic: false,
       layoutErrorPaths: [null],
@@ -4622,6 +4752,7 @@ describe("generateRscEntry ISR code generation", () => {
       routeSegments: [],
       templates: [],
       templateTreePositions: [],
+      unauthorizedPaths: [],
       unauthorizedPath: null,
     };
 
@@ -4630,6 +4761,45 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("interceptLayouts: [mod_");
     expect(code).toContain("interceptLayouts: intercept.interceptLayouts");
     expect(code).toContain("layoutModules: opts.interceptLayouts || null");
+    expect(code).toContain(
+      "resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs",
+    );
+    expect(code).toContain("parallelRoutes: __resolveActiveParallelRouteHeadInputs({");
+    expect(code).toContain("interceptPage: opts?.interceptPage ?? null");
+  });
+
+  it("generated code seeds root params around prerender generateStaticParams", () => {
+    const routeWithRootParams: AppRoute = {
+      errorPath: null,
+      forbiddenPath: null,
+      forbiddenPaths: [],
+      isDynamic: true,
+      layoutErrorPaths: [null],
+      layouts: ["/tmp/test/app/[locale]/layout.tsx"],
+      layoutTreePositions: [1],
+      loadingPath: null,
+      notFoundPath: null,
+      notFoundPaths: [null],
+      pagePath: "/tmp/test/app/[locale]/blog/[slug]/page.tsx",
+      parallelSlots: [],
+      params: ["locale", "slug"],
+      pattern: "/:locale/blog/:slug",
+      patternParts: [":locale", "blog", ":slug"],
+      rootParamNames: ["locale"],
+      routePath: null,
+      routeSegments: ["[locale]", "blog", "[slug]"],
+      templates: [],
+      templateTreePositions: [],
+      unauthorizedPaths: [],
+      unauthorizedPath: null,
+    };
+
+    const code = generateRscEntry("/tmp/test/app", [routeWithRootParams]);
+
+    expect(code).toContain("const rootParamNamesMap = {");
+    expect(code).toContain('"/:locale/blog/:slug": ["locale"]');
+    expect(code).toContain("rootParamNamesByPattern: rootParamNamesMap");
+    expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
   });
 
   it("generated code delegates page boundary rendering to typed helpers", () => {
@@ -4671,6 +4841,8 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
     expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn) {");
+    expect(code).toContain('routerKind: "App Router"');
+    expect(code).toContain('routeType: "render"');
     expect(code).toContain("renderFreshPageForCache: async function()");
   });
 

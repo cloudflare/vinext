@@ -507,10 +507,11 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain('from "vinext/config/config-matchers"');
     expect(content).toContain("matchRedirect");
     expect(content).toContain("matchRewrite");
-    expect(content).toContain("matchHeaders");
     expect(content).toContain("requestContextFromRequest");
     expect(content).toContain("isExternalUrl");
     expect(content).toContain("proxyExternalRequest");
+    expect(content).toContain('from "vinext/server/request-pipeline"');
+    expect(content).toContain("applyConfigHeadersToHeaderRecord");
   });
 
   it("runs middleware before routing", () => {
@@ -593,7 +594,8 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js custom headers", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configHeaders");
-    expect(content).toContain("matchHeaders(pathname");
+    expect(content).toContain("applyConfigHeadersToHeaderRecord");
+    expect(content).toContain('from "vinext/server/request-pipeline"');
   });
 
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {

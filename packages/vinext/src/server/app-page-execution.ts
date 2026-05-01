@@ -15,8 +15,10 @@ export type AppPageFontPreload = {
 };
 
 type AppPageRscStreamCapture = {
-  capturedRscDataPromise: Promise<ArrayBuffer> | null;
-  responseStream: ReadableStream<Uint8Array>;
+  /** Stream for createFromReadableStream (SSR). Always set. */
+  ssrStream: ReadableStream<Uint8Array>;
+  /** When capturing, the combined embed+capture stream. handleSsr consumes this. */
+  sideStream?: ReadableStream<Uint8Array>;
 };
 
 type BuildAppPageSpecialErrorResponseOptions = {
@@ -285,7 +287,9 @@ export async function readAppPageTextStream(stream: ReadableStream<Uint8Array>):
   return chunks.join("");
 }
 
-async function readAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<ArrayBuffer> {
+export async function readAppPageBinaryStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<ArrayBuffer> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let totalLength = 0;
@@ -315,15 +319,14 @@ export function teeAppPageRscStreamForCapture(
 ): AppPageRscStreamCapture {
   if (!shouldCapture) {
     return {
-      capturedRscDataPromise: null,
-      responseStream: stream,
+      ssrStream: stream,
     };
   }
 
-  const [responseStream, captureStream] = stream.tee();
+  const [ssrStream, sideStream] = stream.tee();
   return {
-    capturedRscDataPromise: readAppPageBinaryStream(captureStream),
-    responseStream,
+    ssrStream,
+    sideStream,
   };
 }
 

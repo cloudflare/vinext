@@ -1,13 +1,13 @@
 /**
  * Error boundary unit tests.
  *
- * Tests the ErrorBoundary and NotFoundBoundary components that handle
- * error.tsx and not-found.tsx rendering in the App Router. Verifies
- * correct digest handling, error propagation, and the reset mechanism.
+ * Tests the ErrorBoundary, NotFoundBoundary, ForbiddenBoundary, and
+ * UnauthorizedBoundary components that handle error.tsx, not-found.tsx,
+ * forbidden.tsx, and unauthorized.tsx rendering in the App Router.
+ * Verifies correct digest handling, error propagation, and pathname reset.
  *
- * These test the same digest-based error routing that Next.js uses
- * to distinguish between notFound(), redirect(), forbidden(), and
- * genuine application errors.
+ * Ported from Next.js: test/e2e/app-dir/error-boundary/error-boundary.test.ts
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/error-boundary/error-boundary.test.ts
  */
 import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
 
@@ -242,5 +242,93 @@ describe("ErrorBoundary digest classification (actual class)", () => {
       error,
       previousPathname: "/error-test",
     });
+  });
+});
+
+// Test the actual ForbiddenBoundary.getDerivedStateFromError classification.
+// Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
+describe("ForbiddenBoundary digest classification", () => {
+  let ForbiddenBoundaryInnerClass: {
+    getDerivedStateFromError(error: Error): Partial<{ forbidden: boolean }>;
+  } | null = null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/error-boundary.js");
+    ForbiddenBoundaryInnerClass = Reflect.get(mod, "ForbiddenBoundaryInner") ?? null;
+  });
+
+  it("catches NEXT_HTTP_ERROR_FALLBACK;403", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    expect(ForbiddenBoundaryInnerClass).not.toBeNull();
+    const state = ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e);
+    expect(state).toMatchObject({ forbidden: true });
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;404 (notFound domain)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    expect(ForbiddenBoundaryInnerClass).not.toBeNull();
+    expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;401 (unauthorized domain)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
+    expect(ForbiddenBoundaryInnerClass).not.toBeNull();
+    expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;4030 (defensive: exact match, startsWith would be wrong)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;4030" });
+    expect(ForbiddenBoundaryInnerClass).not.toBeNull();
+    expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws regular errors (no digest)", () => {
+    const e = new Error("oops");
+    expect(ForbiddenBoundaryInnerClass).not.toBeNull();
+    expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+});
+
+// Test the actual UnauthorizedBoundary.getDerivedStateFromError classification.
+// Catches NEXT_HTTP_ERROR_FALLBACK;401 and re-throws everything else.
+describe("UnauthorizedBoundary digest classification", () => {
+  let UnauthorizedBoundaryInnerClass: {
+    getDerivedStateFromError(error: Error): Partial<{ unauthorized: boolean }>;
+  } | null = null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/error-boundary.js");
+    UnauthorizedBoundaryInnerClass = Reflect.get(mod, "UnauthorizedBoundaryInner") ?? null;
+  });
+
+  it("catches NEXT_HTTP_ERROR_FALLBACK;401", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
+    expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
+    const state = UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e);
+    expect(state).toMatchObject({ unauthorized: true });
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;404 (notFound domain)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
+    expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;403 (forbidden domain)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
+    expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws NEXT_HTTP_ERROR_FALLBACK;4010 (defensive: exact match, startsWith would be wrong)", () => {
+    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;4010" });
+    expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
+    expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws regular errors (no digest)", () => {
+    const e = new Error("oops");
+    expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
+    expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 });

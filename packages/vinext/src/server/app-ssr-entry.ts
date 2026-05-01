@@ -167,7 +167,15 @@ export async function handleSsr(
   rscStream: ReadableStream<Uint8Array>,
   navContext: NavigationContext | null,
   fontData?: FontData,
-  options?: { scriptNonce?: string },
+  options?: {
+    scriptNonce?: string;
+    /** Pre-split side stream for embed+capture fusion. When provided,
+     *  rscStream is fed directly to createFromReadableStream (no internal tee).
+     *  The embed transform accumulates raw bytes. */
+    sideStream?: ReadableStream<Uint8Array>;
+    /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
+    capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+  },
 ): Promise<ReadableStream<Uint8Array>> {
   return runWithNavigationContext(async () => {
     await preloadClientReferences();
@@ -184,8 +192,23 @@ export async function handleSsr(
     };
 
     try {
-      const [ssrStream, embedStream] = rscStream.tee();
-      const rscEmbed = createRscEmbedTransform(embedStream, options?.scriptNonce);
+      // Fused tee path (#981): caller pre-split the stream. No internal tee needed.
+      // sideStream carries both the embed transform and raw byte accumulation.
+      // rscStream is used directly for createFromReadableStream (SSR).
+      let ssrStream: ReadableStream<Uint8Array>;
+      let rscEmbed;
+
+      if (options?.sideStream) {
+        ssrStream = rscStream;
+        rscEmbed = createRscEmbedTransform(options.sideStream, options?.scriptNonce);
+        if (options.capturedRscDataRef) {
+          options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
+        }
+      } else {
+        const [s1, s2] = rscStream.tee();
+        ssrStream = s1;
+        rscEmbed = createRscEmbedTransform(s2, options?.scriptNonce);
+      }
 
       let flightRoot: PromiseLike<AppWireElements> | null = null;
 

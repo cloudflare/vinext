@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildAppPageCacheTags,
   buildAppPageCachedResponse,
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -35,6 +36,18 @@ function buildCachedAppPageValue(
 }
 
 describe("app page cache helpers", () => {
+  it("builds implicit page cache tags with unique extra tags", () => {
+    expect(buildAppPageCacheTags("/blog/hello", ["custom", "_N_T_/blog/layout"])).toEqual([
+      "/blog/hello",
+      "_N_T_/blog/hello",
+      "_N_T_/layout",
+      "_N_T_/blog/layout",
+      "_N_T_/blog/hello/layout",
+      "_N_T_/blog/hello/page",
+      "custom",
+    ]);
+  });
+
   it("builds cached HTML and RSC responses", async () => {
     const rscData = new TextEncoder().encode("flight").buffer;
     const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData, 201);

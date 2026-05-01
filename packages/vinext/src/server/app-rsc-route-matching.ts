@@ -32,6 +32,10 @@ type AppRscInterceptLookupEntry = {
   params: readonly string[];
 };
 
+function createRouteParams(): AppRscRouteParams {
+  return Object.create(null);
+}
+
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
@@ -55,7 +59,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       for (const entry of interceptLookup) {
         const params = matchAppRscRoutePattern(urlParts, entry.targetPatternParts);
         if (params !== null) {
-          let sourceParams: AppRscRouteParams = Object.create(null);
+          let sourceParams = createRouteParams();
           if (sourcePathname !== null) {
             const sourceRoute = routes[entry.sourceRouteIndex];
             const sourceParts = sourcePathname.split("/").filter(Boolean);
@@ -103,7 +107,7 @@ export function matchAppRscRoutePattern(
   urlParts: string[],
   patternParts: string[],
 ): AppRscRouteParams | null {
-  const params: AppRscRouteParams = Object.create(null);
+  const params = createRouteParams();
   for (let i = 0; i < patternParts.length; i++) {
     const patternPart = patternParts[i];
     if (patternPart.startsWith(":") && patternPart.endsWith("+")) {
@@ -117,7 +121,10 @@ export function matchAppRscRoutePattern(
     if (patternPart.startsWith(":") && patternPart.endsWith("*")) {
       if (i !== patternParts.length - 1) return null;
       const paramName = patternPart.slice(1, -1);
-      params[paramName] = urlParts.slice(i);
+      const remaining = urlParts.slice(i);
+      if (remaining.length > 0) {
+        params[paramName] = remaining;
+      }
       return params;
     }
     if (patternPart.startsWith(":")) {
@@ -135,5 +142,5 @@ function mergeMatchedParams(
   sourceParams: AppRscRouteParams,
   targetParams: AppRscRouteParams,
 ): AppRscRouteParams {
-  return Object.assign(Object.create(null), sourceParams, targetParams);
+  return Object.assign(createRouteParams(), sourceParams, targetParams);
 }

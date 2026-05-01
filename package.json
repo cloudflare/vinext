@@ -27,7 +27,6 @@
     "@types/react-dom": "catalog:",
     "@typescript/native-preview": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
-    "image-size": "catalog:",
     "knip": "catalog:",
     "next": "catalog:",
     "playwright": "catalog:",

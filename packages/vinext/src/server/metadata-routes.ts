@@ -393,6 +393,14 @@ function getStaticMetadataRoute(appDirPath: string): string {
   return normalizedSegments.length > 0 ? `/${normalizedSegments.join("/")}` : "";
 }
 
+function hashMetadataRouteParentPath(parentPathname: string): string {
+  let hash = 5381;
+  for (let i = 0; i < parentPathname.length; i++) {
+    hash = ((hash << 5) + hash + parentPathname.charCodeAt(i)) & 0xffffffff;
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
 function getMetadataRouteSuffix(page: string): string {
   const lastSlash = page.lastIndexOf("/");
   const parentPathname = lastSlash > 0 ? page.slice(0, lastSlash) : "";
@@ -402,11 +410,7 @@ function getMetadataRouteSuffix(page: string): string {
     (seg) => isGroupSegment(seg) || isParallelRouteSegment(seg),
   );
   if (!hasInvisibleParent) return "";
-  let hash = 5381;
-  for (let i = 0; i < parentPathname.length; i++) {
-    hash = ((hash << 5) + hash + parentPathname.charCodeAt(i)) & 0xffffffff;
-  }
-  return (hash >>> 0).toString(36).slice(0, 6);
+  return hashMetadataRouteParentPath(parentPathname);
 }
 
 function computeMetadataRouteSuffix(
@@ -452,13 +456,122 @@ export type MetadataFileRoute = {
   type: string;
   /** Whether this is a dynamic (code-generated) route */
   isDynamic: boolean;
+  /** Imported dynamic module for code-generated metadata routes. */
+  module?: Record<string, unknown>;
   /** Absolute file path */
   filePath: string;
+  /** Route prefix where this metadata applies, preserving dynamic segment names. */
+  routePrefix: string;
+  /** Raw app tree segments where this metadata file is colocated. */
+  routeSegments?: string[];
+  /** Pattern parts for matching dynamic metadata routes at request time. */
+  patternParts?: string[];
   /** URL path this file is served at */
   servedUrl: string;
   /** Content type for the response */
   contentType: string;
+  /** Optional metadata used to inject file-based routes into <head>. */
+  headData?: MetadataRouteHeadData;
+  /** Optional content hash for cache-busting metadata links. */
+  contentHash?: string;
+  /** Sibling .alt.txt file for static social image metadata routes. */
+  altFilePath?: string;
 };
+
+export type MetadataRouteHeadData =
+  | {
+      kind: "favicon" | "icon" | "apple";
+      href: string;
+      type?: string;
+      sizes?: string;
+    }
+  | {
+      kind: "openGraph" | "twitter";
+      href: string;
+      type?: string;
+      width?: number;
+      height?: number;
+      alt?: string;
+    }
+  | {
+      kind: "manifest";
+      href: string;
+    };
+
+export function getMetadataRouteKind(
+  route: Pick<MetadataFileRoute, "type">,
+): MetadataRouteHeadData["kind"] | null {
+  if (route.type === "favicon") return "favicon";
+  if (route.type === "icon") return "icon";
+  if (route.type === "apple-icon") return "apple";
+  if (route.type === "opengraph-image") return "openGraph";
+  if (route.type === "twitter-image") return "twitter";
+  if (route.type === "manifest") return "manifest";
+  return null;
+}
+
+export function getMetadataImageRouteKind(
+  route: Pick<MetadataFileRoute, "type">,
+): Extract<MetadataRouteHeadData["kind"], "icon" | "apple" | "openGraph" | "twitter"> | null {
+  const kind = getMetadataRouteKind(route);
+  if (kind === "icon" || kind === "apple" || kind === "openGraph" || kind === "twitter") {
+    return kind;
+  }
+  return null;
+}
+
+const metadataImageIdPattern = /^[a-zA-Z0-9-_.]+$/;
+
+export function isValidMetadataImageId(id: string): boolean {
+  return metadataImageIdPattern.test(id);
+}
+
+export function matchMetadataRoutePattern(
+  urlParts: string[],
+  patternParts: string[],
+): Record<string, string | string[]> | null {
+  const params: Record<string, string | string[]> = Object.create(null);
+
+  function matchFrom(urlIndex: number, patternIndex: number): boolean {
+    if (patternIndex === patternParts.length) {
+      return urlIndex === urlParts.length;
+    }
+
+    const patternPart = patternParts[patternIndex];
+    if (patternPart.startsWith(":") && (patternPart.endsWith("+") || patternPart.endsWith("*"))) {
+      const paramName = patternPart.slice(1, -1);
+      const minLength = patternPart.endsWith("+") ? 1 : 0;
+      for (let endIndex = urlIndex + minLength; endIndex <= urlParts.length; endIndex++) {
+        params[paramName] = urlParts.slice(urlIndex, endIndex);
+        if (matchFrom(endIndex, patternIndex + 1)) {
+          return true;
+        }
+      }
+      delete params[paramName];
+      return false;
+    }
+
+    if (patternPart.startsWith(":")) {
+      if (urlIndex >= urlParts.length) {
+        return false;
+      }
+      const paramName = patternPart.slice(1);
+      params[paramName] = urlParts[urlIndex];
+      if (matchFrom(urlIndex + 1, patternIndex + 1)) {
+        return true;
+      }
+      delete params[paramName];
+      return false;
+    }
+
+    if (urlIndex >= urlParts.length || urlParts[urlIndex] !== patternPart) {
+      return false;
+    }
+    return matchFrom(urlIndex + 1, patternIndex + 1);
+  }
+
+  return matchFrom(0, 0) ? params : null;
+}
 
 function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
   if (metaType === "sitemap") {
@@ -475,18 +588,71 @@ function metadataRouteSuffix(parentSegments: string[], metaType: string): string
   );
   if (!hasInvisibleParent) return "";
 
-  const parentPath = `/${parentSegments.join("/")}`;
-  let hash = 5381;
-  for (let i = 0; i < parentPath.length; i++) {
-    hash = ((hash << 5) + hash + parentPath.charCodeAt(i)) & 0xffffffff;
-  }
-  return (hash >>> 0).toString(36).slice(0, 6);
+  return hashMetadataRouteParentPath(`/${parentSegments.join("/")}`);
 }
 
 function withMetadataSuffix(urlPath: string, suffix: string): string {
   if (!suffix) return urlPath;
   const parsed = path.posix.parse(urlPath);
   return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+}
+
+function getMetadataServedUrl(
+  metaType: string,
+  config: { urlPath: string },
+  ext: string,
+  isDynamic: boolean,
+  suffix: string,
+  routeBaseName: string,
+): string {
+  if (
+    isDynamic &&
+    (metaType === "icon" ||
+      metaType === "apple-icon" ||
+      metaType === "opengraph-image" ||
+      metaType === "twitter-image")
+  ) {
+    return withMetadataSuffix(`/${routeBaseName}`, suffix);
+  }
+
+  if (isDynamic) {
+    return withMetadataSuffix(config.urlPath, suffix);
+  }
+
+  if (metaType === "manifest") {
+    return withMetadataSuffix(`/${routeBaseName}${ext}`, suffix);
+  }
+
+  if (
+    metaType === "icon" ||
+    metaType === "apple-icon" ||
+    metaType === "opengraph-image" ||
+    metaType === "twitter-image"
+  ) {
+    return withMetadataSuffix(`/${routeBaseName}${ext}`, suffix);
+  }
+
+  return withMetadataSuffix(config.urlPath, suffix);
+}
+
+function matchMetadataFileBaseName(metaType: string, baseName: string): string | null {
+  if (baseName === metaType) {
+    return baseName;
+  }
+
+  if (
+    metaType === "icon" ||
+    metaType === "apple-icon" ||
+    metaType === "opengraph-image" ||
+    metaType === "twitter-image"
+  ) {
+    const suffix = baseName.slice(metaType.length);
+    if (/^\d$/.test(suffix)) {
+      return baseName;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -519,8 +685,8 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
       const ext = fileName.slice(baseName.length);
 
       for (const [metaType, config] of Object.entries(METADATA_FILE_MAP)) {
-        // Check if the base name matches
-        if (baseName !== metaType) continue;
+        const routeBaseName = matchMetadataFileBaseName(metaType, baseName);
+        if (!routeBaseName) continue;
 
         // Check nestability — non-nestable types only at root
         if (!config.nestable && urlPrefix !== "") continue;
@@ -530,33 +696,40 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const isDynamic = config.dynamicExtensions.includes(ext);
 
         if (!isStatic && !isDynamic) continue;
-
-        // For static metadata files, normalize dynamic parent segments to "-"
-        // and strip route groups / parallel routes from the URL. The leaf
-        // URL path comes from METADATA_FILE_MAP (without file extension for
-        // icon, apple-icon, etc.). Dynamic files keep the existing urlPrefix
-        // behavior because the runtime uses patternParts for matching.
         const appDirPath = parentSegments.length > 0 ? `/${parentSegments.join("/")}` : "";
+        const suffix = metadataRouteSuffix(parentSegments, metaType);
+        const urlPath = getMetadataServedUrl(
+          metaType,
+          config,
+          ext,
+          isDynamic,
+          suffix,
+          routeBaseName,
+        );
         const servedUrl = isStatic
-          ? (() => {
-              const { route, suffix } = computeMetadataRouteSuffix(appDirPath, metaType);
-              const urlPath = withMetadataSuffix(config.urlPath, suffix);
-              return route === "" ? urlPath : `${route}${urlPath}`;
-            })()
-          : (() => {
-              const suffix = metadataRouteSuffix(parentSegments, metaType);
-              const urlPath = withMetadataSuffix(config.urlPath, suffix);
-              return urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`;
-            })();
+          ? fillStaticMetadataSegment(appDirPath, `${routeBaseName}${ext}`)
+          : urlPrefix === ""
+            ? urlPath
+            : `${urlPrefix}${urlPath}`;
+        const altFilePath =
+          isStatic && (metaType === "opengraph-image" || metaType === "twitter-image")
+            ? resolveStaticMetadataAltFilePath(dir, baseName)
+            : undefined;
 
         routes.push({
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
+          routePrefix: urlPrefix,
+          routeSegments: parentSegments,
           servedUrl,
-          contentType: isStatic
-            ? getStaticContentType(ext, config.contentType)
-            : config.contentType,
+          contentType:
+            isStatic && metaType === "manifest"
+              ? config.contentType
+              : isStatic
+                ? getStaticContentType(ext, config.contentType)
+                : config.contentType,
+          altFilePath,
         });
       }
     }
@@ -578,6 +751,11 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     // If both are static or both dynamic, keep the first one found
   }
   return Array.from(byUrl.values());
+}
+
+function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {
+  const altPath = path.join(dir, `${baseName}.alt.txt`);
+  return fs.existsSync(altPath) ? altPath : undefined;
 }
 
 function getStaticContentType(ext: string, fallback: string): string {

@@ -31,7 +31,28 @@ function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
   const renderToReadableStream = vi.fn(() => createStream(["flight-data"]));
   const loadSsrHandler = vi.fn(async () => ({
-    async handleSsr() {
+    async handleSsr(
+      _rscStream: ReadableStream<Uint8Array>,
+      _navContext: unknown,
+      _fontData: unknown,
+      options?: {
+        scriptNonce?: string;
+        sideStream?: ReadableStream<Uint8Array>;
+        capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+      },
+    ) {
+      // Fill capturedRscDataRef so the ISR cache write path can verify paired
+      // HTML + RSC writes. The embed transform accumulates raw bytes; simulate
+      // that by providing a resolved promise with test fixture data.
+      if (options?.capturedRscDataRef) {
+        options.capturedRscDataRef.value = Promise.resolve(
+          new TextEncoder().encode("flight-data").buffer,
+        );
+        // Consume the sideStream so the stream is not left hanging
+        if (options.sideStream) {
+          void options.sideStream.getReader().cancel();
+        }
+      }
       return createStream(["<html>page</html>"]);
     },
   }));

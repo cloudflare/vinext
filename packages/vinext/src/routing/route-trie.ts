@@ -133,6 +133,10 @@ export function trieMatch<R>(
   return match(root, urlParts, 0);
 }
 
+function createParams(): Record<string, string | string[]> {
+  return Object.create(null);
+}
+
 function match<R>(
   node: TrieNode<R>,
   urlParts: string[],
@@ -142,14 +146,15 @@ function match<R>(
   if (index === urlParts.length) {
     // Exact match at this node
     if (node.route !== null) {
-      return { route: node.route, params: Object.create(null) };
+      return { route: node.route, params: createParams() };
     }
 
     // Optional catch-all with 0 segments
     if (node.optionalCatchAllChild !== null) {
-      const params: Record<string, string | string[]> = Object.create(null);
-      params[node.optionalCatchAllChild.paramName] = [];
-      return { route: node.optionalCatchAllChild.route, params };
+      return {
+        route: node.optionalCatchAllChild.route,
+        params: createParams(),
+      };
     }
 
     return null;
@@ -178,7 +183,7 @@ function match<R>(
   // 3. Try catch-all (1+ remaining segments)
   if (node.catchAllChild !== null) {
     const remaining = urlParts.slice(index);
-    const params: Record<string, string | string[]> = Object.create(null);
+    const params = createParams();
     params[node.catchAllChild.paramName] = remaining;
     return { route: node.catchAllChild.route, params };
   }
@@ -186,7 +191,7 @@ function match<R>(
   // 4. Try optional catch-all (0+ remaining segments)
   if (node.optionalCatchAllChild !== null) {
     const remaining = urlParts.slice(index);
-    const params: Record<string, string | string[]> = Object.create(null);
+    const params = createParams();
     params[node.optionalCatchAllChild.paramName] = remaining;
     return { route: node.optionalCatchAllChild.route, params };
   }
