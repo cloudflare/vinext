@@ -123,8 +123,11 @@ function revalidateCtx(
 ): Record<string, unknown> {
   if (revalidateSeconds === undefined) return {};
   return expireSeconds === undefined
-    ? { cacheControl: { revalidate: revalidateSeconds } }
-    : { cacheControl: { revalidate: revalidateSeconds, expire: expireSeconds } };
+    ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
+    : {
+        cacheControl: { revalidate: revalidateSeconds, expire: expireSeconds },
+        revalidate: revalidateSeconds,
+      };
 }
 
 /**

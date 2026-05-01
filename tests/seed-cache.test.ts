@@ -13,6 +13,9 @@ import {
   MemoryCacheHandler,
   setCacheHandler,
   getCacheHandler,
+  type CacheHandler,
+  type CacheHandlerValue,
+  type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
 import { isrCacheKey, getRevalidateDuration } from "../packages/vinext/src/server/isr-cache.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
@@ -211,6 +214,45 @@ describe("seedMemoryCacheFromPrerender", () => {
     const baseKey = isrCacheKey("app", "/isr", buildId);
     expect(getRevalidateDuration(baseKey + ":html")).toBe(45);
     expect(getRevalidateDuration(baseKey + ":rsc")).toBe(45);
+  });
+
+  it("preserves legacy revalidate context while writing cache-control metadata", async () => {
+    const contexts: Record<string, unknown>[] = [];
+    const handler: CacheHandler = {
+      async get(): Promise<CacheHandlerValue | null> {
+        return null;
+      },
+      async set(
+        _key: string,
+        _data: IncrementalCacheValue | null,
+        ctx?: Record<string, unknown>,
+      ): Promise<void> {
+        contexts.push(ctx ?? {});
+      },
+      async revalidateTag(): Promise<void> {
+        // not used by this test
+      },
+    };
+    setCacheHandler(handler);
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "seed-context-test",
+        routes: [{ route: "/isr", status: "rendered", revalidate: 60, expire: 300, router: "app" }],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    expect(contexts).toEqual([
+      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60 },
+      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60 },
+    ]);
   });
 
   it("does not set revalidate duration for static routes", async () => {
