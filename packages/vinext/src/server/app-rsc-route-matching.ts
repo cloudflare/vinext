@@ -1,9 +1,5 @@
 import { buildRouteTrie, trieMatch } from "../routing/route-trie.js";
-import {
-  matchRoutePattern,
-  routePatternParts,
-  type RoutePatternParams,
-} from "../routing/route-pattern.js";
+import { matchRoutePattern, type RoutePatternParams } from "../routing/route-pattern.js";
 
 type AppRscRouteParams = RoutePatternParams;
 
@@ -97,7 +93,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceRouteIndex: routeIndex,
           slotKey,
           targetPattern: intercept.targetPattern,
-          targetPatternParts: routePatternParts(intercept.targetPattern),
+          targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
           interceptLayouts: intercept.interceptLayouts,
           page: intercept.page,
           params: intercept.params,

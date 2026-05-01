@@ -99,6 +99,30 @@ describe("App RSC route matching", () => {
       matchedParams: { id: "target-id" },
     });
   });
+
+  it("preserves bracket-shaped literal segments in intercept target patterns", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/[literal]",
+              interceptLayouts: ["modal-layout"],
+              page: "literal-photo-page",
+              params: [],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/[literal]", "/feed")).toMatchObject({
+      targetPattern: "/photos/[literal]",
+      page: "literal-photo-page",
+      matchedParams: {},
+    });
+    expect(matcher.findIntercept("/photos/anything", "/feed")).toBeNull();
+  });
 });
 
 function route(
