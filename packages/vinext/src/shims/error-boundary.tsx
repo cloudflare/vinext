@@ -6,8 +6,12 @@ import React from "react";
 import { usePathname } from "./navigation.js";
 
 export type ErrorBoundaryProps = {
-  fallback: React.ComponentType<{ error: Error; reset: () => void }>;
+  fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
   children: React.ReactNode;
+};
+
+type CapturedError = {
+  thrownValue: unknown;
 };
 
 type ErrorBoundaryInnerProps = {
@@ -15,7 +19,7 @@ type ErrorBoundaryInnerProps = {
 } & ErrorBoundaryProps;
 
 export type ErrorBoundaryState = {
-  error: Error | null;
+  error: CapturedError | null;
   previousPathname: string;
 };
 
@@ -43,7 +47,7 @@ export class ErrorBoundaryInner extends React.Component<
     return { error: state.error, previousPathname: props.pathname };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+  static getDerivedStateFromError(error: unknown): Partial<ErrorBoundaryState> {
     // notFound(), forbidden(), unauthorized(), and redirect() must propagate
     // past error boundaries. Re-throw them so they bubble up to the
     // framework's HTTP access fallback / redirect handler.
@@ -57,7 +61,7 @@ export class ErrorBoundaryInner extends React.Component<
         throw error;
       }
     }
-    return { error };
+    return { error: { thrownValue: error } };
   }
 
   reset = () => {
@@ -67,7 +71,7 @@ export class ErrorBoundaryInner extends React.Component<
   render() {
     if (this.state.error) {
       const FallbackComponent = this.props.fallback;
-      return <FallbackComponent error={this.state.error} reset={this.reset} />;
+      return <FallbackComponent error={this.state.error.thrownValue} reset={this.reset} />;
     }
     return this.props.children;
   }
@@ -129,7 +133,7 @@ class NotFoundBoundaryInner extends React.Component<
     return { notFound: state.notFound, previousPathname: props.pathname };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<NotFoundBoundaryState> {
+  static getDerivedStateFromError(error: unknown): Partial<NotFoundBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
       if (digest === "NEXT_NOT_FOUND" || digest === "NEXT_HTTP_ERROR_FALLBACK;404") {
@@ -198,7 +202,7 @@ export class ForbiddenBoundaryInner extends React.Component<
     return { forbidden: state.forbidden, previousPathname: props.pathname };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<ForbiddenBoundaryState> {
+  static getDerivedStateFromError(error: unknown): Partial<ForbiddenBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
       if (digest === "NEXT_HTTP_ERROR_FALLBACK;403") {
@@ -262,7 +266,7 @@ export class UnauthorizedBoundaryInner extends React.Component<
     return { unauthorized: state.unauthorized, previousPathname: props.pathname };
   }
 
-  static getDerivedStateFromError(error: Error): Partial<UnauthorizedBoundaryState> {
+  static getDerivedStateFromError(error: unknown): Partial<UnauthorizedBoundaryState> {
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String(error.digest);
       if (digest === "NEXT_HTTP_ERROR_FALLBACK;401") {

@@ -28,13 +28,13 @@ import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
-  error?: Error;
+  error?: unknown;
   params?: unknown;
   reset?: () => void;
 } & Record<string, unknown>;
 
 type AppPageComponent = ComponentType<AppPageComponentProps>;
-type AppPageErrorComponent = ComponentType<{ error: Error; reset: () => void }>;
+type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }>;
 
 export type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;

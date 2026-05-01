@@ -28,22 +28,22 @@ vi.mock("next/navigation", () => ({
 // query-aware. These tests lock our shim to that behavior.
 
 type ErrorBoundaryInnerConstructor = {
-  getDerivedStateFromError(error: Error): Partial<{
-    error: Error | null;
+  getDerivedStateFromError(error: unknown): Partial<{
+    error: { thrownValue: unknown } | null;
     previousPathname: string;
   }>;
   getDerivedStateFromProps(
     props: {
       children: React.ReactNode;
-      fallback: React.ComponentType<{ error: Error; reset: () => void }>;
+      fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
       pathname: string;
     },
     state: {
-      error: Error | null;
+      error: { thrownValue: unknown } | null;
       previousPathname: string;
     },
   ): {
-    error: Error | null;
+    error: { thrownValue: unknown } | null;
     previousPathname: string;
   } | null;
 };
@@ -116,7 +116,7 @@ describe("ErrorBoundary digest patterns", () => {
 
 // Test the actual ErrorBoundary.getDerivedStateFromError classification.
 // The real method THROWS for digest errors (re-throwing them past the boundary)
-// and returns { error } for regular errors (catching them).
+// and wraps regular thrown values so falsy values remain distinguishable from no error.
 describe("ErrorBoundary digest classification (actual class)", () => {
   let ErrorBoundaryInnerClass: ErrorBoundaryInnerConstructor | null = null;
   let ErrorBoundaryInner: ErrorBoundaryInnerConstructor | null = null;
@@ -164,21 +164,33 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     const e = new Error("oops");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
-    expect(state).toMatchObject({ error: e });
+    expect(state).toEqual({ error: { thrownValue: e } });
   });
 
   it("catches errors with unknown digest", () => {
     const e = Object.assign(new Error(), { digest: "CUSTOM_ERROR" });
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
-    expect(state).toMatchObject({ error: e });
+    expect(state).toEqual({ error: { thrownValue: e } });
   });
 
   it("catches errors with empty digest", () => {
     const e = Object.assign(new Error(), { digest: "" });
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
-    expect(state).toMatchObject({ error: e });
+    expect(state).toEqual({ error: { thrownValue: e } });
+  });
+
+  it("catches falsy thrown values instead of treating them as empty state", () => {
+    // Ported from Next.js: test/e2e/app-dir/errors/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/errors/index.test.ts
+    expect(ErrorBoundaryInnerClass).not.toBeNull();
+
+    const falsyThrownValues = [undefined, null, 0, "", false];
+    for (const thrownValue of falsyThrownValues) {
+      const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(thrownValue);
+      expect(state).toEqual({ error: { thrownValue } });
+    }
   });
 
   it("resets caught errors when the pathname changes", () => {
@@ -198,7 +210,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
         pathname: "/next",
       },
       {
-        error: new Error("stuck"),
+        error: { thrownValue: new Error("stuck") },
         previousPathname: "/previous",
       },
     );
@@ -239,7 +251,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     );
 
     expect(stateAfterProps).toEqual({
-      error,
+      error: { thrownValue: error },
       previousPathname: "/error-test",
     });
   });
@@ -249,7 +261,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
 // Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
 describe("ForbiddenBoundary digest classification", () => {
   let ForbiddenBoundaryInnerClass: {
-    getDerivedStateFromError(error: Error): Partial<{ forbidden: boolean }>;
+    getDerivedStateFromError(error: unknown): Partial<{ forbidden: boolean }>;
   } | null = null;
 
   beforeAll(async () => {
@@ -293,7 +305,7 @@ describe("ForbiddenBoundary digest classification", () => {
 // Catches NEXT_HTTP_ERROR_FALLBACK;401 and re-throws everything else.
 describe("UnauthorizedBoundary digest classification", () => {
   let UnauthorizedBoundaryInnerClass: {
-    getDerivedStateFromError(error: Error): Partial<{ unauthorized: boolean }>;
+    getDerivedStateFromError(error: unknown): Partial<{ unauthorized: boolean }>;
   } | null = null;
 
   beforeAll(async () => {

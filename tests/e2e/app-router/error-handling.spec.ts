@@ -44,6 +44,30 @@ test.describe("Error Boundaries", () => {
     await expect(resetButton).toHaveText("Try again");
   });
 
+  test("error.tsx catches falsy values thrown by client components", async ({ page }) => {
+    // Ported from Next.js: test/e2e/app-dir/errors/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/errors/index.test.ts
+    const cases = [
+      ["undefined", "undefined"],
+      ["null", "null"],
+      ["zero", "0"],
+      ["empty-string", ""],
+      ["false", "false"],
+    ] satisfies readonly (readonly [string, string])[];
+
+    for (const [name, expectedText] of cases) {
+      await page.goto(`${BASE}/falsy-error-boundary-test`);
+      await expect(page.locator('[data-testid="falsy-error-content"]')).toBeVisible();
+      const trigger = page.locator(`[data-testid="throw-${name}"]`);
+      await expect(trigger).toBeEnabled();
+      await trigger.click();
+      await expect(page.locator('[data-testid="falsy-error-boundary"]')).toBeVisible({
+        timeout: 5000,
+      });
+      await expect(page.locator('[data-testid="falsy-error-message"]')).toHaveText(expectedText);
+    }
+  });
+
   test("server component error renders error.tsx boundary with 200", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
     // Next.js returns 200 when error.tsx catches an error (it's "handled")
