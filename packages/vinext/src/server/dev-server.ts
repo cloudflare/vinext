@@ -21,7 +21,7 @@ import { ensureFetchPatch, runWithFetchCache } from "vinext/shims/fetch-cache";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
-import "../shims/router-state.js";
+import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";

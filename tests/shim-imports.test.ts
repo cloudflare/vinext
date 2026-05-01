@@ -32,10 +32,11 @@ function collectRelativeShimImports(): { file: string; line: number; text: strin
         const lines = content.split("\n");
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          // Match relative imports of shims: from "../shims/X" or from "../../shims/X"
+          // Match relative imports of shims: from "../shims/X", import "../shims/X", or from "../../shims/X"
           if (
             /from\s+["'](\.\.\/)+shims\/[^"']+["']/.test(line) ||
-            /require\s*\(\s*["'](\.\.\/)+shims\/[^"']+["']\s*\)/.test(line)
+            /require\s*\(\s*["'](\.\.\/)+shims\/[^"']+["']\s*\)/.test(line) ||
+            /^\s*import\s+["'](\.\.\/)+shims\/[^"']+["']/.test(line)
           ) {
             violations.push({
               file: path.relative(SRC_DIR, fullPath),
