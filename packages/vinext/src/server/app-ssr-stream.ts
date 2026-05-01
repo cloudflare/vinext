@@ -52,6 +52,7 @@ export function createRscEmbedTransform(
       if (process.env.NODE_ENV !== "production") {
         console.warn("[vinext] RSC embed stream read error:", error);
       }
+      throw error;
     } finally {
       reading = false;
     }
