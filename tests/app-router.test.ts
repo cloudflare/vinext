@@ -3475,7 +3475,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     },
   ] as any[];
 
-  it("generates redirect handling code when redirects are provided", () => {
+  it("embeds redirect config for createAppRscHandler when redirects are provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [
         { source: "/old-about", destination: "/about", permanent: true },
@@ -3483,13 +3483,14 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       ],
     });
     expect(code).toContain("__configRedirects");
-    expect(code).toContain("matchRedirect");
+    expect(code).toContain("configRedirects: __configRedirects");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
     expect(code).toContain("/old-about");
     expect(code).toContain("/old-blog/:slug");
     expect(code).toContain("permanent");
   });
 
-  it("generates rewrite handling code when rewrites are provided", () => {
+  it("embeds rewrite config for createAppRscHandler when rewrites are provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/before-rewrite", destination: "/about" }],
@@ -3498,7 +3499,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       },
     });
     expect(code).toContain("__configRewrites");
-    expect(code).toContain("matchRewrite");
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
     expect(code).toContain("beforeFiles");
     expect(code).toContain("afterFiles");
     expect(code).toContain("fallback");
@@ -3507,12 +3509,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("/fallback-rewrite");
   });
 
-  it("generates custom header handling code when headers are provided", () => {
+  it("embeds config headers for createAppRscHandler when headers are provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
-    expect(code).toContain("applyConfigHeadersToResponse");
+    expect(code).toContain("configHeaders: __configHeaders");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
   });
@@ -3537,13 +3540,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/docs/:path*", destination: "/wiki/:path*", permanent: false }],
     });
-    // matchConfigPattern is now used internally by matchRedirect/matchRewrite via config-matchers import
-    expect(code).toContain("matchRedirect");
+    expect(code).toContain("configRedirects: __configRedirects");
     // Should handle catch-all patterns
     expect(code).toContain(":path*");
   });
 
-  it("threads proxy.ts identity into shared middleware runtime", () => {
+  it("threads proxy.ts identity into createAppRscHandler", () => {
     const code = generateRscEntry(
       "/tmp/test/app",
       minimalRoutes,
@@ -3553,13 +3555,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       "",
       false,
     );
-    expect(code).toContain("import { applyAppMiddleware as __applyAppMiddleware }");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
-    expect(code).toContain("isProxy: true");
-    expect(code).toContain("module: middlewareModule");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("middlewareIsProxy: true");
+    expect(code).toContain("middlewareModule: middlewareModule");
   });
 
-  it("seeds the Workers execution context for shared middleware runtime", () => {
+  it("delegates middleware execution details to createAppRscHandler", () => {
     const code = generateRscEntry(
       "/tmp/test/app",
       minimalRoutes,
@@ -3569,27 +3570,22 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       "",
       false,
     );
-    // Middleware waitUntil draining lives in the shared middleware runtime.
-    // The generated entry is responsible for seeding the per-request Workers
-    // execution context that shared runtime reads from.
-    expect(code).toContain("_getRequestExecutionContext()");
-    expect(code).toContain("executionContext: ctx ?? _getRequestExecutionContext() ?? null");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("middlewareIsProxy: false");
+    expect(code).toContain("middlewareModule: middlewareModule");
+    expect(code).not.toContain("const __mwResult = await __applyAppMiddleware({");
   });
 
-  it("applies redirects before middleware in the handler", () => {
+  it("delegates redirect ordering to createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
-    // The redirect check should appear before middleware and route matching
-    const redirectIdx = code.indexOf("matchRedirect(__redirPathname");
-    const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
-    expect(redirectIdx).toBeGreaterThan(-1);
-    expect(routeMatchIdx).toBeGreaterThan(-1);
-    expect(redirectIdx).toBeLessThan(routeMatchIdx);
+    expect(code).toContain("configRedirects: __configRedirects");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).not.toContain("matchRedirect(__redirPathname");
   });
 
-  it("applies beforeFiles rewrites before route matching", () => {
+  it("delegates beforeFiles rewrite ordering to createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/old", destination: "/new" }],
@@ -3597,19 +3593,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    const beforeIdx = code.indexOf("__configRewrites.beforeFiles");
-    const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
-    expect(beforeIdx).toBeGreaterThan(-1);
-    expect(routeMatchIdx).toBeGreaterThan(-1);
-    expect(beforeIdx).toBeLessThan(routeMatchIdx);
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).toContain('"beforeFiles":[{"source":"/old","destination":"/new"}]');
+    expect(code).not.toContain("matchRewrite(cleanPathname, __configRewrites.beforeFiles");
   });
 
-  it("strips .rsc suffix before matching beforeFiles rewrite rules", () => {
-    // RSC (soft-nav) requests arrive as /some/path.rsc but rewrite patterns
-    // are defined without the extension. The generated code must strip .rsc
-    // before calling matchRewrite for beforeFiles.
-    // beforeFiles now runs after middleware (using __postMwReqCtx), and
-    // cleanPathname has already had .rsc stripped at that point.
+  it("keeps .rsc rewrite normalization inside createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/old", destination: "/new" }],
@@ -3617,19 +3606,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    // The generated code uses cleanPathname (already .rsc-stripped) when
-    // calling matchRewrite for beforeFiles.
-    const beforeFilesCallIdx = code.indexOf(
-      "matchRewrite(cleanPathname, __configRewrites.beforeFiles",
-    );
-    expect(beforeFilesCallIdx).toBeGreaterThan(-1);
-    // The cleanPathname assignment (stripping .rsc) must appear before the beforeFiles call
-    const cleanPathnameIdx = code.indexOf("cleanPathname = pathname.replace");
-    expect(cleanPathnameIdx).toBeGreaterThan(-1);
-    expect(cleanPathnameIdx).toBeLessThan(beforeFilesCallIdx);
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).not.toContain("cleanPathname = pathname.replace");
   });
 
-  it("applies afterFiles rewrites in the handler code", () => {
+  it("embeds afterFiles rewrites for createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [],
@@ -3637,16 +3619,11 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    expect(code).toContain("__configRewrites.afterFiles");
-    // afterFiles rewrite applies in the request handler, after beforeFiles
-    const afterIdx = code.indexOf("__configRewrites.afterFiles");
-    const beforeIdx = code.indexOf("__configRewrites.beforeFiles");
-    expect(afterIdx).toBeGreaterThan(-1);
-    expect(beforeIdx).toBeGreaterThan(-1);
-    expect(afterIdx).toBeGreaterThan(beforeIdx);
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).toContain('"afterFiles":[{"source":"/old","destination":"/new"}]');
   });
 
-  it("applies fallback rewrites when no route matches", () => {
+  it("embeds fallback rewrites for createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [],
@@ -3654,14 +3631,11 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [{ source: "/fallback", destination: "/about" }],
       },
     });
-    // Fallback rewrites should be inside a "!match" block
-    expect(code).toContain("__configRewrites.fallback");
-    const fallbackIdx = code.indexOf("__configRewrites.fallback");
-    const noMatchIdx = code.indexOf("if (!match");
-    expect(fallbackIdx).toBeGreaterThan(noMatchIdx);
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).toContain('"fallback":[{"source":"/fallback","destination":"/about"}]');
   });
 
-  it("generates external URL proxy helpers for external rewrites", () => {
+  it("serializes external rewrites while keeping proxy helpers out of codegen", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" }],
@@ -3669,11 +3643,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    // Should include the external URL detection and proxy functions
-    expect(code).toContain("isExternalUrl");
-    expect(code).toContain("proxyExternalRequest");
-    // beforeFiles rewrite should check for external URL
-    expect(code).toContain("isExternalUrl(__rewritten)");
+    expect(code).toContain("https://us.i.posthog.com/:path*");
+    expect(code).toContain("configRewrites: __configRewrites");
+    expect(code).not.toContain("proxyExternalRequest(request,");
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
@@ -3688,14 +3660,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       "",
       false,
     );
-    expect(code).toContain("import { applyAppMiddleware as __applyAppMiddleware }");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
-    expect(code).toContain("module: middlewareModule");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("middlewareModule: middlewareModule");
     expect(code).not.toContain('mwResponse.headers.get("x-middleware-rewrite")');
     expect(code).not.toContain("__proxyExternalMiddlewareRewrite(");
   });
 
-  it("generates external URL checks for afterFiles rewrites", () => {
+  it("serializes external afterFiles rewrites without inline URL checks", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [],
@@ -3703,10 +3674,11 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    expect(code).toContain("isExternalUrl(__afterRewritten)");
+    expect(code).toContain("https://api.example.com/:path*");
+    expect(code).not.toContain("isExternalUrl(__afterRewritten)");
   });
 
-  it("generates external URL checks for fallback rewrites", () => {
+  it("serializes external fallback rewrites without inline URL checks", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [],
@@ -3716,10 +3688,11 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         ],
       },
     });
-    expect(code).toContain("isExternalUrl(__fallbackRewritten)");
+    expect(code).toContain("https://fallback.example.com/:path*");
+    expect(code).not.toContain("isExternalUrl(__fallbackRewritten)");
   });
 
-  it("uses imported proxyExternalRequest which guards content-encoding stripping to Node runtime", () => {
+  it("keeps external proxy mechanics in createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/proxy/:path*", destination: "https://api.example.com/:path*" }],
@@ -3727,41 +3700,36 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    // proxyExternalRequest is now imported from config-matchers (which contains
-    // the isNodeRuntime guard internally), so verify the import is used.
-    expect(code).toContain("proxyExternalRequest(request,");
+    expect(code).toContain("https://api.example.com/:path*");
+    expect(code).not.toContain("proxyExternalRequest(request,");
   });
 
-  it("adds basePath prefix to redirect destinations", () => {
+  it("passes basePath alongside redirect config", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
-    // Generated code should prepend basePath to redirect destination
     expect(code).toContain("__basePath");
-    expect(code).toContain("!isExternalUrl(__redir.destination)");
-    expect(code).toContain("hasBasePath(__redir.destination, __basePath)");
+    expect(code).toContain("basePath: __basePath");
+    expect(code).toContain("configRedirects: __configRedirects");
   });
 
   it("generated RSC entry delegates server action requests to the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
     expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
-    expect(code).toContain("const serverActionResponse = await __handleServerActionRscRequest({");
+    expect(code).toContain("handleServerActionRequest({");
+    expect(code).toContain("return __handleServerActionRscRequest({");
     expect(code).toContain("allowedOrigins: __allowedOrigins");
     expect(code).toContain("loadServerAction");
     expect(code).toContain("decodeReply");
-
-    const actionStart = code.indexOf("const serverActionResponse");
-    const routingStart = code.indexOf("// ── Apply afterFiles rewrites", actionStart);
-    expect(actionStart).toBeGreaterThan(-1);
-    expect(routingStart).toBeGreaterThan(actionStart);
+    expect(code).not.toContain("const __actionRerenderTarget =");
   });
 
   it("generated RSC entry wires server action body readers into the shared helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig:", actionStart);
     const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("contentType: actionContentType");
+    expect(actionOptions).toContain("contentType,");
     expect(actionOptions).toContain("readBodyWithLimit: __readBodyWithLimit");
     expect(actionOptions).toContain("readFormDataWithLimit: __readFormDataWithLimit");
     expect(actionOptions).toContain("maxActionBodySize: __MAX_ACTION_BODY_SIZE");
@@ -3794,8 +3762,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 
   it("origin validation does not use x-forwarded-host", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig:", actionStart);
     const actionOptions = code.slice(actionStart, actionEnd);
 
     // CSRF behavior belongs to the shared action helper. The generated entry
@@ -3813,15 +3781,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Should include the dev origin validation function definition
     expect(code).toContain("__validateDevRequestOrigin");
     expect(code).toContain("__safeDevHosts");
-    // Should call dev origin validation inside _handleRequest
-    const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
-    const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx)",
-    );
-    expect(callSite).toBeGreaterThan(-1);
-    expect(handleRequestIdx).toBeGreaterThan(-1);
-    // The call should be inside the function body (after the function declaration)
-    expect(callSite).toBeGreaterThan(handleRequestIdx);
+    expect(code).toContain("validateDevRequestOrigin(request) {");
+    expect(code).toContain("return __validateDevRequestOrigin(request);");
   });
 
   it("embeds allowedDevOrigins in dev origin check code", () => {
@@ -4578,7 +4539,8 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("isrSet as __isrSet");
     expect(code).toContain("triggerBackgroundRegeneration as __triggerBackgroundRegeneration");
     expect(code).toContain("appIsrHtmlKey as __isrHtmlKey");
-    expect(code).toContain("normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).not.toContain("normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader");
     expect(code).not.toContain("async function __isrGet(");
     expect(code).not.toContain("function __isrCacheKey(");
     expect(code).not.toContain("const __pendingRegenerations = new Map()");
@@ -4586,23 +4548,22 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code delegates page dispatch and route ISR separately", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("buildPageCacheTags");
-    expect(code).toContain('buildPageCacheTags(cleanPathname, [], route.routeSegments, "route")');
     expect(code).toContain("dispatchAppPage as __dispatchAppPage");
     expect(code).toContain("return __dispatchAppPage({");
     expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
     expect(code).toContain("return __dispatchAppRouteHandler({");
     expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
     expect(code).toContain("isrSet: __isrSet");
+    expect(code).not.toContain("buildPageCacheTags(");
     expect(code).not.toContain("getCollectedFetchTags");
     expect(code).not.toContain("function __pageCacheTags(");
     expect(code).not.toContain('route.routeHandler ? "route" : "page"');
   });
 
-  it("generated handler exports async function handler(request, ctx)", () => {
+  it("generated handler exports the createAppRscHandler runtime factory", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The handler must accept a ctx param so ExecutionContext is threaded through
-    expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("export default __createAppRscHandler({");
   });
 
   it("generated code leaves cache handler access to the ISR cache module", () => {
@@ -4629,9 +4590,9 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", routes);
 
     expect(code).toContain("setRootParams as __setRootParams");
-    expect(code).toContain("pickRootParams as __pickRootParams");
     expect(code).toContain('rootParamNames: ["lang","locale"]');
-    expect(code).toContain("__setRootParams(__pickRootParams(params, route.rootParamNames));");
+    expect(code).toContain("const rootParamNamesMap = {");
+    expect(code).toContain("rootParamNamesMap,");
     expect(code).toContain("function __clearRequestContext() {");
     expect(code).toContain("__setRootParams(null);");
   });
@@ -4639,7 +4600,7 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated root params selection is delegated to the runtime shim", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
 
-    expect(code).toContain("pickRootParams as __pickRootParams");
+    expect(code).toContain("rootParamNamesMap,");
     expect(code).not.toContain("function __pickRootParams(params, rootParamNames)");
   });
 
@@ -4669,7 +4630,9 @@ describe("generateRscEntry ISR code generation", () => {
       "buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams)",
     );
     expect(code).toContain("renderErrorBoundaryPage(renderErr) {");
-    expect(code).toContain("renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {");
+    expect(code).toContain(
+      "renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {",
+    );
     expect(code).toContain("getFontLinks: _getSSRFontLinks");
     expect(code).toContain("getFontPreloads: _getSSRFontPreloads");
     expect(code).toContain("getFontStyles: _getSSRFontStyles");
@@ -4772,17 +4735,17 @@ describe("generateRscEntry ISR code generation", () => {
 
     expect(code).toContain("const rootParamNamesMap = {");
     expect(code).toContain('"/:locale/blog/:slug": ["locale"]');
-    expect(code).toContain("rootParamNamesByPattern: rootParamNamesMap");
-    expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("rootParamNamesMap,");
+    expect(code).toContain("staticParamsMap: generateStaticParamsMap,");
   });
 
   it("generated code delegates page boundary rendering to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");
     expect(code).toContain("renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback");
-    expect(code).toContain(
-      "const _scriptNonce = __getScriptNonceFromHeaderSources(request.headers, _mwCtx.headers);",
-    );
+    expect(code).toContain("scriptNonce,");
+    expect(code).toContain("middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX");
     expect(code).toContain("return __renderAppPageHttpAccessFallback({");
     expect(code).toContain("return __renderAppPageErrorBoundary({");
   });
@@ -4792,10 +4755,9 @@ describe("generateRscEntry ISR code generation", () => {
 
     expect(code).toContain("const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };");
     expect(code).toContain("middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX");
-    expect(code).toContain("middlewareContext: _mwCtx");
-    expect(code).toContain("__mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers)");
+    expect(code).toContain("middlewareContext,");
     expect(code).toContain("renderHTTPAccessFallbackPage(route, statusCode");
-    expect(code).toContain("return renderErrorBoundaryPage(route, renderErr");
+    expect(code).toContain("renderErrorBoundaryPage(renderErr) {");
     expect(code).not.toContain("renderSpecialError(__buildSpecialError)");
   });
 
@@ -4830,7 +4792,7 @@ describe("generateRscEntry ISR code generation", () => {
     // Intercept response construction now lives in app-page-dispatch; generated
     // code passes the middleware response state into that helper.
     expect(code).toContain("return __dispatchAppPage({");
-    expect(code).toContain("middlewareContext: _mwCtx");
+    expect(code).toContain("middlewareContext,");
     expect(code).not.toContain("renderInterceptResponse(sourceRoute, interceptElement)");
   });
 
@@ -4838,26 +4800,28 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // The shared action helper owns response construction; generated code must
     // pass the middleware response state into that helper.
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig:", actionStart);
     const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
-    expect(actionOptions).toContain("middlewareStatus: _mwCtx.status");
+    expect(actionOptions).toContain("middlewareHeaders: middlewareContext.headers");
+    expect(actionOptions).toContain("middlewareStatus: middlewareContext.status");
   });
 
-  it("generated code accepts both vinext and Next.js action header names", () => {
+  it("generated code leaves action header parsing to the shared runtime", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain(
+    expect(code).toContain("handleServerActionRequest({");
+    expect(code).toContain("return __handleServerActionRscRequest({");
+    expect(code).not.toContain(
       'request.headers.get("x-rsc-action") ?? request.headers.get("next-action")',
     );
   });
 
   it("generated code merges middleware headers into server action redirect responses", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig:", actionStart);
     const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
+    expect(actionOptions).toContain("middlewareHeaders: middlewareContext.headers");
   });
 
   // Ported from Next.js: packages/next/src/client/components/redirect.ts

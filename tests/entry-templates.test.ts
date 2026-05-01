@@ -521,8 +521,8 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry wires buildPageElements into the server-action helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig:", actionStart);
     const helperOptions = code.slice(actionStart, actionEnd);
 
     expect(helperOptions).toContain("buildPageElement({");
@@ -533,7 +533,8 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
-    expect(code).toContain("const serverActionResponse = await __handleServerActionRscRequest({");
+    expect(code).toContain("handleServerActionRequest({");
+    expect(code).toContain("return __handleServerActionRscRequest({");
     expect(code).not.toContain("const __actionRerenderTarget =");
   });
 
@@ -549,6 +550,17 @@ describe("App Router entry templates", () => {
     );
     expect(code).not.toContain("const __pageBuildResult = await __buildAppPageElement");
     expect(code).not.toContain("return __renderAppPageLifecycle({");
+  });
+
+  it("generateRscEntry delegates top-level request handling to createAppRscHandler", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const stableCode = stabilize(code);
+
+    expect(stableCode).toContain('from "<ROOT>/packages/vinext/src/server/app-rsc-handler.js";');
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
+    expect(code).toContain("export default __createAppRscHandler({");
+    expect(code).not.toContain("export default async function handler(");
+    expect(code).not.toContain("async function _handleRequest(");
   });
 
   it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
@@ -570,20 +582,15 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("const _hlFixRe =");
   });
 
-  it("generateRscEntry delegates internal prerender endpoints", () => {
+  it("generateRscEntry passes prerender dependencies into createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
       hasPagesDir: true,
     });
-    const stableCode = stabilize(code);
 
-    expect(stableCode).toContain(
-      'from "<ROOT>/packages/vinext/src/server/app-prerender-endpoints.js";',
-    );
-    expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
-    expect(code).toContain(
-      "const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(",
-    );
+    expect(code).toContain("createAppRscHandler as __createAppRscHandler");
     expect(code).toContain("loadPagesRoutes: __loadPrerenderPagesRoutes,");
+    expect(code).toContain("staticParamsMap: generateStaticParamsMap,");
+    expect(code).toContain("rootParamNamesMap,");
     expect(code).not.toContain('if (pathname === "/__vinext/prerender/static-params")');
     expect(code).not.toContain('if (pathname === "/__vinext/prerender/pages-static-paths")');
   });
