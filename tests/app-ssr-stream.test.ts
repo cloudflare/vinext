@@ -100,6 +100,17 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain("__VINEXT_RSC_CHUNKS__");
   });
 
+  it("rejects getRawBuffer when the stream errors (#1002)", async () => {
+    const errorStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        controller.error(new Error("stream broke"));
+      },
+    });
+    const transform = createRscEmbedTransform(errorStream);
+    await expect(transform.getRawBuffer()).rejects.toThrow("stream broke");
+  });
+
   it("preserves raw bytes before fixFlightHints transform", async () => {
     // Flight hints use as="stylesheet" which get fixed to as="style" in the
     // embed transform. Raw bytes must be the unmodified originals.
