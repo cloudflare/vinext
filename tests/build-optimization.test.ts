@@ -105,6 +105,15 @@ describe("clientManualChunks", () => {
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
 
 describe("optimizeDeps.exclude for vinext", () => {
+  const rscClientShimExcludes = [
+    "vinext/shims/error-boundary",
+    "vinext/shims/form",
+    "vinext/shims/layout-segment-context",
+    "vinext/shims/link",
+    "vinext/shims/script",
+    "vinext/shims/slot",
+  ];
+
   it("excludes vinext at top level for Pages Router builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -258,6 +267,12 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+      for (const shimExclude of rscClientShimExcludes) {
+        expect(result.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.client.optimizeDeps?.exclude).toContain(shimExclude);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

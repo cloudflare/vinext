@@ -77,6 +77,10 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import {
+  mergeOptimizeDepsExclude,
+  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+} from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import {
   VIRTUAL_GOOGLE_FONTS,
@@ -1269,7 +1273,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og", "@tailwindcss/oxide"])],
+          exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
+            "@tailwindcss/oxide",
+          ]),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           rolldownOptions: { plugins: [depOptimizeAliasPlugin] },
         };
@@ -1326,7 +1332,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
               },
               build: {
@@ -1351,7 +1357,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
               },
               build: {
@@ -1378,9 +1384,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // `fileTypeFromFile` only from its `node` condition via `index.js`,
                 // but the browser optimizer resolves to `core.js` which lacks it,
                 // causing MISSING_EXPORT build failures).
-                exclude: [
-                  ...new Set([...incomingExclude, "vinext", "@vercel/og", ...nextServerExternal]),
-                ],
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
+                ),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
