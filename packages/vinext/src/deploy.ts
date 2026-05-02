@@ -19,7 +19,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
-import { createBuilder, build } from "vite";
+import { pathToFileURL } from "node:url";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
@@ -28,11 +28,13 @@ import {
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
+import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface DeployOptions {
+type DeployOptions = {
   /** Project root directory */
   root: string;
   /** Deploy to preview environment (default: production) */
@@ -45,6 +47,8 @@ export interface DeployOptions {
   skipBuild?: boolean;
   /** Dry run — generate config files but don't build or deploy */
   dryRun?: boolean;
+  /** Pre-render all discovered routes into the dist output after building */
+  prerenderAll?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -53,7 +57,7 @@ export interface DeployOptions {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
-}
+};
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
@@ -65,6 +69,7 @@ const deployArgOptions = {
   name: { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
+  "prerender-all": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -73,6 +78,17 @@ const deployArgOptions = {
 
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+
+  function parseIntArg(name: string, raw: string | undefined): number | undefined {
+    if (!raw) return undefined;
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+      console.error(`  --${name} must be a number (got: ${raw})`);
+      process.exit(1);
+    }
+    return n;
+  }
+
   return {
     help: values.help,
     preview: values.preview,
@@ -80,16 +96,17 @@ export function parseDeployArgs(args: string[]) {
     name: values.name?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
+    prerenderAll: values["prerender-all"],
     experimentalTPR: values["experimental-tpr"],
-    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
-    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
-    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+    tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
+    tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
+    tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
   };
 }
 
 // ─── Project Detection ──────────────────────────────────────────────────────
 
-interface ProjectInfo {
+type ProjectInfo = {
   root: string;
   isAppRouter: boolean;
   isPagesRouter: boolean;
@@ -110,7 +127,7 @@ interface ProjectInfo {
   hasCodeHike: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
-}
+};
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
@@ -179,54 +196,44 @@ export function detectProject(root: string): ProjectInfo {
   const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
-  // Derive project name from package.json or directory name
-  let projectName = path.basename(root);
+  // Parse package.json once for all fields that need it
   const pkgPath = path.join(root, "package.json");
+  let pkg: Record<string, unknown> | null = null;
   if (fs.existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      if (pkg.name) {
-        // Sanitize: Workers names must be lowercase alphanumeric + hyphens
-        projectName = pkg.name
-          .replace(/^@[^/]+\//, "") // strip npm scope
-          .toLowerCase() // lowercase BEFORE stripping invalid chars
-          .replace(/[^a-z0-9-]/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "");
-      }
+      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
     } catch {
       // ignore parse errors
     }
+  }
+
+  // Derive project name from package.json or directory name
+  let projectName = path.basename(root);
+  if (pkg?.name && typeof pkg.name === "string") {
+    // Sanitize: Workers names must be lowercase alphanumeric + hyphens
+    projectName = pkg.name
+      .replace(/^@[^/]+\//, "") // strip npm scope
+      .toLowerCase() // lowercase BEFORE stripping invalid chars
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
   }
 
   // Detect ISR usage (rough heuristic: search for `revalidate` exports)
   const hasISR = detectISR(root, isAppRouter);
 
   // Detect "type": "module" in package.json
-  let hasTypeModule = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      hasTypeModule = pkg.type === "module";
-    } catch {
-      // ignore
-    }
-  }
+  const hasTypeModule = pkg?.type === "module";
 
   // Detect MDX usage
   const hasMDX = detectMDX(root, isAppRouter, hasPages);
 
   // Detect CodeHike dependency
-  let hasCodeHike = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-      hasCodeHike = "codehike" in allDeps;
-    } catch {
-      // ignore
-    }
-  }
+  const allDeps = {
+    ...(pkg?.dependencies as Record<string, unknown> | undefined),
+    ...(pkg?.devDependencies as Record<string, unknown> | undefined),
+  };
+  const hasCodeHike = "codehike" in allDeps;
 
   // Detect native Node modules that need stubbing for Workers
   const nativeModulesToStub = detectNativeModules(root);
@@ -251,6 +258,10 @@ export function detectProject(root: string): ProjectInfo {
 }
 
 function detectISR(root: string, isAppRouter: boolean): boolean {
+  // ISR detection is only implemented for App Router (scans for `export const revalidate`).
+  // Pages Router ISR (getStaticProps + revalidate) is not detected here — wrangler.jsonc
+  // will not include the KV namespace binding for Pages Router projects even if they use ISR.
+  // This is a known gap; KV must be configured manually for Pages Router ISR.
   if (!isAppRouter) return false;
   try {
     // Check root-level app/ first, then fall back to src/app/
@@ -387,6 +398,9 @@ export function generateWranglerConfig(info: ProjectInfo): string {
     compatibility_flags: ["nodejs_compat"],
     main: "./worker/index.ts",
     assets: {
+      // Wrangler 4.69+ requires `directory` when `assets` is an object.
+      // The @cloudflare/vite-plugin always writes static assets to dist/client/.
+      directory: "dist/client",
       not_found_handling: "none",
       // Expose static assets to the Worker via env.ASSETS so the image
       // optimization handler can fetch source images programmatically.
@@ -501,13 +515,13 @@ import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
-  matchHeaders,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
   isExternalUrl,
   proxyExternalRequest,
   sanitizeDestination,
 } from "vinext/config/config-matchers";
+import { applyConfigHeadersToHeaderRecord } from "vinext/server/request-pipeline";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
@@ -550,6 +564,20 @@ function stripBasePath(pathname: string, basePath: string): string {
   return pathname.slice(basePath.length) || "/";
 }
 
+// Mirror of isOpenRedirectShaped in server/request-pipeline.ts. Inlined here
+// because this worker runs in the Cloudflare Workers environment and can't
+// import from our local source at build time. Keep in sync.
+function isOpenRedirectShaped(rawPathname: string): boolean {
+  if (!rawPathname.startsWith("/")) return false;
+  const afterSlash = rawPathname.slice(1);
+  if (afterSlash.startsWith("/") || afterSlash.startsWith("\\")) return true;
+  if (afterSlash.length >= 3 && afterSlash[0] === "%") {
+    const encoded = afterSlash.slice(0, 3).toLowerCase();
+    if (encoded === "%5c" || encoded === "%2f") return true;
+  }
+  return false;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
@@ -557,10 +585,13 @@ export default {
       let pathname = url.pathname;
       let urlWithQuery = pathname + url.search;
 
-      // Block protocol-relative URL open redirects (//evil.com/ or /\\evil.com/).
-      // Normalize backslashes: browsers treat /\\ as // in URL context.
-      const safePath = pathname.replaceAll("\\\\", "/");
-      if (safePath.startsWith("//")) {
+      // Block protocol-relative URL open redirects in all shapes:
+      //   literal  //evil.com, /\\\\evil.com
+      //   encoded  /%5Cevil.com, /%2F/evil.com
+      // Browsers normalize backslash to forward slash, and they percent-decode
+      // Location headers, so an encoded backslash in a downstream 308 redirect
+      // would also navigate to the attacker's origin.
+      if (isOpenRedirectShaped(pathname)) {
         return new Response("404 Not Found", { status: 404 });
       }
 
@@ -646,6 +677,13 @@ export default {
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(request, ctx);
 
+        // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
+        if (result.waitUntilPromises?.length) {
+          for (const p of result.waitUntilPromises) {
+            ctx.waitUntil(p);
+          }
+        }
+
         if (!result.continue) {
           if (result.redirectUrl) {
             const redirectHeaders = new Headers({ Location: result.redirectUrl });
@@ -711,29 +749,19 @@ export default {
       // Middleware headers take precedence: skip config keys already set
       // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
-        const matched = matchHeaders(pathname, configHeaders, reqCtx);
-        for (const h of matched) {
-          const lk = h.key.toLowerCase();
-          if (lk === "set-cookie") {
-            const existing = middlewareHeaders[lk];
-            if (Array.isArray(existing)) {
-              existing.push(h.value);
-            } else if (existing) {
-              middlewareHeaders[lk] = [existing as string, h.value];
-            } else {
-              middlewareHeaders[lk] = [h.value];
-            }
-          } else if (lk === "vary" && middlewareHeaders[lk]) {
-            middlewareHeaders[lk] += ", " + h.value;
-          } else if (!(lk in middlewareHeaders)) {
-            // Middleware headers take precedence: only set if middleware
-            // did not already place this key on the response.
-            middlewareHeaders[lk] = h.value;
-          }
-        }
+        applyConfigHeadersToHeaderRecord(middlewareHeaders, {
+          configHeaders,
+          pathname,
+          requestContext: reqCtx,
+        });
       }
 
-      // ��─ 6. Apply beforeFiles rewrites from next.config.js ─────────
+      if (isExternalUrl(resolvedUrl)) {
+        const proxyResponse = await proxyExternalRequest(request, resolvedUrl);
+        return mergeHeaders(proxyResponse, middlewareHeaders, undefined);
+      }
+
+      // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
@@ -799,17 +827,34 @@ export default {
  * Response headers take precedence over middleware headers for all headers
  * except Set-Cookie, which is additive (both middleware and response cookies
  * are preserved). Matches the behavior in prod-server.ts. Uses getSetCookie()
- * to preserve multiple Set-Cookie values.
+ * to preserve multiple Set-Cookie values. Keep this in sync with
+ * prod-server.ts and server/worker-utils.ts.
  */
 function mergeHeaders(
   response: Response,
   extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
-  if (!Object.keys(extraHeaders).length && !statusOverride) return response;
+  const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
+  function isVinextStreamedHtmlResponse(response: Response): boolean {
+    return response.__vinextStreamedHtmlResponse === true;
+  }
+  function isContentLengthHeader(name: string): boolean {
+    return name.toLowerCase() === "content-length";
+  }
+  function cancelResponseBody(response: Response): void {
+    const body = response.body;
+    if (!body || body.locked) return;
+    void body.cancel().catch(() => {
+      /* ignore cancellation failures on discarded bodies */
+    });
+  }
+
+  const status = statusOverride ?? response.status;
   const merged = new Headers();
   // Middleware/config headers go in first (lower precedence)
   for (const [k, v] of Object.entries(extraHeaders)) {
+    if (isContentLengthHeader(k)) continue;
     if (Array.isArray(v)) {
       for (const item of v) merged.append(k, item);
     } else {
@@ -824,9 +869,40 @@ function mergeHeaders(
   });
   const responseCookies = response.headers.getSetCookie?.() ?? [];
   for (const cookie of responseCookies) merged.append("set-cookie", cookie);
+
+  const shouldDropBody = NO_BODY_RESPONSE_STATUSES.has(status);
+  const shouldStripStreamLength =
+    isVinextStreamedHtmlResponse(response) && merged.has("content-length");
+
+  if (
+    !Object.keys(extraHeaders).some((key) => !isContentLengthHeader(key)) &&
+    statusOverride === undefined &&
+    !shouldDropBody &&
+    !shouldStripStreamLength
+  ) {
+    return response;
+  }
+
+  if (shouldDropBody) {
+    cancelResponseBody(response);
+    merged.delete("content-encoding");
+    merged.delete("content-length");
+    merged.delete("content-type");
+    merged.delete("transfer-encoding");
+    return new Response(null, {
+      status,
+      statusText: status === response.status ? response.statusText : undefined,
+      headers: merged,
+    });
+  }
+
+  if (shouldStripStreamLength) {
+    merged.delete("content-length");
+  }
+
   return new Response(response.body, {
-    status: statusOverride ?? response.status,
-    statusText: response.statusText,
+    status,
+    statusText: status === response.status ? response.statusText : undefined,
     headers: merged,
   });
 }
@@ -924,10 +1000,10 @@ export default defineConfig({
 
 // ─── Dependency Management ───────────────────────────────────────────────────
 
-interface MissingDep {
+type MissingDep = {
   name: string;
   version: string;
-}
+};
 
 /**
  * Check if a package is resolvable from a given root directory using
@@ -997,11 +1073,11 @@ const detectPackageManager = _detectPackageManager;
 
 // ─── File Writing ────────────────────────────────────────────────────────────
 
-interface GeneratedFile {
+type GeneratedFile = {
   path: string;
   content: string;
   description: string;
-}
+};
 
 /**
  * Check whether an existing vite.config file already imports and uses the
@@ -1084,27 +1160,40 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 async function runBuild(info: ProjectInfo): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
+  // Resolve Vite from the project root so that symlinked vinext installs
+  // (bun link / npm link) use the project's Vite, not the monorepo copy.
+  // This mirrors the loadVite() pattern in cli.ts.
+  let vitePath: string;
+  try {
+    const req = createRequire(path.join(info.root, "package.json"));
+    vitePath = req.resolve("vite");
+  } catch {
+    vitePath = "vite";
+  }
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const { createBuilder } = (await import(/* @vite-ignore */ viteUrl)) as {
+    createBuilder: typeof import("vite").createBuilder;
+  };
+
   // Use Vite's JS API for the build. The user's vite.config.ts (or our
   // generated one) has the cloudflare() plugin which handles the Worker
   // output format. We just need to trigger the build.
   //
-  // For App Router, createBuilder().buildApp() handles multi-environment builds.
-  // For Pages Router, a single build() call suffices (cloudflare plugin manages it).
-
-  if (info.isAppRouter) {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
-  } else {
-    await build({ root: info.root });
-  }
+  // Both App Router and Pages Router use createBuilder + buildApp() so that
+  // cloudflare() runs in its intended multi-environment mode and writes
+  // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
+  // config() hook's builder.buildApp override, so writeBundle never fires on
+  // the correct environment name.
+  const builder = await createBuilder({ root: info.root });
+  await builder.buildApp();
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-export interface WranglerDeployArgs {
+type WranglerDeployArgs = {
   args: string[];
   env: string | undefined;
-}
+};
 
 export function buildWranglerDeployArgs(
   options: Pick<DeployOptions, "preview" | "env">,
@@ -1200,10 +1289,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (missingDeps.length > 0) {
     console.log();
     installDeps(root, missingDeps);
-    // Re-detect after install
-    info.hasCloudflarePlugin = true;
-    info.hasWrangler = true;
-    if (info.isAppRouter) info.hasRscPlugin = true;
+    // Re-detect so all fields reflect the freshly installed packages.
+    // Preserve any CLI name override applied above.
+    const nameOverride = options.name ? info.projectName : undefined;
+    Object.assign(info, detectProject(root));
+    if (nameOverride) info.projectName = nameOverride;
   }
 
   // Step 3: Ensure ESM + rename CJS configs
@@ -1244,7 +1334,29 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 6: TPR — pre-render hot pages into KV cache (experimental, opt-in)
+  // Step 6a: prerender — render every discovered route into dist.
+  // Triggered by --prerender-all, or automatically when next.config.js
+  // sets `output: 'export'` (every route must be statically exportable).
+  {
+    const rawNextConfig = await loadNextConfig(info.root);
+    const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
+    const isStaticExport = nextConfig.output === "export";
+
+    if (options.prerenderAll || isStaticExport) {
+      const label =
+        isStaticExport && !options.prerenderAll
+          ? "Pre-rendering all routes (output: 'export')..."
+          : "Pre-rendering all routes...";
+      console.log(`\n  ${label}`);
+      if (nextConfig.enablePrerenderSourceMaps) {
+        process.setSourceMapsEnabled(true);
+        Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
+      }
+      await runPrerender({ root: info.root });
+    }
+  }
+
+  // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
   if (options.experimentalTPR) {
     console.log();
     const tprResult = await runTPR({

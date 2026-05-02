@@ -3,12 +3,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview"
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
+    "sanitize-html": "catalog:",
     "ms": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -19,5 +20,9 @@
     "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
     "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

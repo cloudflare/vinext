@@ -162,10 +162,10 @@ function stripMultipartBoundary(contentType: string): string {
   return keptParams.length > 0 ? `${normalizedType}; ${keptParams.join("; ")}` : normalizedType;
 }
 
-interface SerializedBodyResult {
+type SerializedBodyResult = {
   bodyChunks: string[];
   canonicalizedContentType?: string;
-}
+};
 
 async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
   chunks: Uint8Array[];
@@ -414,13 +414,14 @@ async function buildFetchCacheKey(
 // Types
 // ---------------------------------------------------------------------------
 
-interface NextFetchOptions {
+type NextFetchOptions = {
   revalidate?: number | false;
   tags?: string[];
-}
+};
 
 // Extend the standard RequestInit to include `next`
 declare global {
+  // oxlint-disable-next-line typescript/consistent-type-definitions
   interface RequestInit {
     next?: NextFetchOptions;
   }
@@ -465,9 +466,10 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // Uses Symbol.for() on globalThis so the storage is shared across Vite's
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
-export interface FetchCacheState {
+export type FetchCacheState = {
   currentRequestTags: string[];
-}
+  currentFetchSoftTags: string[];
+};
 
 const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
@@ -477,6 +479,7 @@ const _als = (_g[_ALS_KEY] ??=
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
+  currentFetchSoftTags: [],
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
@@ -492,6 +495,7 @@ function _getState(): FetchCacheState {
  */
 function _resetFallbackState(): void {
   _fallbackState.currentRequestTags = [];
+  _fallbackState.currentFetchSoftTags = [];
 }
 
 /**
@@ -501,6 +505,17 @@ function _resetFallbackState(): void {
  */
 export function getCollectedFetchTags(): string[] {
   return [..._getState().currentRequestTags];
+}
+
+/**
+ * Set path-derived implicit tags for fetch cache reads in the current render.
+ *
+ * These are intentionally not persisted on fetch entries. They mirror Next.js
+ * `softTags`: `revalidatePath()` should make a fetch miss while rendering the
+ * affected route, without permanently coupling a shared fetch entry to one path.
+ */
+export function setCurrentFetchSoftTags(tags: string[]): void {
+  _getState().currentFetchSoftTags = [...tags];
 }
 
 /**
@@ -585,6 +600,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const tags = nextOpts?.tags ?? [];
+    const softTags = _getState().currentFetchSoftTags;
     let cacheKey: string;
     try {
       cacheKey = await buildFetchCacheKey(input, init);
@@ -612,7 +628,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags });
+      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         const cachedData = cached.value.data;
         // Reconstruct a Response from the cached data
@@ -641,6 +657,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
               const freshBody = await freshResp.text();
               const freshHeaders: Record<string, string> = {};
               freshResp.headers.forEach((v, k) => {
+                if (k.toLowerCase() === "set-cookie") return;
                 freshHeaders[k] = v;
               });
 
@@ -723,6 +740,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const body = await cloned.text();
       const headers: Record<string, string> = {};
       cloned.headers.forEach((v, k) => {
+        // Never cache Set-Cookie headers — they are per-user and must not
+        // be replayed to subsequent requests from different users.
+        if (k.toLowerCase() === "set-cookie") return;
         headers[k] = v;
       });
 
@@ -821,9 +841,10 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return await runWithUnifiedStateMutation((uCtx) => {
       uCtx.currentRequestTags = [];
+      uCtx.currentFetchSoftTags = [];
     }, fn);
   }
-  return _als.run({ currentRequestTags: [] }, fn);
+  return _als.run({ currentRequestTags: [], currentFetchSoftTags: [] }, fn);
 }
 
 /**

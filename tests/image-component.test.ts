@@ -8,7 +8,7 @@
  * Tests SSR output, srcSet generation, getImageProps(), fill mode,
  * priority, custom loader, and static image data handling.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
@@ -553,5 +553,228 @@ describe("onLoadingComplete prop", () => {
     expect(html).not.toContain("onLoadingComplete");
     expect(html).not.toContain("onloadingcomplete");
     expect(html).toContain('alt="remote"');
+  });
+});
+
+// ─── Reproduction: priority prop on remote URL paths ────────────────────
+// Regression tests for:
+//   "Received `true` for a non-boolean attribute `priority`."
+// The bug: UnpicImage was receiving priority={true} and leaking it to the
+// DOM <img> element. priority is a Next.js concept; it must be translated to
+// loading="eager" and fetchPriority="high" before reaching the DOM.
+// Affected paths: remote URL with fill=true, and remote URL with width+height.
+
+describe("priority prop — no DOM leak on remote URL paths", () => {
+  it("does not render priority attribute on DOM img (remote URL + width/height)", () => {
+    // Reproduction: this used to emit `priority="true"` on the DOM element,
+    // triggering the React warning about non-boolean attribute.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority",
+        src: "https://images.unsplash.com/photo-1",
+        width: 800,
+        height: 600,
+        priority: true,
+      }),
+    );
+    expect(html).not.toContain("priority=");
+    expect(html).not.toContain('"priority"');
+  });
+
+  it("does not render priority attribute on DOM img (remote URL + fill)", () => {
+    // Reproduction: fill layout path also forwarded priority={true} to UnpicImage.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill priority",
+        src: "https://images.unsplash.com/photo-2",
+        fill: true,
+        priority: true,
+      }),
+    );
+    expect(html).not.toContain("priority=");
+    expect(html).not.toContain('"priority"');
+  });
+
+  it("renders loading=eager for remote URL + width/height when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority eager",
+        src: "https://images.unsplash.com/photo-3",
+        width: 400,
+        height: 300,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).not.toContain('loading="lazy"');
+  });
+
+  it("renders loading=eager for remote URL + fill when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill priority eager",
+        src: "https://images.unsplash.com/photo-4",
+        fill: true,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).not.toContain('loading="lazy"');
+  });
+
+  it("renders fetchPriority=high for remote URL + width/height when priority=true", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote priority fetchpriority",
+        src: "https://images.unsplash.com/photo-5",
+        width: 400,
+        height: 300,
+        priority: true,
+      }),
+    );
+    expect(html).toContain("fetchPriority");
+    expect(html).toContain("high");
+  });
+
+  it("defaults to loading=lazy for remote URL when priority is unset", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote lazy",
+        src: "https://images.unsplash.com/photo-6",
+        width: 400,
+        height: 300,
+      }),
+    );
+    expect(html).toContain('loading="lazy"');
+    expect(html).not.toContain("priority=");
+  });
+});
+
+// ─── onLoad / onError single-fire dedup ──────────────────────────────────
+// Ported from Next.js: test/e2e/app-dir/next-image-events/next-image-events.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-image-events/next-image-events.test.ts
+//
+// onLoad and onError must fire at most once per src per mount to prevent
+// double-counting failures or infinite re-render loops when user code
+// calls setState inside the event handler. React re-renders that result
+// from state updates inside onError/onLoad must not re-trigger the handler.
+//
+// The dedup is client-side (refs inside useRef). SSR tests verify that
+// onLoad/onError handlers are properly attached to the img element on
+// all render paths without leaking as DOM attributes. Runtime dedup
+// behavior is verified via E2E (Playwright) tests mirroring the Next.js
+// e2e suite — those tests assert that console.log fires exactly once
+// per src across hydration, client render, and re-render.
+
+describe("onLoad / onError handler attachment (SSR)", () => {
+  it("does not leak onLoad as DOM attribute (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onLoad=");
+    expect(html).toContain('alt="test"');
+  });
+
+  it("does not leak onError as DOM attribute (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("onError=");
+    expect(html).toContain('alt="test"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (custom loader)", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn",
+        src: "/photo.jpg",
+        width: 200,
+        height: 150,
+        loader,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="cdn"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (remote URL + width/height)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote",
+        src: "https://images.unsplash.com/photo-7",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="remote"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (remote URL + fill)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill",
+        src: "https://images.unsplash.com/photo-8",
+        fill: true,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="remote fill"');
+  });
+
+  it("renders valid SSR output with both onLoad and onError (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "events",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain('alt="events"');
+    expect(html).toContain('data-nimg="1"');
+  });
+
+  it("renders valid SSR output with both onLoad and onError (remote URL via UnpicImage)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote events",
+        src: "https://images.unsplash.com/photo-9",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain('alt="remote events"');
   });
 });

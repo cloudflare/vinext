@@ -9,11 +9,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "inlineSources": true,
-    "outDir": "dist"
+    "noEmit": true,
+    "paths": {
+      "vinext/shims/*": ["./packages/vinext/src/shims/*"]
+    }
   },
   "exclude": [
     "node_modules",

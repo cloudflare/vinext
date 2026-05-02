@@ -1,8 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findInstrumentationFile } from "../packages/vinext/src/server/instrumentation.js";
+import {
+  findInstrumentationClientFile,
+  findInstrumentationFile,
+} from "../packages/vinext/src/server/instrumentation.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 // The runInstrumentation/reportRequestError describe blocks re-import via
 // vi.resetModules() to get fresh module-level state (_onRequestError).
@@ -22,7 +26,7 @@ describe("findInstrumentationFile", () => {
   it("returns the path when a file exists at root", () => {
     fs.writeFileSync(path.join(tmpDir, "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
   });
@@ -33,7 +37,7 @@ describe("findInstrumentationFile", () => {
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(path.join(tmpDir, "src", "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     // Root files come first in INSTRUMENTATION_FILES, so root wins
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
@@ -43,13 +47,58 @@ describe("findInstrumentationFile", () => {
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(path.join(tmpDir, "src", "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
   });
 
   it("returns null when no instrumentation file exists", () => {
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("findInstrumentationClientFile", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-"));
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the path when a file exists at root", () => {
+    fs.writeFileSync(path.join(tmpDir, "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+  });
+
+  it("prefers root over src/ directory (priority order)", () => {
+    fs.writeFileSync(path.join(tmpDir, "instrumentation-client.ts"), "");
+    fs.mkdirSync(path.join(tmpDir, "src"));
+    fs.writeFileSync(path.join(tmpDir, "src", "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+  });
+
+  it("falls back to src/ directory", () => {
+    fs.mkdirSync(path.join(tmpDir, "src"));
+    fs.writeFileSync(path.join(tmpDir, "src", "instrumentation-client.ts"), "");
+
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
+
+    expect(result).toBe(path.join(tmpDir, "src", "instrumentation-client.ts"));
+  });
+
+  it("returns null when no instrumentation-client file exists", () => {
+    const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBeNull();
   });
@@ -117,6 +166,90 @@ describe("runInstrumentation", () => {
       "Module not found",
     );
     consoleSpy.mockRestore();
+  });
+});
+
+describe("ensureInstrumentationRegistered", () => {
+  let ensureInstrumentationRegistered: typeof import("../packages/vinext/src/server/instrumentation-runtime.js").ensureInstrumentationRegistered;
+  let reportRequestError: typeof import("../packages/vinext/src/server/instrumentation.js").reportRequestError;
+
+  const sampleRequest = { path: "/test", method: "GET", headers: {} };
+  const sampleContext = {
+    routerKind: "App Router" as const,
+    routePath: "/test",
+    routeType: "render" as const,
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+    delete process.env.VINEXT_PRERENDER;
+    const mod = await import("../packages/vinext/src/server/instrumentation-runtime.js");
+    ensureInstrumentationRegistered = mod.ensureInstrumentationRegistered;
+    const instMod = await import("../packages/vinext/src/server/instrumentation.js");
+    reportRequestError = instMod.reportRequestError;
+  });
+
+  afterEach(() => {
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+    delete process.env.VINEXT_PRERENDER;
+  });
+
+  it("calls register() when exported", async () => {
+    const register = vi.fn();
+
+    await ensureInstrumentationRegistered({ register });
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("wires onRequestError so reportRequestError invokes it", async () => {
+    const onRequestError = vi.fn();
+    const error = new Error("boom");
+
+    await ensureInstrumentationRegistered({ onRequestError });
+    await reportRequestError(error, sampleRequest, sampleContext);
+
+    expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
+  });
+
+  it("is idempotent — register() called only once across concurrent awaits", async () => {
+    const register = vi.fn();
+    const mod = { register };
+
+    await Promise.all([
+      ensureInstrumentationRegistered(mod),
+      ensureInstrumentationRegistered(mod),
+      ensureInstrumentationRegistered(mod),
+    ]);
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("is idempotent — sequential awaits do not re-call register()", async () => {
+    const register = vi.fn();
+    const mod = { register };
+
+    await ensureInstrumentationRegistered(mod);
+    await ensureInstrumentationRegistered(mod);
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("no-ops when VINEXT_PRERENDER is set", async () => {
+    process.env.VINEXT_PRERENDER = "1";
+    const register = vi.fn();
+
+    await ensureInstrumentationRegistered({ register });
+
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when module has no register or onRequestError", async () => {
+    await ensureInstrumentationRegistered({});
+
+    // Should not throw
+    await reportRequestError(new Error("boom"), sampleRequest, sampleContext);
   });
 });
 

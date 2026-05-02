@@ -9,14 +9,19 @@
  * at load time, so we must set globalThis.window BEFORE importing it via
  * vi.resetModules() + dynamic import().
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { createAppPayloadCacheKey } from "../packages/vinext/src/server/app-elements.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
+let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
+let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
+let snapshotRscResponse: Navigation["snapshotRscResponse"];
+let restoreRscResponse: Navigation["restoreRscResponse"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -31,10 +36,14 @@ beforeEach(async () => {
   vi.resetModules();
   const nav = await import("../packages/vinext/src/shims/navigation.js");
   storePrefetchResponse = nav.storePrefetchResponse;
+  consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
+  getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
+  snapshotRscResponse = nav.snapshotRscResponse;
+  restoreRscResponse = nav.restoreRscResponse;
 });
 
 afterEach(() => {
@@ -48,12 +57,97 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
   const prefetched = getPrefetchedUrls();
   for (let i = 0; i < count; i++) {
     const key = `${keyPrefix}${i}.rsc`;
-    cache.set(key, { response: new Response(`body-${i}`), timestamp });
+    const body = `body-${i}`;
+    const buffer = new TextEncoder().encode(body).buffer;
+    cache.set(key, {
+      snapshot: {
+        buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        url: key,
+      },
+      timestamp,
+    });
     prefetched.add(key);
   }
 }
 
 describe("prefetch cache eviction", () => {
+  it("reuses a prefetched response only when mounted-slot context matches", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/dashboard.rsc";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: "slot:auth:/",
+      paramsHeader: null,
+      url: rscUrl,
+    };
+
+    cache.set(rscUrl, { snapshot, timestamp: Date.now() });
+    prefetched.add(rscUrl);
+
+    expect(consumePrefetchResponse(rscUrl, null, "slot:auth:/")).toEqual(snapshot);
+    expect(cache.has(rscUrl)).toBe(false);
+    expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("rejects a prefetched response when mounted-slot context differs", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/dashboard.rsc";
+
+    cache.set(rscUrl, {
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: "slot:auth:/",
+        paramsHeader: null,
+        url: rscUrl,
+      },
+      timestamp: Date.now(),
+    });
+    prefetched.add(rscUrl);
+
+    expect(consumePrefetchResponse(rscUrl, null, "slot:nav:/")).toBeNull();
+    expect(cache.has(rscUrl)).toBe(false);
+    expect(prefetched.has(rscUrl)).toBe(false);
+  });
+
+  it("derives the interception context from the current pathname", () => {
+    (globalThis as any).window.location.pathname = "/feed";
+
+    expect(getCurrentInterceptionContext()).toBe("/feed");
+  });
+
+  it("allows separate interception-context entries for the same RSC URL", () => {
+    storePrefetchResponse("/photos/42.rsc", new Response("feed"), "/feed");
+    storePrefetchResponse("/photos/42.rsc", new Response("gallery"), "/gallery");
+
+    const feedKey = createAppPayloadCacheKey("/photos/42.rsc", "/feed");
+    const galleryKey = createAppPayloadCacheKey("/photos/42.rsc", "/gallery");
+    expect(feedKey).not.toBe(galleryKey);
+    expect(getPrefetchCache().has(feedKey)).toBe(true);
+    expect(getPrefetchCache().has(galleryKey)).toBe(true);
+  });
+
+  it("preserves X-Vinext-Params when replaying cached RSC responses", async () => {
+    const response = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component; charset=utf-8",
+        "x-vinext-params": encodeURIComponent('{"id":"2"}'),
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot);
+
+    expect(restored.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
+    await expect(restored.text()).resolves.toBe("flight");
+  });
+
   it("sweeps all expired entries before FIFO", () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;

@@ -37,10 +37,10 @@ import {
  * Using a structural interface so this file has no runtime dependency on
  * Cloudflare types packages.
  */
-export interface ExecutionContextLike {
+export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
-}
+};
 
 // ---------------------------------------------------------------------------
 // ALS setup — stored on globalThis so all Vite environments (RSC/SSR/client)
@@ -65,6 +65,14 @@ const _als = (_g[_ALS_KEY] ??=
  * delegation to vinext so the context propagates through the entire
  * request pipeline.
  */
+export function runWithExecutionContext<T>(
+  ctx: ExecutionContextLike,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function runWithExecutionContext<T>(
+  ctx: ExecutionContextLike,
+  fn: () => T | Promise<T>,
+): T | Promise<T>;
 export function runWithExecutionContext<T>(
   ctx: ExecutionContextLike,
   fn: () => T | Promise<T>,

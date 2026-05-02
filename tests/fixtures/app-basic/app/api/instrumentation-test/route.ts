@@ -12,8 +12,8 @@
 
 import { NextResponse } from "next/server";
 import {
-  registerCalled,
-  capturedErrors,
+  getRegisterCalled,
+  getCapturedErrors,
   resetInstrumentationState,
   getMiddlewareInvocationCount,
   getMiddlewareInvokedPaths,
@@ -21,8 +21,8 @@ import {
 
 export async function GET() {
   return NextResponse.json({
-    registerCalled,
-    errors: capturedErrors,
+    registerCalled: getRegisterCalled(),
+    errors: getCapturedErrors(),
     middlewareInvocationCount: getMiddlewareInvocationCount(),
     middlewareInvokedPaths: getMiddlewareInvokedPaths(),
   });

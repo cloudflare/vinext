@@ -13,14 +13,14 @@ import path from "node:path";
 
 type Status = "supported" | "partial" | "unsupported";
 
-interface CheckItem {
+type CheckItem = {
   name: string;
   status: Status;
   detail?: string;
   files?: string[];
-}
+};
 
-export interface CheckResult {
+export type CheckResult = {
   imports: CheckItem[];
   config: CheckItem[];
   libraries: CheckItem[];
@@ -32,7 +32,7 @@ export interface CheckResult {
     total: number;
     score: number;
   };
-}
+};
 
 // ── Import support map ─────────────────────────────────────────────────────
 
@@ -40,13 +40,21 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
   "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/legacy/image": {
+    status: "supported",
+    detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",
+  },
   "next/router": { status: "supported" },
+  "next/compat/router": {
+    status: "supported",
+    detail: "useRouter() returns null in App Router, router object in Pages Router",
+  },
   "next/navigation": { status: "supported" },
   "next/headers": { status: "supported" },
   "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
   "next/cache": {
     status: "supported",
-    detail: "revalidateTag, revalidatePath, unstable_cache, cacheLife, cacheTag",
+    detail: "revalidateTag, revalidatePath, unstable_cache, unstable_io, cacheLife, cacheTag",
   },
   "next/dynamic": { status: "supported" },
   "next/head": { status: "supported" },
@@ -62,15 +70,75 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
   "next/config": { status: "supported" },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
+  "next/offline": {
+    status: "partial",
+    detail: "useOffline() hook available; offline retry behavior deferred",
+  },
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
+  "next/form": { status: "supported", detail: "Form component with client-side navigation" },
+  "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
+  "next/constants": { status: "supported", detail: "PHASE_* constants" },
   "next/third-parties/google": {
     status: "unsupported",
     detail: "third-party script optimization not implemented",
   },
   "server-only": { status: "supported" },
   "client-only": { status: "supported" },
+  // Internal next/dist/* paths used by libraries (testing utilities, older libs, etc.)
+  "next/dist/shared/lib/router-context.shared-runtime": {
+    status: "supported",
+    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
+  },
+  "next/dist/shared/lib/app-router-context.shared-runtime": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/app-router-context": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/utils": {
+    status: "supported",
+    detail: "execOnce, getLocationOrigin and other shared utilities",
+  },
+  "next/dist/server/api-utils": {
+    status: "supported",
+    detail: "NextApiRequestCookies and Pages Router API route utilities",
+  },
+  "next/dist/server/web/spec-extension/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/compiled/@edge-runtime/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/server/app-render/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/request-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/request-async-storage": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/navigation": {
+    status: "supported",
+    detail: "internal navigation module; re-exports next/navigation",
+  },
+  "next/dist/server/config-shared": {
+    status: "supported",
+    detail: "shared config utilities; re-exports next/dist/shared/lib/utils",
+  },
 };
 
 // ── Config support map ─────────────────────────────────────────────────────
@@ -85,11 +153,18 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   env: { status: "supported" },
   images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
-  output: { status: "supported", detail: "'export' and 'standalone' modes" },
+  output: {
+    status: "supported",
+    detail: "'export' mode and 'standalone' output (dist/standalone/server.js)",
+  },
   transpilePackages: { status: "supported", detail: "Vite handles this natively" },
   webpack: {
     status: "unsupported",
     detail: "Vite replaces webpack — custom webpack configs need migration",
+  },
+  enablePrerenderSourceMaps: {
+    status: "supported",
+    detail: "sourcemap-resolved stack traces during prerender",
   },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
@@ -97,11 +172,29 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
+  "experimental.prefetchInlining": {
+    status: "partial",
+    detail:
+      "config recognized; vinext uses unified RSC navigation payloads so per-segment prefetch inlining is a no-op",
+  },
+  "experimental.outputHashSalt": {
+    status: "supported",
+    detail: "salt mixed into output content hashes for cache-busting",
+  },
+  "experimental.swcEnvOptions": {
+    status: "unsupported",
+    detail:
+      "not applicable; vinext uses Vite instead of SWC. A Vite-compatible polyfill solution may be explored in the future.",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
   },
-  reactStrictMode: { status: "supported", detail: "always enabled" },
+  reactStrictMode: {
+    status: "partial",
+    detail:
+      "config option recognized but not yet enforced; root is not wrapped in <React.StrictMode>",
+  },
   poweredByHeader: {
     status: "supported",
     detail: "not sent (matching Next.js default when disabled)",
@@ -121,8 +214,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       "auto-detected from i18n/request.{ts,tsx,js,jsx}; createNextIntlPlugin wrapper not needed",
   },
   "@clerk/nextjs": {
-    status: "unsupported",
-    detail: "deep Next.js middleware integration not compatible",
+    status: "partial",
+    detail:
+      "clerkMiddleware, auth.protect, ClerkProvider, client hooks work; auth() in Server Components requires next/headers shim (wip)",
   },
   "@auth/nextjs": {
     status: "unsupported",
@@ -304,7 +398,7 @@ export function analyzeConfig(root: string): CheckItem[] {
 
   for (const opt of configOptions) {
     // Simple heuristic: check if the option name appears as a property in the config
-    const regex = new RegExp(`\\b${opt}\\b`);
+    const regex = new RegExp(String.raw`\b${opt}\b`);
     if (regex.test(content)) {
       const support = CONFIG_SUPPORT[opt];
       if (support) {
@@ -315,28 +409,15 @@ export function analyzeConfig(root: string): CheckItem[] {
     }
   }
 
-  // Check for experimental options
-  if (/experimental\s*[:=]\s*\{/.test(content)) {
-    if (/\bppr\b/.test(content)) {
-      items.push({ name: "experimental.ppr", ...CONFIG_SUPPORT["experimental.ppr"]! });
+  // Check for nested (dot-notation) options: parent block present + child name appears
+  for (const key of Object.keys(CONFIG_SUPPORT)) {
+    if (!key.includes(".")) continue;
+    const dot = key.indexOf(".");
+    const parentBlock = new RegExp(String.raw`\b${key.slice(0, dot)}\s*[:=]\s*\{`);
+    const childRef = new RegExp(String.raw`\b${key.slice(dot + 1)}\b`);
+    if (parentBlock.test(content) && childRef.test(content)) {
+      items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
-    if (/\btypedRoutes\b/.test(content)) {
-      items.push({
-        name: "experimental.typedRoutes",
-        ...CONFIG_SUPPORT["experimental.typedRoutes"]!,
-      });
-    }
-    if (/\bserverActions\b/.test(content)) {
-      items.push({
-        name: "experimental.serverActions",
-        ...CONFIG_SUPPORT["experimental.serverActions"]!,
-      });
-    }
-  }
-
-  // Check for i18n.domains
-  if (/domains\s*:/.test(content) && /i18n/.test(content)) {
-    items.push({ name: "i18n.domains", ...CONFIG_SUPPORT["i18n.domains"]! });
   }
 
   // Sort: unsupported first
@@ -505,16 +586,41 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  // Scan for ViewTransition import from react
+  // Scan all source files once for per-file checks:
+  //   - ViewTransition import from react
+  //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
+  //
+  // For __dirname/__filename we use a single-pass alternation regex that skips over
+  // string literals, template literals, and comments before testing for the identifier,
+  // so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  // Single-pass regex: skip tokens that can contain identifier-like text, expose everything else
+  // to the identifier capture branch. Template literals are skipped segment-by-segment between
+  // `${` boundaries — the `${...}` body itself is NOT consumed, so `__dirname` inside template
+  // expressions (e.g. `${__dirname}/views`) is correctly exposed to the identifier branch.
+  const cjsGlobalScanRegex =
+    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
   const viewTransitionFiles: string[] = [];
+  const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
+    const rel = path.relative(root, file);
+
     if (viewTransitionRegex.test(content)) {
-      viewTransitionFiles.push(path.relative(root, file));
+      viewTransitionFiles.push(rel);
+    }
+
+    cjsGlobalScanRegex.lastIndex = 0;
+    let m;
+    while ((m = cjsGlobalScanRegex.exec(content)) !== null) {
+      if (m[1]) {
+        cjsGlobalFiles.push(rel);
+        break;
+      }
     }
   }
+  // Emit items for the combined scan results
   if (viewTransitionFiles.length > 0) {
     items.push({
       name: "ViewTransition (React canary API)",
@@ -548,6 +654,16 @@ export function checkConventions(root: string): CheckItem[] {
       }
       break; // Only check the first config file found
     }
+  }
+
+  if (cjsGlobalFiles.length > 0) {
+    items.push({
+      name: "__dirname / __filename (CommonJS globals)",
+      status: "unsupported",
+      detail:
+        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+      files: cjsGlobalFiles,
+    });
   }
 
   return items;
@@ -669,6 +785,11 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     for (const item of allItems) {
       if (item.status === "unsupported") {
         lines.push(`    \x1b[31m✗\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        if (item.files && item.files.length > 0) {
+          for (const f of item.files) {
+            lines.push(`       \x1b[90m${f}\x1b[0m`);
+          }
+        }
       }
     }
   }

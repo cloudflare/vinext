@@ -12,7 +12,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
+import {
+  _registerStateAccessors,
+  type NavigationContext,
+  GLOBAL_ACCESSORS_KEY,
+} from "./navigation.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -23,10 +27,10 @@ import {
 // ALS setup — same pattern as headers.ts
 // ---------------------------------------------------------------------------
 
-export interface NavigationState {
+export type NavigationState = {
   serverContext: NavigationContext | null;
   serverInsertedHTMLCallbacks: Array<() => unknown>;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.navigation.als");
 const _FALLBACK_KEY = Symbol.for("vinext.navigation.fallback");
@@ -51,6 +55,8 @@ function _getState(): NavigationState {
  * Ensures per-request isolation for navigation context and
  * useServerInsertedHTML callbacks on concurrent runtimes.
  */
+export function runWithNavigationContext<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
@@ -73,6 +79,8 @@ export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promi
  * but it needs a fresh callback collection so CSS-in-JS insertions from the
  * streamed render cannot accumulate into the cache-fill render.
  */
+export function runWithServerInsertedHTMLState<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
@@ -90,9 +98,16 @@ export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T |
 
 // ---------------------------------------------------------------------------
 // Register ALS-backed accessors into navigation.ts
+//
+// Two registration paths (issue #688):
+// 1. _registerStateAccessors — updates the module-level function pointers
+//    in the same module instance that imported us (the SSR entry's copy).
+// 2. globalThis[Symbol.for(...)] — makes the accessors discoverable by ANY
+//    module instance of navigation.ts, even if Vite created a separate one
+//    for "use client" components due to pre-bundling or env separation.
 // ---------------------------------------------------------------------------
 
-_registerStateAccessors({
+const _accessors = {
   getServerContext(): NavigationContext | null {
     return _getState().serverContext;
   },
@@ -108,4 +123,7 @@ _registerStateAccessors({
   clearInsertedHTMLCallbacks(): void {
     _getState().serverInsertedHTMLCallbacks = [];
   },
-});
+} satisfies Parameters<typeof _registerStateAccessors>[0];
+
+_registerStateAccessors(_accessors);
+(globalThis as unknown as Record<PropertyKey, unknown>)[GLOBAL_ACCESSORS_KEY] = _accessors;

@@ -165,6 +165,35 @@ declare module "next/script" {
   export function initScriptLoader(scripts: ScriptProps[]): void;
 }
 
+declare module "next/compat/router" {
+  export function useRouter(): {
+    pathname: string;
+    route: string;
+    query: Record<string, string | string[]>;
+    asPath: string;
+    basePath: string;
+    locale?: string;
+    locales?: string[];
+    defaultLocale?: string;
+    isReady: boolean;
+    isPreview: boolean;
+    isFallback: boolean;
+    push(url: string | object, as?: string, options?: object): Promise<boolean>;
+    replace(url: string | object, as?: string, options?: object): Promise<boolean>;
+    back(): void;
+    reload(): void;
+    prefetch(url: string): Promise<void>;
+    beforePopState(
+      cb: (state: { url: string; as: string; options: { shallow: boolean } }) => boolean,
+    ): void;
+    events: {
+      on(event: string, handler: (...args: unknown[]) => void): void;
+      off(event: string, handler: (...args: unknown[]) => void): void;
+      emit(event: string, ...args: unknown[]): void;
+    };
+  } | null;
+}
+
 declare module "next/server" {
   export class NextRequest extends Request {
     get nextUrl(): any;

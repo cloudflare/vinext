@@ -5,10 +5,10 @@
  */
 import type { ComponentType } from "react";
 
-export interface AppProps<P = Record<string, unknown>> {
+export type AppProps<P = Record<string, unknown>> = {
   Component: ComponentType<P>;
   pageProps: P;
-}
+};
 
 // Re-export for named import compatibility
 export type { AppProps as default };

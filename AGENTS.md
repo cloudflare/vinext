@@ -21,11 +21,11 @@ pnpm test                                        # Vitest — full suite (~2 min
 pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
 pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
 pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
-pnpm run typecheck                               # TypeScript via tsgo (fast)
-pnpm run lint                                    # oxlint
+pnpm run check                                   # Format, lint, and type checks
+pnpm run lint                                    # Lint only (type-aware oxlint)
 pnpm run fmt                                     # oxfmt (format)
 pnpm run fmt:check                               # oxfmt (check only, no writes)
-pnpm run build                                   # Build the vinext package
+pnpm run build                                   # Build the vinext package (via vp pack)
 pnpm --filter create-vinext-app test             # create-vinext-app tests
 pnpm --filter create-vinext-app build            # Build the CLI
 ```
@@ -99,7 +99,34 @@ When you find relevant Next.js tests, port the test cases to our test suite and 
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
 ```
 
-**Use `gh search code` for efficient searching:**
+**Local Next.js clone for fast searching:**
+
+Keep a local clone of the Next.js repo for fast `rg` (ripgrep) searches. This is much faster and more reliable than `gh search code` for exploratory searches.
+
+```bash
+# First time: clone into .nextjs-ref (gitignored)
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+
+# Update periodically
+git -C .nextjs-ref pull --ff-only
+```
+
+The `.nextjs-ref` directory is gitignored. Use it for searching source, tests, and closed PR context:
+
+```bash
+# Search test suite for how Next.js handles a behavior
+rg -rn "javascript:" .nextjs-ref/test/ --include "*.test.*" -l
+rg -rn "router\.push" .nextjs-ref/test/e2e/ -l | head -20
+
+# Search source for implementation details
+rg -rn "x-middleware-override-headers" .nextjs-ref/packages/next/src/
+rg -rn "isExternalUrl" .nextjs-ref/packages/next/src/
+
+# Search for how config headers/redirects are ordered relative to middleware
+rg -rn "headers.*redirect.*middleware" .nextjs-ref/packages/next/src/server/
+```
+
+**Use `gh search code` when the local clone is not available:**
 
 ```bash
 gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
@@ -109,6 +136,15 @@ gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit
 ### Running Tests
 
 **Always run targeted tests, not the full suite.** The full Vitest suite takes ~2 minutes because test files run serially (to avoid Vite deps optimizer cache races). Running the full suite during development wastes time, especially when multiple agents are working on the repo simultaneously.
+
+**Prefer `vp` for day-to-day local work.** The `pnpm` scripts above still work, but current repo workflow and CI debugging usually use the direct Vite+ commands:
+
+```bash
+vp check tests/app-router.test.ts
+vp test run tests/app-router.test.ts
+vp test run tests/app-router.test.ts -t "route handler"
+vp run vinext#build
+```
 
 **During development**, run only the test file(s) relevant to your change:
 
@@ -144,6 +180,15 @@ pnpm test -t "middleware"
 **When to run the full suite locally:** Only if you're making a broad change that touches shared infrastructure (e.g., the Vite plugin's `resolveId` hook, virtual module generation, or the test helpers themselves). Even then, consider pushing and letting CI do it.
 
 ### Fixing Bugs
+
+**Always verify Next.js behavior first.** Before writing a fix, confirm how Next.js handles the same scenario. This applies to security fixes, bug reports, and behavioral changes. We have repeatedly shipped fixes that diverged from Next.js because this step was skipped. Specific things to check:
+
+1. **Search the Next.js test suite** (in `.nextjs-ref/test/`) for tests covering the behavior. If Next.js has a test, that is the authoritative answer for what the correct behavior is.
+2. **Search Next.js issues and PRs** for prior discussion. Many behaviors are intentional design choices (e.g., Next.js intentionally does not block `javascript:` URIs in `router.push()`, config headers intentionally run before middleware). Use `gh search code` or EXA web search for this.
+3. **Search Next.js source** (in `.nextjs-ref/packages/next/src/`) for the implementation. Understand what they do before deciding what we should do.
+4. **Document what you found.** When creating a PR or closing an issue, link to the Next.js test, issue, or docs that informed the decision.
+
+If Next.js and vinext should behave differently (defense-in-depth, Cloudflare-specific requirements), that is OK, but it must be a deliberate, documented decision, not an accidental divergence.
 
 **Always check dev and prod server parity.** Request handling logic exists in multiple places that must stay in sync:
 
@@ -259,7 +304,13 @@ Use EXA for web search when you need to find recent discussions, blog posts, Git
 
 **When in doubt, look at how Next.js does it.** Vinext aims to replicate Next.js behavior, so their implementation is the authoritative reference.
 
-If you're trying to understand how something works under the hood — route matching, RSC streaming, caching behavior, API semantics — the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+If you're trying to understand how something works under the hood (route matching, RSC streaming, caching behavior, API semantics), the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+
+Use the local `.nextjs-ref` clone for fast searching. If the clone doesn't exist yet, create it:
+
+```bash
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+```
 
 ---
 
@@ -284,7 +335,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.
 
-- **Branch protection is enabled on main.** Required checks: Format, Lint, Typecheck, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
+- **Branch protection is enabled on main.** Required checks: Check, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
 
 - **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
 
@@ -293,9 +344,17 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   2. Make changes and commit
   3. Push branch: `git push -u origin fix/descriptive-name`
   4. Open PR via `gh pr create`
-  5. Wait for CI to pass — all required checks (Format, Lint, Typecheck, Vitest, Playwright E2E) must be green
+  5. Wait for CI to pass — all required checks (Check, Vitest, Playwright E2E) must be green
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
+
+- **For large refactors, prefer small stacked PRs.** When extracting logic out of generated entries or other high-risk files, do the work in reviewable slices:
+  1. Move one cohesive runtime seam into a typed helper
+  2. Add focused helper tests plus minimal generator assertion updates
+  3. Push, fix CI, and re-request review
+  4. Rebase the next stacked branch after each merge
+
+- **Use `/bigbonk` after meaningful updates on stacked refactor PRs.** That is the normal re-review loop for this repo once a PR has been rebased or a review comment has been addressed.
 
 ### CI for External Contributors
 
@@ -303,7 +362,7 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 **Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
 
-- Format, Lint, Typecheck, Vitest, Playwright E2E
+- Check, Vitest, Playwright E2E
 - Uses zero secrets and read-only permissions
 - First-time contributors need one manual approval, then subsequent PRs run automatically
 
@@ -361,9 +420,49 @@ vinext handles everything else:
 
 The RSC entry's `default` export is the request handler. The plugin calls it for every request; vinext does route matching, builds the React tree, renders to RSC stream, and delegates to the SSR entry for HTML.
 
+### Generated Entry Modules Should Stay Thin
+
+The generated entry files under `packages/vinext/src/entries/*` are one of the easiest places for the codebase to become hard to maintain. Treat them as **codegen glue**, not as the home for large runtime subsystems.
+
+**Rule of thumb:** generated code may describe route-specific imports, manifests, and thin closures, but it should not own substantial request lifecycle logic.
+
+Move real behavior into normal typed modules under `packages/vinext/src/server/*` whenever the code involves:
+
+- request/response orchestration
+- streaming or teeing streams
+- ISR/cache policy or cache writes
+- route-handler method dispatch
+- redirect / not-found / access-fallback handling
+- response shaping, header merging, or middleware merge behavior
+- logic that needs direct unit tests
+
+**Preferred layering:**
+
+1. `entries/*` — generate route-specific imports, manifests, and thin wiring
+2. `server/*` — implement runtime behavior in importable typed modules
+3. `tests/*` — unit test the runtime helpers directly; keep generated-entry tests focused on delegation and wiring
+
+**Testing guidance for entry refactors:**
+
+- If you move behavior out of a template string, add a focused unit test for the new helper module
+- Update `tests/entry-templates.test.ts` or other generated-code assertions to check the new helper delegation, not the old inline implementation detail
+- Prefer verifying stream/cache/error behavior in helper tests instead of asserting on giant generated strings
+
+**App Router examples:** the long-term pattern is for files like `entries/app-rsc-entry.ts`, `entries/app-browser-entry.ts`, and `entries/app-ssr-entry.ts` to stay thin and delegate to `server/app-*.ts` helpers.
+
 ### Production Builds Require `createBuilder`
 
 You **must** use `createBuilder()` + `builder.buildApp()` for production builds, not `build()` directly. Calling `build()` from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. `buildApp()` runs the 5-step RSC/SSR/client build sequence in the correct order.
+
+### Vite 8 Defaults
+
+This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bundles Vite 8. Keep that in mind when touching Vite config or plugin integration code:
+
+- Prefer `oxc` over `esbuild` for new JavaScript transform config
+- Prefer `optimizeDeps.rolldownOptions` over `optimizeDeps.esbuildOptions`
+- Prefer `build.rolldownOptions` / `worker.rolldownOptions` over adding new `*.rollupOptions` config
+- When touching existing `build.rollupOptions` or `manualChunks`, treat them as migration targets to Rolldown equivalents, not patterns to copy forward
+- If something breaks only on Vite 8, check the newer `build.target` baseline and stricter CommonJS default import behavior first
 
 ### Virtual Module Resolution Quirks
 
@@ -392,6 +491,27 @@ The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler`
 
 The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
 
+### Next.js Request Execution Order
+
+This is critical to get right. Many security reports and bug fixes depend on understanding which steps run before vs after middleware. The Next.js documented execution order is (source: [Next.js middleware docs](https://nextjs.org/docs/app/building-your-application/routing/middleware#matching-paths), [rewrites docs](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)):
+
+1. `headers` from next.config.js (has/missing conditions use the **original** request)
+2. `redirects` from next.config.js (has/missing conditions use the **original** request)
+3. **Middleware** (rewrites, redirects, header modifications, etc.)
+4. `beforeFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+5. Filesystem routes (`public/`, `_next/static/`, pages, app)
+6. `afterFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+7. Dynamic routes (`/blog/[slug]`)
+8. `fallback` rewrites from next.config.js
+
+**Key implications:**
+
+- Config headers and redirects run BEFORE middleware. Their `has`/`missing` conditions evaluate against the original incoming request, not middleware-modified state. If you need middleware-aware conditional headers, set them in middleware itself.
+- `_next/static/*` (build output) is served directly without middleware. But `public/` directory files go through middleware.
+- `beforeFiles`, `afterFiles`, and `fallback` rewrites run AFTER middleware and should see middleware-modified request state.
+
+**Current vinext gap:** vinext evaluates config headers at step 6 (after middleware) instead of step 1 (before middleware). The has/missing conditions correctly use the pre-middleware request context, but the timing of when headers are applied differs from Next.js. This is a known parity gap tracked for future work.
+
 ### Ecosystem Library Compatibility
 
 When adding support for third-party Next.js libraries:
@@ -400,3 +520,92 @@ When adding support for third-party Next.js libraries:
 - **next-themes:** Works out of the box. ThemeProvider, `useTheme`, SSR script injection all function correctly.
 - **next-intl:** Requires deep integration. It expects a plugin from `next.config.ts` (`createNextIntlPlugin`) that injects config at build time. Simply installing and importing doesn't work.
 - **General pattern:** Libraries that only import from `next/*` public APIs tend to work. Libraries that depend on Next.js build plugins or internal APIs need custom shimming.
+
+<!--VITE PLUS START-->
+
+# Using Vite+, the Unified Toolchain for the Web
+
+This project is using Vite+, a unified toolchain built on top of Vite, Rolldown, Vitest, tsdown, Oxlint, Oxfmt, and Vite Task. Vite+ wraps runtime management, package management, and frontend tooling in a single global CLI called `vp`. Vite+ is distinct from Vite, but it invokes Vite through `vp dev` and `vp build`.
+
+## Vite+ Workflow
+
+`vp` is a global binary that handles the full development lifecycle. Run `vp help` to print a list of commands and `vp <command> --help` for information about a specific command.
+
+### Start
+
+- create - Create a new project from a template
+- migrate - Migrate an existing project to Vite+
+- config - Configure hooks and agent integration
+- staged - Run linters on staged files
+- install (`i`) - Install dependencies
+- env - Manage Node.js versions
+
+### Develop
+
+- dev - Run the development server
+- check - Run format, lint, and TypeScript type checks
+- lint - Lint code
+- fmt - Format code
+- test - Run tests
+
+### Execute
+
+- run - Run monorepo tasks
+- exec - Execute a command from local `node_modules/.bin`
+- dlx - Execute a package binary without installing it as a dependency
+- cache - Manage the task cache
+
+### Build
+
+- build - Build for production
+- pack - Build libraries
+- preview - Preview production build
+
+### Manage Dependencies
+
+Vite+ automatically detects and wraps the underlying package manager such as pnpm, npm, or Yarn through the `packageManager` field in `package.json` or package manager-specific lockfiles.
+
+- add - Add packages to dependencies
+- remove (`rm`, `un`, `uninstall`) - Remove packages from dependencies
+- update (`up`) - Update packages to latest versions
+- dedupe - Deduplicate dependencies
+- outdated - Check for outdated packages
+- list (`ls`) - List installed packages
+- why (`explain`) - Show why a package is installed
+- info (`view`, `show`) - View package information from the registry
+- link (`ln`) / unlink - Manage local package links
+- pm - Forward a command to the package manager
+
+### Maintain
+
+- upgrade - Update `vp` itself to the latest version
+
+These commands map to their corresponding tools. For example, `vp dev --port 3000` runs Vite's dev server and works the same as Vite. `vp test` runs JavaScript tests through the bundled Vitest. The version of all tools can be checked using `vp --version`. This is useful when researching documentation, features, and bugs.
+
+## Common Pitfalls
+
+- **Using the package manager directly:** Do not use pnpm, npm, or Yarn directly. Vite+ can handle all package manager operations.
+- **Always use Vite commands to run tools:** Don't attempt to run `vp vitest` or `vp oxlint`. They do not exist. Use `vp test` and `vp lint` instead.
+- **Running scripts:** Vite+ built-in commands (`vp dev`, `vp build`, `vp test`, etc.) always run the Vite+ built-in tool, not any `package.json` script of the same name. To run a custom script that shares a name with a built-in command, use `vp run <script>`. For example, if you have a custom `dev` script that runs multiple services concurrently, run it with `vp run dev`, not `vp dev` (which always starts Vite's dev server).
+- **Do not install Vitest, Oxlint, Oxfmt, or tsdown directly:** Vite+ wraps these tools. They must not be installed directly. You cannot upgrade these tools by installing their latest versions. Always use Vite+ commands.
+- **Use Vite+ wrappers for one-off binaries:** Use `vp dlx` instead of package-manager-specific `dlx`/`npx` commands.
+- **Import JavaScript modules from `vite-plus`:** Instead of importing from `vite` or `vitest`, all modules should be imported from the project's `vite-plus` dependency. For example, `import { defineConfig } from 'vite-plus';` or `import { expect, test, vi } from 'vite-plus/test';`. You must not install `vitest` to import test utilities.
+- **Type-Aware Linting:** There is no need to install `oxlint-tsgolint`, `vp lint --type-aware` works out of the box.
+
+## CI Integration
+
+For GitHub Actions, consider using [`voidzero-dev/setup-vp`](https://github.com/voidzero-dev/setup-vp) to replace separate `actions/setup-node`, package-manager setup, cache, and install steps with a single action.
+
+```yaml
+- uses: voidzero-dev/setup-vp@v1
+  with:
+    cache: true
+- run: vp check
+- run: vp test
+```
+
+## Review Checklist for Agents
+
+- [ ] Run `vp install` after pulling remote changes and before getting started.
+- [ ] Run `vp check` and `vp test` to validate changes.
+<!--VITE PLUS END-->

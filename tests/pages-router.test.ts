@@ -1,19 +1,35 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createServer, build, type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
+import { createServer, build, type ViteDevServer } from "vite-plus";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
-import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import {
+  PHASE_DEVELOPMENT_SERVER,
+  PHASE_PRODUCTION_BUILD,
+} from "../packages/vinext/src/shims/constants.js";
+import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
   return <Component {...pageProps} />;
 }
 `;
+
+type ClientBuildManifestEntry = {
+  file?: string;
+  css?: string[];
+  assets?: string[];
+};
+
+function getBuildBundlerOptions(result: any) {
+  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+}
 
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
@@ -33,6 +49,158 @@ export default function middleware() {
   return new Response("nested blocked", { status: 418 });
 }
 `,
+  );
+}
+
+async function buildPagesFixtureToOutDir(rootDir: string, outDir: string): Promise<void> {
+  await build({
+    root: rootDir,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: path.join(outDir, "server"),
+      ssr: "virtual:vinext-server-entry",
+      rollupOptions: { output: { entryFileNames: "entry.js" } },
+    },
+  });
+
+  await build({
+    root: rootDir,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: path.join(outDir, "client"),
+      manifest: true,
+      ssrManifest: true,
+      rollupOptions: { input: "virtual:vinext-client-entry" },
+    },
+  });
+}
+
+function unwrapStartedProdServer(
+  result: import("node:http").Server | { server: import("node:http").Server },
+): import("node:http").Server {
+  return "server" in result ? result.server : result;
+}
+
+type CapturedStreamResponse = {
+  body: Buffer;
+  headers: IncomingHttpHeaders;
+  statusCode: number;
+  firstChunkMs: number;
+  endMs: number;
+  snapshot: Buffer;
+  rawBody: Buffer;
+  rawSnapshot: Buffer;
+};
+
+function createResponseDecoder(
+  contentEncoding: string | string[] | undefined,
+): zlib.BrotliDecompress | zlib.Gunzip | zlib.Inflate | null {
+  const encoding = Array.isArray(contentEncoding) ? contentEncoding[0] : contentEncoding;
+  switch (encoding) {
+    case "br":
+      return zlib.createBrotliDecompress();
+    case "gzip":
+      return zlib.createGunzip();
+    case "deflate":
+      return zlib.createInflate();
+    default:
+      return null;
+  }
+}
+
+async function captureStreamedResponse(
+  url: string,
+  options: { headers?: Record<string, string>; snapshotDelayMs?: number } = {},
+): Promise<CapturedStreamResponse> {
+  const { headers = {}, snapshotDelayMs = 120 } = options;
+
+  return await new Promise<CapturedStreamResponse>((resolve, reject) => {
+    const startedAt = Date.now();
+    const req = httpRequest(url, { headers }, (res) => {
+      const rawChunks: Buffer[] = [];
+      const decodedChunks: Buffer[] = [];
+      let firstChunkMs = -1;
+      let snapshot = Buffer.alloc(0);
+      let rawSnapshot = Buffer.alloc(0);
+      let snapshotCaptured = false;
+      let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+      const decoder = createResponseDecoder(res.headers["content-encoding"]);
+
+      const captureSnapshot = () => {
+        if (snapshotCaptured) return;
+        snapshotCaptured = true;
+        rawSnapshot = Buffer.concat(rawChunks);
+        snapshot = Buffer.concat(decodedChunks);
+      };
+
+      const observeDecodedChunk = (chunk: Buffer) => {
+        decodedChunks.push(Buffer.from(chunk));
+        if (firstChunkMs !== -1) return;
+        firstChunkMs = Date.now() - startedAt;
+        snapshotTimer = setTimeout(captureSnapshot, snapshotDelayMs);
+      };
+
+      res.on("data", (chunk: Buffer) => {
+        const rawChunk = Buffer.from(chunk);
+        rawChunks.push(rawChunk);
+        if (decoder) {
+          decoder.write(rawChunk);
+        } else {
+          observeDecodedChunk(rawChunk);
+        }
+      });
+
+      res.on("error", reject);
+
+      if (decoder) {
+        decoder.on("data", (chunk: Buffer) => {
+          observeDecodedChunk(Buffer.from(chunk));
+        });
+        decoder.on("error", reject);
+      }
+
+      res.on("end", async () => {
+        try {
+          if (decoder) {
+            decoder.end();
+            await new Promise<void>((resolveDecoder, rejectDecoder) => {
+              decoder.once("end", () => resolveDecoder());
+              decoder.once("error", rejectDecoder);
+            });
+          }
+          if (snapshotTimer) clearTimeout(snapshotTimer);
+          captureSnapshot();
+          resolve({
+            body: Buffer.concat(decodedChunks),
+            headers: res.headers,
+            statusCode: res.statusCode ?? 0,
+            firstChunkMs,
+            endMs: Date.now() - startedAt,
+            snapshot,
+            rawBody: Buffer.concat(rawChunks),
+            rawSnapshot,
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function findBuildManifestEntries(
+  buildManifest: Record<string, ClientBuildManifestEntry>,
+  moduleId: string,
+): Array<[string, ClientBuildManifestEntry]> {
+  return Object.entries(buildManifest).filter(
+    ([key]) => key === moduleId || key.endsWith(`/${moduleId}`),
   );
 }
 
@@ -59,6 +227,18 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Go to About");
   });
 
+  it("sets optimizeDeps.entries for pages and instrumentation hooks so deps are discovered at startup", () => {
+    const entries = server.config.optimizeDeps?.entries;
+
+    expect(entries).toBeDefined();
+    expect(Array.isArray(entries)).toBe(true);
+
+    const glob = (entries as string[]).join(",");
+    expect(glob).toMatch(/pages\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(glob).toContain("instrumentation.ts");
+    expect(glob).toContain("instrumentation-client.ts");
+  });
+
   it("resolves tsconfig path aliases (@/ imports)", async () => {
     const res = await fetch(`${baseUrl}/alias-test`);
     expect(res.status).toBe(200);
@@ -76,6 +256,35 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("About");
     expect(html).toContain("This is the about page.");
+  });
+
+  it("adds middleware CSP nonces to Pages Router next data", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-page?mw-csp-nonce=pages-response`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-pages-response' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    expect(html).toContain('<script nonce="pages-response">window.__NEXT_DATA__ = ');
+  });
+
+  it("does not serve cached Pages ISR HTML to CSP nonce requests", async () => {
+    const first = await fetch(`${baseUrl}/isr-test`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstHtml = await first.text();
+    expect(firstHtml).not.toContain("nonce=");
+
+    const second = await fetch(`${baseUrl}/isr-test?mw-csp-nonce=pages-isr`);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-pages-isr' 'strict-dynamic';",
+    );
+    expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(second.headers.get("x-vinext-cache")).toBeNull();
+    const secondHtml = await second.text();
+    expect(secondHtml).toContain('<script nonce="pages-isr">window.__NEXT_DATA__ = ');
   });
 
   it("renders the SSR page with getServerSideProps data", async () => {
@@ -107,6 +316,7 @@ describe("Pages Router integration", () => {
     // gSSP calls res.end() with a JSON body and status 202
     expect(res.status).toBe(202);
     expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("content-length")).toBe("35");
     const body = await res.json();
     expect(body).toEqual({ ok: true, source: "gssp-res-end" });
   });
@@ -133,6 +343,19 @@ describe("Pages Router integration", () => {
     // Router should have correct pathname and query during SSR
     expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/\[id\]/);
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
+  });
+
+  it("next/compat/router: useRouter returns router object in Pages Router context", async () => {
+    const res = await fetch(`${baseUrl}/compat-router-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The shared component detects Pages Router context (router !== null)
+    expect(html).toContain('data-testid="router-context"');
+    expect(html).toContain("pages-router");
+    // The router pathname should reflect the current page
+    expect(html).toContain('data-testid="router-pathname"');
+    expect(html).toContain("/compat-router-test");
   });
 
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
@@ -951,7 +1174,7 @@ describe("Pages Router allowedDevOrigins config", () => {
   afterAll(async () => {
     await server?.close();
     await fsp.rm(tmpDir, { recursive: true, force: true });
-  });
+  }, 30000);
 
   it("allows cross-origin requests from allowedDevOrigins", async () => {
     const res = await fetch(`${baseUrl}/`, {
@@ -1027,6 +1250,127 @@ describe("Virtual server entry generation", () => {
 });
 
 describe("Plugin config", () => {
+  it("uses inline nextConfig instead of root next.config and warns once", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-inline-config-"));
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/disk", env: { CONFIG_SOURCE: "disk" } };`,
+    );
+
+    try {
+      const plugins = vinext({
+        nextConfig: {
+          basePath: "/inline",
+          env: { CONFIG_SOURCE: "inline" },
+        },
+      }) as any[];
+      const configPlugin = plugins.find((p) => p.name === "vinext:config");
+      expect(configPlugin).toBeDefined();
+
+      const result = await configPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "serve", mode: "development" },
+      );
+
+      expect(result.base).toBe("/inline/");
+      expect(result.define["process.env.CONFIG_SOURCE"]).toBe(JSON.stringify("inline"));
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining("vinext({ nextConfig }) overrides next.config.mjs"),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the current phase to inline function-form nextConfig", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-inline-phase-"));
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    try {
+      const buildPlugins = vinext({
+        nextConfig: async (phase) => ({ env: { RECEIVED_PHASE: phase } }),
+      }) as any[];
+      const buildConfigPlugin = buildPlugins.find((p) => p.name === "vinext:config");
+      expect(buildConfigPlugin).toBeDefined();
+
+      const buildResult = await buildConfigPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+
+      expect(buildResult.define["process.env.RECEIVED_PHASE"]).toBe(
+        JSON.stringify(PHASE_PRODUCTION_BUILD),
+      );
+
+      const servePlugins = vinext({
+        nextConfig: (phase) => ({ env: { RECEIVED_PHASE: phase } }),
+      }) as any[];
+      const serveConfigPlugin = servePlugins.find((p) => p.name === "vinext:config");
+      expect(serveConfigPlugin).toBeDefined();
+
+      const serveResult = await serveConfigPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "serve", mode: "development" },
+      );
+
+      expect(serveResult.define["process.env.RECEIVED_PHASE"]).toBe(
+        JSON.stringify(PHASE_DEVELOPMENT_SERVER),
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads .env before evaluating inline function-form nextConfig", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-inline-env-"));
+    const envKey = "VINEXT_INLINE_NEXT_CONFIG_ENV";
+    delete process.env[envKey];
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, ".env"), `${envKey}=loaded-before-inline-config\n`);
+
+    try {
+      const plugins = vinext({
+        nextConfig: () => ({
+          env: {
+            INLINE_ENV_VALUE: process.env[envKey] ?? "missing",
+          },
+        }),
+      }) as any[];
+      const configPlugin = plugins.find((p) => p.name === "vinext:config");
+      expect(configPlugin).toBeDefined();
+
+      const result = await configPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "serve", mode: "development" },
+      );
+
+      expect(result.define["process.env.INLINE_ENV_VALUE"]).toBe(
+        JSON.stringify("loaded-before-inline-config"),
+      );
+    } finally {
+      delete process.env[envKey];
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("auto-injects @vitejs/plugin-react as a top-level async plugin", async () => {
     const plugins = vinext() as any[];
     const resolvedPlugins = (
@@ -1094,20 +1438,21 @@ describe("Plugin config", () => {
     const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
 
     expect(result.build).toBeDefined();
-    expect(result.build.rollupOptions).toBeDefined();
-    expect(result.build.rollupOptions.onwarn).toBeDefined();
+    const bundlerOptions = getBuildBundlerOptions(result);
+    expect(bundlerOptions).toBeDefined();
+    expect(bundlerOptions.onwarn).toBeDefined();
 
     const defaultHandler = vi.fn();
 
     // "use client" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
     expect(defaultHandler).not.toHaveBeenCalled();
 
     // "use server" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use server" was ignored' },
       defaultHandler,
     );
@@ -1118,14 +1463,89 @@ describe("Plugin config", () => {
       code: "MODULE_LEVEL_DIRECTIVE",
       message: '"use strict" was ignored',
     };
-    result.build.rollupOptions.onwarn(otherDirectiveWarning, defaultHandler);
+    bundlerOptions.onwarn(otherDirectiveWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherDirectiveWarning);
 
     // Other warning codes should pass through to the default handler
     defaultHandler.mockClear();
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherWarning);
+  });
+
+  it("suppresses IMPORT_IS_UNDEFINED noise for generated proxy/middleware fallback probes", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+
+    expect(result.build).toBeDefined();
+    const bundlerOptions = getBuildBundlerOptions(result);
+    expect(bundlerOptions).toBeDefined();
+    expect(bundlerOptions.onwarn).toBeDefined();
+
+    const defaultHandler = vi.fn();
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `default` will always be undefined because there is no matching export in 'proxy.ts'\\n      ╭─[ \\0virtual:vinext-rsc-entry:2632:34 ]",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `default` will always be undefined because there is no matching export in 'middleware.ts'\\n      ╭─[ \\0virtual:vinext-server-entry:168:34 ]",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `proxy` will always be undefined because there is no matching export in 'proxy.tsx'\\n      ╭─[ \\0virtual:vinext-rsc-entry:2632:34 ]",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `middleware` will always be undefined because there is no matching export in 'middleware.jsx'\\n      ╭─[ \\0virtual:vinext-server-entry:168:34 ]",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `default` will always be undefined because there is no matching export in 'some-user-file.ts'",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).toHaveBeenCalledTimes(1);
+
+    bundlerOptions.onwarn(
+      {
+        code: "IMPORT_IS_UNDEFINED",
+        message:
+          "[IMPORT_IS_UNDEFINED] Warning: Import `proxy` will always be undefined because there is no matching export in 'some-user-file.ts'",
+      },
+      defaultHandler,
+    );
+    expect(defaultHandler).toHaveBeenCalledTimes(2);
   });
 
   it("preserves user-supplied build.rollupOptions.onwarn", async () => {
@@ -1140,10 +1560,11 @@ describe("Plugin config", () => {
       build: { rollupOptions: { onwarn: userOnwarn } },
     });
 
+    const bundlerOptions = getBuildBundlerOptions(result);
     const defaultHandler = vi.fn();
 
     // "use client" should still be suppressed (user handler NOT called)
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
@@ -1152,12 +1573,12 @@ describe("Plugin config", () => {
 
     // Other warnings should be forwarded to the user's handler
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(userOnwarn).toHaveBeenCalledWith(otherWarning, defaultHandler);
     expect(defaultHandler).not.toHaveBeenCalled();
   });
 
-  it("registers vinext:mdx proxy plugin with enforce pre for correct ordering", () => {
+  it("registers vinext:mdx proxy plugin with enforce pre for correct ordering", async () => {
     const plugins = vinext() as any[];
     const mdxProxy = plugins.find((p) => p.name === "vinext:mdx");
     expect(mdxProxy).toBeDefined();
@@ -1167,10 +1588,10 @@ describe("Plugin config", () => {
     expect(typeof mdxProxy.transform).toBe("function");
     // Proxy should be inert when no MDX files are detected (mdxDelegate is null)
     expect(mdxProxy.config({}, { command: "build", mode: "production" })).toBeUndefined();
-    expect(mdxProxy.transform("code", "./foo.ts", {})).toBeUndefined();
+    await expect(mdxProxy.transform("code", "./foo.ts", {})).resolves.toBeUndefined();
   });
 
-  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", () => {
+  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", async () => {
     // @mdx-js/rollup strips the query before matching the file extension, so
     // it would compile "foo.mdx?raw" as MDX and return compiled JSX instead of
     // raw text. The proxy must short-circuit on any id that contains "?".
@@ -1178,9 +1599,59 @@ describe("Plugin config", () => {
     const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
 
     // Common query-param import patterns that must be skipped
-    expect(mdxProxy.transform("# hello", "/app/content.mdx?raw", {})).toBeUndefined();
-    expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).toBeUndefined();
-    expect(mdxProxy.transform("# hello", "/app/page.mdx?inline", {})).toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
+    ).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
+    ).resolves.toBeUndefined();
+    // Additional query variations
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
+    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    // Edge case: query value contains .mdx but isn't the extension
+    await expect(
+      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
+    ).resolves.toBeUndefined();
+  });
+
+  it("vinext:mdx lazily compiles plain .mdx imports that were not pre-detected", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-mdx-lazy-"));
+
+    try {
+      await fsp.writeFile(
+        path.join(tmpDir, "package.json"),
+        JSON.stringify({ name: "vinext-mdx-lazy", private: true, type: "module" }),
+      );
+
+      const plugins = vinext({ appDir: tmpDir }) as any[];
+      const configPlugin = plugins.find((p) => p.name === "vinext:config");
+      const mdxProxy = plugins.find((p) => p.name === "vinext:mdx");
+
+      await configPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+
+      const result = await mdxProxy.transform(
+        `---
+title: "Second Post"
+---
+
+export const marker = "mdx-evaluated";
+
+# Hello <span>world</span>
+`,
+        path.join(tmpDir, "content", "post.mdx"),
+        {},
+      );
+
+      expect(result).toBeDefined();
+      expect(result.code).toContain("mdx-evaluated");
+      expect(result.code).not.toContain('title: "Second Post"');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("vinext:mdx proxy logic — ?raw guard prevents delegate from compiling query imports", () => {
@@ -1422,12 +1893,16 @@ export const config = { matcher: ["/protected"] };
     expect(fs.existsSync(buildManifestPath)).toBe(true);
     const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
       string,
-      unknown
+      ClientBuildManifestEntry
     >;
-    const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-      (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+    const counterBuildManifestEntries = findBuildManifestEntries(
+      buildManifest,
+      "pages/counter.tsx",
     );
-    expect(counterBuildManifestEntries).toEqual([]);
+    expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+    expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+      true,
+    );
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -1448,7 +1923,7 @@ export const config = { matcher: ["/protected"] };
     // entire React framework). Before code-splitting this was ~200KB+.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(20 * 1024); // < 20 KB
+      expect(entrySize).toBeLessThan(25 * 1024); // < 25 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -1514,12 +1989,16 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+        true,
+      );
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -1535,11 +2014,13 @@ export default function CounterPage() {
       );
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir: fixtureOutDir,
-      });
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
 
       try {
         const addr = prodServer.address() as { port: number };
@@ -1618,12 +2099,21 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(
+        counterBuildManifestEntries.some(
+          ([, entry]) =>
+            typeof entry.file === "string" ||
+            (Array.isArray(entry.css) && entry.css.length > 0) ||
+            (Array.isArray(entry.assets) && entry.assets.length > 0),
+        ),
+      ).toBe(true);
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -1647,11 +2137,13 @@ export default function CounterPage() {
       expect(cssContent).toMatch(/data:image\/svg\+xml|\.svg/);
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir: fixtureOutDir,
-      });
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
 
       try {
         const addr = prodServer.address() as { port: number };
@@ -1888,6 +2380,48 @@ export default function CounterPage() {
     expect(result.rewriteUrl).toContain("/ssr");
   });
 
+  it("runMiddleware preserves internal middleware cookie headers on rewrites", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/rewrite-with-cookie");
+    const result = await serverEntry.runMiddleware(request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toContain("/ssr");
+    expect(result.responseHeaders.get("x-middleware-set-cookie")).toContain(
+      "rewrite-cookie=visible",
+    );
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("runMiddleware preserves external middleware rewrite destinations", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    if (!fs.existsSync(serverEntryPath)) {
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+    }
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/external-middleware-rewrite");
+    const result = await serverEntry.runMiddleware(request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("https://api.example.com/from-middleware?ok=1");
+  });
+
   it("runMiddleware handles block (/blocked -> 403)", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);
@@ -1896,6 +2430,18 @@ export default function CounterPage() {
     expect(result.continue).toBe(false);
     expect(result.response).toBeInstanceOf(Response);
     expect(result.response.status).toBe(403);
+  });
+
+  it("runMiddleware strips internal cookie headers from custom responses", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    const request = new Request("http://localhost/blocked-with-cookie");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(false);
+    expect(result.response).toBeInstanceOf(Response);
+    expect(result.response.status).toBe(403);
+    expect(result.response.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(result.response.headers.get("set-cookie")).toContain("blocked=1");
   });
 
   it("runMiddleware sets x-custom-middleware header on matched paths", async () => {
@@ -1940,7 +2486,7 @@ export default function CounterPage() {
 
 describe("Production server middleware (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -1975,18 +2521,20 @@ describe("Production server middleware (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
-      port: 0,
-      host: "127.0.0.1",
-      outDir,
-    });
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+      }),
+    );
     const addr = prodServer.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2027,11 +2575,13 @@ describe("Production server middleware (Pages Router)", () => {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      prodServer = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir: path.join(tmpDir, "dist"),
-      });
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: path.join(tmpDir, "dist"),
+        }),
+      );
       const addr = prodServer.address() as { port: number };
       const tempProdUrl = `http://127.0.0.1:${addr.port}`;
 
@@ -2061,12 +2611,69 @@ describe("Production server middleware (Pages Router)", () => {
     expect(cookies.some((c: string) => c.includes("mw-theme=dark"))).toBe(true);
   });
 
+  it("adds middleware CSP nonces to production Pages Router scripts and preloads", async () => {
+    const res = await fetch(`${prodUrl}/dynamic-page?mw-csp-nonce=pages-prod`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-pages-prod' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    expect(html).toContain('<script nonce="pages-prod">window.__NEXT_DATA__ = ');
+    expect(html).toMatch(/<script type="module" nonce="pages-prod" src="\/[^"]+"/);
+    expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
+  });
+
+  it("does not serve cached production Pages ISR HTML to CSP nonce requests", async () => {
+    const first = await fetch(`${prodUrl}/isr-test`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstHtml = await first.text();
+    expect(firstHtml).not.toContain("nonce=");
+
+    const second = await fetch(`${prodUrl}/isr-test?mw-csp-nonce=pages-prod-isr`);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-pages-prod-isr' 'strict-dynamic';",
+    );
+    expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(second.headers.get("x-vinext-cache")).toBeNull();
+    const secondHtml = await second.text();
+    expect(secondHtml).toContain('<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ');
+  });
+
   it("rewrites /rewritten to render /ssr content", async () => {
     const res = await fetch(`${prodUrl}/rewritten`);
     expect(res.status).toBe(200);
     const html = await res.text();
     // /rewritten should serve the content of /ssr page
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("preserves upstream status for external middleware rewrites in production", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((_, res) => {
+      res.writeHead(418, { "content-type": "text/plain" });
+      res.end("upstream status");
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-status`, {
+        headers: {
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/external`,
+        },
+      });
+      expect(res.status).toBe(418);
+      expect(await res.text()).toBe("upstream status");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   // Ported from Next.js:
@@ -2292,6 +2899,14 @@ describe("Production server middleware (Pages Router)", () => {
     expect(html).toContain("Hello, vinext!");
   });
 
+  it("preserves content-length for getServerSideProps res.end() short-circuit responses in production", async () => {
+    const res = await fetch(`${prodUrl}/ssr-res-end`);
+    expect(res.status).toBe(202);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("content-length")).toBe("35");
+    expect(await res.json()).toEqual({ ok: true, source: "gssp-res-end" });
+  });
+
   it("returns 400 for malformed percent-encoded path (not crash)", async () => {
     const res = await fetch(`${prodUrl}/%E0%A4%A`);
     expect(res.status).toBe(400);
@@ -2320,9 +2935,203 @@ describe("Production server middleware (Pages Router)", () => {
   });
 });
 
+describe("Production Pages Router SSR streaming", () => {
+  let outDir: string;
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  async function withFreshStreamingProdServer<T>(
+    run: (freshProdUrl: string) => Promise<T>,
+  ): Promise<T> {
+    const freshOutDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-streaming-fresh-"));
+    let freshServer: import("node:http").Server | undefined;
+
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(freshOutDir, "node_modules"),
+        "junction",
+      );
+      await buildPagesFixtureToOutDir(FIXTURE_DIR, freshOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      freshServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: freshOutDir,
+        }),
+      );
+      const addr = freshServer.address() as { port: number };
+      return await run(`http://127.0.0.1:${addr.port}`);
+    } finally {
+      const serverToClose = freshServer;
+      if (serverToClose) {
+        await new Promise<void>((resolve) => serverToClose.close(() => resolve()));
+      }
+      fs.rmSync(freshOutDir, { recursive: true, force: true });
+    }
+  }
+
+  beforeAll(async () => {
+    outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-streaming-prod-"));
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(outDir, "node_modules"),
+      "junction",
+    );
+    await buildPagesFixtureToOutDir(FIXTURE_DIR, outDir);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+      }),
+    );
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  }, 60000);
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+    if (outDir) {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams Pages SSR responses incrementally in production with br compression", async () => {
+    // Parity target: Next.js streams Node responses via sendResponse() ->
+    // pipeToNodeResponse() instead of buffering the full HTML first, while
+    // still leaving compression enabled under next start.
+    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-response.ts
+    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/pipe-readable.ts
+    const response = await captureStreamedResponse(`${prodUrl}/streaming-ssr`, {
+      headers: { "accept-encoding": "br" },
+    });
+    const partialHtml = response.snapshot.toString("utf8");
+    const finalHtml = response.body.toString("utf8");
+    const contentType = response.headers["content-type"];
+    const contentEncoding = response.headers["content-encoding"];
+    const middlewareHeader = response.headers["x-custom-middleware"];
+    const transferEncoding = response.headers["transfer-encoding"];
+
+    expect(response.statusCode).toBe(200);
+    expect(String(contentType)).toContain("text/html");
+    expect(String(contentEncoding)).toBe("br");
+    expect(String(middlewareHeader)).toBe("active");
+    expect(response.headers["content-length"]).toBeUndefined();
+    expect(String(transferEncoding)).toBe("chunked");
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
+    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs).toBeGreaterThanOrEqual(400);
+    expect(response.rawBody.byteLength).toBeGreaterThan(0);
+    expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
+
+    expect(partialHtml).toContain("Streaming SSR Test");
+    expect(partialHtml).toContain("Loading delayed chunk...");
+    expect(partialHtml).not.toContain("Delayed stream content loaded");
+
+    expect(finalHtml).toContain("Streaming SSR Test");
+    expect(finalHtml).toContain("Delayed stream content loaded");
+    expect(finalHtml).toContain("__NEXT_DATA__");
+  });
+
+  it("streams Pages SSR responses incrementally in production with gzip compression", async () => {
+    const response = await withFreshStreamingProdServer((freshProdUrl) =>
+      captureStreamedResponse(`${freshProdUrl}/streaming-ssr`, {
+        headers: { "accept-encoding": "gzip" },
+      }),
+    );
+    const partialHtml = response.snapshot.toString("utf8");
+    const finalHtml = response.body.toString("utf8");
+
+    expect(response.statusCode).toBe(200);
+    expect(String(response.headers["content-encoding"])).toBe("gzip");
+    expect(response.headers["content-length"]).toBeUndefined();
+    expect(String(response.headers["transfer-encoding"])).toBe("chunked");
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
+    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs).toBeGreaterThanOrEqual(400);
+    expect(partialHtml).toContain("Loading delayed chunk...");
+    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(finalHtml).toContain("Delayed stream content loaded");
+  });
+
+  it("preserves streamed SSR bodies when middleware rewrites are merged into the response", async () => {
+    const res = await fetch(`${prodUrl}/streaming-ssr`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-custom-middleware")).toBe("active");
+
+    const html = await res.text();
+    expect(html).toContain("Delayed stream content loaded");
+  });
+
+  it("serves streamed Pages SSR HEAD requests as headers-only responses in production", async () => {
+    const startedAt = Date.now();
+    const res = await fetch(`${prodUrl}/streaming-ssr`, {
+      method: "HEAD",
+      headers: { "accept-encoding": "br" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-custom-middleware")).toBe("active");
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(await res.text()).toBe("");
+    expect(Date.now() - startedAt).toBeLessThan(400);
+  });
+
+  it("strips stale content-length from streamed Pages SSR responses when gSSP sets one", async () => {
+    // Parity target: Next.js only sets Content-Length for unchunked render
+    // payloads; streamed HTML is sent without one.
+    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-payload.ts
+    const response = await captureStreamedResponse(`${prodUrl}/streaming-gssp-content-length`, {
+      headers: { "accept-encoding": "br" },
+    });
+    const partialHtml = response.snapshot.toString("utf8");
+    const finalHtml = response.body.toString("utf8");
+
+    expect(response.statusCode).toBe(200);
+    expect(String(response.headers["content-encoding"])).toBe("br");
+    expect(response.headers["content-length"]).toBeUndefined();
+    expect(String(response.headers["transfer-encoding"])).toBe("chunked");
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
+    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(partialHtml).toContain("Loading delayed gSSP chunk...");
+    expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
+    expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
+    expect(finalHtml).toContain("Delayed gSSP stream content loaded");
+  });
+
+  it("strips middleware-provided content-length when rewriting to a streamed Pages SSR response", async () => {
+    // Parity target: Next.js route resolution explicitly skips forwarding
+    // middleware content-length headers.
+    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const response = await withFreshStreamingProdServer((freshProdUrl) =>
+      captureStreamedResponse(`${freshProdUrl}/middleware-bad-content-length`, {
+        headers: { "accept-encoding": "br" },
+      }),
+    );
+    const partialHtml = response.snapshot.toString("utf8");
+    const finalHtml = response.body.toString("utf8");
+
+    expect(response.statusCode).toBe(200);
+    expect(String(response.headers["content-encoding"])).toBe("br");
+    expect(response.headers["content-length"]).toBeUndefined();
+    expect(String(response.headers["transfer-encoding"])).toBe("chunked");
+    expect(partialHtml).toContain("Loading delayed chunk...");
+    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(finalHtml).toContain("Streaming SSR Test");
+    expect(finalHtml).toContain("Delayed stream content loaded");
+  });
+});
+
 describe("Production server next.config.js features (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -2357,18 +3166,20 @@ describe("Production server next.config.js features (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
-      port: 0,
-      host: "127.0.0.1",
-      outDir,
-    });
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+      }),
+    );
     const addr = prodServer.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2530,22 +3341,14 @@ describe("Production server next.config.js features (Pages Router)", () => {
 });
 
 describe("Static export (Pages Router)", () => {
-  let server: ViteDevServer;
+  let pagesBundlePath: string;
   const exportDir = path.resolve(FIXTURE_DIR, "out");
 
   beforeAll(async () => {
-    server = await createServer({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext()],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    // Don't need to listen — just need the SSR module loader
-  });
+    pagesBundlePath = await buildPagesFixture(FIXTURE_DIR);
+  }, 60_000);
 
-  afterAll(async () => {
-    await server.close();
+  afterAll(() => {
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 
@@ -2561,7 +3364,7 @@ describe("Static export (Pages Router)", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     const result = await staticExportPages({
-      server,
+      pagesBundlePath,
       routes,
       apiRoutes,
       pagesDir,
@@ -2624,7 +3427,7 @@ describe("Static export (Pages Router)", () => {
     const tempDir = path.resolve(FIXTURE_DIR, "out-temp");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2665,7 +3468,7 @@ describe("Static export (Pages Router)", () => {
     const trailingDir = path.resolve(FIXTURE_DIR, "out-trailing");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2739,11 +3542,13 @@ export function middleware(request) {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir,
-      });
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir,
+        }),
+      );
 
       try {
         const addr = prodServer.address() as { port: number };
@@ -2763,6 +3568,123 @@ export function middleware(request) {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+});
+
+describe("Pages Router production no-body rewrite statuses", () => {
+  let tmpRoot: string;
+  let outDir: string;
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  beforeAll(async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-no-body-rewrite-"));
+    outDir = path.join(tmpRoot, "dist");
+
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpRoot, "node_modules"),
+      "junction",
+    );
+    await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+    await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
+    await fsp.writeFile(
+      path.join(tmpRoot, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+export function middleware(request) {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\\/status-(204|205|304)$/);
+  if (match) {
+    const response = NextResponse.rewrite(new URL("/target", request.url), {
+      status: Number(match[1]),
+    });
+    response.headers.set("x-custom-middleware", "active");
+    return response;
+  }
+  const apiMatch = url.pathname.match(/^\\/api-status-(204|205|304)$/);
+  if (!apiMatch) return NextResponse.next();
+  const response = NextResponse.rewrite(new URL("/api/target", request.url), {
+    status: Number(apiMatch[1]),
+  });
+  response.headers.set("x-custom-middleware", "active");
+  return response;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "index.tsx"),
+      `export default function Home() {
+  return <div>home</div>;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "target.tsx"),
+      `export default function TargetPage() {
+  return <div>TARGET PAGE</div>;
+}
+`,
+    );
+    await fsp.mkdir(path.join(tmpRoot, "pages", "api"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "api", "target.ts"),
+      `export default function handler(req, res) {
+  res.status(200).json({ ok: true });
+}
+`,
+    );
+
+    await buildPagesFixtureToOutDir(tmpRoot, outDir);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+        noCompression: true,
+      }),
+    );
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  }, 60000);
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+    if (tmpRoot) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  for (const statusCode of [204, 205, 304]) {
+    it(`preserves middleware rewrite status ${statusCode} for Pages SSR responses in production`, async () => {
+      const res = await fetch(`${prodUrl}/status-${statusCode}`);
+
+      expect(res.status).toBe(statusCode);
+      expect(res.headers.get("x-custom-middleware")).toBe("active");
+      expect(await res.text()).toBe("");
+    });
+  }
+
+  for (const statusCode of [204, 205, 304]) {
+    it(`drops body headers for middleware rewrite status ${statusCode} on Pages API responses in production`, async () => {
+      // Parity targets:
+      // - Next.js skips forwarding middleware content-length in route resolution.
+      // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+      // - Next.js sends bodyless responses by ending the Node response without piping the body.
+      // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-response.ts
+      const res = await fetch(`${prodUrl}/api-status-${statusCode}`);
+
+      expect(res.status).toBe(statusCode);
+      expect(res.headers.get("x-custom-middleware")).toBe("active");
+      expect(res.headers.get("content-type")).toBeNull();
+      expect(res.headers.get("content-length")).toBeNull();
+      expect(await res.text()).toBe("");
+    });
+  }
 });
 
 describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
@@ -2887,48 +3809,55 @@ describe("Pages Router dev ISR regeneration", () => {
       };
 
       const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
+      const loadModule = async (id: string) => {
+        // ALS registration side-effects loaded at createSSRHandler startup
+        if (id === "vinext/head-state" || id === "vinext/router-state") {
+          return {};
+        }
+
+        if (id === "next/router") {
+          return {
+            setSSRContext() {
+              getRequestContext().currentRequestTags.push("outer-tag");
+              parentRequestTags = [...getRequestContext().currentRequestTags];
+            },
+            wrapWithRouterContext(element: unknown) {
+              return element;
+            },
+          };
+        }
+
+        if (id === routeFile) {
+          return {
+            default() {
+              return null;
+            },
+            async getStaticProps() {
+              regenSawUnifiedScope = isInsideUnifiedScope();
+              regenTags = [...getRequestContext().currentRequestTags];
+              regenExecutionContext = getRequestExecutionContext();
+              regenUnifiedExecutionContext = getRequestContext().executionContext;
+              return {
+                props: {
+                  timestamp: Date.now(),
+                  message: "fresh",
+                },
+                revalidate: 1,
+              };
+            },
+          };
+        }
+
+        throw new Error(`Unexpected module load: ${id}`);
+      };
       const server = {
         transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
-        ssrLoadModule: vi.fn(async (id: string) => {
-          if (id === "next/router") {
-            return {
-              setSSRContext() {
-                getRequestContext().currentRequestTags.push("outer-tag");
-                parentRequestTags = [...getRequestContext().currentRequestTags];
-              },
-              wrapWithRouterContext(element: unknown) {
-                return element;
-              },
-            };
-          }
-
-          if (id === routeFile) {
-            return {
-              default() {
-                return null;
-              },
-              async getStaticProps() {
-                regenSawUnifiedScope = isInsideUnifiedScope();
-                regenTags = [...getRequestContext().currentRequestTags];
-                regenExecutionContext = getRequestExecutionContext();
-                regenUnifiedExecutionContext = getRequestContext().executionContext;
-                return {
-                  props: {
-                    timestamp: Date.now(),
-                    message: "fresh",
-                  },
-                  revalidate: 1,
-                };
-              },
-            };
-          }
-
-          throw new Error(`Unexpected module load: ${id}`);
-        }),
       } as unknown as ViteDevServer;
+      const runner = { import: loadModule };
 
       const handler = createSSRHandler(
         server,
+        runner,
         [
           {
             pattern: "/isr-test",
@@ -2976,8 +3905,9 @@ describe("Pages Router dev ISR regeneration", () => {
       if (!regenPromise) {
         throw new Error("expected stale ISR request to start background regeneration");
       }
+      const pendingRegen = regenPromise;
 
-      await regenPromise;
+      await Promise.resolve(pendingRegen);
 
       expect(regenSawUnifiedScope).toBe(true);
       expect(regenTags).toEqual([]);

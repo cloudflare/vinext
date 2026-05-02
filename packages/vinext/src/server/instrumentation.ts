@@ -38,39 +38,69 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
  * callers (including tests) to provide a full `ModuleRunner` instance.
  */
-export interface ModuleImporter {
+export type ModuleImporter = {
   import(id: string): Promise<unknown>;
+};
+
+/**
+ * Import a module via the runner and cast the result to `Record<string, any>`.
+ *
+ * Centralises the `as Record<string, any>` cast so callers don't need
+ * per-call oxlint-disable comments.
+ */
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
+export async function importModule(
+  runner: ModuleImporter,
+  id: string,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<Record<string, any>> {
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  return (await runner.import(id)) as Record<string, any>;
 }
 
-/** Possible instrumentation file names. */
-const INSTRUMENTATION_FILES = [
-  "instrumentation.ts",
-  "instrumentation.tsx",
-  "instrumentation.js",
-  "instrumentation.mjs",
-  "src/instrumentation.ts",
-  "src/instrumentation.tsx",
-  "src/instrumentation.js",
-  "src/instrumentation.mjs",
-];
+const INSTRUMENTATION_LOCATIONS = ["", "src/"];
+
+function findInstrumentationHookFile(
+  root: string,
+  basename: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  for (const dir of INSTRUMENTATION_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `${basename}${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Find the instrumentation file in the project root.
  */
-export function findInstrumentationFile(root: string): string | null {
-  for (const file of INSTRUMENTATION_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
-    }
-  }
-  return null;
+export function findInstrumentationFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation", fileMatcher);
+}
+
+/**
+ * Find the instrumentation-client file in the project root.
+ */
+export function findInstrumentationClientFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  return findInstrumentationHookFile(root, "instrumentation-client", fileMatcher);
 }
 
 /**
@@ -79,7 +109,7 @@ export function findInstrumentationFile(root: string): string | null {
  * Called when an unhandled error occurs during request handling.
  * Provides the error, the request info, and an error context.
  */
-export interface OnRequestErrorContext {
+export type OnRequestErrorContext = {
   /** The route path (e.g., '/blog/[slug]') */
   routerKind: "Pages Router" | "App Router";
   /** The matched route pattern */
@@ -88,7 +118,7 @@ export interface OnRequestErrorContext {
   routeType: "render" | "route" | "action" | "middleware";
   /** HTTP status code that will be sent */
   revalidateReason?: "on-demand" | "stale" | undefined;
-}
+};
 
 export type OnRequestErrorHandler = (
   error: Error,

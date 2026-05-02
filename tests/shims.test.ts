@@ -1,10 +1,16 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
+import type {
+  CacheHandler,
+  CacheHandlerValue,
+  IncrementalCacheValue,
+} from "../packages/vinext/src/shims/cache.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -43,6 +49,92 @@ describe("next/navigation shim", () => {
     expect(typeof router.prefetch).toBe("function");
   });
 
+  it("keeps pending render snapshot active when external history.pushState syncs the URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/current",
+        search: "?from=committed",
+        hash: "",
+        href: "http://localhost/current?from=committed",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null,
+        pushState(_data: unknown, _unused: string, url?: string | URL | null) {
+          if (!url) return;
+          const parsed = new URL(url, win.location.href);
+          win.location.pathname = parsed.pathname;
+          win.location.search = parsed.search;
+          win.location.hash = parsed.hash;
+          win.location.href = parsed.href;
+        },
+        replaceState(_data: unknown, _unused: string, url?: string | URL | null) {
+          if (!url) return;
+          const parsed = new URL(url, win.location.href);
+          win.location.pathname = parsed.pathname;
+          win.location.search = parsed.search;
+          win.location.hash = parsed.hash;
+          win.location.href = parsed.href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const Context = navigation.getClientNavigationRenderContext();
+      if (!Context) {
+        throw new Error("Expected client navigation render context");
+      }
+
+      navigation.activateNavigationSnapshot();
+      const snapshot = navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/pending?from=snapshot",
+        {},
+      );
+
+      const readHookValues = () => {
+        let pathname = "";
+        let search = "";
+        function Probe() {
+          pathname = navigation.usePathname();
+          search = navigation.useSearchParams().toString();
+          return React.createElement("span", null, pathname);
+        }
+
+        renderToStaticMarkup(
+          React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
+        );
+
+        return { pathname, search };
+      };
+
+      expect(readHookValues()).toEqual({
+        pathname: "/pending",
+        search: "from=snapshot",
+      });
+
+      win.history.pushState(null, "", "/ownerless?from=history");
+
+      expect(readHookValues()).toEqual({
+        pathname: "/pending",
+        search: "from=snapshot",
+      });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("exports redirect, notFound, permanentRedirect", async () => {
     const nav = await import("../packages/vinext/src/shims/navigation.js");
     expect(typeof nav.redirect).toBe("function");
@@ -62,6 +154,45 @@ describe("next/navigation shim", () => {
     }
   });
 
+  // Ported from Next.js: packages/next/src/client/components/redirect.ts
+  // In Next.js, redirect() without an explicit type uses an empty sentinel so
+  // the context (action vs render) can resolve the default at the catch site.
+  it("redirect() without explicit type uses empty sentinel (context-dependent default)", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      // Empty string sentinel — the catch site determines push vs replace
+      expect(parts[1]).toBe("");
+      expect(decodeURIComponent(parts[2])).toBe("/dashboard");
+    }
+  });
+
+  it("redirect() with explicit 'push' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("push");
+    }
+  });
+
+  it("redirect() with explicit 'replace' type preserves it in digest", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      redirect("/dashboard", "replace");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
+    }
+  });
+
   it("redirect() encodes semicolons in URL to prevent digest injection", async () => {
     const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
     try {
@@ -72,8 +203,34 @@ describe("next/navigation shim", () => {
       // The URL field must not leak into the status code position
       expect(parts).toHaveLength(3); // NEXT_REDIRECT, type, encoded-url
       expect(parts[0]).toBe("NEXT_REDIRECT");
-      expect(parts[1]).toBe("replace");
+      // Empty sentinel — no explicit type passed
+      expect(parts[1]).toBe("");
       expect(decodeURIComponent(parts[2])).toBe("http://example.com;301");
+    }
+  });
+
+  it("permanentRedirect() accepts an optional type parameter", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page", "push");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      expect(parts[1]).toBe("push");
+      expect(decodeURIComponent(parts[2])).toBe("/new-page");
+      expect(parts[3]).toBe("308");
+    }
+  });
+
+  it("permanentRedirect() defaults to 'replace' when no type given", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    try {
+      permanentRedirect("/new-page");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      expect(parts[1]).toBe("replace");
     }
   });
 
@@ -164,6 +321,90 @@ describe("next/navigation shim", () => {
     setNavigationContext(null);
   });
 
+  it("shares the hydrated navigation snapshot across browser module instances", async () => {
+    // Next.js derives usePathname/useSearchParams from PathnameContext in
+    // packages/next/src/client/components/app-router.tsx, so hydration does
+    // not have a per-module fallback to "/" for the first client snapshot.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const previousWindow = globalThis.window;
+    const accessorsKey = Symbol.for("vinext.navigation.globalAccessors");
+    const hydrationKey = Symbol.for("vinext.navigation.clientHydrationContext");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessors = globalRecord[accessorsKey];
+    const previousHydration = globalRecord[hydrationKey];
+
+    try {
+      delete globalRecord[accessorsKey];
+      delete globalRecord[hydrationKey];
+      (globalThis as any).window = {
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        history: {
+          pushState() {},
+          replaceState() {},
+        },
+        location: {
+          href: "http://localhost/split-hydration?q=hello",
+          origin: "http://localhost",
+          pathname: "/split-hydration",
+          search: "?q=hello",
+        },
+        removeEventListener() {},
+      };
+
+      const setterPath = "../packages/vinext/src/shims/navigation.js?hydration-setter=issue-871";
+      const hookPath = "../packages/vinext/src/shims/navigation.js?hydration-hook=issue-871";
+      const setterMod = (await import(
+        setterPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      const hookMod = (await import(
+        hookPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      setterMod.setNavigationContext({
+        pathname: "/split-hydration",
+        searchParams: new URLSearchParams("q=hello"),
+        params: { slug: "hello" },
+      });
+
+      function Probe() {
+        const pathname = hookMod.usePathname();
+        const searchParams = hookMod.useSearchParams();
+        const params = hookMod.useParams<{ slug: string }>();
+        return React.createElement(
+          "span",
+          null,
+          `${pathname}|${searchParams.get("q") ?? ""}|${params.slug ?? ""}`,
+        );
+      }
+
+      expect(renderToStaticMarkup(React.createElement(Probe))).toBe(
+        "<span>/split-hydration|hello|hello</span>",
+      );
+
+      setterMod.setNavigationContext(null);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousAccessors === undefined) {
+        delete globalRecord[accessorsKey];
+      } else {
+        globalRecord[accessorsKey] = previousAccessors;
+      }
+      if (previousHydration === undefined) {
+        delete globalRecord[hydrationKey];
+      } else {
+        globalRecord[hydrationKey] = previousHydration;
+      }
+    }
+  });
+
   it("setClientParams provides referential stability for identical params", async () => {
     const { setClientParams, getClientParams } =
       await import("../packages/vinext/src/shims/navigation.js");
@@ -210,7 +451,8 @@ describe("next/navigation shim", () => {
 
     const html = renderToStaticMarkup(
       React.createElement(providerMod.LayoutSegmentProvider, {
-        childSegments: ["explore"],
+        segmentMap: { children: ["explore"] },
+        // oxlint-disable-next-line react/no-children-prop
         children: React.createElement(Probe),
       }),
     );
@@ -261,6 +503,81 @@ describe("next/navigation shim", () => {
     // Outside a React tree, no LayoutSegmentProvider wraps us,
     // so there are no child segments → null.
     expect(useSelectedLayoutSegment()).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments() accepts parallelRoutesKey and returns matching segments", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    // Outside a React tree, returns [] regardless of key.
+    const result = nav.useSelectedLayoutSegments("team");
+    expect(result).toEqual([]);
+  });
+
+  it("useSelectedLayoutSegment() accepts parallelRoutesKey and returns null outside React tree", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    const result = nav.useSelectedLayoutSegment("team");
+    expect(result).toBeNull();
+  });
+
+  it("useSelectedLayoutSegments(parallelRoutesKey) returns per-slot segments via segmentMap", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments, useSelectedLayoutSegment } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const childrenSegs = useSelectedLayoutSegments();
+      const teamSegs = useSelectedLayoutSegments("team");
+      const teamSeg = useSelectedLayoutSegment("team");
+      return createElement(
+        "div",
+        null,
+        createElement("span", { id: "children" }, JSON.stringify(childrenSegs)),
+        createElement("span", { id: "team" }, JSON.stringify(teamSegs)),
+        createElement("span", { id: "team-singular" }, teamSeg ?? "null"),
+      );
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog", "hello"], team: ["settings"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    // React SSR HTML-encodes " as &quot; in text content
+    const Q = "&quot;";
+    expect(html).toContain(`<span id="children">[${Q}blog${Q},${Q}hello${Q}]</span>`);
+    expect(html).toContain(`<span id="team">[${Q}settings${Q}]</span>`);
+    expect(html).toContain('<span id="team-singular">settings</span>');
+  });
+
+  it("useSelectedLayoutSegments(unknownKey) returns [] for missing slot", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegments } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const segs = useSelectedLayoutSegments("nonexistent");
+      return createElement("span", null, JSON.stringify(segs));
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    expect(html).toContain("[]");
   });
 });
 
@@ -313,16 +630,16 @@ describe("next/headers shim", () => {
     });
 
     const syncHeaders = headers();
-    expect(() => syncHeaders.set).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.append).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.delete).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "set")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "append")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "delete")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.append("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.delete("foo")).toThrow(/Headers cannot be modified/);
     expect(syncHeaders.get("foo")).toBe("original");
 
     const awaitedHeaders = await headers();
-    expect(() => awaitedHeaders.set).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(awaitedHeaders, "set")).toThrow(/Headers cannot be modified/);
     expect(() => awaitedHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(awaitedHeaders.get("foo")).toBe("original");
     expect((await headers()).get("foo")).toBe("original");
@@ -377,10 +694,10 @@ describe("next/headers shim", () => {
     });
 
     const syncCookies = cookies();
-    expect(() => syncCookies.set).toThrow(
+    expect(() => Reflect.get(syncCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
-    expect(() => syncCookies.delete).toThrow(
+    expect(() => Reflect.get(syncCookies, "delete")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => syncCookies.set("session", "mutated")).toThrow(
@@ -392,7 +709,7 @@ describe("next/headers shim", () => {
     expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
 
     const awaitedCookies = await cookies();
-    expect(() => awaitedCookies.set).toThrow(
+    expect(() => Reflect.get(awaitedCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => awaitedCookies.set("session", "mutated")).toThrow(
@@ -733,6 +1050,51 @@ describe("next/headers shim", () => {
     });
   });
 
+  // Ported from Next.js:
+  // - packages/next/src/server/async-storage/request-store.ts
+  // - test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/async-storage/request-store.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  it("middleware-set cookies are visible to cookies() in the same render", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const {
+      headersContextFromRequest,
+      applyMiddlewareRequestHeaders,
+      runWithHeadersContext,
+      cookies,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    const middlewareResponse = NextResponse.next();
+    middlewareResponse.cookies.set("rsc-cookie-value-1", "123", { path: "/" });
+    middlewareResponse.cookies.set("rsc-cookie-value-2", "456", { path: "/", secure: true });
+
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com/rsc-cookies", {
+        headers: { cookie: "existing=kept" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      applyMiddlewareRequestHeaders(middlewareResponse.headers);
+
+      const jar = await cookies();
+      expect(jar.get("existing")).toEqual({ name: "existing", value: "kept" });
+      expect(jar.get("rsc-cookie-value-1")).toEqual({
+        name: "rsc-cookie-value-1",
+        value: "123",
+      });
+      expect(jar.get("rsc-cookie-value-2")).toEqual({
+        name: "rsc-cookie-value-2",
+        value: "456",
+      });
+      expect(jar.getAll()).toEqual([
+        { name: "existing", value: "kept" },
+        { name: "rsc-cookie-value-1", value: "123" },
+        { name: "rsc-cookie-value-2", value: "456" },
+      ]);
+    });
+  });
+
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import("../packages/vinext/src/shims/headers.js");
     // Ensure context is cleared
@@ -826,7 +1188,8 @@ describe("next/headers shim", () => {
     expect(dm2.isEnabled).toBe(false);
 
     const cookieHeader = getDraftModeCookieHeader();
-    expect(cookieHeader).toContain("Max-Age=0");
+    expect(cookieHeader).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    expect(cookieHeader).not.toContain("Max-Age=0");
     setHeadersContext(null);
   });
 
@@ -892,10 +1255,59 @@ describe("next/headers phase-aware cookies", () => {
     const previousPhase = setHeadersAccessPhase("route-handler");
     try {
       const cookieStore = cookies();
-      cookieStore.set("token", "sync-token", { httpOnly: true });
+      void cookieStore.set("token", "sync-token", { httpOnly: true });
 
       expect(cookieStore.get("token")).toEqual({ name: "token", value: "sync-token" });
       expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("token=sync-token")]);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().set() emits Path=/ when no path option is provided", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.set("token", "implicit-path");
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("token=implicit-path");
+      expect(pending[0]).toContain("Path=/");
+      expect(getAndClearPendingCookies()).toHaveLength(0);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().set() preserves an explicit path option", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.set("token", "scoped-path", { path: "/api" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("token=scoped-path");
+      expect(pending[0]).toContain("Path=/api");
+      expect(pending[0]).not.toContain("Path=/;");
+      expect(getAndClearPendingCookies()).toHaveLength(0);
     } finally {
       setHeadersAccessPhase(previousPhase);
       setHeadersContext(null);
@@ -920,7 +1332,56 @@ describe("next/headers phase-aware cookies", () => {
       const pending = getAndClearPendingCookies();
       expect(pending.length).toBe(1);
       expect(pending[0]).toContain("session=");
-      expect(pending[0]).toContain("Max-Age=0");
+      expect(pending[0]).toContain("Expires=");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().delete() accepts options with path and domain", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.delete({ name: "session", path: "/account", domain: ".example.com" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("session=");
+      expect(pending[0]).toContain("Path=/account");
+      expect(pending[0]).toContain("Domain=.example.com");
+      expect(pending[0]).toContain("Expires=");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().delete() defaults Path=/ for object syntax without path", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.delete({ name: "session" });
+
+      const pending = getAndClearPendingCookies();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toContain("session=");
+      expect(pending[0]).toContain("Path=/");
+      expect(pending[0]).toContain("Expires=");
     } finally {
       setHeadersAccessPhase(previousPhase);
       setHeadersContext(null);
@@ -1016,11 +1477,27 @@ describe("next/server shim", () => {
     expect(res.headers.get("Location")).toBe("https://example.com/new");
   });
 
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("NextResponse.redirect() throws when using a relative URL", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    expect(() => NextResponse.redirect("/urls-b")).toThrow("URL is malformed");
+  });
+
   it("NextResponse.rewrite() sets x-middleware-rewrite header", async () => {
     const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
     const res = NextResponse.rewrite("https://example.com/internal");
 
     expect(res.headers.get("x-middleware-rewrite")).toBe("https://example.com/internal");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("NextResponse.rewrite() throws when using a relative URL", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    expect(() => NextResponse.rewrite("/urls-b")).toThrow("URL is malformed");
   });
 
   it("NextResponse.rewrite() forwards request header overrides", async () => {
@@ -1040,6 +1517,28 @@ describe("next/server shim", () => {
     expect(res.headers.get("x-middleware-override-headers")).toBe("cookie,x-added");
     expect(res.headers.get("x-middleware-request-cookie")).toBe("a=1");
     expect(res.headers.get("x-middleware-request-x-added")).toBe("1");
+  });
+
+  // Ported from Next.js:
+  // - packages/next/src/server/web/spec-extension/response.ts
+  // - test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/response.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  it("NextResponse.cookies.set() emits x-middleware-set-cookie for same-render reads", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const res = NextResponse.next();
+
+    res.cookies.set("rsc-cookie-value-1", "123", { path: "/" });
+    res.cookies.set("rsc-cookie-value-2", "456", { path: "/", httpOnly: true });
+
+    expect(res.headers.getSetCookie()).toEqual([
+      "rsc-cookie-value-1=123; Path=/",
+      "rsc-cookie-value-2=456; Path=/; HttpOnly",
+    ]);
+    const internalCookieHeader = res.headers.get("x-middleware-set-cookie");
+    expect(internalCookieHeader).not.toBeNull();
+    expect(internalCookieHeader).toContain("rsc-cookie-value-1=123; Path=/");
+    expect(internalCookieHeader).toContain("rsc-cookie-value-2=456; Path=/; HttpOnly");
   });
 
   it("NextResponse.next() sets x-middleware-next header", async () => {
@@ -1105,9 +1604,79 @@ describe("next/server shim", () => {
     after(() => {
       throw new Error("task failed");
     });
-    await new Promise((r) => setTimeout(r, 10));
+    // after() wraps function tasks in Promise.resolve().then(task) — two microtask
+    // ticks are sufficient and more deterministic than a setTimeout.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(consoleError).toHaveBeenCalledWith("[vinext] after() task failed:", expect.any(Error));
     consoleError.mockRestore();
+  });
+
+  it("after() calls waitUntil on the execution context when one exists", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const mockCtx = {
+      waitUntil: (p: Promise<unknown>) => {
+        waitUntilCalls.push(p);
+      },
+    };
+
+    let called = false;
+    await runWithExecutionContext(mockCtx, () => {
+      after(() => {
+        called = true;
+      });
+    });
+
+    // waitUntil is called synchronously — no microtask delay needed
+    expect(waitUntilCalls).toHaveLength(1);
+    // Await the guarded promise to verify the callback ran
+    await waitUntilCalls[0];
+    expect(called).toBe(true);
+  });
+
+  it("after() falls back to fire-and-forget when no execution context exists", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+
+    // Outside any execution context scope — should still run the task
+    let called = false;
+    after(() => {
+      called = true;
+    });
+    // after() wraps function tasks in Promise.resolve().then(task) — two microtask
+    // ticks are sufficient and more deterministic than a setTimeout.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(true);
+  });
+
+  it('after() throws inside "use cache" scope', async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, () => {
+      expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
+    });
+  });
+
+  it("after() throws inside unstable_cache() scope", async () => {
+    const { after } = await import("../packages/vinext/src/shims/server.js");
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const key = Symbol.for("vinext.unstableCache.als");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    // Lazily register an ALS on globalThis if cache.ts hasn't been imported yet.
+    // This test is intentionally isolated from the real cache.ts registration path —
+    // it only validates that server.ts reads from the same Symbol key to detect the
+    // unstable_cache scope. If cache.ts was already imported, the existing instance is
+    // reused; if not, this standalone ALS is sufficient for the guard to work.
+    if (!g[key]) g[key] = new AsyncLocalStorage();
+
+    (g[key] as any).run(true, () => {
+      expect(() => after(() => {})).toThrow(/unstable_cache/);
+    });
   });
 
   it("connection() returns a resolved promise", async () => {
@@ -1324,6 +1893,151 @@ describe("next/cache shim", () => {
     mod.refresh();
   });
 
+  // Ported from Next.js: packages/next/src/client/request/io.browser.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/request/io.browser.ts
+  it("exports unstable_io function", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.unstable_io).toBe("function");
+  });
+
+  it("unstable_io returns a resolved promise", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const result = unstable_io();
+    expect(result).toBeInstanceOf(Promise);
+    expect((result as any).status).toBe("fulfilled");
+    expect((result as any).value).toBeUndefined();
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it("unstable_io returns same instance (singleton)", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const r1 = unstable_io();
+    const r2 = unstable_io();
+    expect(r1).toBe(r2);
+  });
+
+  // Ported from Next.js: packages/next/src/server/request/io.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+  it("unstable_io returns a hanging promise during prerender", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+
+    // run() returns whatever the callback returns — a hanging promise.
+    const hanging = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    // The promise should not be resolved or rejected (it's "hanging")
+    expect(hanging).toBeInstanceOf(Promise);
+
+    // Verify it's still hanging using Promise.race (more portable than V8 internals)
+    const result = await Promise.race([
+      hanging.then(() => "resolved"),
+      new Promise((r) => setTimeout(() => r("still-hanging"), 50)),
+    ]);
+    expect(result).toBe("still-hanging");
+
+    // Clean up by aborting the signal
+    controller.abort();
+  });
+
+  it("unstable_io resolves immediately with request store", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const promise = workUnitAsyncStorage.run({ type: "request" }, unstable_io);
+
+    expect(promise).toBeInstanceOf(Promise);
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("unstable_io resolves immediately with cache store", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const promise = workUnitAsyncStorage.run({ type: "cache" }, unstable_io);
+
+    expect(promise).toBeInstanceOf(Promise);
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("unstable_io rejects hanging promise on abort when prerendering", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+
+    const hanging = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    expect(hanging).toBeInstanceOf(Promise);
+
+    // Abort the signal — the hanging promise should reject
+    controller.abort();
+    await expect(hanging).rejects.toThrow(/unstable_io/i);
+  });
+
+  it("unstable_io returns rejected promise when signal already aborted", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const controller = new AbortController();
+    controller.abort(); // already aborted
+
+    const promise = workUnitAsyncStorage.run(
+      { type: "prerender", renderSignal: controller.signal },
+      unstable_io,
+    );
+
+    await expect(promise).rejects.toThrow(/prerendering/i);
+  });
+
+  it("unstable_io does not emit unhandled rejection when signal already aborted", async () => {
+    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const controller = new AbortController();
+      controller.abort(); // already aborted
+
+      const promise = workUnitAsyncStorage.run(
+        { type: "prerender", renderSignal: controller.signal, route: "/test" },
+        unstable_io,
+      );
+
+      // Wait a tick for potential unhandled rejection to be detected
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Await the promise to handle the rejection
+      try {
+        await promise;
+      } catch {
+        // expected
+      }
+
+      expect(unhandledRejections.length).toBe(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
   it("setCacheHandler swaps the active handler", async () => {
     const { setCacheHandler, getCacheHandler, unstable_cache } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -1460,6 +2174,29 @@ describe("next/cache shim", () => {
     consoleWarn.mockRestore();
   });
 
+  it("cacheLife inline configs inherit default profile values for omitted fields", async () => {
+    const {
+      cacheLife,
+      _consumeRequestScopedCacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+
+    await _runWithCacheState(async () => {
+      cacheLife({ expire: 60 });
+
+      expect(_peekRequestScopedCacheLife()).toEqual({
+        revalidate: 900,
+        expire: 60,
+      });
+      expect(_consumeRequestScopedCacheLife()).toEqual({
+        revalidate: 900,
+        expire: 60,
+      });
+      expect(_peekRequestScopedCacheLife()).toBeNull();
+    });
+  });
+
   it("exports cacheTag as a no-op function", async () => {
     const { cacheTag } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheTag).toBe("function");
@@ -1509,6 +2246,140 @@ describe("next/cache shim", () => {
     expect(callCount).toBe(2);
 
     setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("unstable_cache serves stale entries and refreshes them in the background during App Router requests", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const setBodies: string[] = [];
+    let callCount = 0;
+
+    const handler: CacheHandler = {
+      async get(): Promise<CacheHandlerValue> {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale-value" }),
+              url: "unstable_cache:stale-swr-test:[]",
+            },
+            tags: ["stale-swr"],
+            revalidate: 1,
+          },
+        };
+      },
+      async set(_key: string, data: IncrementalCacheValue | null) {
+        if (data?.kind === "FETCH") {
+          setBodies.push(data.data.body);
+        }
+      },
+      async revalidateTag(_tags: string | string[]) {},
+    };
+
+    setCacheHandler(handler);
+
+    const cached = unstable_cache(
+      async () => {
+        callCount++;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return "fresh-value";
+      },
+      ["stale-swr-test"],
+      { tags: ["stale-swr"], revalidate: 1 },
+    );
+
+    // Matches Next.js App Router semantics: stale entries schedule a
+    // pending revalidate and return the stale response immediately.
+    // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+    const requestContext = createRequestContext({
+      unstableCacheRevalidation: "background",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
+    });
+
+    try {
+      const result = await Promise.race([
+        runWithRequestContext(requestContext, () => cached()),
+        new Promise((resolve) => setTimeout(() => resolve("blocked"), 10)),
+      ]);
+
+      expect(result).toBe("stale-value");
+      expect(callCount).toBe(1);
+      expect(waitUntilPromises).toHaveLength(1);
+      expect(setBodies).toEqual([]);
+
+      await Promise.all(waitUntilPromises);
+
+      expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("unstable_cache blocks on stale entries inside revalidation scopes", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    let callCount = 0;
+    const handler: CacheHandler = {
+      async get(): Promise<CacheHandlerValue> {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale-value" }),
+              url: "unstable_cache:foreground-test:[]",
+            },
+            tags: ["foreground"],
+            revalidate: 1,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag(_tags: string | string[]) {},
+    };
+
+    setCacheHandler(handler);
+
+    const cached = unstable_cache(
+      async () => {
+        callCount++;
+        return "fresh-value";
+      },
+      ["foreground-test"],
+      { tags: ["foreground"], revalidate: 1 },
+    );
+
+    // Next.js foreground-revalidates stale unstable_cache entries while
+    // regenerating a static/ISR page so the regenerated page stores fresh data.
+    // Source test: https://github.com/vercel/next.js/blob/canary/test/production/app-dir/unstable-cache-foreground-revalidate/unstable-cache-foreground-revalidate.test.ts
+    const requestContext = createRequestContext({
+      unstableCacheRevalidation: "foreground",
+    });
+
+    try {
+      await expect(runWithRequestContext(requestContext, () => cached())).resolves.toBe(
+        "fresh-value",
+      );
+      expect(callCount).toBe(1);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("unstable_cache with no revalidate option caches indefinitely", async () => {
@@ -1581,6 +2452,43 @@ describe('"use cache" runtime', () => {
     const r3 = await cached(7);
     expect(r3).toEqual({ result: 14 });
     expect(callCount).toBe(2);
+  });
+
+  it("scopes shared cache entries by build ID", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const previousBuildId = process.env.__VINEXT_BUILD_ID;
+    try {
+      let callCount = 0;
+
+      process.env.__VINEXT_BUILD_ID = "build-one";
+      const firstBuild = registerCachedFunction(async () => {
+        callCount++;
+        return { version: "old" };
+      }, "test:same-id");
+
+      expect(await firstBuild()).toEqual({ version: "old" });
+      expect(callCount).toBe(1);
+
+      process.env.__VINEXT_BUILD_ID = "build-two";
+      const secondBuild = registerCachedFunction(async () => {
+        callCount++;
+        return { version: "new" };
+      }, "test:same-id");
+
+      expect(await secondBuild()).toEqual({ version: "new" });
+      expect(callCount).toBe(2);
+    } finally {
+      if (previousBuildId === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
+        process.env.__VINEXT_BUILD_ID = previousBuildId;
+      }
+    }
   });
 
   it("registerCachedFunction respects cacheLife inside cached function", async () => {
@@ -1939,16 +2847,48 @@ describe("replyToCacheKey deterministic hashing", () => {
 describe("middleware runner", () => {
   it("findMiddlewareFile finds middleware.ts at project root", async () => {
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
     // pages-basic fixture has middleware.ts
-    const result = findMiddlewareFile(FIXTURE_DIR);
+    const result = findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
     expect(result).not.toBeNull();
     expect(result).toContain("middleware.ts");
   });
 
   it("findMiddlewareFile returns null when no middleware exists", async () => {
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
-    const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    const result = findMiddlewareFile(
+      "/tmp/nonexistent-dir-" + Date.now(),
+      createValidFileMatcher(),
+    );
     expect(result).toBeNull();
+  });
+
+  it("findMiddlewareFile does not find middleware.ts when ts is not a configured pageExtension", async () => {
+    const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    // FIXTURE_DIR has middleware.ts — restricting to mdx only means it should not match
+    const result = findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher(["mdx"]));
+    expect(result).toBeNull();
+  });
+
+  it("findMiddlewareFile emits a deprecation warning when middleware.ts is found", async () => {
+    const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("middleware.ts is deprecated in Next.js 16"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("findMiddlewareFile prefers proxy.ts over middleware.ts (Next.js 16)", async () => {
@@ -1956,13 +2896,15 @@ describe("middleware runner", () => {
     const path = await import("node:path");
     const os = await import("node:os");
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
 
     // Create a temp directory with both proxy.ts and middleware.ts
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
     try {
       fs.writeFileSync(path.join(tmpDir, "proxy.ts"), "export default function proxy() {}");
       fs.writeFileSync(path.join(tmpDir, "middleware.ts"), "export function middleware() {}");
-      const result = findMiddlewareFile(tmpDir);
+      const result = findMiddlewareFile(tmpDir, createValidFileMatcher());
       expect(result).not.toBeNull();
       expect(result).toContain("proxy.ts");
     } finally {
@@ -1975,11 +2917,13 @@ describe("middleware runner", () => {
     const path = await import("node:path");
     const os = await import("node:os");
     const { findMiddlewareFile } = await import("../packages/vinext/src/server/middleware.js");
+    const { createValidFileMatcher } =
+      await import("../packages/vinext/src/routing/file-matcher.js");
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
     try {
       fs.writeFileSync(path.join(tmpDir, "proxy.js"), "module.exports = function proxy() {}");
-      const result = findMiddlewareFile(tmpDir);
+      const result = findMiddlewareFile(tmpDir, createValidFileMatcher());
       expect(result).not.toBeNull();
       expect(result).toContain("proxy.js");
     } finally {
@@ -2051,6 +2995,50 @@ describe("runMiddleware preserves x-middleware-request-* headers (dev mode)", ()
     expect(result.responseHeaders!.get("x-middleware-request-x-auth")).toBe("bearer-token");
     // x-middleware-rewrite must be stripped
     expect(result.responseHeaders!.has("x-middleware-rewrite")).toBe(false);
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("preserves the full external URL for middleware rewrites", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    const mockRunner = {
+      import: async () => ({
+        default: () => NextResponse.rewrite("https://api.example.com/echo?from=middleware"),
+        config: { matcher: "/:path*" },
+      }),
+    };
+
+    const request = new Request("http://localhost/original?keep=1");
+    const result = await runMiddleware(mockRunner as any, "/fake/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("https://api.example.com/echo?from=middleware");
+  });
+
+  it("strips x-middleware-set-cookie from custom middleware responses", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    const mockRunner = {
+      import: async () => ({
+        default: () => {
+          const res = new NextResponse("blocked", { status: 403 });
+          res.cookies.set("blocked", "1", { path: "/" });
+          return res;
+        },
+        config: { matcher: "/:path*" },
+      }),
+    };
+
+    const request = new Request("http://localhost/blocked");
+    const result = await runMiddleware(mockRunner as any, "/fake/middleware.ts", request);
+
+    expect(result.continue).toBe(false);
+    expect(result.response).toBeDefined();
+    expect(result.response!.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(result.response!.headers.get("set-cookie")).toContain("blocked=1");
   });
 });
 
@@ -2501,207 +3489,86 @@ describe("normalizePath", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Codegen parity tests (verify generated code matches runtime behavior)
+// ── escapePathDelimiters / decodePathParams ────────────────────────────────
+// Ported from Next.js: packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
+// and packages/next/src/server/lib/router-utils/decode-path-params.ts
 
-describe("middleware codegen parity", () => {
-  it("generateMiddlewareMatcherCode('modern') produces working matchesMiddleware", async () => {
-    const { generateSafeRegExpCode, generateMiddlewareMatcherCode } =
-      await import("../packages/vinext/src/server/middleware-codegen.js");
-    // Eval the generated code and test it behaves identically to the runtime
-    const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
-    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
-    const { matchMiddlewarePattern, matchesMiddleware } = fn();
+describe("escapePathDelimiters", () => {
+  let escapePathDelimiters: (segment: string, escapeEncoded?: boolean) => string;
 
-    // No matcher → matches all (Next.js default)
-    expect(matchesMiddleware("/", undefined)).toBe(true);
-    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
-    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(true);
-    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(true);
-
-    // Exact match
-    expect(matchMiddlewarePattern("/about", "/about")).toBe(true);
-    expect(matchMiddlewarePattern("/other", "/about")).toBe(false);
-    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
-    expect(
-      matchesMiddleware("/about", "/about", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
-    expect(
-      matchesMiddleware("/fr/about", "/about", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
-    // Ported from Next.js: test/e2e/middleware-matcher/index.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-matcher/index.test.ts
-    expect(
-      matchesMiddleware("/", "/", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
-
-    // Regex pattern with groups (must NOT corrupt the regex via dot-escaping)
-    expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
-    expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
-    expect(
-      matchesMiddleware("/fr/about", "/((?!api|_next|favicon\\.ico).*)", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
-    expect(
-      matchesMiddleware("/fr/api/hello", "/((?!api|_next|favicon\\.ico).*)", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(false);
-    expect(
-      matchesMiddleware(
-        "/fr/_next/static/chunk.js",
-        "/((?!api|_next|favicon\\.ico).*)",
-        undefined,
-        {
-          locales: ["en", "fr"],
-          defaultLocale: "en",
-        },
-      ),
-    ).toBe(false);
-    expect(
-      matchesMiddleware("/fr/favicon.ico", "/((?!api|_next|favicon\\.ico).*)", undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(false);
-
-    // Named params
-    expect(matchMiddlewarePattern("/user/123", "/user/:id")).toBe(true);
-
-    // :param(constraint) — inline regex constraint on a named param
-    expect(matchMiddlewarePattern("/blog/123", "/blog/:id(\\d+)")).toBe(true);
-    expect(matchMiddlewarePattern("/blog/abc", "/blog/:id(\\d+)")).toBe(false);
-    expect(matchMiddlewarePattern("/en/about", "/:locale(en|es|fr)/about")).toBe(true);
-    expect(matchMiddlewarePattern("/de/about", "/:locale(en|es|fr)/about")).toBe(false);
-
-    // Wildcard
-    expect(matchMiddlewarePattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
-    expect(matchMiddlewarePattern("/dashboard", "/dashboard/:path*")).toBe(true);
-
-    const gatedMatcher = [
-      {
-        source: "/dashboard",
-        has: [{ type: "query", key: "preview", value: "1" }],
-        missing: [{ type: "header", key: "x-blocked" }],
-      },
-    ];
-    expect(matchesMiddleware("/dashboard", gatedMatcher)).toBe(false);
-    expect(
-      matchesMiddleware(
-        "/dashboard",
-        gatedMatcher,
-        new Request("https://example.com/dashboard?preview=1"),
-      ),
-    ).toBe(true);
-    expect(
-      matchesMiddleware(
-        "/dashboard",
-        gatedMatcher,
-        new Request("https://example.com/dashboard?preview=1", {
-          headers: { "x-blocked": "1" },
-        }),
-      ),
-    ).toBe(false);
-
-    expect(
-      matchesMiddleware("/dashboard", [{ source: "/dashboard" }], undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
-    expect(
-      matchesMiddleware("/fr/dashboard", [{ source: "/dashboard" }], undefined, {
-        locales: ["en", "fr"],
-        defaultLocale: "en",
-      }),
-    ).toBe(true);
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    escapePathDelimiters = mod.escapePathDelimiters;
   });
 
-  it("generateMiddlewareMatcherCode('es5') produces working matchesMiddleware", async () => {
-    const { generateSafeRegExpCode, generateMiddlewareMatcherCode } =
-      await import("../packages/vinext/src/server/middleware-codegen.js");
-    const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
-    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
-    const { matchMiddlewarePattern, matchesMiddleware } = fn();
-
-    // No matcher → matches all
-    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
-
-    // Regex guard (must not corrupt regex patterns via dot-escaping)
-    expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
-    expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
-
-    // :param(constraint) — inline regex constraint on a named param
-    expect(matchMiddlewarePattern("/blog/123", "/blog/:id(\\d+)")).toBe(true);
-    expect(matchMiddlewarePattern("/blog/abc", "/blog/:id(\\d+)")).toBe(false);
-    expect(matchMiddlewarePattern("/en/about", "/:locale(en|es|fr)/about")).toBe(true);
-    expect(matchMiddlewarePattern("/de/about", "/:locale(en|es|fr)/about")).toBe(false);
-
-    const headerMatcher = [
-      {
-        source: "/dashboard",
-        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
-      },
-    ];
-    expect(matchesMiddleware("/dashboard", headerMatcher)).toBe(false);
-    expect(
-      matchesMiddleware(
-        "/dashboard",
-        headerMatcher,
-        new Request("https://example.com/dashboard", {
-          headers: { "x-user-tier": "pro" },
-        }),
-      ),
-    ).toBe(true);
-
-    const hostMatcher = [
-      {
-        source: "/dashboard",
-        has: [{ type: "host", value: "example.com" }],
-      },
-    ];
-    const mixedCaseHostRequest = {
-      url: "https://example.com/dashboard",
-      headers: new Headers([["host", "Example.com:3000"]]),
-    };
-    const emptyHostRequest = {
-      url: "https://example.com/dashboard",
-      headers: new Headers([["host", ""]]),
-    };
-    expect(matchesMiddleware("/dashboard", hostMatcher, mixedCaseHostRequest)).toBe(true);
-    expect(matchesMiddleware("/dashboard", hostMatcher, emptyHostRequest)).toBe(false);
+  it("re-encodes forward slash", () => {
+    expect(escapePathDelimiters("admin/panel")).toBe("admin%2Fpanel");
   });
 
-  it("generateNormalizePathCode produces working __normalizePath", async () => {
-    const { generateNormalizePathCode } =
-      await import("../packages/vinext/src/server/middleware-codegen.js");
-    const code = generateNormalizePathCode("modern");
-    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
-    const fn = new Function(code + "\nreturn __normalizePath;");
-    const __normalizePath = fn();
+  it("re-encodes hash and question mark", () => {
+    expect(escapePathDelimiters("foo#bar")).toBe("foo%23bar");
+    expect(escapePathDelimiters("foo?bar")).toBe("foo%3Fbar");
+  });
 
-    expect(__normalizePath("/")).toBe("/");
-    expect(__normalizePath("/foo/bar")).toBe("/foo/bar");
-    expect(__normalizePath("//foo")).toBe("/foo");
-    expect(__normalizePath("/foo//bar")).toBe("/foo/bar");
-    expect(__normalizePath("/foo/./bar")).toBe("/foo/bar");
-    expect(__normalizePath("/foo/../bar")).toBe("/bar");
-    expect(__normalizePath("/../../../etc/passwd")).toBe("/etc/passwd");
+  it("re-encodes already-encoded delimiters when escapeEncoded is true", () => {
+    expect(escapePathDelimiters("admin%2Fpanel", true)).toBe("admin%252Fpanel");
+    expect(escapePathDelimiters("foo%23bar", true)).toBe("foo%2523bar");
+    expect(escapePathDelimiters("foo%3Fbar", true)).toBe("foo%253Fbar");
+    expect(escapePathDelimiters("foo%5Cbar", true)).toBe("foo%255Cbar");
+  });
+
+  it("leaves non-delimiter characters unchanged", () => {
+    expect(escapePathDelimiters("café")).toBe("café");
+    expect(escapePathDelimiters("hello world")).toBe("hello world");
+  });
+});
+
+describe("decodePathParams", () => {
+  let decodePathParams: (pathname: string) => string;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/normalize-path.js");
+    decodePathParams = mod.decodePathParams;
+  });
+
+  it("decodes non-ASCII characters within segments", () => {
+    expect(decodePathParams("/caf%C3%A9")).toBe("/café");
+    expect(decodePathParams("/%E6%97%A5%E6%9C%AC%E8%AA%9E")).toBe("/日本語");
+  });
+
+  it("preserves encoded slashes (%2F) - does not change path structure", () => {
+    expect(decodePathParams("/admin%2Fpanel")).toBe("/admin%2Fpanel");
+  });
+
+  it("preserves encoded hash (%23) and question mark (%3F)", () => {
+    expect(decodePathParams("/foo%23bar")).toBe("/foo%23bar");
+    expect(decodePathParams("/foo%3Fbar")).toBe("/foo%3Fbar");
+  });
+
+  it("decodes encoded backslash (%5C) since it is not a path delimiter", () => {
+    // Backslash is not a URL path delimiter (browsers normalize \ to / before
+    // sending). The escapePathDelimiters function only re-encodes /, #, and ?.
+    // %5C is decoded to \ and left as-is, matching Next.js behavior.
+    expect(decodePathParams("/foo%5Cbar")).toBe("/foo\\bar");
+  });
+
+  it("decodes mixed paths correctly", () => {
+    // Non-ASCII decoded, structural delimiters preserved
+    expect(decodePathParams("/caf%C3%A9/admin%2Fpanel")).toBe("/café/admin%2Fpanel");
+  });
+
+  it("handles already-decoded paths", () => {
+    expect(decodePathParams("/about")).toBe("/about");
+    expect(decodePathParams("/foo/bar/baz")).toBe("/foo/bar/baz");
+  });
+
+  it("handles malformed percent-encoding gracefully", () => {
+    // Should not throw, just return the segment as-is
+    expect(decodePathParams("/%E0%A4%A")).toBe("/%E0%A4%A");
+  });
+
+  it("handles root path", () => {
+    expect(decodePathParams("/")).toBe("/");
   });
 });
 
@@ -2876,9 +3743,8 @@ describe("double-encoded path handling in middleware", () => {
     expect(matchPattern(normalized, "/dashboard")).toBe(false);
   });
 
-  it("matchRoute in generated code does not double-decode pathnames", async () => {
-    // Verify that matchRoute no longer calls decodeURIComponent internally.
-    // The generated RSC entry code is a string — we check it directly.
+  it("RSC route matching does not double-decode pathnames", async () => {
+    // Verify the generated entry delegates route matching to the typed helper.
     const { generateRscEntry } = await import("../packages/vinext/src/entries/app-rsc-entry.js");
     const code = generateRscEntry("/tmp/app", [
       {
@@ -2897,55 +3763,50 @@ describe("double-encoded path handling in middleware", () => {
         layoutErrorPaths: [],
         notFoundPath: null,
         notFoundPaths: [],
+        forbiddenPaths: [],
         forbiddenPath: null,
+        unauthorizedPaths: [],
         unauthorizedPath: null,
         parallelSlots: [],
       },
     ]);
-    // Extract the matchRoute function from generated code
-    const matchRouteMatch = code.match(/function matchRoute\(url\) \{[\s\S]*?\n\}/);
-    expect(matchRouteMatch).toBeTruthy();
-    const matchRouteCode = matchRouteMatch![0];
+    expect(code).toContain("createAppRscRouteMatcher as __createAppRscRouteMatcher");
+    expect(code).toContain("return __routeMatcher.matchRoute(url);");
+
+    const routeMatchingSource = await readFile(
+      new URL("../packages/vinext/src/server/app-rsc-route-matching.ts", import.meta.url),
+      "utf8",
+    );
     // Verify it does NOT call decodeURIComponent (the comment mentions it but
     // should not have an actual call like `decodeURIComponent(...)`)
-    expect(matchRouteCode).not.toMatch(/\bdecodeURIComponent\s*\(/);
+    expect(routeMatchingSource).not.toMatch(/\bdecodeURIComponent\s*\(/);
   });
 
-  it("middleware always receives a Request with the decoded pathname (not raw URL)", async () => {
-    const { generateRscEntry } = await import("../packages/vinext/src/entries/app-rsc-entry.js");
-    const code = generateRscEntry(
-      "/tmp/app",
-      [
-        {
-          pattern: "/dashboard",
-          patternParts: ["dashboard"],
-          isDynamic: false,
-          params: [],
-          pagePath: null,
-          routePath: null,
-          layouts: [],
-          routeSegments: [],
-          layoutTreePositions: [],
-          templates: [],
-          loadingPath: null,
-          errorPath: null,
-          layoutErrorPaths: [],
-          notFoundPath: null,
-          notFoundPaths: [],
-          forbiddenPath: null,
-          unauthorizedPath: null,
-          parallelSlots: [],
-        },
-      ],
-      "/tmp/middleware.ts",
-    );
-    // The generated code should ALWAYS construct a new Request with cleanPathname.
-    // Verify the generated code constructs a Request with the decoded pathname
-    // for ALL requests (not just RSC).
-    expect(code).not.toMatch(/let mwRequest = request;/);
-    expect(code).toContain("const mwUrl = new URL(request.url)");
-    expect(code).toContain("mwUrl.pathname = cleanPathname");
-    expect(code).toContain("const mwRequest = new Request(mwUrl, request)");
+  it("App Router middleware receives a Request with the decoded pathname (not raw URL)", async () => {
+    const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
+    let capturedUrl: string | undefined;
+    const module = {
+      default: (req: Request) => {
+        capturedUrl = req.url;
+        return new Response(null, {
+          headers: { "x-middleware-next": "1" },
+        });
+      },
+    };
+
+    const result = await applyAppMiddleware({
+      cleanPathname: "/%64ashboard",
+      context: { headers: null, requestHeaders: null, status: null },
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/%2564ashboard"),
+    });
+
+    expect(result.kind).toBe("continue");
+    expect(capturedUrl).toBeDefined();
+    const mwPathname = new URL(capturedUrl!).pathname;
+    expect(mwPathname).toBe("/%64ashboard");
+    expect(mwPathname).not.toBe("/%2564ashboard");
   });
 
   it("Pages Router runMiddleware passes decoded pathname to middleware function", async () => {
@@ -3002,6 +3863,60 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.redirectStatus).toBe(307);
   });
 
+  it("runMiddleware bubbles up waitUntil promises in result", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("background-work");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return Response.redirect("http://localhost/login", 307);
+        },
+        config: { matcher: ["/protected"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/protected");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    // The most critical behavior: waitUntil promises must appear in the result
+    // so the runtime (e.g. Cloudflare Workers ctx.waitUntil) can keep them alive.
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBeDefined();
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
+  });
+
+  it("runMiddleware bubbles up waitUntil promises on continue: true path", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    let capturedPromise: Promise<unknown> | null = null;
+    const mockRunner = {
+      import: async () => ({
+        middleware: (_req: Request, event: { waitUntil: (p: Promise<unknown>) => void }) => {
+          const p = Promise.resolve("analytics");
+          capturedPromise = p;
+          event.waitUntil(p);
+          return NextResponse.next();
+        },
+        config: { matcher: ["/dashboard"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/dashboard");
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.waitUntilPromises).toBeDefined();
+    expect(result.waitUntilPromises!.length).toBe(1);
+    expect(result.waitUntilPromises![0]).toBe(capturedPromise);
+  });
+
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
     // Verify the Cloudflare Worker entry does not decode the pathname itself,
     // leaving that responsibility to the RSC handler.
@@ -3014,7 +3929,9 @@ describe("double-encoded path handling in middleware", () => {
     // (the RSC handler is the single decode point)
     expect(entryCode).not.toMatch(/normalizedRequest\s*=\s*new Request\(normalizedUrl/);
     // It should still validate malformed encoding (return 400)
-    expect(entryCode).toContain("decodeURIComponent(rawPathname)");
+    expect(entryCode).toMatch(
+      /decodeURIComponent\(\s*(?:raw)?[pP]athname|decodeURIComponent\(url\.pathname\)/,
+    );
     // The delegate call should pass the original request object through,
     // without reconstructing a normalized Request before delegation.
     expect(entryCode).toMatch(/rscHandler\(request(?:,\s*ctx)?\)/);
@@ -3031,7 +3948,7 @@ describe("NextFetchEvent passed to middleware", () => {
     let receivedEvent: any;
     const mockRunner = {
       import: async () => ({
-        middleware: (req: any, event: any) => {
+        middleware: (_req: any, event: any) => {
           receivedEvent = event;
           event.waitUntil(Promise.resolve("done"));
           return new Response(null, {
@@ -3271,6 +4188,25 @@ describe("RequestCookies API", () => {
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
   });
 
+  it("set() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set("foo=bar; Path=/", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("foo\r\nCookie: evil=1", "val")).toThrow("Invalid cookie name");
+    expect(() => cookies.set("", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("set({ name, value }) rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.set({ name: "foo=bar", value: "val" })).toThrow("Invalid cookie name");
+  });
+
   it("delete() removes a cookie from the Cookie header", async () => {
     const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers({ cookie: "a=1; b=2; c=3" });
@@ -3305,6 +4241,15 @@ describe("RequestCookies API", () => {
     expect(cookies.has("a")).toBe(false);
     expect(cookies.has("c")).toBe(false);
     expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+  });
+
+  it("delete() rejects invalid cookie names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2" });
+    const cookies = new RequestCookies(headers);
+
+    expect(() => cookies.delete("foo=bar")).toThrow("Invalid cookie name");
+    expect(() => cookies.delete(["a", "foo;bar"])).toThrow("Invalid cookie name");
   });
 
   it("delete() is a no-op for missing cookies", async () => {
@@ -3459,7 +4404,18 @@ describe("ResponseCookies API", () => {
     expect(all).toContainEqual({ name: "c", value: "3" });
   });
 
-  it("delete() sets Max-Age=0", async () => {
+  it("has() checks whether a response cookie exists", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc");
+
+    expect(cookies.has("session")).toBe(true);
+    expect(cookies.has("missing")).toBe(false);
+  });
+
+  it("delete() expires the cookie (matching edge-runtime)", async () => {
     const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers();
     const cookies = new ResponseCookies(headers);
@@ -3469,7 +4425,7 @@ describe("ResponseCookies API", () => {
     const setCookie = headers.getSetCookie();
     expect(setCookie).toHaveLength(1);
     expect(setCookie[0]).toContain("session=");
-    expect(setCookie[0]).toContain("Max-Age=0");
+    expect(setCookie[0]).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
     expect(setCookie[0]).toContain("Path=/");
   });
 
@@ -3526,6 +4482,233 @@ describe("ResponseCookies API", () => {
     const setCookie = headers.getSetCookie();
     expect(setCookie[0]).toContain("Expires=");
     expect(setCookie[0]).toContain("2030");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResponseCookies correctness (Next.js parity)
+// Ported from @edge-runtime/cookies: packages/cookies/src/response-cookies.ts
+// https://github.com/vercel/edge-runtime/blob/main/packages/cookies/src/response-cookies.ts
+
+describe("ResponseCookies correctness", () => {
+  // Bug 1: set() same cookie name twice should replace, not duplicate
+  it("set() same cookie name twice replaces the header (no duplicates)", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "old-value");
+    cookies.set("session", "new-value");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=new-value");
+  });
+
+  it("get() returns the latest value after set() overwrites", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "first");
+    cookies.set("token", "second");
+
+    const result = cookies.get("token");
+    expect(result?.value).toBe("second");
+  });
+
+  it("set() replaces only the matching cookie, preserves others", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("a", "3");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(2);
+    // 'a' was replaced, 'b' stays
+    const aHeader = setCookie.find((h: string) => h.startsWith("a="));
+    const bHeader = setCookie.find((h: string) => h.startsWith("b="));
+    expect(aHeader).toContain("a=3");
+    expect(bHeader).toContain("b=2");
+  });
+
+  // Bug 2: set() should accept object form
+  it("set() accepts object form { name, value, ... }", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set({ name: "token", value: "abc", httpOnly: true, path: "/api" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=abc");
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Path=/api");
+
+    const result = cookies.get("token");
+    expect(result?.value).toBe("abc");
+  });
+
+  it("set() object form replaces existing cookie of same name", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "old");
+    cookies.set({ name: "token", value: "new", secure: true });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=new");
+    expect(setCookie[0]).toContain("Secure");
+  });
+
+  // Bug 3: getAll() should accept optional name filter
+  it("getAll(name) filters by cookie name", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("c", "3");
+
+    const filtered = cookies.getAll("b");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toEqual({ name: "b", value: "2" });
+  });
+
+  it("getAll({ name }) filters by cookie name (object form)", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("x", "10");
+    cookies.set("y", "20");
+
+    const filtered = cookies.getAll({ name: "x" });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toEqual({ name: "x", value: "10" });
+  });
+
+  it("getAll() with no args returns all cookies", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(2);
+  });
+
+  it("getAll(name) returns empty array for non-existent cookie", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+
+    const filtered = cookies.getAll("missing");
+    expect(filtered).toHaveLength(0);
+  });
+
+  // Bug 4: delete() should accept object and array forms
+  it("delete({ name, path, domain }) sets correct expiry cookie with path and domain", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({ name: "session", path: "/app", domain: ".example.com" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=");
+    expect(setCookie[0]).toContain("Path=/app");
+    expect(setCookie[0]).toContain("Domain=.example.com");
+    // Should expire the cookie
+    expect(setCookie[0]).toContain("Expires=");
+  });
+
+  it("delete() forwards httpOnly, secure, and sameSite attributes", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({
+      name: "session",
+      path: "/app",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Secure");
+    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("Path=/app");
+    expect(setCookie[0]).toContain("Expires=");
+  });
+
+  it("delete() replaces existing cookie's Set-Cookie header", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc123", { path: "/app" });
+    cookies.delete("session");
+
+    // Should have exactly one Set-Cookie for 'session' (the deletion one)
+    const setCookie = headers.getSetCookie();
+    const sessionHeaders = setCookie.filter((h: string) => h.startsWith("session="));
+    expect(sessionHeaders).toHaveLength(1);
+    expect(sessionHeaders[0]).toContain("Expires=");
+  });
+
+  // Constructor should parse existing Set-Cookie headers
+  it("constructor parses existing Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    headers.append("Set-Cookie", "existing=value; Path=/");
+
+    const cookies = new ResponseCookies(headers);
+    const result = cookies.get("existing");
+    expect(result?.value).toBe("value");
+  });
+
+  // has() should work with internal map
+  it("has() returns false after delete()", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc");
+    expect(cookies.has("session")).toBe(true);
+
+    cookies.delete("session");
+    // After delete, a new expired cookie replaces the old one.
+    // The cookie still "exists" in the map (with empty value and past expiry),
+    // matching edge-runtime behavior where delete() calls set().
+    // has() returns true because the entry exists in the map.
+    expect(cookies.has("session")).toBe(true);
+  });
+
+  // get() with object form (matching edge-runtime)
+  it("get() accepts object { name } form", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc");
+    const result = cookies.get({ name: "token" });
+    expect(result?.value).toBe("abc");
   });
 });
 
@@ -3818,6 +5001,372 @@ describe("NextRequest API", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NextURL basePath and locale properties
+
+describe("NextURL basePath and locale properties", () => {
+  const i18nConfig = {
+    nextConfig: {
+      i18n: {
+        locales: ["en", "fr", "de"],
+        defaultLocale: "en",
+      },
+    },
+  };
+
+  it("basePath defaults to empty string when no config provided", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard");
+    expect(url.basePath).toBe("");
+  });
+
+  it("basePath returns the configured value", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath setter normalizes leading slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard");
+    url.basePath = "app";
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath is preserved through clone()", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/docs",
+    });
+    const cloned = url.clone();
+    expect(cloned.basePath).toBe("/docs");
+  });
+
+  it("locale defaults to empty string when no i18n config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about");
+    expect(url.locale).toBe("");
+    expect(url.defaultLocale).toBeUndefined();
+  });
+
+  it("locale returns the detected locale from pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.defaultLocale).toBe("en");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale falls back to defaultLocale when no locale in pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    expect(url.locale).toBe("en");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale detection is case-insensitive", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/FR/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.pathname).toBe("/about");
+  });
+
+  it("locale setter updates the locale and affects href", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.locale = "de";
+    expect(url.locale).toBe("de");
+    expect(url.href).toContain("/de/about");
+  });
+
+  it("locale setter throws on invalid locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(() => {
+      url.locale = "es";
+    }).toThrow(TypeError);
+  });
+
+  it("locales returns a copy of the configured locales array", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    const locales = url.locales!;
+    expect(locales).toEqual(["en", "fr", "de"]);
+    // Mutating the returned array must not affect internals
+    locales.push("es");
+    expect(url.locales).toEqual(["en", "fr", "de"]);
+  });
+
+  it("locales returns undefined without i18n config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about");
+    expect(url.locales).toBeUndefined();
+  });
+
+  // --- href / toString() reconstruction ---
+
+  it("toString() preserves locale prefix in serialized URL", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.toString()).toBe("http://localhost/fr/about");
+    expect(url.href).toBe("http://localhost/fr/about");
+  });
+
+  it("toString() omits defaultLocale prefix (matches Next.js)", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, i18nConfig);
+    expect(url.locale).toBe("en"); // defaultLocale
+    expect(url.toString()).toBe("http://localhost/about");
+  });
+
+  it("setting locale changes the serialized href", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    url.locale = "de";
+    expect(url.href).toBe("http://localhost/de/about");
+  });
+
+  it("href includes basePath prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost/app/dashboard");
+  });
+
+  it("href includes both basePath and locale prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    expect(url.pathname).toBe("/about");
+    expect(url.href).toBe("http://localhost/app/fr/about");
+  });
+
+  it("href preserves port, search, and hash when basePath is active", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost:3000/app/dashboard?q=1#top", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost:3000/app/dashboard?q=1#top");
+  });
+
+  it("root locale path /fr produces pathname /", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/fr");
+  });
+
+  it("href setter re-analyzes locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.href = "http://localhost/de/contact";
+    expect(url.locale).toBe("de");
+    expect(url.pathname).toBe("/contact");
+  });
+
+  it("href setter re-strips basePath before locale analysis", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.href = "http://localhost/app/de/contact";
+    expect(url.locale).toBe("de");
+    expect(url.pathname).toBe("/contact");
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath setter to empty string clears basePath", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("/app");
+    url.basePath = "";
+    expect(url.basePath).toBe("");
+    expect(url.href).toBe("http://localhost/dashboard");
+  });
+
+  it("basePath root path has no trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/app");
+  });
+
+  it("basePath is stripped from input URL (basePath-only, no i18n)", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.basePath).toBe("/app");
+    expect(url.href).toBe("http://localhost/app/dashboard");
+  });
+
+  it("pathname setter does not re-analyze locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    url.pathname = "/contact";
+    expect(url.locale).toBe("fr"); // unchanged
+    expect(url.pathname).toBe("/contact");
+    expect(url.href).toBe("http://localhost/fr/contact");
+  });
+
+  it("basePath root path with default locale has no trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    expect(url.locale).toBe("en"); // default locale, no prefix in output
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost/app");
+  });
+
+  it("locale setter resets to defaultLocale when set to undefined with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.locale = undefined;
+    expect(url.locale).toBe("en"); // falls back to defaultLocale
+    expect(url.href).toBe("http://localhost/about"); // default locale omitted from prefix
+  });
+
+  it("locale setter resets to defaultLocale when set to empty string with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/de/contact", undefined, i18nConfig);
+    url.locale = "";
+    expect(url.locale).toBe("en");
+  });
+
+  it("searchParams mutations are reflected in href with basePath and locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.searchParams.set("q", "2");
+    expect(url.href).toBe("http://localhost/app/fr/about?q=2");
+  });
+
+  // --- clone() ---
+
+  it("clone() preserves locale, basePath, and config through constructor", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    const cloned = url.clone();
+    expect(cloned.basePath).toBe("/app");
+    expect(cloned.locale).toBe("fr");
+    expect(cloned.defaultLocale).toBe("en");
+    expect(cloned.pathname).toBe("/about");
+    expect(cloned.href).toBe("http://localhost/app/fr/about");
+    // Mutations on clone don't affect original
+    cloned.locale = "de";
+    expect(url.locale).toBe("fr");
+  });
+
+  // --- NextRequest integration ---
+
+  it("NextRequest passes basePath and i18n config through to nextUrl", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/fr/dashboard", {
+      nextConfig: {
+        basePath: "/app",
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+      },
+    });
+    expect(req.nextUrl.basePath).toBe("/app");
+    expect(req.nextUrl.locale).toBe("fr");
+    expect(req.nextUrl.defaultLocale).toBe("en");
+    expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
+  });
+
+  it("NextRequest.url reflects the normalized nextUrl href", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/fr/dashboard?tab=settings", {
+      nextConfig: {
+        basePath: "/app",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      },
+    });
+
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard?tab=settings");
+    expect(req.url).toBe(req.nextUrl.href);
+  });
+
+  it("NextRequest.url preserves raw input when middleware URL normalization is disabled", async () => {
+    const previous = process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE;
+    process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE = "1";
+    try {
+      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+      const req = new NextRequest("http://localhost/fr/dashboard?tab=settings", {
+        nextConfig: {
+          basePath: "/app",
+          i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+        },
+      });
+
+      expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard?tab=settings");
+      expect(req.url).toBe("http://localhost/fr/dashboard?tab=settings");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE;
+      } else {
+        process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE = previous;
+      }
+    }
+  });
+
+  it("NextRequest passes config when input is a Request object", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const raw = new Request("http://localhost/app/fr/dashboard");
+    const req = new NextRequest(raw, {
+      nextConfig: {
+        basePath: "/app",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      },
+    });
+    expect(req.nextUrl.basePath).toBe("/app");
+    expect(req.nextUrl.locale).toBe("fr");
+    expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
+  });
+
+  it("NextRequest.url normalizes Request input through nextUrl", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const raw = new Request("http://localhost/fr/dashboard?tab=settings");
+    const req = new NextRequest(raw, {
+      nextConfig: {
+        basePath: "/app",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      },
+    });
+
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard?tab=settings");
+    expect(req.url).toBe(req.nextUrl.href);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NextResponse.next() with request header forwarding
 
 describe("NextResponse.next() request header forwarding", () => {
@@ -3967,6 +5516,66 @@ describe("middleware request header overrides", () => {
       expect(liveCookies.getAll()).toEqual([]);
     });
   });
+
+  it("next/headers applyMiddlewareRequestHeaders invalidates headers() snapshot taken before the override", async () => {
+    // Regression: a middleware that reads `headers()` (or `cookies()`) before
+    // applying a request-header override would prime a sealed read-only
+    // snapshot built from the *pre*-override request. Discovered with
+    // @clerk/nextjs whose `clerkClient()` reads `headers()` via
+    // `buildRequestLike()` during middleware execution; before the fix, the
+    // Server Component subsequently received the stale snapshot and saw the
+    // pre-override credentials and missing middleware-injected headers.
+    const {
+      applyMiddlewareRequestHeaders,
+      cookies,
+      headers,
+      headersContextFromRequest,
+      runWithHeadersContext,
+    } = await import("../packages/vinext/src/shims/headers.js");
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+        "x-keep": "original",
+      },
+    });
+
+    await runWithHeadersContext(headersContextFromRequest(request), async () => {
+      // 1. Prime the sealed snapshot — this is exactly what
+      //    `clerkMiddleware()` does internally via `buildRequestLike()`.
+      const preHeaders = await headers();
+      const preCookies = await cookies();
+      expect(preHeaders.get("authorization")).toBe("Bearer secret");
+      expect(preHeaders.get("x-keep")).toBe("original");
+      expect(preCookies.getAll()).toEqual([
+        { name: "a", value: "1" },
+        { name: "b", value: "2" },
+      ]);
+
+      // 2. Apply the override — drops `authorization`/`cookie`, adds `x-added`,
+      //    and updates `x-keep`.
+      applyMiddlewareRequestHeaders(
+        new Headers({
+          "x-middleware-override-headers": "x-keep,x-added",
+          "x-middleware-request-x-keep": "updated",
+          "x-middleware-request-x-added": "1",
+        }),
+      );
+
+      // 3. A subsequent `headers()` call — for example from the Server
+      //    Component's render — must observe the override, not the snapshot
+      //    captured in step 1.
+      const postHeaders = await headers();
+      const postCookies = await cookies();
+
+      expect(postHeaders.get("authorization")).toBeNull();
+      expect(postHeaders.get("cookie")).toBeNull();
+      expect(postHeaders.get("x-keep")).toBe("updated");
+      expect(postHeaders.get("x-added")).toBe("1");
+      expect(postCookies.getAll()).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3983,7 +5592,8 @@ describe("NextResponse.redirect() status codes", () => {
     const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
     const res = NextResponse.redirect("https://example.com", 301);
     expect(res.status).toBe(301);
-    expect(res.headers.get("Location")).toBe("https://example.com");
+    // validateURL() normalizes via `new URL()`, adding a trailing slash for origin-only URLs.
+    expect(res.headers.get("Location")).toBe("https://example.com/");
   });
 
   it("supports 302 Found", async () => {
@@ -4004,6 +5614,31 @@ describe("NextResponse.redirect() status codes", () => {
     const res = NextResponse.redirect(url);
     expect(res.headers.get("Location")).toBe("https://example.com/target");
   });
+
+  it("supports 303 See Other", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const res = NextResponse.redirect("https://example.com", 303);
+    expect(res.status).toBe(303);
+  });
+
+  // Ported from Next.js: packages/next/src/server/web/spec-extension/response.ts
+  // Next.js validates redirect status codes and throws RangeError for invalid ones.
+  it("throws RangeError for non-redirect status code 200", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(RangeError);
+  });
+
+  it("throws RangeError for non-redirect status code 418", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 418)).toThrow(RangeError);
+  });
+
+  it("throws RangeError with descriptive message for invalid status", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    expect(() => NextResponse.redirect("https://example.com", 200)).toThrow(
+      /Failed to execute "redirect" on "response": Invalid status code/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4011,32 +5646,32 @@ describe("NextResponse.redirect() status codes", () => {
 
 describe("matchConfigPattern", () => {
   it("matches exact paths", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/about", "/about")).toEqual({});
     expect(matchConfigPattern("/", "/")).toEqual({});
     expect(matchConfigPattern("/about", "/other")).toBeNull();
   });
 
   it("matches single :param segments", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchConfigPattern("/blog/hello-world", "/blog/:slug");
     expect(result).toEqual({ slug: "hello-world" });
   });
 
   it("matches multiple :param segments", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchConfigPattern("/blog/2024/my-post", "/blog/:year/:slug");
     expect(result).toEqual({ year: "2024", slug: "my-post" });
   });
 
   it("rejects when segment count differs for non-wildcard patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/blog/a/b", "/blog/:slug")).toBeNull();
     expect(matchConfigPattern("/blog", "/blog/:slug")).toBeNull();
   });
 
   it("matches :path* catch-all (zero or more segments)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Zero segments
     expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
     // One segment
@@ -4048,7 +5683,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path+ catch-all (one or more segments)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // One segment
     expect(matchConfigPattern("/api/users", "/api/:path+")).toEqual({ path: "users" });
     // Multiple segments
@@ -4058,7 +5693,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches regex group patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Common Next.js pattern: /:path(\\d+) for numeric paths
     const result = matchConfigPattern("/123", "/:id(\\d+)");
     if (result) {
@@ -4069,14 +5704,14 @@ describe("matchConfigPattern", () => {
   });
 
   it("handles dots in patterns", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/feed.xml", "/feed.xml")).toEqual({});
     // Dot should not match any character
     expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
   });
 
   it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs ending in .md
     expect(matchConfigPattern("/article.md", "/:path*.md")).toEqual({ path: "article" });
     expect(matchConfigPattern("/news/my-article.md", "/:path*.md")).toEqual({
@@ -4093,7 +5728,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path+ with literal suffix (e.g. /:path+.json)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs ending in .json with at least one path segment
     expect(matchConfigPattern("/data.json", "/:path+.json")).toEqual({ path: "data" });
     expect(matchConfigPattern("/api/users.json", "/:path+.json")).toEqual({ path: "api/users" });
@@ -4105,7 +5740,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :path* with prefix and suffix (e.g. /docs/:path*.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(matchConfigPattern("/docs/intro.md", "/docs/:path*.md")).toEqual({ path: "intro" });
     expect(matchConfigPattern("/docs/guide/getting-started.md", "/docs/:path*.md")).toEqual({
       path: "guide/getting-started",
@@ -4117,7 +5752,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("matches :param with literal suffix (e.g. /:slug.md)", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Should match URLs with the .md suffix and extract the param
     expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
     expect(matchConfigPattern("/my-post.md", "/:slug.md")).toEqual({ slug: "my-post" });
@@ -4137,7 +5772,7 @@ describe("matchConfigPattern", () => {
   });
 
   it("still matches plain :path* catch-all (no suffix) correctly", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Ensure the fix doesn't regress existing catch-all behavior
     expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
     expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
@@ -4151,7 +5786,7 @@ describe("matchConfigPattern", () => {
   // passed without checking for a segment boundary after the prefix.
   // https://github.com/cloudflare/vinext/pull/368
   it("regression: does not overmatch catch-all when pathname shares a prefix but not a segment boundary", async () => {
-    const { matchConfigPattern } = await import("../packages/vinext/src/index.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Core regression case: /foobar must NOT match /foo/:path*
     expect(matchConfigPattern("/foobar", "/foo/:path*")).toBeNull();
     // Similarly for :path+
@@ -4542,6 +6177,34 @@ describe("matchRedirect locale-static index", () => {
     });
     expect(withHeader).not.toBeNull();
     expect(withHeader!.destination).toBe("/en/gated-dest");
+  });
+
+  it("lets has captures override locale params in locale-static redirects", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: `/:locale(en|fr)?/docs`,
+        destination: `/target/:locale`,
+        permanent: false as const,
+        has: [{ type: "header" as const, key: "x-locale", value: "(?<locale>forced)" }],
+      },
+    ];
+
+    const withLocalePrefix = matchRedirect("/en/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+
+    const withoutLocalePrefix = matchRedirect("/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withoutLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
   });
 
   it("falls back to linear matching for rules that are not locale-static", async () => {
@@ -5219,8 +6882,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("ok", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("ok", {
         status: 200,
         headers: {
           "content-type": "text/plain",
@@ -5230,7 +6893,6 @@ describe("proxyExternalRequest", () => {
           // setting them on Response, so we test with headers that can be set.
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/test");
@@ -5248,9 +6910,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      return new Response("Not Found", { status: 404 });
-    };
+    globalThis.fetch = async (_url: any, _init: any) => new Response("Not Found", { status: 404 });
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/missing");
@@ -5273,6 +6933,7 @@ describe("proxyExternalRequest", () => {
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
+        "x-vinext-prerender-secret": "build-secret-123",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -5296,9 +6957,54 @@ describe("proxyExternalRequest", () => {
       // Internal middleware headers must be stripped
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("strips hop-by-hop request headers before proxying external rewrites", async () => {
+    const { proxyExternalRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const request = new Request("http://localhost:3000/proxy", {
+      method: "DELETE",
+      headers: {
+        connection: "keep-alive, x-custom-hop",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        trailers: "x-trailer",
+        "transfer-encoding": "chunked",
+        upgrade: "websocket",
+        "x-custom-hop": "secret",
+        "proxy-authorization": "Basic cHJveHk=",
+        "x-custom-header": "keep-me",
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: any, init: any) => {
+      capturedHeaders = init.headers;
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/data");
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("connection")).toBeNull();
+      expect(capturedHeaders!.get("keep-alive")).toBeNull();
+      expect(capturedHeaders!.get("te")).toBeNull();
+      expect(capturedHeaders!.get("trailers")).toBeNull();
+      expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
+      expect(capturedHeaders!.get("upgrade")).toBeNull();
+      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Request credentials that are not connection-scoped should still forward.
+      expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
+      expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -5336,10 +7042,8 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/test");
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: any, _init: any) => {
-      // Simulate an upstream that sent gzip-encoded content.
-      // Node.js fetch() auto-decompresses, but the original headers remain.
-      return new Response("decompressed body", {
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("decompressed body", {
         status: 200,
         headers: {
           "content-type": "application/json",
@@ -5348,7 +7052,6 @@ describe("proxyExternalRequest", () => {
           "x-custom": "keep",
         },
       });
-    };
 
     try {
       const response = await proxyExternalRequest(request, "https://api.example.com/data");
@@ -5432,6 +7135,24 @@ describe("matchRewrite with external URLs", () => {
     const result = matchRewrite("/item/123", rewrites, emptyCtx);
     expect(result).toBe("/dest/123-bar");
   });
+
+  it("substitutes named captures from has conditions into rewrite destinations", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Ported from documented Next.js behavior:
+    // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/rewrites.mdx
+    const rewrites = [
+      {
+        source: "/:path*",
+        has: [{ type: "header" as const, key: "x-authorized", value: "(?<authorized>yes|true)" }],
+        destination: "/home?authorized=:authorized&path=:path*",
+      },
+    ];
+    const result = matchRewrite("/docs/intro", rewrites, {
+      ...emptyCtx,
+      headers: new Headers({ "x-authorized": "yes" }),
+    });
+    expect(result).toBe("/home?authorized=yes&path=docs/intro");
+  });
 });
 
 describe("matchRedirect destination param substitution", () => {
@@ -5469,6 +7190,25 @@ describe("matchRedirect destination param substitution", () => {
     ];
     const result = matchRedirect("/en/docs", redirects, emptyCtx);
     expect(result).toEqual({ destination: "/en/en/docs", permanent: false });
+  });
+
+  it("substitutes named captures from has conditions into redirect destinations", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Ported from documented Next.js behavior:
+    // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/redirects.mdx
+    const redirects = [
+      {
+        source: "/",
+        has: [{ type: "header" as const, key: "x-authorized", value: "(?<authorized>yes|true)" }],
+        destination: "/home?authorized=:authorized",
+        permanent: false,
+      },
+    ];
+    const result = matchRedirect("/", redirects, {
+      ...emptyCtx,
+      headers: new Headers({ "x-authorized": "yes" }),
+    });
+    expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
   });
 });
 
@@ -5646,7 +7386,8 @@ describe("next/form shim", () => {
 
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
-    const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
     const result = Inter({ subsets: ["latin"], weight: ["400", "700"] });
 
     expect(result.className).toMatch(/^__font_inter_/);
@@ -5678,7 +7419,8 @@ describe("next/font/google shim", () => {
   });
 
   it("uses custom variable name when provided", async () => {
-    const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
     const result = Inter({ variable: "--custom-font" });
     // When custom variable is provided, the generated class still sets that variable
     // The returned value is still a class name, not the CSS variable name itself
@@ -5686,17 +7428,20 @@ describe("next/font/google shim", () => {
   });
 
   it("uses custom fallback fonts", async () => {
-    const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
+    const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
+    const Inter = createFontLoader("Inter");
     const result = Inter({ fallback: ["Helvetica", "Arial", "sans-serif"] });
     expect(result.style.fontFamily).toContain("Helvetica");
     expect(result.style.fontFamily).toContain("Arial");
   });
 
   it("generates CSS rules for className (SSR)", async () => {
-    const { Inter, getSSRFontStyles } = await import("../packages/vinext/src/shims/font-google.js");
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
     // Clear any previously collected styles
     getSSRFontStyles();
 
+    const Inter = createFontLoader("Inter");
     const result = Inter({ subsets: ["latin"], weight: ["400"] });
 
     // getSSRFontStyles should return CSS rules mapping className to font-family
@@ -5708,9 +7453,11 @@ describe("next/font/google shim", () => {
   });
 
   it("generates CSS variable rule when variable is specified", async () => {
-    const { Inter, getSSRFontStyles } = await import("../packages/vinext/src/shims/font-google.js");
+    const { createFontLoader, getSSRFontStyles } =
+      await import("../packages/vinext/src/shims/font-google.js");
     getSSRFontStyles(); // clear
 
+    const Inter = createFontLoader("Inter");
     Inter({ variable: "--font-inter" });
     const styles = getSSRFontStyles();
     const allCss = styles.join("\n");
@@ -7295,6 +9042,676 @@ describe("Pages Router router helpers", () => {
   });
 });
 
+describe("Pages Router concurrent navigation", () => {
+  /**
+   * Helper: create a mock window suitable for non-shallow Router.push().
+   * Returns an object with the window mock plus helpers for controlling
+   * the fetch responses (deferred promises).
+   */
+  function createNavWindow() {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const render = vi.fn();
+
+    const win = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState: pushState as any,
+        replaceState: replaceState as any,
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: vi.fn(),
+      __NEXT_DATA__: {
+        page: "/",
+        query: {},
+        isFallback: false,
+        props: { pageProps: {} },
+        __vinext: { pageModuleUrl: "/@fs/pages/index.js" },
+      },
+      __VINEXT_ROOT__: { render },
+      __VINEXT_APP__: undefined,
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    // Make pushState update location to simulate real browser behavior
+    pushState.mockImplementation((_state: unknown, _title: string, url: string) => {
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        // Relative URL — just set pathname
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+
+    replaceState.mockImplementation((_state: unknown, _title: string, url?: string) => {
+      if (!url) return;
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+
+    return { win, pushState, replaceState, render };
+  }
+
+  /**
+   * Build a minimal HTML response that navigateClient can parse.
+   * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.
+   */
+  function buildNavHtml(page: string, pageModuleUrl: string): string {
+    const nextData = JSON.stringify({
+      page,
+      query: {},
+      isFallback: false,
+      props: { pageProps: { page } },
+      __vinext: { pageModuleUrl },
+    });
+    return `<html><head></head><body><script>window.__NEXT_DATA__ = ${nextData}</script></body></html>`;
+  }
+
+  /**
+   * Create a deferred promise for controlling fetch timing.
+   */
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function trackHrefAssignments(win: {
+    location: {
+      href: string;
+    };
+  }): string[] {
+    let currentHref = win.location.href;
+    const assignments: string[] = [];
+
+    Object.defineProperty(win.location, "href", {
+      configurable: true,
+      enumerable: true,
+      get: () => currentHref,
+      set: (value: string) => {
+        currentHref = value;
+        assignments.push(value);
+      },
+    });
+
+    return assignments;
+  }
+
+  it("last push() wins when two overlap — superseded navigation does not render", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    // Two deferred fetches so we control resolution order
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      // Start two navigations — don't await yet
+      const navA = Router.push("/page-a");
+      // Let microtask queue process so navA's fetch has been called
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B first (the winning navigation)
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      // Resolve A after B (stale — should be ignored)
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) must NOT have committed its data.
+      // In a real browser page-b would render; in the test env B's dynamic import
+      // may fail, so we verify the important invariant: A never writes.
+      expect(win.__NEXT_DATA__.page).not.toBe("/page-a");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("routeChangeComplete does not fire for the superseded navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+
+      // Start two overlapping navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B first, then A
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) must NOT fire routeChangeComplete.
+      // page-b may or may not complete fully (dynamic import may fail in test
+      // env), but that's a separate concern. The critical fix is that the
+      // cancelled navigation never fires routeChangeComplete.
+      expect(completedUrls).not.toContain("/page-a");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("routeChangeError fires for superseded navigation with cancelled error", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start two overlapping navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve both
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded navigation (page-a) should emit routeChangeError
+      // with a cancelled error, matching Next.js behavior
+      const cancelledError = errors.find((e) => e.url === "/page-a");
+      expect(cancelledError).toBeDefined();
+      const errObj = cancelledError?.err;
+      expect(errObj).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("failed navigation (non-OK response) does not emit routeChangeComplete", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    const completedUrls: string[] = [];
+    const errorUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errorUrls.push(String(args[1]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      await Router.push("/failing-page");
+
+      // Should NOT have fired routeChangeComplete for a failed navigation
+      expect(completedUrls).not.toContain("/failing-page");
+      // Should have fired routeChangeError
+      expect(errorUrls).toContain("/failing-page");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("known navigation failures schedule exactly one hard-navigation fallback", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/failing-page");
+      // Distinguish the history update from the hard-navigation fallback:
+      // pushState writes the absolute browser URL, while the fallback helper
+      // writes the raw app-relative URL. The guard is correct only if each
+      // happens exactly once.
+      const fallbackAssignments = hrefAssignments.filter((value) => value === "/failing-page");
+      const pushStateAssignments = hrefAssignments.filter(
+        (value) => value === "http://localhost/failing-page",
+      );
+
+      expect(result).toBe(false);
+      expect(fallbackAssignments).toHaveLength(1);
+      expect(pushStateAssignments).toHaveLength(1);
+      // Catch-all: exactly one history write plus exactly one hard-nav fallback.
+      expect(hrefAssignments).toHaveLength(2);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("popstate known failures schedule a single hard navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    globalThis.fetch = async (_url: any, _init: any) =>
+      new Response("Internal Server Error", { status: 500 });
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/failing-page";
+      win.location.href = "http://localhost/failing-page";
+      // Install tracking after test setup so we only capture popstate-driven
+      // writes, not the setup assignment above.
+      const hrefAssignments = trackHrefAssignments(win);
+      popstateHandler!({ state: null });
+      // Cross a task boundary so the async popstate chain has fully settled.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
+      expect(hrefAssignments).toHaveLength(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  it("replace() also cancels superseded navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // First push, then replace overlapping
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.replace("/page-b");
+
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // The superseded push (page-a) should be cancelled, not completed
+      expect(completedUrls).not.toContain("/page-a");
+      // page-a should have a cancelled error
+      const cancelledA = errors.find((e) => e.url === "/page-a");
+      expect(cancelledA).toBeDefined();
+      expect(cancelledA?.err).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("abort signal fires when navigation is superseded — AbortError becomes NavigationCancelledError", async () => {
+    // Verify that the AbortController signal passed to fetch actually fires when a
+    // newer navigation starts, and that the resulting AbortError is converted into
+    // a NavigationCancelledError (the routeChangeError path, not a plain rejection).
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    // Signal-aware mock: the first fetch rejects with AbortError when its signal fires.
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        return new Promise<Response>((resolve, reject) => {
+          fetchA.promise.then(resolve, reject);
+          _init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      }
+      return fetchB.promise;
+    };
+
+    const errors: Array<{ err: unknown; url: string }> = [];
+    const onRouteChangeError = (...args: unknown[]) => {
+      errors.push({ err: args[0], url: String(args[1]) });
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start navigation A then immediately supersede it with B
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve B; A is aborted via its signal — no manual resolution needed
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // navA's fetch was aborted via signal → AbortError → NavigationCancelledError
+      const cancelledError = errors.find((e) => e.url === "/page-a");
+      expect(cancelledError).toBeDefined();
+      expect(cancelledError?.err).toHaveProperty("cancelled", true);
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("stale response arriving first does not render before the winning navigation", async () => {
+    // fetchA (stale, page-a) resolves before fetchB (winning, page-b).
+    // assertStillCurrent() in navigateClient must catch the stale navigation
+    // after it processes the response, so page-a's data never reaches the DOM.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    const completedUrls: string[] = [];
+    const onRouteChangeComplete = (...args: unknown[]) => {
+      completedUrls.push(String(args[0]));
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeComplete", onRouteChangeComplete);
+
+      // Start two navigations
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Stale fetch (A) resolves first this time
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+      // Winning fetch (B) resolves after
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // Stale navigation must not have committed its data to the DOM.
+      // B may also fail at dynamic import in test env, so we only verify A never wrote.
+      expect(win.__NEXT_DATA__.page).not.toBe("/page-a");
+      // Stale navigation must not fire routeChangeComplete
+      expect(completedUrls).not.toContain("/page-a");
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeComplete", onRouteChangeComplete);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("__NEXT_DATA__ is not stale when routeChangeError fires for a cancelled navigation", async () => {
+    // Regression test: __NEXT_DATA__ must not reflect the cancelled route's data
+    // at the moment routeChangeError fires.  The fix defers the global write until
+    // just before root.render(), after all assertStillCurrent() checks pass.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    const fetchA = createDeferred<Response>();
+    const fetchB = createDeferred<Response>();
+    let fetchCount = 0;
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      fetchCount++;
+      if (fetchCount === 1) return fetchA.promise;
+      return fetchB.promise;
+    };
+
+    // Track __NEXT_DATA__.page at the moment of each routeChangeError
+    const nextDataPageAtError: string[] = [];
+    const onRouteChangeError = () => {
+      nextDataPageAtError.push(win.__NEXT_DATA__.page);
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Start two navigations — A will be superseded by B
+      const navA = Router.push("/page-a");
+      await Promise.resolve();
+      const navB = Router.push("/page-b");
+
+      // Resolve stale (A) first, then winning (B)
+      fetchA.resolve(new Response(buildNavHtml("/page-a", "/@fs/pages/page-a.js")));
+      fetchB.resolve(new Response(buildNavHtml("/page-b", "/@fs/pages/page-b.js")));
+
+      await Promise.allSettled([navA, navB]);
+
+      // At the moment routeChangeError fired for nav A, __NEXT_DATA__ must NOT
+      // have been overwritten with page-a's data
+      for (const page of nextDataPageAtError) {
+        expect(page).not.toBe("/page-a");
+      }
+    } finally {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.off("routeChangeError", onRouteChangeError);
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("next/server enhancements", () => {
   it("NextRequest.ip extracts from x-forwarded-for header", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
@@ -7720,6 +10137,92 @@ describe("next/image component rendering", () => {
       React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
     );
     expect(html).toContain('decoding="async"');
+  });
+
+  // ── SSR-only smoke tests: verify SSR output does not crash when onLoad / onError /
+  // ref are provided. The hydration replay logic (useLayoutEffect, img.src = img.src,
+  // mergedRef DOM node capture) requires a client-side mount; the handler wiring is
+  // tested in the Playwright E2E test suite.
+
+  it("renders with onError callback attached (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/broken.jpg",
+        alt: "Broken",
+        width: 400,
+        height: 300,
+        onError: () => {},
+      }),
+    );
+    // SSR should render without errors — the onError replay is client-side only
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("renders with both onLoad and onError callbacks (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Photo",
+        width: 800,
+        height: 600,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("forwards ref to img element via mergedRef (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+
+    const ref = React.createRef<HTMLImageElement>();
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToString(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Ref test",
+        width: 800,
+        height: 600,
+        ref,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+    // ref.current is null after SSR — that's expected since refs don't hydrate in SSR
+    expect(ref.current).toBeNull();
+  });
+
+  it("renders with onError in loader path (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Loader",
+        width: 800,
+        height: 600,
+        onError: () => {},
+        loader: ({ src, width, quality }) =>
+          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).not.toContain("/_vinext/image");
+    expect(html).toContain("cdn.example.com");
   });
 });
 
@@ -8476,9 +10979,7 @@ describe("handleImageOptimization", () => {
       transformImage: async (
         _body: ReadableStream,
         options: { width: number; format: string; quality: number },
-      ) => {
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
+      ) => new Response("transformed", { headers: { "Content-Type": options.format } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -8501,10 +11002,8 @@ describe("handleImageOptimization", () => {
           status: 200,
           headers: { "Content-Type": "image/jpeg" },
         }),
-      transformImage: async () => {
-        // Buggy transform that returns text/html
-        return new Response("transformed", { headers: { "Content-Type": "text/html" } });
-      },
+      transformImage: async () =>
+        new Response("transformed", { headers: { "Content-Type": "text/html" } }),
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
@@ -9080,9 +11579,12 @@ describe("next/dist/* internal import shims", () => {
     expect(mod.workUnitAsyncStorage).toBe(mod.requestAsyncStorage);
   });
 
-  it("router-context exports RouterContext", async () => {
+  it("router-context exports RouterContext as a React context", async () => {
     const mod = await import("../packages/vinext/src/shims/internal/router-context.js");
     expect(mod.RouterContext).toBeDefined();
+    // Must be a real React context object (has Provider and Consumer)
+    expect(mod.RouterContext.Provider).toBeDefined();
+    expect(mod.RouterContext.Consumer).toBeDefined();
   });
 });
 
@@ -10113,6 +12615,69 @@ describe("cache scope guards for dynamic APIs", () => {
 
     setCacheHandler(new MemoryCacheHandler());
   });
+
+  // Ported from Next.js: workStore.invalidDynamicUsageError in
+  // packages/next/src/server/app-render/app-render.tsx
+  // https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
+  it("records invalid dynamic usage error on request context (survives try/catch)", async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setHeadersContext, throwIfInsideCacheScope, consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const ctx = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    let recordedError: unknown = null;
+
+    await runWithRequestContext(ctx, async () => {
+      try {
+        await cacheContextStorage.run(
+          { tags: [], lifeConfigs: [], variant: "default" },
+          async () => {
+            throwIfInsideCacheScope("cookies()");
+          },
+        );
+      } catch {
+        // User try/catch — the error should still be recorded on the context
+      }
+      recordedError = consumeInvalidDynamicUsageError();
+    });
+
+    expect(recordedError).toBeInstanceOf(Error);
+    expect((recordedError as Error).message).toContain('cannot be called inside "use cache"');
+
+    // After consumption, the error is cleared
+    expect(consumeInvalidDynamicUsageError()).toBeNull();
+
+    setHeadersContext(null);
+  });
+
+  it("consumeInvalidDynamicUsageError returns null when no error was recorded", async () => {
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const ctx = createRequestContext();
+    let result: unknown;
+
+    await runWithRequestContext(ctx, async () => {
+      result = consumeInvalidDynamicUsageError();
+    });
+
+    expect(result!).toBeNull();
+  });
+
+  it("consumeInvalidDynamicUsageError works outside unified request scope", async () => {
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    // Should return null without throwing when no unified scope is active
+    expect(consumeInvalidDynamicUsageError()).toBeNull();
+  });
 });
 
 describe("shim alias map .js variants", () => {
@@ -10149,5 +12714,226 @@ describe("shim alias map .js variants", () => {
 
     const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+// ── next/head attribute name validation ─────────────────────────────────────
+
+describe("isSafeAttrName", () => {
+  let isSafeAttrName: (name: string) => boolean;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/shims/head.js");
+    isSafeAttrName = mod.isSafeAttrName;
+  });
+
+  it("allows standard HTML attribute names", () => {
+    expect(isSafeAttrName("name")).toBe(true);
+    expect(isSafeAttrName("content")).toBe(true);
+    expect(isSafeAttrName("charset")).toBe(true);
+    expect(isSafeAttrName("http-equiv")).toBe(true);
+    expect(isSafeAttrName("data-testid")).toBe(true);
+    expect(isSafeAttrName("property")).toBe(true);
+    expect(isSafeAttrName("rel")).toBe(true);
+    expect(isSafeAttrName("href")).toBe(true);
+    expect(isSafeAttrName("crossOrigin")).toBe(true);
+  });
+
+  it("allows xml-namespaced attributes", () => {
+    expect(isSafeAttrName("xml:lang")).toBe(true);
+    expect(isSafeAttrName("xlink:href")).toBe(true);
+  });
+
+  it("rejects attribute names containing quotes", () => {
+    expect(isSafeAttrName('x"')).toBe(false);
+    expect(isSafeAttrName("x'")).toBe(false);
+  });
+
+  it("rejects attribute names containing angle brackets", () => {
+    expect(isSafeAttrName("x>")).toBe(false);
+    expect(isSafeAttrName("x<script")).toBe(false);
+  });
+
+  it("rejects attribute names containing slashes", () => {
+    expect(isSafeAttrName("x/")).toBe(false);
+    expect(isSafeAttrName('x"/><script>alert(1)</script><meta a="')).toBe(false);
+  });
+
+  it("rejects attribute names containing spaces", () => {
+    expect(isSafeAttrName("x y")).toBe(false);
+    expect(isSafeAttrName("x\ty")).toBe(false);
+  });
+
+  it("rejects attribute names containing equals", () => {
+    expect(isSafeAttrName("x=y")).toBe(false);
+  });
+
+  it("rejects inline event handler attributes", () => {
+    expect(isSafeAttrName("onclick")).toBe(false);
+    expect(isSafeAttrName("onerror")).toBe(false);
+    expect(isSafeAttrName("onload")).toBe(false);
+    expect(isSafeAttrName("onmouseover")).toBe(false);
+  });
+
+  it("allows attributes starting with 'o' that are not event handlers", () => {
+    expect(isSafeAttrName("open")).toBe(true);
+    expect(isSafeAttrName("og:title")).toBe(true);
+  });
+
+  it("rejects empty or non-alpha-starting names", () => {
+    expect(isSafeAttrName("")).toBe(false);
+    expect(isSafeAttrName("123")).toBe(false);
+    expect(isSafeAttrName("-foo")).toBe(false);
+  });
+});
+
+// ── has/missing condition value matching (anchored regex) ──────────────────
+
+describe("checkHasConditions value anchoring", () => {
+  let checkHasConditions: Function;
+  let requestContextFromRequest: Function;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/config/config-matchers.js");
+    checkHasConditions = mod.checkHasConditions;
+    requestContextFromRequest = mod.requestContextFromRequest;
+  });
+
+  it("exact value matches fully", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
+  });
+
+  it("does not match substring (anchored regex prevents partial match)", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=not-admin" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("does not match superstring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { cookie: "role=admin-temp" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "cookie", key: "role", value: "admin" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(false);
+  });
+
+  it("regex patterns still work with anchoring", () => {
+    const ctx = requestContextFromRequest(
+      new Request("http://localhost/", { headers: { "x-lang": "en-US" } }),
+    );
+    const result = checkHasConditions(
+      [{ type: "header", key: "x-lang", value: "en.*" }],
+      undefined,
+      ctx,
+    );
+    expect(result).toBe(true);
+  });
+});
+
+// ── CSRF origin wildcard matching ─────────────────────────────────────────
+// Ported from Next.js: packages/next/src/server/app-render/csrf-protection.test.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/csrf-protection.test.ts
+
+describe("isOriginAllowed", () => {
+  let isOriginAllowed: (origin: string, allowed: string[]) => boolean;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/server/request-pipeline.js");
+    isOriginAllowed = mod.isOriginAllowed;
+  });
+
+  it("exact match", () => {
+    expect(isOriginAllowed("vercel.com", ["vercel.com"])).toBe(true);
+    expect(isOriginAllowed("www.vercel.com", ["www.vercel.com"])).toBe(true);
+  });
+
+  it("single-level wildcard matches one subdomain", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["*.vercel.com"])).toBe(true);
+  });
+
+  it("single-level wildcard does NOT match multiple subdomains", () => {
+    expect(isOriginAllowed("asdf.jkl.vercel.com", ["*.vercel.com"])).toBe(false);
+  });
+
+  it("double wildcard matches one or more subdomains", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["**.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("asdf.jkl.vercel.com", ["**.vercel.com"])).toBe(true);
+  });
+
+  it("does not match different TLD", () => {
+    expect(isOriginAllowed("asdf.vercel.com", ["*.vercel.app"])).toBe(false);
+    expect(isOriginAllowed("asdf.jkl.vercel.app", ["**.vercel.com"])).toBe(false);
+  });
+
+  it("does not match unrelated domain", () => {
+    expect(isOriginAllowed("vercel.com", ["nextjs.org"])).toBe(false);
+  });
+
+  it("returns false for undefined/empty allowed list", () => {
+    expect(isOriginAllowed("vercel.com", [])).toBe(false);
+  });
+
+  it("returns false for empty string pattern", () => {
+    expect(isOriginAllowed("vercel.com", [""])).toBe(false);
+  });
+
+  it("wildcards only match below the domain level", () => {
+    expect(isOriginAllowed("vercel.com", ["*"])).toBe(false);
+    expect(isOriginAllowed("vercel.com", ["**"])).toBe(false);
+  });
+
+  it("matches case-insensitively (RFC 1035)", () => {
+    expect(isOriginAllowed("sub.VERCEL.com", ["*.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("SUB.vercel.COM", ["*.vercel.com"])).toBe(true);
+    expect(isOriginAllowed("VERCEL.COM", ["vercel.com"])).toBe(true);
+    expect(isOriginAllowed("vercel.com", ["VERCEL.COM"])).toBe(true);
+  });
+
+  it("localhost patterns", () => {
+    expect(isOriginAllowed("subdomain.localhost", ["*.localhost"])).toBe(true);
+    expect(isOriginAllowed("localhost", ["*.localhost"])).toBe(false);
+    expect(isOriginAllowed("subdomain.localhost", ["**.localhost"])).toBe(true);
+    expect(isOriginAllowed("a.b.localhost", ["**.localhost"])).toBe(true);
+    expect(isOriginAllowed("localhost", ["**.localhost"])).toBe(false);
+    expect(isOriginAllowed("localhost", ["localhost"])).toBe(true);
+  });
+
+  it("does NOT match attacker-controlled suffix domains", () => {
+    // This was the original vulnerability: endsWith(".example.com") matching
+    // evil.example.com.attacker.com
+    expect(isOriginAllowed("evil.example.com.attacker.com", ["*.example.com"])).toBe(false);
+    expect(isOriginAllowed("evil.example.com.attacker.com", ["**.example.com"])).toBe(false);
+  });
+});
+
+// Reference: vercel/next.js#92012 — useOffline() hook
+describe("next/offline shim", () => {
+  it("exports useOffline", async () => {
+    const offline = await import("../packages/vinext/src/shims/offline.js");
+    expect(offline.useOffline).toBeDefined();
+    expect(typeof offline.useOffline).toBe("function");
+  });
+
+  it("useOffline returns false (no-op stub)", async () => {
+    const offline = await import("../packages/vinext/src/shims/offline.js");
+    expect(offline.useOffline()).toBe(false);
   });
 });

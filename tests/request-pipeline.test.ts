@@ -1,10 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import {
+  applyConfigHeadersToHeaderRecord,
+  applyConfigHeadersToResponse,
+  createStaticFileSignal,
   guardProtocolRelativeUrl,
+  isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
   normalizeTrailingSlash,
+  resolvePublicFileRoute,
   validateCsrfOrigin,
+  validateServerActionPayload,
   validateImageUrl,
   processMiddlewareHeaders,
 } from "../packages/vinext/src/server/request-pipeline.js";
@@ -24,10 +30,88 @@ describe("guardProtocolRelativeUrl", () => {
     expect(res!.status).toBe(404);
   });
 
+  // Regression for VULN-126915 / H1 #3576997: encoded backslash in the
+  // leading segment survives segment-wise decoding (the decoder re-encodes
+  // `\` back to `%5C`) and is then echoed into a trailing-slash 308 Location
+  // header. Browsers percent-decode the Location, and WHATWG URL treats `\`
+  // as `/`, so `/\evil.com` resolves as protocol-relative → `http://evil.com/`.
+  it("returns 404 for encoded backslash (%5C) protocol-relative paths", () => {
+    const res = guardProtocolRelativeUrl("/%5Cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for lowercase encoded backslash (%5c) protocol-relative paths", () => {
+    const res = guardProtocolRelativeUrl("/%5cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for encoded forward slash (%2F) in leading segment", () => {
+    // /%2F/evil.com decodes to //evil.com which is protocol-relative.
+    const res = guardProtocolRelativeUrl("/%2Fevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for double-encoded backslash (%5C%5C)", () => {
+    const res = guardProtocolRelativeUrl("/%5C%5Cevil.com/");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
   it("returns null for normal paths", () => {
     expect(guardProtocolRelativeUrl("/about")).toBeNull();
     expect(guardProtocolRelativeUrl("/")).toBeNull();
     expect(guardProtocolRelativeUrl("/api/data")).toBeNull();
+  });
+
+  it("returns null when % appears after the leading slash but not as a delimiter", () => {
+    // /%E4%B8%AD is the UTF-8 encoding of a Chinese character — should pass.
+    expect(guardProtocolRelativeUrl("/%E4%B8%AD")).toBeNull();
+    // /%61dmin decodes to /admin — a single encoded ASCII char is fine.
+    expect(guardProtocolRelativeUrl("/%61dmin")).toBeNull();
+  });
+
+  it("returns null for encoded delimiters that appear after the first segment", () => {
+    // Only the leading-segment shape matters for open redirects. An encoded
+    // backslash elsewhere in the path is a legitimate (if unusual) route.
+    expect(guardProtocolRelativeUrl("/foo/%5Cbar")).toBeNull();
+    expect(guardProtocolRelativeUrl("/foo%5Cbar")).toBeNull();
+  });
+
+  it("returns null for malformed percent-encoding (defers to decode error path)", () => {
+    // `/%E0%A4%A` is malformed but the guard should not 404 it — the
+    // downstream decode will return 400 Bad Request, which is more accurate.
+    expect(guardProtocolRelativeUrl("/%E0%A4%A")).toBeNull();
+  });
+});
+
+// ── isOpenRedirectShaped ────────────────────────────────────────────────
+
+describe("isOpenRedirectShaped", () => {
+  it("detects literal protocol-relative forms", () => {
+    expect(isOpenRedirectShaped("//evil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/\\evil.com")).toBe(true);
+  });
+
+  it("detects percent-encoded delimiter forms", () => {
+    expect(isOpenRedirectShaped("/%5Cevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%5cevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%2Fevil.com")).toBe(true);
+    expect(isOpenRedirectShaped("/%2fevil.com")).toBe(true);
+  });
+
+  it("returns false for paths that don't start with /", () => {
+    expect(isOpenRedirectShaped("evil.com")).toBe(false);
+    expect(isOpenRedirectShaped("")).toBe(false);
+  });
+
+  it("returns false for safe paths", () => {
+    expect(isOpenRedirectShaped("/")).toBe(false);
+    expect(isOpenRedirectShaped("/about")).toBe(false);
+    expect(isOpenRedirectShaped("/api/users")).toBe(false);
+    expect(isOpenRedirectShaped("/%61dmin")).toBe(false);
   });
 });
 
@@ -73,6 +157,158 @@ describe("stripBasePath", () => {
     expect(stripBasePath("/application/about", "/app")).toBe("/application/about");
     expect(stripBasePath("/app2", "/app")).toBe("/app2");
     expect(stripBasePath("/apple", "/app")).toBe("/apple");
+  });
+});
+
+// ── config headers ──────────────────────────────────────────────────────
+
+describe("applyConfigHeadersToResponse", () => {
+  it("matches against the original request context and preserves middleware response precedence", () => {
+    const response = new Response("ok", {
+      headers: {
+        "x-middleware": "winner",
+        vary: "RSC",
+      },
+    });
+    const request = new Request("https://example.com/about?preview=1", {
+      headers: {
+        cookie: "mode=preview",
+        "x-enable-header": "yes",
+      },
+    });
+
+    applyConfigHeadersToResponse(response.headers, {
+      configHeaders: [
+        {
+          source: "/about",
+          has: [
+            { type: "header", key: "x-enable-header", value: "yes" },
+            { type: "cookie", key: "mode", value: "preview" },
+            { type: "query", key: "preview", value: "1" },
+          ],
+          headers: [
+            { key: "x-middleware", value: "config-loses" },
+            { key: "x-added", value: "config" },
+            { key: "vary", value: "Accept" },
+            { key: "set-cookie", value: "from=config; Path=/" },
+          ],
+        },
+      ],
+      pathname: "/about",
+      requestContext: {
+        headers: request.headers,
+        cookies: { mode: "preview" },
+        query: new URL(request.url).searchParams,
+        host: "example.com",
+      },
+    });
+
+    expect(response.headers.get("x-middleware")).toBe("winner");
+    expect(response.headers.get("x-added")).toBe("config");
+    expect(response.headers.get("vary")).toBe("RSC, Accept");
+    expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
+  });
+});
+
+describe("applyConfigHeadersToHeaderRecord", () => {
+  it("adds config headers into the early response header record without overwriting middleware", () => {
+    const headers: Record<string, string | string[]> = {
+      "x-middleware": "winner",
+      vary: "RSC",
+      "set-cookie": ["mw=1; Path=/"],
+    };
+
+    applyConfigHeadersToHeaderRecord(headers, {
+      configHeaders: [
+        {
+          source: "/logo.svg",
+          headers: [
+            { key: "x-middleware", value: "config-loses" },
+            { key: "x-added", value: "config" },
+            { key: "vary", value: "Accept" },
+            { key: "set-cookie", value: "cfg=1; Path=/" },
+          ],
+        },
+      ],
+      pathname: "/logo.svg",
+      requestContext: {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "example.com",
+      },
+    });
+
+    expect(headers["x-middleware"]).toBe("winner");
+    expect(headers["x-added"]).toBe("config");
+    expect(headers.vary).toBe("RSC, Accept");
+    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/", "cfg=1; Path=/"]);
+  });
+});
+
+// ── public file routing ─────────────────────────────────────────────────
+
+describe("resolvePublicFileRoute", () => {
+  it("signals GET public files and preserves middleware headers/status", () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        status: 203,
+      },
+      pathname: "/logo.svg",
+      publicFiles: new Set(["/logo.svg"]),
+      request: new Request("https://example.com/logo.svg"),
+    });
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(203);
+    expect(response!.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(response!.headers.get("x-from-middleware")).toBe("1");
+  });
+
+  it("does not signal non-GET/HEAD, RSC, or missing public file requests", () => {
+    const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
+    const middlewareContext = { headers: null, status: null };
+
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/logo.svg",
+        middlewareContext,
+        pathname: "/logo.svg",
+        publicFiles,
+        request: new Request("https://example.com/logo.svg", { method: "POST" }),
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/about.rsc",
+        middlewareContext,
+        pathname: "/about.rsc",
+        publicFiles,
+        request: new Request("https://example.com/about.rsc"),
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublicFileRoute({
+        cleanPathname: "/missing.svg",
+        middlewareContext,
+        pathname: "/missing.svg",
+        publicFiles,
+        request: new Request("https://example.com/missing.svg"),
+      }),
+    ).toBeNull();
+  });
+
+  it("creates standalone static file signals from normal modules", () => {
+    const response = createStaticFileSignal("/robots.txt", {
+      headers: new Headers({ "cache-control": "no-store" }),
+      status: 202,
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-vinext-static-file")).toBe("%2Frobots.txt");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
 
@@ -147,6 +383,35 @@ describe("normalizeTrailingSlash", () => {
     expect(res!.status).toBe(308);
     expect(res!.headers.get("Location")).toBe("/api-docs");
   });
+
+  // Defense-in-depth for VULN-126915: even if an upstream guard is bypassed,
+  // the trailing-slash emitter must refuse to echo a protocol-relative path
+  // back into a Location header. Returns 404 instead of 308.
+  it("returns 404 (not 308) for encoded-backslash paths when trailingSlash is false", () => {
+    const res = normalizeTrailingSlash("/%5Cevil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+    expect(res!.headers.get("Location")).toBeNull();
+  });
+
+  it("returns 404 (not 308) for encoded-backslash paths when trailingSlash is true", () => {
+    const res = normalizeTrailingSlash("/%5Cevil.com", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+    expect(res!.headers.get("Location")).toBeNull();
+  });
+
+  it("returns 404 for literal double-slash paths", () => {
+    const res = normalizeTrailingSlash("//evil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
+
+  it("returns 404 for encoded-forward-slash paths", () => {
+    const res = normalizeTrailingSlash("/%2Fevil.com/", "", false, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(404);
+  });
 });
 
 // ── validateCsrfOrigin ──────────────────────────────────────────────────
@@ -160,8 +425,16 @@ describe("validateCsrfOrigin", () => {
     expect(validateCsrfOrigin(makeRequest({ host: "localhost:3000" }))).toBeNull();
   });
 
-  it("allows requests with Origin: null", () => {
-    expect(validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }))).toBeNull();
+  it("blocks requests with Origin: null (CSRF via sandboxed context)", () => {
+    const res = validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }));
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("allows Origin: null when explicitly in allowedOrigins", () => {
+    expect(
+      validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }), ["null"]),
+    ).toBeNull();
   });
 
   it("allows same-origin requests", () => {
@@ -200,14 +473,93 @@ describe("validateCsrfOrigin", () => {
     expect(res!.status).toBe(403);
   });
 
-  it("allows requests with no Host header", () => {
-    // Can't construct a Request without host easily, but we can test the
-    // empty-host fallback by providing an origin but no host
+  it("falls back to request.url host when Host header is missing", () => {
     const req = new Request("http://localhost:3000/api/action", {
       headers: { origin: "http://localhost:3000" },
     });
-    // When host is missing, the function returns null (allows)
     expect(validateCsrfOrigin(req)).toBeNull();
+  });
+
+  it("still blocks cross-origin requests when Host header is missing", () => {
+    const req = new Request("http://localhost:3000/api/action", {
+      headers: { origin: "http://evil.com" },
+    });
+    const res = validateCsrfOrigin(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+});
+
+// ── validateServerActionPayload ─────────────────────────────────────────
+
+describe("validateServerActionPayload", () => {
+  it("allows plain JSON action bodies with no Flight container references", async () => {
+    await expect(validateServerActionPayload('["hello",1]')).resolves.toBeNull();
+  });
+
+  it("allows valid Map backing-field payloads", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+    body.set("1", '[["a",1],["b",2]]');
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("allows file-backed numeric fields when the backing graph is valid", async () => {
+    const body = new FormData();
+    body.set("0", new File(['["$Q1"]'], "root.txt", { type: "application/json" }));
+    body.set("1", new File(['[["a",1],["b",2]]'], "map.txt", { type: "application/json" }));
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("ignores normal user form fields", async () => {
+    const body = new FormData();
+    body.set("message", "$Q0 should stay user data");
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("rejects missing container backing fields", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects self-referential root container payloads", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q0","$Q0"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects self-referential file-backed root container payloads", async () => {
+    const body = new FormData();
+    body.set("0", new File(['["$Q0","$Q0"]'], "root.txt", { type: "application/json" }));
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("rejects cyclic container reference graphs across backing fields", async () => {
+    const body = new FormData();
+    body.set("0", '["$Q1"]');
+    body.set("1", '["$Q2"]');
+    body.set("2", '["$Q1"]');
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
 });
 

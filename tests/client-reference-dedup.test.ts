@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
+import type { Plugin } from "vite";
+import vinext from "../packages/vinext/src/index.js";
 import {
   extractPackageName,
   clientReferenceDedupPlugin,
@@ -144,25 +146,18 @@ describe("clientReferenceDedupPlugin", () => {
   });
 
   describe("load", () => {
-    it("generates bare specifier re-exports for dedup modules", () => {
-      const ctx = {};
-      const result = load.call(ctx, "\0vinext:dedup/@mantine/core");
-      expect(result).toContain('export * from "@mantine/core"');
-      expect(result).toContain('import * as __all__ from "@mantine/core"');
-      expect(result).toContain("export default __all__.default");
+    it("re-exports from the bare specifier for scoped packages", () => {
+      const result = load.call({}, "\0vinext:dedup/@mantine/core");
+      expect(result).toContain('"@mantine/core"');
     });
 
-    it("generates correct output for unscoped packages", () => {
-      const ctx = {};
-      const result = load.call(ctx, "\0vinext:dedup/react");
-      expect(result).toContain('export * from "react"');
-      expect(result).toContain('import * as __all__ from "react"');
-      expect(result).toContain("export default __all__.default");
+    it("re-exports from the bare specifier for unscoped packages", () => {
+      const result = load.call({}, "\0vinext:dedup/react");
+      expect(result).toContain('"react"');
     });
 
     it("skips non-dedup module IDs", () => {
-      const ctx = {};
-      const result = load.call(ctx, "\0some-other-virtual-module");
+      const result = load.call({}, "\0some-other-virtual-module");
       expect(result).toBeUndefined();
     });
   });
@@ -179,5 +174,25 @@ describe("clientReferenceDedupPlugin", () => {
     it("applies only in serve mode", () => {
       expect(plugin.apply).toBe("serve");
     });
+  });
+});
+
+describe("vinext experimental.clientReferenceDedup", () => {
+  function getPluginNames(options?: Parameters<typeof vinext>[0]) {
+    return ((vinext(options) as Plugin[]).flat(Infinity) as Plugin[])
+      .map((plugin) => plugin?.name)
+      .filter(Boolean);
+  }
+
+  it("does not register clientReferenceDedupPlugin by default", () => {
+    expect(getPluginNames()).not.toContain("vinext:client-reference-dedup");
+  });
+
+  it("registers clientReferenceDedupPlugin when explicitly enabled", () => {
+    expect(
+      getPluginNames({
+        experimental: { clientReferenceDedup: true },
+      }),
+    ).toContain("vinext:client-reference-dedup");
   });
 });

@@ -4,7 +4,7 @@
  * Task 1a: hasMdxFiles() should cache its result per (root, appDir, pagesDir) combination.
  * Task 1b: resolvePostcssStringPlugins() should cache its result per project root.
  */
-import { afterEach, describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeAll, beforeEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,13 +14,13 @@ import os from "node:os";
 // ---------------------------------------------------------------------------
 
 describe("hasMdxFiles caching", () => {
-  let hasMdxFiles: (typeof import("../packages/vinext/src/index.js"))["_hasMdxFiles"];
-  let mdxScanCache: (typeof import("../packages/vinext/src/index.js"))["_mdxScanCache"];
+  let hasMdxFiles: (typeof import("../packages/vinext/src/utils/mdx-scan.js"))["hasMdxFiles"];
+  let mdxScanCache: (typeof import("../packages/vinext/src/utils/mdx-scan.js"))["mdxScanCache"];
 
   beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/index.js");
-    hasMdxFiles = mod._hasMdxFiles;
-    mdxScanCache = mod._mdxScanCache;
+    const mod = await import("../packages/vinext/src/utils/mdx-scan.js");
+    hasMdxFiles = mod.hasMdxFiles;
+    mdxScanCache = mod.mdxScanCache;
   });
 
   beforeEach(() => {
@@ -135,13 +135,13 @@ describe("hasMdxFiles caching", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolvePostcssStringPlugins caching", () => {
-  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/index.js"))["_resolvePostcssStringPlugins"];
-  let postcssCache: (typeof import("../packages/vinext/src/index.js"))["_postcssCache"];
+  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/plugins/postcss.js"))["resolvePostcssStringPlugins"];
+  let postcssCache: (typeof import("../packages/vinext/src/plugins/postcss.js"))["postcssCache"];
 
   beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/index.js");
-    resolvePostcssStringPlugins = mod._resolvePostcssStringPlugins;
-    postcssCache = mod._postcssCache;
+    const mod = await import("../packages/vinext/src/plugins/postcss.js");
+    resolvePostcssStringPlugins = mod.resolvePostcssStringPlugins;
+    postcssCache = mod.postcssCache;
   });
 
   beforeEach(() => {

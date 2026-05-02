@@ -20,6 +20,7 @@ import type {
   NavigationState,
   PrivateCacheState,
   RouterState,
+  RootParamsState,
   VinextHeadersShimState,
 } from "./request-state-types.js";
 
@@ -34,20 +35,24 @@ import type {
  *
  * Each field group is documented with its source shim module.
  */
-export interface UnifiedRequestContext
-  extends
-    VinextHeadersShimState,
-    I18nState,
-    NavigationState,
-    CacheState,
-    PrivateCacheState,
-    FetchCacheState,
-    RouterState,
-    HeadState {
+export type UnifiedRequestContext = {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
-}
+
+  // ── cache-for-request.ts ──────────────────────────────────────────
+  /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  requestCache: WeakMap<(...args: any[]) => any, unknown>;
+} & VinextHeadersShimState &
+  I18nState &
+  NavigationState &
+  CacheState &
+  PrivateCacheState &
+  FetchCacheState &
+  RouterState &
+  HeadState &
+  RootParamsState;
 
 // ---------------------------------------------------------------------------
 // ALS setup — stored on globalThis via Symbol.for so all Vite environments
@@ -82,6 +87,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     dynamicUsageDetected: false,
+    invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
     phase: "render",
@@ -89,11 +95,15 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
+    unstableCacheRevalidation: "foreground",
     _privateCache: null,
     currentRequestTags: [],
+    currentFetchSoftTags: [],
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    requestCache: new WeakMap(),
     ssrContext: null,
     ssrHeadChildren: [],
+    rootParams: null,
     ...opts,
   };
 }
@@ -103,6 +113,14 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
  * All shim modules will read/write their state from `ctx` for the
  * duration of the call, including async continuations.
  */
+export function runWithRequestContext<T>(
+  ctx: UnifiedRequestContext,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function runWithRequestContext<T>(
+  ctx: UnifiedRequestContext,
+  fn: () => T | Promise<T>,
+): T | Promise<T>;
 export function runWithRequestContext<T>(
   ctx: UnifiedRequestContext,
   fn: () => T | Promise<T>,
@@ -121,6 +139,14 @@ export function runWithRequestContext<T>(
  */
 export function runWithUnifiedStateMutation<T>(
   mutate: (ctx: UnifiedRequestContext) => void,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function runWithUnifiedStateMutation<T>(
+  mutate: (ctx: UnifiedRequestContext) => void,
+  fn: () => T | Promise<T>,
+): T | Promise<T>;
+export function runWithUnifiedStateMutation<T>(
+  mutate: (ctx: UnifiedRequestContext) => void,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   const parentCtx = _als.getStore();
@@ -129,9 +155,11 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), the
-  // _privateCache Map, and object fields (headersContext, i18nContext,
-  // serverContext, ssrContext, executionContext, requestScopedCacheLife)
-  // still share references with the parent until replaced. The mutate
+  // _privateCache Map, requestCache WeakMap, and object fields (headersContext,
+  // i18nContext, serverContext, ssrContext, executionContext,
+  // requestScopedCacheLife) still share references with the parent until
+  // replaced. requestCache is intentionally shared — nested scopes within
+  // the same request should see the same cached values. The mutate
   // callback must replace those reference-typed slices (for example
   // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
   // example `ctx.currentRequestTags.push(...)`) or the parent scope will

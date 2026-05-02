@@ -7,21 +7,15 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: prefetch (browser)", () => {
   // Next.js: 'should navigate when prefetch is false'
   test("should navigate when prefetch is false", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click the no-prefetch link
     await page.click("#no-prefetch-link");
@@ -33,7 +27,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Test that prefetched link navigates correctly
   test("should navigate via prefetched link", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click the prefetch link
     await page.click("#prefetch-link");
@@ -45,7 +39,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Test that prefetched navigation preserves client state (no full reload)
   test("prefetched navigation does not cause full page reload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Set marker to detect full reload
     await page.evaluate(() => {
@@ -66,7 +60,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Test that prefetch populates the in-memory RSC cache
   test("visible Link prefetches RSC payload into in-memory cache", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Wait for prefetch to complete (requestIdleCallback + fetch)
     await expect(async () => {
@@ -92,7 +86,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Test that prefetch={false} does NOT populate the cache
   test("Link with prefetch={false} does not prefetch RSC payload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Wait for the prefetch-enabled link to populate the cache, then check
     // that the no-prefetch target is NOT in the cache.
@@ -120,7 +114,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   // Test that navigating to a prefetched link uses the cache (no extra fetch)
   test("navigation to prefetched link uses cached RSC payload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Wait for prefetch to populate the cache
     await expect(async () => {

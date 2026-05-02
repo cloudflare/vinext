@@ -9,6 +9,8 @@
  * - Global-error.tsx as the last resort for root-level errors
  * - generateMetadata() errors caught by local error.tsx when present
  * - generateMetadata() errors escalating to global-error when no local boundary
+ * - layout generateMetadata() errors following the same boundary path
+ * - layout generateViewport() errors following the same boundary path
  *
  * NOTE: Most Next.js global-error tests are browser-based (click buttons, check
  * rendered error UI after hydration/client error). This file tests SSR-level
@@ -23,8 +25,11 @@
  * - fixtures/app-basic/app/nextjs-compat/metadata-error-{with,without}-boundary/ (new)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import fs from "node:fs";
+import path from "node:path";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { createBuilder, preview, type ViteDevServer } from "vite-plus";
+import vinext from "../../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
 describe("Next.js compat: global-error", () => {
@@ -127,6 +132,54 @@ describe("Next.js compat: global-error", () => {
     expect(html).toContain("Metadata error");
   });
 
+  it("layout generateMetadata() error caught by local error.tsx boundary", async () => {
+    // Ported from Next.js: test/e2e/app-dir/global-error/basic/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/basic/index.test.ts
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-metadata-error-with-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("Local layout metadata error boundary");
+    expect(html).not.toContain("layout metadata page rendered");
+  });
+
+  it("layout generateMetadata() error without local boundary renders global-error", async () => {
+    // Ported from Next.js: test/e2e/app-dir/global-error/basic/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/basic/index.test.ts
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-metadata-error-without-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("Layout metadata error");
+  });
+
+  it("layout generateViewport() error caught by local error.tsx boundary", async () => {
+    // Next.js resolves viewport through the same metadata outlet error path:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/metadata.tsx
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-viewport-error-with-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("Local layout viewport error boundary");
+    expect(html).not.toContain("layout viewport page rendered");
+  });
+
+  it("layout generateViewport() error without local boundary renders global-error", async () => {
+    // Next.js resolves viewport through the same metadata outlet error path:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/metadata.tsx
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-viewport-error-without-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("Layout viewport error");
+  });
+
   // ── Structural integrity: no double <html>/<body> tags ───────
   // global-error.tsx provides its own <html> and <body>. When it renders,
   // the root layout's <html>/<body> must NOT also appear.
@@ -170,4 +223,123 @@ describe("Next.js compat: global-error", () => {
   //   WHY SKIPPED: Tests Next.js-specific dev overlay (Redbox) error display format.
   //   Vinext uses Vite's error overlay which has different formatting.
   //   N/A for compat suite.
+});
+
+describe("Next.js compat: global-error (production preview)", () => {
+  const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
+  let previewServer: Awaited<ReturnType<typeof preview>>;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const builder = await createBuilder({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    previewServer = await preview({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      preview: { port: 0 },
+      logLevel: "silent",
+    });
+
+    const addr = previewServer.httpServer.address();
+    if (!addr || typeof addr !== "object") {
+      throw new Error("Preview server did not expose a port");
+    }
+    baseUrl = `http://localhost:${addr.port}`;
+  }, 60_000);
+
+  afterAll(() => {
+    previewServer?.httpServer.close();
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("server component throw without local error.tsx renders global-error with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain("server page error");
+  });
+
+  it("client component SSR throw without local error.tsx renders global-error with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain("client page error");
+  });
+
+  it("server component throw with local error.tsx renders that boundary with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Server Error Caught");
+    expect(html).not.toContain("global-error");
+  });
+
+  it("nested server component throw resolves to the nearest error.tsx boundary", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
+    expect(res.status).toBe(200);
+    expect(html).toContain("inner-error-boundary");
+    expect(html).not.toContain("outer-error-boundary");
+  });
+
+  it("generateMetadata() errors render the co-located error.tsx boundary with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-error-with-boundary");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Local error boundary");
+    expect(html).not.toContain("global-error");
+  });
+
+  it("generateMetadata() errors without a local boundary escalate to global-error with 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-error-without-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+  });
+
+  it("layout generateMetadata() errors render the co-located error.tsx boundary with 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-metadata-error-with-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("Local layout metadata error boundary");
+    expect(html).not.toContain("global-error");
+  });
+
+  it("layout generateMetadata() errors without a local boundary escalate to global-error with 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-metadata-error-without-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+  });
+
+  it("layout generateViewport() errors render the co-located error.tsx boundary with 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-viewport-error-with-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("Local layout viewport error boundary");
+    expect(html).not.toContain("global-error");
+  });
+
+  it("layout generateViewport() errors without a local boundary escalate to global-error with 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-viewport-error-without-boundary",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+  });
 });

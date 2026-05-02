@@ -20,18 +20,18 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-export interface SSRContext {
+export type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
-}
+};
 
-export interface RouterState {
+export type RouterState = {
   ssrContext: SSRContext | null;
-}
+};
 
 const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
@@ -55,6 +55,8 @@ function _getState(): RouterState {
  * Ensures per-request isolation for Pages Router SSR context
  * on concurrent runtimes.
  */
+export function runWithRouterState<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {

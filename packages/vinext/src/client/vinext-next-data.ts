@@ -5,9 +5,9 @@
  * We can't augment the `NEXT_DATA` type alias, so we extend the vinext shim's
  * interface (shims/internal/utils.ts) and cast at the usage sites.
  */
-import type { NEXT_DATA } from "../shims/internal/utils.js";
+import type { NEXT_DATA } from "vinext/shims/internal/utils";
 
-export interface VinextNextData extends NEXT_DATA {
+export type VinextNextData = {
   /** vinext-specific additions (not part of Next.js upstream). */
   __vinext?: {
     /** Absolute URL of the page module for dynamic import. */
@@ -15,8 +15,4 @@ export interface VinextNextData extends NEXT_DATA {
     /** Absolute URL of the `_app` module for dynamic import. */
     appModuleUrl?: string;
   };
-  /** Serialised page module path (legacy — used by `client/entry.ts`). */
-  __pageModule?: string;
-  /** Serialised `_app` module path (legacy — used by `client/entry.ts`). */
-  __appModule?: string;
-}
+} & NEXT_DATA;

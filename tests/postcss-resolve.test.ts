@@ -1,13 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
 
 describe("resolvePostcssStringPlugins", () => {
-  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/index.js"))["_resolvePostcssStringPlugins"];
+  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/plugins/postcss.js"))["resolvePostcssStringPlugins"];
 
   beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/index.js");
-    resolvePostcssStringPlugins = mod._resolvePostcssStringPlugins;
+    const mod = await import("../packages/vinext/src/plugins/postcss.js");
+    resolvePostcssStringPlugins = mod.resolvePostcssStringPlugins;
   });
 
   /**

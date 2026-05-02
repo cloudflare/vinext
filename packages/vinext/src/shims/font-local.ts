@@ -100,13 +100,13 @@ function sanitizeCSSValue(value: string): string | undefined {
 let classCounter = 0;
 const injectedFonts = new Set<string>();
 
-interface LocalFontSrc {
+type LocalFontSrc = {
   path: string;
   weight?: string;
   style?: string;
-}
+};
 
-interface LocalFontOptions {
+type LocalFontOptions = {
   src: string | LocalFontSrc | LocalFontSrc[];
   display?: string;
   weight?: string;
@@ -116,13 +116,13 @@ interface LocalFontOptions {
   variable?: string;
   adjustFontFallback?: boolean | string;
   declarations?: Array<{ prop: string; value: string }>;
-}
+};
 
-interface FontResult {
+type FontResult = {
   className: string;
   style: { fontFamily: string };
   variable?: string;
-}
+};
 
 function generateFontFaceCSS(family: string, options: LocalFontOptions): string {
   const sources = normalizeSources(options);

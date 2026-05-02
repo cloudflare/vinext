@@ -8,7 +8,7 @@
  * - Valid entries round-trip correctly
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
 
 // ---------------------------------------------------------------------------
@@ -16,15 +16,47 @@ import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handl
 // ---------------------------------------------------------------------------
 
 function createMockKV(store: Map<string, string> = new Map()) {
+  // Metadata store mirrors what Cloudflare KV returns on list()
+  const metadataStore = new Map<string, Record<string, unknown>>();
+
   return {
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, value: string) => {
-      store.set(key, value);
-    }),
+    put: vi.fn(
+      async (
+        key: string,
+        value: string,
+        options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
+      ) => {
+        store.set(key, value);
+        if (options?.metadata) metadataStore.set(key, options.metadata);
+      },
+    ),
     delete: vi.fn(async (key: string) => {
       store.delete(key);
+      metadataStore.delete(key);
     }),
-    list: vi.fn(async () => ({ keys: [], list_complete: true })),
+    list: vi.fn(async (options?: { prefix?: string; limit?: number; cursor?: string }) => {
+      const prefix = options?.prefix ?? "";
+      const limit = options?.limit ?? 1000;
+      const cursor = options?.cursor;
+
+      const allKeys = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
+
+      let startIdx = 0;
+      if (cursor) {
+        const idx = allKeys.indexOf(cursor);
+        startIdx = idx >= 0 ? idx + 1 : 0;
+      }
+
+      const pageKeys = allKeys.slice(startIdx, startIdx + limit);
+      const hasMore = startIdx + limit < allKeys.length;
+
+      return {
+        keys: pageKeys.map((name) => ({ name, metadata: metadataStore.get(name) })),
+        list_complete: !hasMore,
+        cursor: hasMore ? pageKeys[pageKeys.length - 1] : undefined,
+      };
+    }),
   };
 }
 
@@ -184,6 +216,22 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-reval");
     });
 
+    it("rejects entry with invalid expireAt type", async () => {
+      store.set(
+        "cache:bad-expire",
+        JSON.stringify({
+          value: null,
+          tags: [],
+          lastModified: 123,
+          revalidateAt: null,
+          expireAt: "not-a-number",
+        }),
+      );
+      const result = await handler.get("bad-expire");
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:bad-expire");
+    });
+
     it("rejects entry with unknown value kind", async () => {
       store.set("cache:bad-kind", validEntry({ kind: "UNKNOWN_KIND", data: {} }));
       const result = await handler.get("bad-kind");
@@ -326,6 +374,10 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("set and get round-trip", () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+
     it("round-trips APP_ROUTE with ArrayBuffer body", async () => {
       const bodyBytes = new TextEncoder().encode("response body");
       await handler.set("rt-route", {
@@ -383,6 +435,32 @@ describe("KVCacheHandler", () => {
         "test-data",
       ]);
     });
+
+    it("serves stale within expire and returns a hard miss beyond expire", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "expire-test",
+        {
+          kind: "PAGES",
+          html: "<html>cached</html>",
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 1, expire: 3 } },
+      );
+
+      vi.setSystemTime(2_500);
+      const stale = await handler.get("expire-test");
+      expect(stale?.cacheState).toBe("stale");
+      expect(stale?.value?.kind).toBe("PAGES");
+
+      vi.setSystemTime(4_500);
+      await expect(handler.get("expire-test")).resolves.toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
+    });
   });
 
   describe("tag invalidation", () => {
@@ -419,6 +497,62 @@ describe("KVCacheHandler", () => {
 
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
+    });
+
+    it("softTags invalidate FETCH reads without deleting the shared entry", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:_N_T_/posts/hello", "2000");
+
+      const withoutSoftTags = await handler.get("fetch-entry", { kind: "FETCH", tags: [] });
+      const withSoftTags = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        tags: [],
+        softTags: ["_N_T_/posts/hello"],
+      });
+
+      expect(withoutSoftTags).not.toBeNull();
+      expect(withSoftTags).toBeNull();
+      expect(kv.delete).not.toHaveBeenCalledWith("cache:fetch-entry");
+    });
+
+    it("validates and dedupes softTags before reading KV tag markers", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            revalidate: 3600,
+          },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+
+      const result = await handler.get("fetch-entry", {
+        kind: "FETCH",
+        softTags: ["_N_T_/posts/hello", "_N_T_/posts/hello", "bad:tag", ""],
+      });
+
+      expect(result).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledWith("cache:fetch-entry");
+      expect(kv.get).toHaveBeenCalledWith("__tag:_N_T_/posts/hello");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:bad:tag");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:");
+      expect(kv.get).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -880,7 +1014,7 @@ describe("KVCacheHandler", () => {
 
       // The set() promise should NOT be resolved yet because the kv.put hasn't resolved.
       let setSettled = false;
-      setPromise.then(() => {
+      void setPromise.then(() => {
         setSettled = true;
       });
 
@@ -997,6 +1131,143 @@ describe("KVCacheHandler", () => {
       expect(store.has("cache:override-positive")).toBe(true);
       const result = await handler.get("override-positive");
       expect(result).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revalidateByPathPrefix
+  // -------------------------------------------------------------------------
+
+  describe("revalidateByPathPrefix", () => {
+    async function setPageEntry(h: KVCacheHandler, pathname: string, extraTags: string[] = []) {
+      const tags = [pathname, `_N_T_${pathname}`, ...extraTags];
+      await h.set(
+        pathname,
+        {
+          kind: "APP_PAGE",
+          html: `<html>${pathname}</html>`,
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags },
+      );
+    }
+
+    it("invalidates entries whose paths match the prefix (segment-aware)", async () => {
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/dashboard/settings");
+      await setPageEntry(handler, "/about");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/dashboard/settings")).toBeNull();
+      expect(await handler.get("/about")).not.toBeNull();
+    });
+
+    it("does NOT match partial segment names", async () => {
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/dashboard-admin");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/dashboard-admin")).not.toBeNull();
+    });
+
+    it("root prefix / invalidates all path-tagged entries", async () => {
+      await setPageEntry(handler, "/");
+      await setPageEntry(handler, "/dashboard");
+      await setPageEntry(handler, "/about");
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/");
+      handler.resetRequestCache();
+
+      expect(await handler.get("/")).toBeNull();
+      expect(await handler.get("/dashboard")).toBeNull();
+      expect(await handler.get("/about")).toBeNull();
+    });
+
+    it("skips entries with only non-path custom tags", async () => {
+      await handler.set(
+        "custom-only",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "data", url: "/api" },
+          tags: ["api-tag"],
+          revalidate: 60,
+        },
+        { tags: ["api-tag"] },
+      );
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/dashboard");
+      handler.resetRequestCache();
+
+      expect(await handler.get("custom-only")).not.toBeNull();
+    });
+
+    it("gracefully skips entries without metadata (written before metadata support)", async () => {
+      // Manually write an entry without metadata (simulating old entries)
+      store.set(
+        "cache:/legacy",
+        JSON.stringify({
+          value: { kind: "APP_PAGE", html: "<html>/legacy</html>", status: 200 },
+          tags: ["/legacy", "_N_T_/legacy"],
+          lastModified: Date.now(),
+          revalidateAt: null,
+        }),
+      );
+
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/legacy");
+      handler.resetRequestCache();
+
+      // Legacy entry is NOT invalidated — no metadata to read tags from
+      expect(await handler.get("/legacy")).not.toBeNull();
+    });
+
+    it("omits metadata when tags exceed 1024-byte KV limit, entry still cached", async () => {
+      // Generate tags that exceed 1024 bytes when JSON-serialized
+      const longTags = Array.from({ length: 50 }, (_, i) => `/very/deep/nested/path/segment-${i}`);
+      const allTags = longTags.flatMap((t) => [t, `_N_T_${t}`]);
+
+      await handler.set(
+        "/big-tags",
+        {
+          kind: "APP_PAGE",
+          html: "<html>big</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags: allTags },
+      );
+
+      // Entry IS cached (set didn't fail)
+      handler.resetRequestCache();
+      const result = await handler.get("/big-tags");
+      expect(result).not.toBeNull();
+      expect(result!.value!.kind).toBe("APP_PAGE");
+
+      // But prefix invalidation skips it (no metadata to read)
+      handler.resetRequestCache();
+      await handler.revalidateByPathPrefix!("/very");
+      handler.resetRequestCache();
+      expect(await handler.get("/big-tags")).not.toBeNull();
+
+      // Exact-path invalidation via revalidateTag still works
+      await handler.revalidateTag(allTags.slice(0, 2));
+      handler.resetRequestCache();
+      expect(await handler.get("/big-tags")).toBeNull();
     });
   });
 });

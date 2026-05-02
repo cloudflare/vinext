@@ -8,7 +8,7 @@ import {
 import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
 import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
-export interface Route {
+export type Route = {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
   pattern: string;
   /** Pre-split pattern segments (computed once at scan time, reused per request) */
@@ -19,7 +19,7 @@ export interface Route {
   isDynamic: boolean;
   /** Parameter names for dynamic segments */
   params: string[];
-}
+};
 
 // Route cache — invalidated when pages directory changes
 const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
@@ -217,7 +217,12 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   let files: string[];
   try {
     files = [];
-    for await (const file of scanWithExtensions("**/*", apiDir, matcher.extensions)) {
+    for await (const file of scanWithExtensions(
+      "**/*",
+      apiDir,
+      matcher.extensions,
+      (name: string) => name.startsWith("_"),
+    )) {
       files.push(file);
     }
   } catch {

@@ -5,8 +5,10 @@
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
 import {
   hasNamedExport,
   extractExportConstString,
@@ -14,9 +16,13 @@ import {
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
   classifyAppRoute,
+  classifyLayoutSegmentConfig,
   buildReportRows,
   formatBuildReport,
+  printBuildReport,
 } from "../packages/vinext/src/build/report.js";
+import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
 const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
@@ -145,6 +151,8 @@ describe("extractGetStaticPropsRevalidate", () => {
     expect(extractGetStaticPropsRevalidate(code)).toBe(60);
   });
 
+  // These bare return-object cases intentionally exercise the whole-file
+  // fallback path used when no local getStaticProps declaration is present.
   it("extracts revalidate: 0 (treat as SSR)", () => {
     const code = `return { props: {}, revalidate: 0 };`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(0);
@@ -164,6 +172,149 @@ describe("extractGetStaticPropsRevalidate", () => {
     const code = `export async function getStaticProps() {
   return { props: { foo: 1 } };
 }`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores unrelated revalidate values outside getStaticProps", () => {
+    const code = `const defaults = { revalidate: 30 };
+
+export async function getStaticProps() {
+  return { props: { ok: true } };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("prefers revalidate inside getStaticProps over unrelated values elsewhere", () => {
+    const code = `const defaults = { revalidate: 30 };
+
+export async function getStaticProps() {
+  return { props: {}, revalidate: 60 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("finds revalidate in a later return when an earlier return redirects", () => {
+    const code = `export async function getStaticProps(ctx) {
+  if (!ctx.params?.slug) {
+    return { redirect: { destination: "/", permanent: false } };
+  }
+  return { props: { data: 1 }, revalidate: 60 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("ignores revalidate in a function defined after getStaticProps", () => {
+    const code = `export function getStaticProps() {
+  return { props: {} };
+}
+
+export function unrelated() {
+  return { revalidate: 999 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("extracts revalidate from a function declaration with destructured params", () => {
+    const code = `export async function getStaticProps({ params }) {
+  return { props: { slug: params?.slug ?? null }, revalidate: 60 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("extracts revalidate from a function expression with destructured params", () => {
+    const code = `export const getStaticProps = async function({ params }) {
+  return { props: { slug: params?.slug ?? null }, revalidate: 60 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60);
+  });
+
+  it("ignores revalidate in a nested helper function inside getStaticProps", () => {
+    const code = `export function getStaticProps() {
+  const helper = () => {
+    return { revalidate: 999 };
+  };
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate in a nested named function inside getStaticProps", () => {
+    const code = `export function getStaticProps() {
+  function helper(paramOne, paramTwo, paramThree, paramFour, paramFive) {
+    return { revalidate: 999 };
+  }
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate in a nested implicit-arrow helper inside block-body getStaticProps", () => {
+    const code = `export const getStaticProps = async () => {
+  const helper = () => ({ revalidate: 999 });
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate in a nested implicit-arrow helper inside function-expression getStaticProps", () => {
+    const code = `export const getStaticProps = async function() {
+  const helper = () => ({ revalidate: 999 });
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate nested inside props data", () => {
+    const code = `export async function getStaticProps() {
+  return {
+    props: {
+      config: {
+        revalidate: 999,
+      },
+    },
+  };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate in an object-method helper inside getStaticProps", () => {
+    const code = `export function getStaticProps() {
+  const helper = {
+    build() {
+      return { revalidate: 999 };
+    },
+  };
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores revalidate in object-method helpers named get and async", () => {
+    const code = `export function getStaticProps() {
+  const helper = {
+    get() {
+      return { revalidate: 999 };
+    },
+    async() {
+      return { revalidate: 998 };
+    },
+  };
+
+  return { props: {} };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
+  it("ignores unrelated revalidate when getStaticProps is re-exported from another file", () => {
+    const code = `const defaults = { revalidate: 30 };
+
+export { getStaticProps } from "./shared";
+`;
     expect(extractGetStaticPropsRevalidate(code)).toBeNull();
   });
 
@@ -384,11 +535,10 @@ describe("formatBuildReport", () => {
     expect(tableLines[2]).toContain("└");
   });
 
-  it("uses ┌ for a single-route table (not └)", () => {
+  it("uses - for a single-route table (not └)", () => {
     const rows = [{ pattern: "/", type: "static" as const }];
     const out = formatBuildReport(rows);
-    expect(out).toContain("┌ ○ /");
-    expect(out).not.toContain("└ ○ /");
+    expect(out).toContain("─ ○ /");
   });
 
   it("prints a legend line with only the types that appear", () => {
@@ -452,5 +602,194 @@ describe("formatBuildReport", () => {
     expect(out).toContain("└ ƒ /dashboard");
     // Legend is alphabetical: API, Dynamic, ISR, Static
     expect(out).toContain("λ API  ƒ Dynamic  ◐ ISR  ○ Static");
+  });
+});
+
+// ─── printBuildReport with pageExtensions ─────────────────────────────────────
+
+describe("printBuildReport respects pageExtensions", () => {
+  let tmpRoot: string;
+
+  afterEach(async () => {
+    if (tmpRoot) {
+      // Invalidate both routers' caches — pages router tests set pagesDir at
+      // tmpRoot/pages, so we invalidate that path too. This ensures a failing
+      // test that skips its own finally-block cleanup doesn't pollute later tests.
+      invalidateAppRouteCache();
+      invalidateRouteCache(path.join(tmpRoot, "pages"));
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("app router: only reports routes matching configured pageExtensions", async () => {
+    // Ported from Next.js MDX e2e pageExtensions behaviour:
+    // test/e2e/app-dir/mdx/next.config.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx/next.config.ts
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-"));
+    const appDir = path.join(tmpRoot, "app");
+    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
+    await fs.writeFile(
+      path.join(appDir, "layout.tsx"),
+      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+    );
+    await fs.writeFile(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    // This .mdx page should be excluded when mdx is not in pageExtensions
+    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
+
+    // Capture stdout output from printBuildReport
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateAppRouteCache();
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+    } finally {
+      console.log = origLog;
+    }
+
+    const output = lines.join("\n");
+    // / should appear (page.tsx matches)
+    expect(output).toContain("/");
+    // /about should NOT appear (page.mdx excluded — mdx not in pageExtensions)
+    expect(output).not.toContain("/about");
+  });
+
+  it("app router: reports mdx routes when pageExtensions includes mdx", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-mdx-"));
+    const appDir = path.join(tmpRoot, "app");
+    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
+    await fs.writeFile(
+      path.join(appDir, "layout.tsx"),
+      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+    );
+    await fs.writeFile(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateAppRouteCache();
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] });
+    } finally {
+      console.log = origLog;
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/about");
+  });
+
+  it("pages router: only reports routes matching configured pageExtensions", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-"));
+    const pagesDir = path.join(tmpRoot, "pages");
+    await fs.mkdir(pagesDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    // This .mdx page should be excluded when mdx is not in pageExtensions
+    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateRouteCache(pagesDir);
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+    } finally {
+      console.log = origLog;
+      invalidateRouteCache(pagesDir);
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/");
+    expect(output).not.toContain("/about");
+  });
+
+  it("pages router: reports mdx routes when pageExtensions includes mdx", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-mdx-"));
+    const pagesDir = path.join(tmpRoot, "pages");
+    await fs.mkdir(pagesDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateRouteCache(pagesDir);
+      await printBuildReport({
+        root: tmpRoot,
+        pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"],
+      });
+    } finally {
+      console.log = origLog;
+      invalidateRouteCache(pagesDir);
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/about");
+  });
+});
+
+// ─── classifyLayoutSegmentConfig ─────────────────────────────────────────────
+
+describe("classifyLayoutSegmentConfig", () => {
+  it("returns kind=static with segment-config reason for force-static", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-static" },
+    });
+  });
+
+  it('returns kind=static with segment-config reason for dynamic = "error"', () => {
+    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "dynamic", value: "error" },
+    });
+  });
+
+  it("returns kind=dynamic with segment-config reason for force-dynamic", () => {
+    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+    });
+  });
+
+  it("returns kind=dynamic with revalidate reason for revalidate = 0", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toEqual({
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "revalidate", value: 0 },
+    });
+  });
+
+  it("returns kind=static with revalidate reason for revalidate = Infinity", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    });
+  });
+
+  it("returns kind=absent when no config is present (defers to module graph)", () => {
+    expect(
+      classifyLayoutSegmentConfig(
+        "export default function Layout({ children }) { return children; }",
+      ),
+    ).toEqual({ kind: "absent" });
+  });
+
+  it("returns kind=absent for positive revalidate (ISR is a page concept)", () => {
+    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toEqual({
+      kind: "absent",
+    });
   });
 });

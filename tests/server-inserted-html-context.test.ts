@@ -6,7 +6,7 @@
  * These tests verify the actual integration pattern used by libraries, not just
  * structural properties of the context object.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vite-plus/test";
 import * as React from "react";
 import { renderToString } from "react-dom/server";
 

@@ -15,8 +15,8 @@
  * - fixtures/app-basic/app/nextjs-compat/api/draft-status/
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchJson } from "../helpers.js";
 
 describe("Next.js compat: draft-mode", () => {
@@ -94,6 +94,58 @@ describe("Next.js compat: draft-mode", () => {
         const cookieHeader = getDraftModeCookieHeader();
         expect(cookieHeader).toBeDefined();
         expect(cookieHeader).toMatch(/;\s*Secure/i);
+      });
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it("draftMode().enable() uses cross-site cookie attributes in production", async () => {
+    const {
+      draftMode: draftModeFn,
+      getDraftModeCookieHeader,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const ctx = headersContextFromRequest(new Request("https://preview.example.com/test"));
+      await runWithHeadersContext(ctx, async () => {
+        const dm = await draftModeFn();
+        dm.enable();
+        const cookieHeader = getDraftModeCookieHeader();
+        expect(cookieHeader).toBeDefined();
+        expect(cookieHeader).toMatch(/;\s*SameSite=None/i);
+        expect(cookieHeader).toMatch(/;\s*Secure/i);
+      });
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it("draftMode().disable() clears with Next.js production cookie attributes", async () => {
+    const {
+      draftMode: draftModeFn,
+      getDraftModeCookieHeader,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const ctx = headersContextFromRequest(new Request("https://preview.example.com/test"));
+      await runWithHeadersContext(ctx, async () => {
+        const dm = await draftModeFn();
+        dm.disable();
+        const cookieHeader = getDraftModeCookieHeader();
+        expect(cookieHeader).toBeDefined();
+        expect(cookieHeader).toMatch(/;\s*SameSite=None/i);
+        expect(cookieHeader).toMatch(/;\s*Secure/i);
+        expect(cookieHeader).toMatch(/;\s*Expires=Thu, 01 Jan 1970 00:00:00 GMT/i);
+        expect(cookieHeader).not.toMatch(/;\s*Max-Age=0/i);
       });
     } finally {
       process.env.NODE_ENV = origEnv;

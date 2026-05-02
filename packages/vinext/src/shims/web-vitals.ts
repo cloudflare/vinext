@@ -6,14 +6,14 @@
  * Apps can use the web-vitals library directly instead.
  */
 
-interface WebVitalsMetric {
+type WebVitalsMetric = {
   id: string;
   name: string;
   value: number;
   rating?: "good" | "needs-improvement" | "poor";
   delta: number;
   navigationType?: "navigate" | "reload" | "back-forward" | "prerender";
-}
+};
 
 type ReportWebVitalsCallback = (metric: WebVitalsMetric) => void;
 

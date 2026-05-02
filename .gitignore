@@ -26,13 +26,21 @@ coverage/
 
 # Worktrees
 .worktrees/
+.claude
+
+# Next.js reference clone (for searching source/tests)
+.nextjs-ref/
 
 # OS / editor
 .DS_Store
 .idea/
+.vscode/
+.claude/
 
 # Nix
 result
 result-*
 .direnv/
 .corepack/
+
+.vinext

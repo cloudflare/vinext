@@ -15,39 +15,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run lint
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Build plugin (needed for benchmark workspace type resolution)
+        run: vp run build
+      - run: vp run check
+      - run: vp run knip
 
-  format:
-    name: Format
+  test-unit:
+    name: Vitest (unit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run fmt:check
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: vp test run --project unit
 
-  typecheck:
-    name: Typecheck
+  test-integration:
+    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3]
+        shardTotal: [3]
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run typecheck
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
+        run: vp run build
+      # Coverage is gated to push-to-main runs to keep PR feedback fast.
+      # Istanbul instrumentation adds ~10–25% to each shard's wall-clock.
+      - run: vp test run --project integration ${{ github.event_name == 'push' && '--coverage' || '' }} --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+        env:
+          CI: true
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: .vitest-reports/*
+          include-hidden-files: true
+          retention-days: 1
 
-  test:
-    name: Vitest
+  test-integration-merge:
+    name: Vitest (integration report)
+    if: ${{ !cancelled() }}
+    needs: [test-integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - name: Build plugin (needed by ecosystem fixtures)
-        run: pnpm run build
-      - run: pnpm test
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v7
+        with:
+          path: .vitest-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
+      # coverage data embedded in each shard's blob, producing a unified report.
+      # Only enabled on push-to-main, matching the shard config above.
+      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+        env:
+          CI: true
+      - name: Publish coverage matrix to job summary
+        if: ${{ !cancelled() && hashFiles('coverage/coverage-summary.json') != '' }}
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
+        with:
+          name: coverage-html
+          path: coverage
+          retention-days: 14
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
@@ -57,32 +97,32 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
       - name: Build plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Pack vinext for local install
-        run: pnpm pack --pack-destination "${{ runner.temp }}"
+        run: vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
-        run: npx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@16.2.3 "${{ runner.temp }}/cna-test" --yes
 
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
-        run: npm install "${{ runner.temp }}"/vinext-*.tgz
+        run: vp add "${{ runner.temp }}"/vinext-*.tgz
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
-        run: npx vinext init --skip-check
+        run: vp exec vinext init --skip-check
 
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
         run: |
-          npx vite dev --port 3099 &
+          vp exec vite dev --port 3099 &
           SERVER_PID=$!
 
           for i in $(seq 1 30); do
@@ -170,28 +210,44 @@ jobs:
           - cloudflare-workers
           - cloudflare-dev
           - cloudflare-pages-router-dev
+          - static-export
+          - app-with-src
+          - standalone-output
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
       - name: Build plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - run: pnpm exec playwright install chromium
+      - run: vp exec playwright install chromium
 
-      - run: pnpm exec playwright test
+      - run: vp run test:e2e
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}
           path: playwright-report/
           retention-days: 7
+
+  ci:
+    name: CI
+    if: ${{ always() }}
+    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: echo "All checks passed"
+      - name: Some checks failed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

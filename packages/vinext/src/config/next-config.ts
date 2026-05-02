@@ -7,8 +7,9 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
 
@@ -62,35 +63,35 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
   return bytes;
 }
 
-export interface HasCondition {
+export type HasCondition = {
   type: "header" | "cookie" | "query" | "host";
   key: string;
   value?: string;
-}
+};
 
-export interface NextRedirect {
+export type NextRedirect = {
   source: string;
   destination: string;
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextRewrite {
+export type NextRewrite = {
   source: string;
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
-}
+};
 
-export interface NextHeader {
+export type NextHeader = {
   source: string;
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
-}
+};
 
-export interface NextI18nConfig {
+export type NextI18nConfig = {
   /** List of supported locales */
   locales: string[];
   /** The default locale (used when no locale prefix is in the URL) */
@@ -109,20 +110,20 @@ export interface NextI18nConfig {
     locales?: string[];
     http?: boolean;
   }>;
-}
+};
 
 /**
  * MDX compilation options extracted from @next/mdx config.
  * These are passed through to @mdx-js/rollup so that custom
  * remark/rehype/recma plugins configured in next.config work with Vite.
  */
-export interface MdxOptions {
+export type MdxOptions = {
   remarkPlugins?: unknown[];
   rehypePlugins?: unknown[];
   recmaPlugins?: unknown[];
-}
+};
 
-export interface NextConfig {
+export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
   /** Base URL path prefix */
@@ -179,12 +180,20 @@ export interface NextConfig {
   pageExtensions?: string[];
   /** Extra origins allowed to access the dev server. */
   allowedDevOrigins?: string[];
+  /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
+  expireTime?: number;
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
    * Replaces the removed experimental.ppr and experimental.dynamicIO flags.
    */
   cacheComponents?: boolean;
+  /**
+   * Enables source maps while generating static pages.
+   * Helps with errors during the prerender phase in `vinext build`.
+   * Defaults to `true`. Set to `false` to disable.
+   */
+  enablePrerenderSourceMaps?: boolean;
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
   /**
@@ -196,18 +205,37 @@ export interface NextConfig {
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
+   * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
+   * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
+   * When "type": "module" is set in package.json, use import.meta.resolve() instead of
+   * require.resolve() to get a valid path.
+   */
+  cacheHandler?: string;
+  /**
+   * Maximum memory size (bytes) for the default in-memory cache handler.
+   * Set to 0 to disable in-memory caching entirely.
+   */
+  cacheMaxMemorySize?: number;
+  /**
    * Custom build ID generator. If provided, called once at build/dev start.
    * Must return a non-empty string, or null to use the default random ID.
    */
   generateBuildId?: () => string | null | Promise<string | null>;
   /** Any other options */
   [key: string]: unknown;
-}
+};
+
+export type NextConfigFactory = (
+  phase: string,
+  opts: { defaultConfig: NextConfig },
+) => NextConfig | Promise<NextConfig>;
+
+export type NextConfigInput = NextConfig | NextConfigFactory;
 
 /**
  * Resolved configuration with all async values awaited.
  */
-export interface ResolvedNextConfig {
+export type ResolvedNextConfig = {
   env: Record<string, string>;
   basePath: string;
   trailingSlash: boolean;
@@ -231,19 +259,43 @@ export interface ResolvedNextConfig {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
+  optimizePackageImports: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
+  expireTime: number;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
    * `experimental.serverComponentsExternalPackages` in next.config.
    */
   serverExternalPackages: string[];
+  /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
+  enablePrerenderSourceMaps: boolean;
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
-}
+  /**
+   * Path to a custom cache handler module. file:// URLs are resolved to
+   * filesystem paths via fileURLToPath() during config resolution.
+   */
+  cacheHandler: string | undefined;
+  /**
+   * Maximum memory size (bytes) for the default in-memory cache handler.
+   * Set to 0 to disable in-memory caching entirely.
+   */
+  cacheMaxMemorySize: number | undefined;
+  /**
+   * Concatenated hash salt from `experimental.outputHashSalt` config option
+   * and `NEXT_HASH_SALT` environment variable. Empty string when neither is set.
+   * When non-empty, mix into content-addressed output filenames so hash values
+   * change without modifying source — useful for cache-busting after CDN poisoning.
+   */
+  hashSalt: string;
+};
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+const DEFAULT_EXPIRE_TIME = 31_536_000;
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -262,6 +314,12 @@ function isCjsError(e: unknown): boolean {
   );
 }
 
+// Dev-server phase is the safe default for config loading: it enables all
+// optional config sections (headers, redirects, rewrites) without triggering
+// build-only behaviour. Used in two default parameter values below to avoid
+// repeating PHASE_DEVELOPMENT_SERVER inline.
+const DEFAULT_PHASE = PHASE_DEVELOPMENT_SERVER;
+
 /**
  * Emit a warning when config loading fails, with a targeted hint for
  * known plugin wrappers that are unnecessary in vinext.
@@ -274,7 +332,9 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
     stack.includes("next-intl/plugin") ||
     stack.includes("next-intl/dist");
 
-  console.warn(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
+  console.error(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
   if (isNextIntlPlugin) {
     console.warn(
       "[vinext] Hint: createNextIntlPlugin() is not needed with vinext. " +
@@ -285,14 +345,13 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
 }
 
 /**
- * Unwrap the config value from a loaded module, calling it if it's a
- * function-form config (Next.js supports `module.exports = (phase, opts) => config`).
+ * Resolve a Next-style config value, calling it if it's a function-form config
+ * (Next.js supports `module.exports = (phase, opts) => config`).
  */
-async function unwrapConfig(
-  mod: any,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+async function resolveConfigValue(
+  config: unknown,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig> {
-  const config = mod.default ?? mod;
   if (typeof config === "function") {
     const result = await config(phase, {
       defaultConfig: {},
@@ -300,6 +359,34 @@ async function unwrapConfig(
     return result as NextConfig;
   }
   return config as NextConfig;
+}
+
+/**
+ * Unwrap the config value from a loaded module namespace.
+ */
+async function unwrapConfig(
+  // oxlint-disable-next-line typescript/no-explicit-any
+  mod: any,
+  phase: string = PHASE_DEVELOPMENT_SERVER,
+): Promise<NextConfig> {
+  return await resolveConfigValue(mod.default ?? mod, phase);
+}
+
+export function findNextConfigPath(root: string): string | null {
+  for (const filename of CONFIG_FILES) {
+    const configPath = path.join(root, filename);
+    if (fs.existsSync(configPath)) return configPath;
+  }
+  return null;
+}
+
+export async function resolveNextConfigInput(
+  config: NextConfigInput,
+  phase: string = PHASE_DEVELOPMENT_SERVER,
+): Promise<NextConfig> {
+  // Inline vinext({ nextConfig }) already receives the config value itself,
+  // not a module namespace object, so do not treat a "default" key specially.
+  return await resolveConfigValue(config, phase);
 }
 
 /**
@@ -313,41 +400,39 @@ async function unwrapConfig(
  */
 export async function loadNextConfig(
   root: string,
-  phase: string = PHASE_DEVELOPMENT_SERVER,
+  phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
-  for (const filename of CONFIG_FILES) {
-    const configPath = path.join(root, filename);
-    if (!fs.existsSync(configPath)) continue;
+  const configPath = findNextConfigPath(root);
+  if (!configPath) return null;
 
-    try {
-      // Load config via Vite's module runner (TS + extensionless import support)
-      const { runnerImport } = await import("vite");
-      const { module: mod } = await runnerImport(configPath, {
-        root,
-        logLevel: "error",
-        clearScreen: false,
-      });
-      return await unwrapConfig(mod, phase);
-    } catch (e) {
-      // If the error indicates a CJS file loaded in ESM context, retry with
-      // createRequire which provides a proper CommonJS environment.
-      if (isCjsError(e) && (filename.endsWith(".js") || filename.endsWith(".cjs"))) {
-        try {
-          const require = createRequire(path.join(root, "package.json"));
-          const mod = require(configPath);
-          return await unwrapConfig({ default: mod }, phase);
-        } catch (e2) {
-          warnConfigLoadFailure(filename, e2 as Error);
-          return null;
-        }
+  const filename = path.basename(configPath);
+
+  try {
+    // Load config via Vite's module runner (TS + extensionless import support)
+    const { runnerImport } = await import("vite");
+    const { module: mod } = await runnerImport(configPath, {
+      root,
+      logLevel: "error",
+      clearScreen: false,
+    });
+    return await unwrapConfig(mod, phase);
+  } catch (e) {
+    // If the error indicates a CJS file loaded in ESM context, retry with
+    // createRequire which provides a proper CommonJS environment.
+    if (isCjsError(e) && (filename.endsWith(".js") || filename.endsWith(".cjs"))) {
+      try {
+        const require = createRequire(path.join(root, "package.json"));
+        const mod = require(configPath);
+        return await unwrapConfig(mod, phase);
+      } catch (e2) {
+        warnConfigLoadFailure(filename, e2 as Error);
+        throw e2;
       }
-
-      warnConfigLoadFailure(filename, e as Error);
-      return null;
     }
-  }
 
-  return null;
+    warnConfigLoadFailure(filename, e as Error);
+    throw e;
+  }
 }
 
 /**
@@ -393,6 +478,20 @@ async function resolveBuildId(
 }
 
 /**
+ * Converts a cache handler path to a filesystem path.
+ * ESM's import.meta.resolve() returns file:// URLs which break when concatenated
+ * with path operations like path.join or path.relative.
+ * @param filePath - Absolute path, relative path, or file:// URL (e.g. from import.meta.resolve)
+ * @returns A filesystem path suitable for path operations
+ */
+function resolveCacheHandlerPathToFilesystem(filePath: string): string {
+  if (filePath.startsWith("file://")) {
+    return fileURLToPath(filePath);
+  }
+  return filePath;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -418,8 +517,14 @@ export async function resolveNextConfig(
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      expireTime: DEFAULT_EXPIRE_TIME,
       serverExternalPackages: [],
+      cacheHandler: undefined,
+      cacheMaxMemorySize: undefined,
+      enablePrerenderSourceMaps: true,
+      hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -499,6 +604,17 @@ export async function resolveNextConfig(
     serverActionsConfig?.bodySizeLimit as string | number | undefined,
   );
 
+  // Resolve hashSalt from experimental.outputHashSalt config + NEXT_HASH_SALT env var.
+  // Next.js concatenates them: config value first, then env var.
+  const configOutputHashSalt = experimental?.outputHashSalt as string | undefined;
+  const hashSalt = (configOutputHashSalt ?? "") + (process.env.NEXT_HASH_SALT ?? "");
+
+  // Resolve optimizePackageImports from experimental config
+  const rawOptimize = experimental?.optimizePackageImports;
+  const optimizePackageImports = Array.isArray(rawOptimize)
+    ? rawOptimize.filter((x): x is string => typeof x === "string")
+    : [];
+
   // Resolve serverExternalPackages — support the current top-level key and the
   // legacy experimental.serverComponentsExternalPackages name that Next.js still
   // accepts (it moved out of experimental in Next.js 14.2).
@@ -508,6 +624,15 @@ export async function resolveNextConfig(
     : Array.isArray(legacyServerComponentsExternal)
       ? (legacyServerComponentsExternal as string[])
       : [];
+
+  // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
+  // transforms, not SWC, so automatic polyfill injection is not applicable.
+  if (experimental?.swcEnvOptions !== undefined) {
+    console.warn(
+      '[vinext] next.config option "experimental.swcEnvOptions" is not applicable and will be ignored (vinext uses Vite, not SWC). ' +
+        "A Vite-compatible polyfill solution may be explored in the future.",
+    );
+  }
 
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
@@ -546,6 +671,16 @@ export async function resolveNextConfig(
     config.generateBuildId as (() => string | null | Promise<string | null>) | undefined,
   );
 
+  // Resolve cacheHandler path — handle file:// URLs from import.meta.resolve()
+  const cacheHandler: string | undefined =
+    typeof config.cacheHandler === "string"
+      ? resolveCacheHandlerPathToFilesystem(config.cacheHandler)
+      : undefined;
+
+  // Resolve cacheMaxMemorySize
+  const cacheMaxMemorySize: number | undefined =
+    typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -562,8 +697,14 @@ export async function resolveNextConfig(
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    optimizePackageImports,
     serverActionsBodySizeLimit,
+    expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
     serverExternalPackages,
+    cacheHandler,
+    cacheMaxMemorySize,
+    enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
+    hashSalt,
     buildId,
   };
 
@@ -613,11 +754,13 @@ async function probeWebpackConfig(
     return { aliases: {}, mdx: null };
   }
 
+  // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
   const mockConfig = {
     context: root,
     resolve: { alias: {} as Record<string, unknown> },
     module: { rules: mockModuleRules },
+    // oxlint-disable-next-line typescript/no-explicit-any
     plugins: [] as any[],
   };
   const mockOptions = {
@@ -628,8 +771,10 @@ async function probeWebpackConfig(
   };
 
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-function-type
     const result = await (config.webpack as Function)(mockConfig, mockOptions);
     const finalConfig = result ?? mockConfig;
+    // oxlint-disable-next-line typescript/no-explicit-any
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
@@ -718,6 +863,7 @@ export function detectNextIntlConfig(root: string, resolved: ResolvedNextConfig)
   }
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
   // Search through webpack rules for the MDX loader injected by @next/mdx
   for (const rule of rules) {
@@ -731,6 +877,7 @@ function extractMdxOptionsFromRules(rules: any[]): MdxOptions | null {
  * Recursively search a webpack rule (which may have nested `oneOf` arrays)
  * for an MDX loader and extract its remark/rehype/recma plugin options.
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractMdxLoaders(rule: any): MdxOptions | null {
   if (!rule) return null;
 
@@ -770,6 +917,7 @@ function isMdxLoader(loaderPath: string): boolean {
   );
 }
 
+// oxlint-disable-next-line typescript/no-explicit-any
 function extractPluginsFromOptions(opts: any): MdxOptions | null {
   if (!opts || typeof opts !== "object") return null;
 
@@ -792,3 +940,5 @@ function extractPluginsFromOptions(opts: any): MdxOptions | null {
 
   return null;
 }
+
+export { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";

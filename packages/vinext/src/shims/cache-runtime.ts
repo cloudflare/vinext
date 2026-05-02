@@ -6,7 +6,7 @@
  * Vite plugin to wrap them with `registerCachedFunction()`.
  *
  * The runtime:
- * 1. Generates a cache key from function identity + serialized arguments
+ * 1. Generates a cache key from build ID + function identity + serialized arguments
  * 2. Checks the CacheHandler for a cached value
  * 3. On HIT: returns the cached value (deserialized via RSC stream)
  * 4. On MISS: creates an AsyncLocalStorage context for cacheLife/cacheTag,
@@ -32,7 +32,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getCacheHandler,
   cacheLifeProfiles,
+  _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
+  type CacheControlMetadata,
   type CacheLifeConfig,
 } from "./cache.js";
 import {
@@ -45,14 +47,14 @@ import {
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
 // ---------------------------------------------------------------------------
 
-export interface CacheContext {
+export type CacheContext = {
   /** Tags collected via cacheTag() during execution */
   tags: string[];
   /** Cache life configs collected via cacheLife() — minimum-wins rule applies */
   lifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
-}
+};
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
 // without a direct import (avoiding circular dependencies).
@@ -82,13 +84,30 @@ export function getCacheContext(): CacheContext | null {
  * (they depend on virtual modules set up by @vitejs/plugin-rsc).
  * In test environments, the import fails and we fall back to JSON.
  */
-interface RscModule {
+type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
   decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
+};
+
+function getUseCacheBuildId(): string | undefined {
+  try {
+    // Keep this direct reference so Vite's define transform can inline it for
+    // Worker bundles where the process global might not exist at runtime. A
+    // typeof process guard would return before the inlined build ID is reached.
+    return process.env.__VINEXT_BUILD_ID;
+  } catch (error) {
+    if (error instanceof ReferenceError) return undefined;
+    throw error;
+  }
+}
+
+function buildUseCacheKey(id: string, buildId: string | undefined, argsKey?: string): string {
+  const scopedId = buildId ? `build:${encodeURIComponent(buildId)}:${id}` : id;
+  return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
 
 const NOT_LOADED = Symbol("not-loaded");
@@ -229,9 +248,9 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // Uses AsyncLocalStorage for request isolation so concurrent requests
 // on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
-export interface PrivateCacheState {
+export type PrivateCacheState = {
   _privateCache: Map<string, unknown> | null;
-}
+};
 
 const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
@@ -259,6 +278,8 @@ function _getPrivateState(): PrivateCacheState {
  * Ensures per-request isolation for "use cache: private" entries
  * on concurrent runtimes.
  */
+export function runWithPrivateCache<T>(fn: () => Promise<T>): Promise<T>;
+export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
@@ -301,6 +322,7 @@ export function clearPrivateCache(): void {
  * @param variant - Cache variant: "" (default/shared), "remote", "private"
  * @returns A wrapper function that checks cache before calling the original
  */
+// oxlint-disable-next-line typescript/no-explicit-any
 export function registerCachedFunction<T extends (...args: any[]) => Promise<any>>(
   fn: T,
   id: string,
@@ -315,7 +337,9 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   // Per-request ("use cache: private") caching still works in dev since
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+  const buildId = getUseCacheBuildId();
 
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const cachedFn = async (...args: any[]): Promise<any> => {
     const rsc = await getRscModule();
 
@@ -340,11 +364,10 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
         const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
-        const argsKey = await replyToCacheKey(encoded);
-        cacheKey = `use-cache:${id}:${argsKey}`;
+        cacheKey = buildUseCacheKey(id, buildId, await replyToCacheKey(encoded));
       } else {
-        const argsKey = args.length > 0 ? ":" + stableStringify(args) : "";
-        cacheKey = `use-cache:${id}${argsKey}`;
+        const argsKey = args.length > 0 ? stableStringify(args) : undefined;
+        cacheKey = buildUseCacheKey(id, buildId, argsKey);
       }
     } catch {
       // Non-serializable arguments — run without caching
@@ -367,10 +390,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
     // In dev mode, always execute fresh — skip shared cache lookup/storage.
     // This ensures HMR changes are reflected immediately.
     if (isDev) {
-      return cacheContextStorage.run(
-        { tags: [], lifeConfigs: [], variant: cacheVariant || "default" },
-        () => fn(...args),
-      );
+      return executeWithContext(fn, args, cacheVariant);
     }
 
     // Shared cache ("use cache" / "use cache: remote")
@@ -384,10 +404,14 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
           const stream = uint8ToStream(bytes);
-          return await rsc.createFromReadableStream(stream);
+          const result = await rsc.createFromReadableStream(stream);
+          recordRequestScopedCacheControl(existing.cacheControl);
+          return result;
         }
         // JSON-serialized entry (legacy or no RSC available)
-        return JSON.parse(existing.value.data.body);
+        const result = JSON.parse(existing.value.data.body);
+        recordRequestScopedCacheControl(existing.cacheControl);
+        return result;
       } catch {
         // Corrupted entry, fall through to re-execute
       }
@@ -404,6 +428,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // Resolve effective cache life from collected configs
     const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
+    recordRequestScopedCacheLife(effectiveLife);
     const revalidateSeconds =
       effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
@@ -441,7 +466,10 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
       await handler.set(cacheKey, cacheValue, {
         fetchCache: true,
         tags: ctx.tags,
-        revalidate: revalidateSeconds,
+        cacheControl: {
+          revalidate: revalidateSeconds,
+          expire: effectiveLife.expire,
+        },
       });
     } catch {
       // Result not serializable — skip caching, still return the result
@@ -453,22 +481,38 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   return cachedFn as T;
 }
 
+function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
+  if (cacheControl === undefined) return;
+  _setRequestScopedCacheLife({
+    revalidate: cacheControl.revalidate,
+    expire: cacheControl.expire,
+  });
+}
+
+function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
+  _setRequestScopedCacheLife(cacheLife);
+}
+
 // ---------------------------------------------------------------------------
 // Helper: execute function within cache context
 // ---------------------------------------------------------------------------
 
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   fn: T,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-): Promise<any> {
+): Promise<Awaited<ReturnType<T>>> {
   const ctx: CacheContext = {
     tags: [],
     lifeConfigs: [],
     variant: variant || "default",
   };
 
-  return cacheContextStorage.run(ctx, () => fn(...args));
+  const result = await cacheContextStorage.run(ctx, () => fn(...args));
+  recordRequestScopedCacheLife(resolveCacheLife(ctx.lifeConfigs));
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,11 +546,13 @@ function unwrapThenableObjects(value: unknown): unknown {
 
   // Detect thenable (Promise-like) with own enumerable properties —
   // this is the Object.assign(Promise.resolve(obj), obj) pattern.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   if (typeof (value as any).then === "function") {
     const keys = Object.keys(value);
     if (keys.length > 0) {
       const plain: Record<string, unknown> = {};
       for (const key of keys) {
+        // oxlint-disable-next-line typescript/no-explicit-any
         plain[key] = unwrapThenableObjects((value as any)[key]);
       }
       return plain;
@@ -518,6 +564,7 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;

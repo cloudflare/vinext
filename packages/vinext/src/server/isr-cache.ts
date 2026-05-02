@@ -19,14 +19,15 @@ import {
   type IncrementalCacheValue,
   type CachedPagesValue,
   type CachedAppPageValue,
-} from "../shims/cache.js";
+} from "vinext/shims/cache";
 import { fnv1a64 } from "../utils/hash.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
 
-export interface ISRCacheEntry {
+export type ISRCacheEntry = {
   value: CacheHandlerValue;
   isStale: boolean;
-}
+};
 
 /**
  * Get a cache entry with staleness information.
@@ -39,6 +40,9 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   const handler = getCacheHandler();
   const result = await handler.get(key);
   if (!result || !result.value) return null;
+  // Built-in handlers hard-delete expired entries and return null, but custom
+  // CacheHandler implementations may surface expiry explicitly.
+  if (result.cacheState === "expired") return null;
 
   return {
     value: result,
@@ -54,9 +58,16 @@ export async function isrSet(
   data: IncrementalCacheValue,
   revalidateSeconds: number,
   tags?: string[],
+  expireSeconds?: number,
 ): Promise<void> {
   const handler = getCacheHandler();
   await handler.set(key, data, {
+    cacheControl:
+      expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: expireSeconds },
+    // `revalidate` is the legacy vinext CacheHandler context field. `expire`
+    // is new metadata and intentionally only lives inside cacheControl.
     revalidate: revalidateSeconds,
     tags: tags ?? [],
   });
@@ -84,13 +95,37 @@ const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise
  * On Cloudflare Workers the regeneration promise is registered with
  * `ctx.waitUntil()` via the ALS-backed ExecutionContext, keeping the isolate
  * alive until the regeneration completes even after the Response is returned.
+ *
+ * When `errorContext` is provided and the render function fails, the error
+ * is reported via `reportRequestError` (instrumentation hook) with
+ * `revalidateReason: "stale"`.
  */
-export function triggerBackgroundRegeneration(key: string, renderFn: () => Promise<void>): void {
+export function triggerBackgroundRegeneration(
+  key: string,
+  renderFn: () => Promise<void>,
+  errorContext?: {
+    routerKind: OnRequestErrorContext["routerKind"];
+    routePath: string;
+    routeType: OnRequestErrorContext["routeType"];
+  },
+): void {
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()
     .catch((err) => {
       console.error(`[vinext] ISR background regeneration failed for ${key}:`, err);
+      if (errorContext) {
+        void reportRequestError(
+          err instanceof Error ? err : new Error(String(err)),
+          { path: key, method: "GET", headers: {} },
+          {
+            routerKind: errorContext.routerKind,
+            routePath: errorContext.routePath,
+            routeType: errorContext.routeType,
+            revalidateReason: "stale",
+          },
+        );
+      }
     })
     .finally(() => {
       pendingRegenerations.delete(key);
@@ -143,16 +178,69 @@ export function buildAppPageCacheValue(
   };
 }
 
+function normalizeCachePathname(pathname: string): string {
+  return pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+}
+
+function buildCacheKey(prefix: string, pathname: string, suffix?: string): string {
+  const normalized = normalizeCachePathname(pathname);
+  const suffixPart = suffix ? `:${suffix}` : "";
+  const key = `${prefix}:${normalized}${suffixPart}`;
+  if (key.length <= 200) return key;
+  return `${prefix}:__hash:${fnv1a64(normalized)}${suffixPart}`;
+}
+
 /**
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
 export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
-  const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
   const prefix = buildId ? `${router}:${buildId}` : router;
-  const key = `${prefix}:${normalized}`;
-  if (key.length <= 200) return key;
-  return `${prefix}:__hash:${fnv1a64(normalized)}`;
+  return buildCacheKey(prefix, pathname);
+}
+
+/**
+ * Normalize the App Router mounted-slot header before it participates in cache
+ * keys. The client can send mounted slot ids in different orders as navigation
+ * state changes, but equivalent slot sets must map to the same RSC cache entry.
+ */
+export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
+    .sort()
+    .join(" ");
+  return normalized || null;
+}
+
+/**
+ * Compute an App Router ISR key for one cache artifact.
+ *
+ * App pages store HTML, RSC payloads, and route-handler responses separately.
+ * The suffix mirrors Next.js's separate on-disk app artifacts while keeping the
+ * Cloudflare KV key under its 512-byte limit for long pathnames.
+ */
+function appIsrCacheKey(
+  pathname: string,
+  suffix: string,
+  buildId = process.env.__VINEXT_BUILD_ID,
+): string {
+  const prefix = buildId ? `app:${buildId}` : "app";
+  return buildCacheKey(prefix, pathname, suffix);
+}
+
+export function appIsrHtmlKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "html");
+}
+
+export function appIsrRscKey(pathname: string, mountedSlotsHeader?: string | null): string {
+  const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
+  if (!normalizedMountedSlotsHeader) return appIsrCacheKey(pathname, "rsc");
+  return appIsrCacheKey(pathname, `rsc:${fnv1a64(normalizedMountedSlotsHeader)}`);
+}
+
+export function appIsrRouteKey(pathname: string): string {
+  return appIsrCacheKey(pathname, "route");
 }
 
 // ---------------------------------------------------------------------------

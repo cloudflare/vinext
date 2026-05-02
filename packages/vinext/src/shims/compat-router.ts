@@ -7,6 +7,7 @@
  */
 import { useContext } from "react";
 import { RouterContext } from "./internal/router-context.js";
+import type { NextRouter } from "./router.js";
 
 /**
  * useRouter from `next/compat/router` is designed to assist developers
@@ -18,6 +19,6 @@ import { RouterContext } from "./internal/router-context.js";
  *
  * @returns The `NextRouter` instance if it's available, otherwise `null`.
  */
-export function useRouter() {
+export function useRouter(): NextRouter | null {
   return useContext(RouterContext);
 }

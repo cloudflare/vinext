@@ -1,5 +1,5 @@
 -- Benchmark results: one row per runner per commit.
--- Three rows per benchmark run (nextjs, vinext, vinext_rolldown).
+-- Two rows per benchmark run (nextjs, vinext).
 CREATE TABLE IF NOT EXISTS benchmark_results (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS benchmark_results (
 
   -- Run metadata
   run_date TEXT NOT NULL,
-  runner TEXT NOT NULL CHECK(runner IN ('nextjs', 'vinext', 'vinext_rolldown')),
+  runner TEXT NOT NULL CHECK(runner IN ('nextjs', 'vinext')),
 
   -- Build time (ms)
   build_time_mean REAL,

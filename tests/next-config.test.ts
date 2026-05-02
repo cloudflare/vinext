@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,31 @@ import {
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
 }
+
+describe("invalid config files", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should throw an error when loading a config fails", async () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }`);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `const path = require('path');\n module.exports = {};\n`,
+    );
+
+    await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
 
 describe("loadNextConfig phase argument", () => {
   let tmpDir: string;
@@ -373,6 +398,67 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig hashSalt", () => {
+  const OLD_ENV = process.env.NEXT_HASH_SALT;
+
+  afterEach(() => {
+    if (OLD_ENV !== undefined) {
+      process.env.NEXT_HASH_SALT = OLD_ENV;
+    } else {
+      delete process.env.NEXT_HASH_SALT;
+    }
+  });
+
+  it("defaults to empty string when no config or env is set", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.hashSalt).toBe("");
+  });
+
+  it("defaults to empty string when config has no experimental", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.hashSalt).toBe("");
+  });
+
+  it("reads outputHashSalt from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { outputHashSalt: "v1" },
+    });
+    expect(resolved.hashSalt).toBe("v1");
+  });
+
+  it("reads NEXT_HASH_SALT from env var", async () => {
+    process.env.NEXT_HASH_SALT = "envsalt";
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.hashSalt).toBe("envsalt");
+  });
+
+  it("concatenates config salt and env salt (config first)", async () => {
+    process.env.NEXT_HASH_SALT = "envsalt";
+    const resolved = await resolveNextConfig({
+      experimental: { outputHashSalt: "configsalt" },
+    });
+    expect(resolved.hashSalt).toBe("configsaltenvsalt");
+  });
+
+  it("handles only env var without config salt", async () => {
+    process.env.NEXT_HASH_SALT = "onlyenv";
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.hashSalt).toBe("onlyenv");
+  });
+});
+
+describe("resolveNextConfig expireTime", () => {
+  it("defaults to the Next.js route expire fallback", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.expireTime).toBe(31_536_000);
+  });
+
+  it("uses configured expireTime", async () => {
+    const resolved = await resolveNextConfig({ expireTime: 2 });
+    expect(resolved.expireTime).toBe(2);
+  });
+});
+
 describe("detectNextIntlConfig", () => {
   let tmpDir: string;
 
@@ -399,23 +485,30 @@ describe("detectNextIntlConfig", () => {
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverExternalPackages: [],
+      cacheHandler: undefined,
+      cacheMaxMemorySize: undefined,
+      hashSalt: "",
+      enablePrerenderSourceMaps: true,
+      expireTime: 31_536_000,
       buildId: "test-build-id",
       ...overrides,
     };
   }
 
-  /** Create a tmpdir with a fake next-intl package so createRequire can resolve it */
+  /** Create a tmpdir with a fake next-intl package so require.resolve("next-intl") works */
   function setupWithNextIntl(i18nFile?: string) {
     tmpDir = makeTempDir();
-    // Create a resolvable next-intl/package.json
+    // Create a resolvable next-intl package with an entry file.
     const nextIntlDir = path.join(tmpDir, "node_modules", "next-intl");
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     // Create root package.json so createRequire works
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
 
@@ -530,8 +623,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
@@ -547,8 +641,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
@@ -719,5 +814,100 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeUndefined();
+  });
+});
+
+describe("resolveNextConfig swcEnvOptions warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.swcEnvOptions is set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { swcEnvOptions: { mode: "usage" } },
+    });
+
+    const swcWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("swcEnvOptions"),
+    );
+
+    expect(swcWarning).toBeDefined();
+    expect(swcWarning![0]).toContain("swcEnvOptions");
+    expect(swcWarning![0]).toContain("not applicable");
+    expect(swcWarning![0]).toContain("vinext uses Vite");
+  });
+
+  it("does not warn when experimental.swcEnvOptions is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {},
+    });
+
+    const swcWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("swcEnvOptions"),
+    );
+    expect(swcWarning).toBeUndefined();
+  });
+});
+
+describe("resolveNextConfig cacheHandler", () => {
+  it("resolves file:// URLs to filesystem paths", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "file:///absolute/path/to/handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+  });
+
+  it("passes through absolute paths unchanged", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "/absolute/path/to/handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+  });
+
+  it("passes through relative paths unchanged", async () => {
+    const resolved = await resolveNextConfig({
+      cacheHandler: "./my-cache-handler.js",
+    });
+    expect(resolved.cacheHandler).toBe("./my-cache-handler.js");
+  });
+
+  it("defaults to undefined when not configured", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.cacheHandler).toBeUndefined();
+  });
+
+  it("defaults to undefined when config is null", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.cacheHandler).toBeUndefined();
+  });
+
+  it("resolves cacheMaxMemorySize when configured", async () => {
+    const resolved = await resolveNextConfig({
+      cacheMaxMemorySize: 52428800,
+    });
+    expect(resolved.cacheMaxMemorySize).toBe(52428800);
+  });
+
+  it("defaults cacheMaxMemorySize to undefined when not configured", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.cacheMaxMemorySize).toBeUndefined();
+  });
+});
+
+describe("resolveNextConfig enablePrerenderSourceMaps", () => {
+  it("defaults enablePrerenderSourceMaps to true when not configured", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.enablePrerenderSourceMaps).toBe(true);
+  });
+
+  it("respects explicit enablePrerenderSourceMaps: false", async () => {
+    const resolved = await resolveNextConfig({
+      enablePrerenderSourceMaps: false,
+    });
+    expect(resolved.enablePrerenderSourceMaps).toBe(false);
   });
 });

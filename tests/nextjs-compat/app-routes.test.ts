@@ -24,8 +24,8 @@
  * - fixtures/app-basic/app/api/* (pre-existing, referenced for some tests)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 describe("Next.js compat: app-routes", () => {
@@ -232,6 +232,41 @@ describe("Next.js compat: app-routes", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  it("POST form route handler redirect() produces 303", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/post-form-redirect`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(
+      "/nextjs-compat/route-handler-redirects?success=true",
+    );
+    expect(res.headers.get("set-cookie")).toContain("route-redirect=preserved");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  it("POST form route handler permanentRedirect() produces 303", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/post-form-permanent-redirect`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain(
+      "/nextjs-compat/route-handler-redirects?success=true",
+    );
+  });
+
   // ── notFound() in route handlers ─────────────────────────────
   // Next.js: 'can respond correctly in nodejs' (notFound)
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L186-L191
@@ -257,7 +292,7 @@ describe("Next.js compat: app-routes", () => {
   });
 
   // ── cookies().delete() ───────────────────────────────────────
-  it("cookies().delete() produces Set-Cookie with Max-Age=0", async () => {
+  it("cookies().delete() produces an expired Set-Cookie header", async () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`, {
       method: "POST",
     });
@@ -265,7 +300,7 @@ describe("Next.js compat: app-routes", () => {
     const setCookies = res.headers.getSetCookie();
     const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
-    expect(sessionCookie).toContain("Max-Age=0");
+    expect(sessionCookie).toContain("Expires=");
   });
 
   // ── Dynamic params ───────────────────────────────────────────
@@ -346,6 +381,28 @@ describe("Next.js compat: app-routes", () => {
     }
   });
 
+  // ── Catch-all dynamic params (Next.js 15 async params) ──────
+  // Regression test for: https://github.com/cloudflare/vinext/pull/466
+  // Route handlers must support `await params` (Promise<{ ... }> pattern).
+  // Fixture: /api/catch-all/[...slugs]/route.ts uses `await params`
+  //
+  // Next.js: 'provides params to routes with dynamic parameters'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L84-L92
+
+  it("catch-all route handler supports await params (Next.js 15 async params)", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/a/b/c`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["a", "b", "c"]);
+  });
+
+  it("catch-all route handler with hyphenated segments", async () => {
+    const res = await fetch(`${baseUrl}/api/catch-all/foo-bar/baz-qux`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.slugs).toEqual(["foo-bar", "baz-qux"]);
+  });
+
   // ── Documented skips ─────────────────────────────────────────
   //
   // N/A: 'statically generates correctly with no dynamic usage'
@@ -379,6 +436,16 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'no response returned' — Tests console error inspection
   //
   // N/A: 'permanentRedirect' — Would need fixture, minor variant of redirect
-  //
-  // N/A: 'catch-all routes' — Would need fixture with [...slug] route handler
+
+  // ── ISR caching (dev mode) ─────────────────────────────────
+  // In dev mode, ISR caching is disabled. Route handlers should NOT emit
+  // X-Vinext-Cache headers — every request re-executes the handler fresh.
+  // Production ISR behavioral tests are in app-router.test.ts's production server section.
+
+  it("dev mode: route handler with revalidate does not emit X-Vinext-Cache header", async () => {
+    const res = await fetch(`${baseUrl}/api/static-data`);
+    expect(res.status).toBe(200);
+    // Dev mode should not set X-Vinext-Cache (ISR is production-only)
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+  });
 });

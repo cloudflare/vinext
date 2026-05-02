@@ -10,15 +10,9 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Next.js compat: metadata (browser)", () => {
   // Next.js: 'should support title and description'
@@ -82,7 +76,7 @@ test.describe("Next.js compat: metadata (browser)", () => {
   // Source: metadata.test.ts#L130-L149
   test("title updates on client-side navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Navigate to the title page via Link
     await page.click("#link-to-title");

@@ -9,7 +9,7 @@
  * These tests verify SSR output matches Next.js expectations and that
  * pure helper functions work correctly.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 
@@ -24,6 +24,13 @@ import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/ro
 // rendering occurs (same as dev-server.ts and pages-server-entry.ts do).
 import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
+
+import {
+  resolveRelativeHref,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+  toSameOriginPath,
+} from "../packages/vinext/src/shims/url-utils.js";
 
 // ─── SSR rendering (mirrors Next.js test/unit/link-rendering.test.ts) ────
 
@@ -503,13 +510,6 @@ describe("Link i18n ALS isolation", () => {
 // ─── toSameOriginPath ────────────────────────────────────────────────────
 // Tests for the shared same-origin URL normalization utility.
 // Related to: https://github.com/cloudflare/vinext/issues/335
-
-import {
-  resolveRelativeHref,
-  toBrowserNavigationHref,
-  toSameOriginAppPath,
-  toSameOriginPath,
-} from "../packages/vinext/src/shims/url-utils.js";
 
 describe("toSameOriginPath", () => {
   it("returns null on the server (no window)", () => {

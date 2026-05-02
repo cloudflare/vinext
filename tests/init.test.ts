@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -37,6 +37,36 @@ function readPkg(dir: string): Record<string, unknown> {
 
 function readFile(dir: string, relativePath: string): string {
   return fs.readFileSync(path.join(dir, relativePath), "utf-8");
+}
+
+function readPluginRscVendoredEdgeBundle(fileName: string): string {
+  return fs.readFileSync(
+    path.resolve(
+      import.meta.dirname,
+      "../node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/cjs",
+      fileName,
+    ),
+    "utf-8",
+  );
+}
+
+function expectConsumedBeforeInitialization(
+  source: string,
+  functionName: "createMap" | "createSet" | "extractIterator",
+  initializationSnippet: string,
+): void {
+  const start = source.indexOf(`function ${functionName}(response, model) {`);
+  expect(start).toBeGreaterThanOrEqual(0);
+
+  const nextFunction = source.indexOf("function ", start + 1);
+  const body = nextFunction === -1 ? source.slice(start) : source.slice(start, nextFunction);
+
+  const consumedIndex = body.indexOf("model.$$consumed = !0;");
+  const initializationIndex = body.indexOf(initializationSnippet);
+
+  expect(consumedIndex).toBeGreaterThanOrEqual(0);
+  expect(initializationIndex).toBeGreaterThanOrEqual(0);
+  expect(consumedIndex).toBeLessThan(initializationIndex);
 }
 
 /**
@@ -192,17 +222,19 @@ describe("generateViteConfig", () => {
 // ─── Unit Tests: addScripts ──────────────────────────────────────────────────
 
 describe("addScripts", () => {
-  it("adds dev:vinext and build:vinext scripts", () => {
+  it("adds dev:vinext, build:vinext, and start:vinext scripts", () => {
     setupProject(tmpDir, { router: "app" });
 
     const added = addScripts(tmpDir, 3001);
 
     expect(added).toContain("dev:vinext");
     expect(added).toContain("build:vinext");
+    expect(added).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 3001");
-    expect(pkg.scripts["build:vinext"]).toBe("vite build");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 3001");
+    expect(pkg.scripts["build:vinext"]).toBe("vinext build");
+    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
   });
 
   it("uses custom port", () => {
@@ -211,7 +243,7 @@ describe("addScripts", () => {
     addScripts(tmpDir, 4000);
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 4000");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 4000");
   });
 
   it("does not overwrite existing scripts", () => {
@@ -224,6 +256,7 @@ describe("addScripts", () => {
 
     expect(added).not.toContain("dev:vinext");
     expect(added).toContain("build:vinext");
+    expect(added).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
@@ -279,9 +312,9 @@ function setupFakeReact(dir: string, version: string): void {
 }
 
 describe("getReactUpgradeDeps", () => {
-  it("returns react@latest + react-dom@latest when React is too old", () => {
+  it("returns react@latest + react-dom@latest when React is below the RSDW security floor", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.3");
+    setupFakeReact(tmpDir, "19.2.4");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
@@ -289,7 +322,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.4");
+    setupFakeReact(tmpDir, "19.2.5");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
@@ -316,6 +349,24 @@ describe("getReactUpgradeDeps", () => {
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
   });
+});
+
+describe("@vitejs/plugin-rsc vendored React Flight protections", () => {
+  // Regression for CVE-2026-23869. plugin-rsc vendors its own Flight decoder,
+  // so the fix must be present in the vendored edge bundle that vinext uses.
+  // React fix: https://github.com/facebook/react/pull/36236
+  for (const fileName of [
+    "react-server-dom-webpack-server.edge.development.js",
+    "react-server-dom-webpack-server.edge.production.js",
+  ]) {
+    it(`${fileName} marks outlined containers consumed before materializing them`, () => {
+      const source = readPluginRscVendoredEdgeBundle(fileName);
+
+      expectConsumedBeforeInitialization(source, "createMap", "new Map(model)");
+      expectConsumedBeforeInitialization(source, "createSet", "new Set(model)");
+      expectConsumedBeforeInitialization(source, "extractIterator", "model[Symbol.iterator]()");
+    });
+  }
 });
 
 describe("isDepInstalled", () => {
@@ -386,17 +437,19 @@ describe("init — basic functionality", () => {
     expect(result.addedTypeModule).toBe(false);
   });
 
-  it("adds dev:vinext and build:vinext scripts", async () => {
+  it("adds dev:vinext, build:vinext, and start:vinext scripts", async () => {
     setupProject(tmpDir, { router: "app" });
 
     const { result } = await runInit(tmpDir);
 
     expect(result.addedScripts).toContain("dev:vinext");
     expect(result.addedScripts).toContain("build:vinext");
+    expect(result.addedScripts).toContain("start:vinext");
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 3001");
-    expect(pkg.scripts["build:vinext"]).toBe("vite build");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 3001");
+    expect(pkg.scripts["build:vinext"]).toBe("vinext build");
+    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
   });
 
   it("uses custom port in dev:vinext script", async () => {
@@ -405,7 +458,7 @@ describe("init — basic functionality", () => {
     await runInit(tmpDir, { port: 4000 });
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
-    expect(pkg.scripts["dev:vinext"]).toBe("vite dev --port 4000");
+    expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 4000");
   });
 
   it("does not overwrite existing scripts", async () => {
@@ -551,7 +604,7 @@ describe("init — dependency installation", () => {
 
   it("does not upgrade React when version is already compatible", async () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.4");
+    setupFakeReact(tmpDir, "19.2.5");
 
     const { execCalls } = await runInit(tmpDir);
 
@@ -674,6 +727,7 @@ describe("init — guard rails", () => {
     // Scripts should still be added
     expect(result.addedScripts).toContain("dev:vinext");
     expect(result.addedScripts).toContain("build:vinext");
+    expect(result.addedScripts).toContain("start:vinext");
     // But vite config should be skipped
     expect(result.generatedViteConfig).toBe(false);
     expect(result.skippedViteConfig).toBe(true);

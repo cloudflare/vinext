@@ -1,3 +1,5 @@
+// oxlint-disable typescript/consistent-type-definitions
+
 /**
  * Minimal type augmentation for Vite's HMR API on ImportMeta.
  *

@@ -1,3 +1,4 @@
+// oxlint-disable typescript/no-explicit-any
 /**
  * Type declarations for next/* bare specifiers used within shims.
  *
@@ -38,17 +39,17 @@ declare module "next/dynamic" {
 }
 
 declare module "next/config" {
-  interface RuntimeConfig {
+  type RuntimeConfig = {
     serverRuntimeConfig: Record<string, unknown>;
     publicRuntimeConfig: Record<string, unknown>;
-  }
+  };
   export default function getConfig(): RuntimeConfig;
   export function setConfig(configValue: RuntimeConfig): void;
 }
 
 declare module "next/script" {
   import { ReactElement } from "react";
-  interface ScriptProps {
+  type ScriptProps = {
     src?: string;
     strategy?: "beforeInteractive" | "afterInteractive" | "lazyOnload" | "worker";
     id?: string;
@@ -58,7 +59,7 @@ declare module "next/script" {
     children?: React.ReactNode;
     dangerouslySetInnerHTML?: { __html: string };
     [key: string]: unknown;
-  }
+  };
   const Script: (props: ScriptProps) => ReactElement | null;
   export default Script;
   export { ScriptProps };
@@ -111,16 +112,20 @@ declare module "next/navigation" {
   export function getLayoutSegmentContext(): import("react").Context<string[]> | null;
 
   // RSC prefetch cache utilities (shared between link.tsx and browser entry)
-  export interface PrefetchCacheEntry {
+  export type PrefetchCacheEntry = {
     response: Response;
     timestamp: number;
-  }
+  };
   export const MAX_PREFETCH_CACHE_SIZE: number;
   export const PREFETCH_CACHE_TTL: number;
   export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
-  export function storePrefetchResponse(rscUrl: string, response: Response): void;
+  export function storePrefetchResponse(
+    rscUrl: string,
+    response: Response,
+    interceptionContext?: string | null,
+  ): void;
 }
 
 declare module "next/image" {
@@ -133,14 +138,14 @@ declare module "next/image" {
     MouseEventHandler,
   } from "react";
 
-  export interface StaticImageData {
+  export type StaticImageData = {
     src: string;
     height: number;
     width: number;
     blurDataURL?: string;
-  }
+  };
 
-  interface ImageProps {
+  type ImageProps = {
     src: string | StaticImageData;
     alt: string;
     width?: number;
@@ -163,7 +168,7 @@ declare module "next/image" {
     unoptimized?: boolean;
     overrideSrc?: string;
     loading?: "lazy" | "eager";
-  }
+  };
 
   const Image: ForwardRefExoticComponent<ImageProps & RefAttributes<HTMLImageElement>>;
   export default Image;
@@ -181,7 +186,7 @@ declare module "next/legacy/image" {
     ReactEventHandler,
   } from "react";
 
-  interface LegacyImageProps {
+  type LegacyImageProps = {
     src: string | { src: string; width: number; height: number; blurDataURL?: string };
     alt: string;
     width?: number | string;
@@ -203,7 +208,7 @@ declare module "next/legacy/image" {
     loading?: "lazy" | "eager";
     unoptimized?: boolean;
     id?: string;
-  }
+  };
 
   const LegacyImage: ForwardRefExoticComponent<LegacyImageProps & RefAttributes<HTMLImageElement>>;
   export default LegacyImage;
@@ -212,11 +217,11 @@ declare module "next/legacy/image" {
 declare module "next/error" {
   import { ComponentType } from "react";
 
-  interface ErrorProps {
+  type ErrorProps = {
     statusCode: number;
     title?: string;
     withDarkMode?: boolean;
-  }
+  };
 
   const ErrorComponent: ComponentType<ErrorProps>;
   export default ErrorComponent;
@@ -252,13 +257,13 @@ declare module "next/constants" {
     MIDDLEWARE = "MIDDLEWARE",
   }
 
-  export const PHASE_PRODUCTION_BUILD: string;
-  export const PHASE_DEVELOPMENT_SERVER: string;
-  export const PHASE_PRODUCTION_SERVER: string;
-  export const PHASE_EXPORT: string;
-  export const PHASE_INFO: string;
-  export const PHASE_TEST: string;
-  export const PHASE_ANALYZE: string;
+  export const PHASE_PRODUCTION_BUILD: "phase-production-build";
+  export const PHASE_DEVELOPMENT_SERVER: "phase-development-server";
+  export const PHASE_PRODUCTION_SERVER: "phase-production-server";
+  export const PHASE_EXPORT: "phase-export";
+  export const PHASE_INFO: "phase-info";
+  export const PHASE_TEST: "phase-test";
+  export const PHASE_ANALYZE: "phase-analyze";
 
   export type PHASE_TYPE =
     | typeof PHASE_INFO
@@ -270,7 +275,6 @@ declare module "next/constants" {
     | typeof PHASE_DEVELOPMENT_SERVER;
 
   export const PAGES_MANIFEST: string;
-  export const WEBPACK_STATS: string;
   export const APP_PATHS_MANIFEST: string;
   export const APP_PATH_ROUTES_MANIFEST: string;
   export const BUILD_MANIFEST: string;
@@ -279,6 +283,7 @@ declare module "next/constants" {
   export const NEXT_FONT_MANIFEST: string;
   export const EXPORT_MARKER: string;
   export const EXPORT_DETAIL: string;
+  export const PREFETCH_HINTS: string;
   export const PRERENDER_MANIFEST: string;
   export const ROUTES_MANIFEST: string;
   export const IMAGES_MANIFEST: string;
@@ -338,6 +343,12 @@ declare module "next/constants" {
   export const SYSTEM_ENTRYPOINTS: Set<string>;
 }
 
+declare module "next/compat/router" {
+  import type { NextRouter } from "./router.js";
+  // oxlint-disable-next-line no-redundant-type-constituents -- NextRouter is a proper interface, not an error type
+  export function useRouter(): NextRouter | null;
+}
+
 declare module "next/server" {
   export class NextRequest extends Request {
     get nextUrl(): any;
@@ -363,7 +374,7 @@ declare module "next/server" {
 }
 
 declare module "next/font/google" {
-  interface FontOptions {
+  type FontOptions = {
     weight?: string | string[];
     style?: string | string[];
     subsets?: string[];
@@ -373,13 +384,13 @@ declare module "next/font/google" {
     adjustFontFallback?: boolean | string;
     variable?: string;
     axes?: string[];
-  }
+  };
 
-  interface FontResult {
+  type FontResult = {
     className: string;
     style: { fontFamily: string };
     variable?: string;
-  }
+  };
 
   type FontLoader = (options?: FontOptions) => FontResult;
   // Named exports are generated in next-shims-font-google.generated.d.ts
@@ -388,13 +399,13 @@ declare module "next/font/google" {
 }
 
 declare module "next/font/local" {
-  interface LocalFontSrc {
+  type LocalFontSrc = {
     path: string;
     weight?: string;
     style?: string;
-  }
+  };
 
-  interface LocalFontOptions {
+  type LocalFontOptions = {
     src: string | LocalFontSrc | LocalFontSrc[];
     display?: string;
     weight?: string;
@@ -404,19 +415,19 @@ declare module "next/font/local" {
     variable?: string;
     adjustFontFallback?: boolean | string;
     declarations?: Array<{ prop: string; value: string }>;
-  }
+  };
 
-  interface FontResult {
+  type FontResult = {
     className: string;
     style: { fontFamily: string };
     variable?: string;
-  }
+  };
 
   export default function localFont(options: LocalFontOptions): FontResult;
 }
 
 declare module "next/cache" {
-  export interface CacheHandler {
+  export type CacheHandler = {
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
     set(
       key: string,
@@ -425,14 +436,14 @@ declare module "next/cache" {
     ): Promise<void>;
     revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
     resetRequestCache?(): void;
-  }
+  };
 
-  export interface CacheHandlerValue {
+  export type CacheHandlerValue = {
     lastModified: number;
     age?: number;
     cacheState?: string;
     value: IncrementalCacheValue | null;
-  }
+  };
 
   export type IncrementalCacheValue =
     | {
@@ -489,13 +500,14 @@ declare module "next/cache" {
   ): T;
   export function unstable_noStore(): void;
   export function noStore(): void;
+  export function unstable_io(): Promise<void>;
 
   // "use cache" APIs (Next.js 15+)
-  export interface CacheLifeConfig {
+  export type CacheLifeConfig = {
     stale?: number;
     revalidate?: number;
     expire?: number;
-  }
+  };
   export const cacheLifeProfiles: Record<string, CacheLifeConfig>;
   export function cacheLife(profile: string | CacheLifeConfig): void;
   export function cacheTag(...tags: string[]): void;
@@ -504,25 +516,25 @@ declare module "next/cache" {
 declare module "next/form" {
   import { ForwardRefExoticComponent, RefAttributes, FormHTMLAttributes } from "react";
 
-  interface FormProps extends Omit<FormHTMLAttributes<HTMLFormElement>, "action"> {
+  type FormProps = {
     action: string | ((formData: FormData) => void | Promise<void>);
     replace?: boolean;
     scroll?: boolean;
-  }
+  } & Omit<FormHTMLAttributes<HTMLFormElement>, "action">;
 
   const Form: ForwardRefExoticComponent<FormProps & RefAttributes<HTMLFormElement>>;
   export default Form;
 }
 
 declare module "next/web-vitals" {
-  interface WebVitalsMetric {
+  type WebVitalsMetric = {
     id: string;
     name: string;
     value: number;
     rating?: "good" | "needs-improvement" | "poor";
     delta: number;
     navigationType?: "navigate" | "reload" | "back-forward" | "prerender";
-  }
+  };
   type ReportWebVitalsCallback = (metric: WebVitalsMetric) => void;
   export function useReportWebVitals(callback: ReportWebVitalsCallback): void;
 }
@@ -532,10 +544,14 @@ declare module "next/amp" {
   export function isInAmpMode(): boolean;
 }
 
+declare module "next/offline" {
+  export function useOffline(): boolean;
+}
+
 declare module "next/og" {
   import { ReactElement } from "react";
 
-  interface ImageResponseOptions {
+  type ImageResponseOptions = {
     width?: number;
     height?: number;
     emoji?: "twemoji" | "blobmoji" | "noto" | "openmoji";
@@ -549,7 +565,7 @@ declare module "next/og" {
     status?: number;
     statusText?: string;
     headers?: Record<string, string>;
-  }
+  };
 
   export class ImageResponse extends Response {
     constructor(element: ReactElement, options?: ImageResponseOptions);

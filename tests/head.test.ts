@@ -5,7 +5,7 @@
  * plus comprehensive coverage for vinext's Head SSR collection, HTML
  * generation, allowed tags, and escaping.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Head, {

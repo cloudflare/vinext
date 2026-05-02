@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview"
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
@@ -23,6 +23,7 @@
     "@vitejs/plugin-rsc": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "wrangler": "catalog:"
+    "wrangler": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

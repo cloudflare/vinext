@@ -272,13 +272,13 @@ function CommitList({ commits }: { commits: BenchmarkCommit[] }) {
           <Table.Row>
             <Table.Head>Commit</Table.Head>
             <Table.Head>Date</Table.Head>
-            <Table.Head>Build Time (vinext Rolldown)</Table.Head>
-            <Table.Head>Client Bundle Size (vinext Rolldown)</Table.Head>
+            <Table.Head>Build Time (vinext)</Table.Head>
+            <Table.Head>Client Bundle Size (vinext)</Table.Head>
           </Table.Row>
         </Table.Header>
         <Table.Body>
           {commits.map((c) => {
-            const rd = c.runners.vinext_rolldown;
+            const vn = c.runners.vinext;
             return (
               <Table.Row key={c.commitSha}>
                 <Table.Cell>
@@ -295,8 +295,8 @@ function CommitList({ commits }: { commits: BenchmarkCommit[] }) {
                 <Table.Cell className="text-sm text-gray-500">
                   {new Date(c.commitDate).toLocaleDateString()}
                 </Table.Cell>
-                <Table.Cell>{rd ? formatMs(rd.buildTimeMean) : "-"}</Table.Cell>
-                <Table.Cell>{rd ? formatBytes(rd.bundleSizeGzip) : "-"}</Table.Cell>
+                <Table.Cell>{vn ? formatMs(vn.buildTimeMean) : "-"}</Table.Cell>
+                <Table.Cell>{vn ? formatBytes(vn.bundleSizeGzip) : "-"}</Table.Cell>
               </Table.Row>
             );
           })}

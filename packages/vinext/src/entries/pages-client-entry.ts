@@ -43,6 +43,7 @@ export async function generateClientEntry(
   const appFileBase = appFilePath?.replace(/\\/g, "/");
 
   return `
+import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 // Eagerly import the router shim so its module-level popstate listener is
@@ -105,6 +106,7 @@ async function hydrate() {
 
   const root = hydrateRoot(container, element);
   window.__VINEXT_ROOT__ = root;
+  window.__VINEXT_HYDRATED_AT = performance.now();
 }
 
 hydrate();

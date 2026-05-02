@@ -1,0 +1,25 @@
+name: Setup
+description: Setup
+
+inputs:
+  node-version:
+    description: Node.js version to use
+    required: false
+  cache:
+    description: Whether to enable caching for Vite+ dependencies
+    required: false
+    default: true
+  run-install:
+    description: Whether to run `vp install` after setup
+    required: false
+    default: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Vite+
+      uses: voidzero-dev/setup-vp@dc86dedacad12dfe5b3e525b735a327fcd1f6477 # v1
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: ${{ inputs.cache }}
+        run-install: ${{ inputs.run-install }}

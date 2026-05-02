@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { Metadata, Viewport } from "next";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "700"] });
-const mono = Geist_Mono({ variable: "--font-mono" });
+const mono = Geist_Mono({ variable: "--font-mono", subsets: ["latin"] });
 
 // Static metadata on root layout with title template
 export const metadata: Metadata = {

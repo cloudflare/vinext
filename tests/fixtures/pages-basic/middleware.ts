@@ -26,6 +26,32 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  if (url.pathname === "/rewrite-with-cookie") {
+    const res = NextResponse.rewrite(new URL("/ssr", request.url));
+    res.cookies.set("rewrite-cookie", "visible", { path: "/" });
+    return res;
+  }
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/app/middleware.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/app/middleware.js
+  if (url.pathname === "/external-middleware-rewrite") {
+    return NextResponse.rewrite("https://api.example.com/from-middleware?ok=1");
+  }
+
+  if (url.pathname === "/external-middleware-rewrite-status") {
+    const target =
+      request.headers.get("x-middleware-test-rewrite-target") ??
+      "https://api.example.com/from-middleware-status";
+    return NextResponse.rewrite(target, { status: 403 });
+  }
+
+  if (url.pathname === "/middleware-bad-content-length") {
+    const res = NextResponse.rewrite(new URL("/streaming-ssr", request.url));
+    res.headers.set("content-length", "1");
+    res.headers.set("x-custom-middleware", "active");
+    return res;
+  }
+
   if (url.pathname === "/headers-before-middleware-rewrite") {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
@@ -41,6 +67,15 @@ export function middleware(request: NextRequest) {
   // Block /blocked with a custom response
   if (url.pathname === "/blocked") {
     return new Response("Access Denied", { status: 403, statusText: "Blocked by Middleware" });
+  }
+
+  if (url.pathname === "/blocked-with-cookie") {
+    const res = new NextResponse("Access Denied", {
+      status: 403,
+      statusText: "Blocked by Middleware",
+    });
+    res.cookies.set("blocked", "1", { path: "/" });
+    return res;
   }
 
   // Return a binary response (PNG 1x1 pixel) to test binary body preservation
@@ -117,6 +152,16 @@ export function middleware(request: NextRequest) {
     const existing = headers.get("cookie") ?? "";
     headers.set("cookie", existing ? existing + "; mw-before-user=1" : "mw-before-user=1");
     return NextResponse.next({ request: { headers } });
+  }
+
+  if (
+    (url.pathname === "/dynamic-page" || url.pathname === "/isr-test") &&
+    url.searchParams.has("mw-csp-nonce")
+  ) {
+    response.headers.set(
+      "content-security-policy",
+      `script-src 'nonce-${url.searchParams.get("mw-csp-nonce")}' 'strict-dynamic';`,
+    );
   }
 
   return response;

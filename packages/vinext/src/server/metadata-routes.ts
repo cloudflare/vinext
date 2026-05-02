@@ -17,12 +17,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 
 // -------------------------------------------------------------------
 // Types matching Next.js MetadataRoute
 // -------------------------------------------------------------------
 
-export interface SitemapEntry {
+export type SitemapEntry = {
   url: string;
   lastModified?: string | Date;
   changeFrequency?: "always" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "never";
@@ -53,22 +54,22 @@ export interface SitemapEntry {
     live?: "yes" | "no";
     tag?: string;
   }>;
-}
+};
 
-export interface RobotsRule {
+export type RobotsRule = {
   userAgent?: string | string[];
   allow?: string | string[];
   disallow?: string | string[];
   crawlDelay?: number;
-}
+};
 
-export interface RobotsConfig {
+export type RobotsConfig = {
   rules: RobotsRule | RobotsRule[];
   sitemap?: string | string[];
   host?: string;
-}
+};
 
-export interface ManifestConfig {
+export type ManifestConfig = {
   name?: string;
   short_name?: string;
   description?: string;
@@ -83,7 +84,7 @@ export interface ManifestConfig {
     purpose?: string;
   }>;
   [key: string]: unknown;
-}
+};
 
 // -------------------------------------------------------------------
 // Known metadata file patterns
@@ -243,9 +244,9 @@ export function sitemapToXml(entries: SitemapEntry[]): string {
           video.tag && `<video:tag>${escapeXml(String(video.tag))}</video:tag>`,
           video.rating && `<video:rating>${video.rating}</video:rating>`,
           video.expiration_date &&
-            `<video:expiration_date>${video.expiration_date}</video:expiration_date>`,
+            `<video:expiration_date>${escapeXml(String(video.expiration_date))}</video:expiration_date>`,
           video.publication_date &&
-            `<video:publication_date>${video.publication_date}</video:publication_date>`,
+            `<video:publication_date>${escapeXml(String(video.publication_date))}</video:publication_date>`,
           video.family_friendly &&
             `<video:family_friendly>${video.family_friendly}</video:family_friendly>`,
           video.requires_subscription &&
@@ -340,26 +341,204 @@ function serializeDate(value: string | Date): string {
 }
 
 // -------------------------------------------------------------------
+// Static metadata URL resolution
+//
+// Ported from Next.js: packages/next/src/lib/metadata/get-metadata-route.ts
+// https://github.com/vercel/next.js/blob/7873aea/packages/next/src/lib/metadata/get-metadata-route.ts
+//
+// Static metadata files (like favicon.ico, icon.png) under dynamic parents
+// get a fixed URL with "-" placeholders instead of literal "[param]" segments.
+// Route groups and parallel route parents trigger a unique hash suffix to
+// avoid collisions.
+// -------------------------------------------------------------------
+
+/**
+ * Regular expression pattern used to match route parameters.
+ * Matches both single parameters and parameter groups.
+ * Examples:
+ *   - `[[...slug]]` matches parameter group with key 'slug', repeat: true, optional: true
+ *   - `[...slug]` matches parameter group with key 'slug', repeat: true, optional: false
+ *   - `[[foo]]` matches parameter with key 'foo', repeat: false, optional: true
+ *   - `[bar]` matches parameter with key 'bar', repeat: false, optional: false
+ */
+const PARAMETER_PATTERN = /^([^[]*)\[((?:\[[^\]]*\])|[^\]]+)\](.*)$/;
+
+function isGroupSegment(segment: string): boolean {
+  return segment.startsWith("(") && segment.endsWith(")");
+}
+
+function isParallelRouteSegment(segment: string): boolean {
+  return segment.startsWith("@") && segment !== "@children";
+}
+
+function normalizeStaticMetadataRouteSegment(segment: string): string {
+  let normalizedSegment = segment;
+  let match = normalizedSegment.match(PARAMETER_PATTERN);
+  while (match) {
+    normalizedSegment = `${match[1]}-${match[3]}`;
+    match = normalizedSegment.match(PARAMETER_PATTERN);
+  }
+  return normalizedSegment;
+}
+
+function getStaticMetadataRoute(appDirPath: string): string {
+  const segments = appDirPath.split("/").filter(Boolean);
+  const normalizedSegments: string[] = [];
+  for (const seg of segments) {
+    // Strip route groups and all parallel route slots (including @children)
+    // from the URL path. The @children slot is the default parallel route
+    // and must also be invisible in the URL, matching Next.js behavior.
+    if (isGroupSegment(seg) || seg.startsWith("@")) continue;
+    normalizedSegments.push(normalizeStaticMetadataRouteSegment(seg));
+  }
+  return normalizedSegments.length > 0 ? `/${normalizedSegments.join("/")}` : "";
+}
+
+function hashMetadataRouteParentPath(parentPathname: string): string {
+  let hash = 5381;
+  for (let i = 0; i < parentPathname.length; i++) {
+    hash = ((hash << 5) + hash + parentPathname.charCodeAt(i)) & 0xffffffff;
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
+function getMetadataRouteSuffix(page: string): string {
+  const lastSlash = page.lastIndexOf("/");
+  const parentPathname = lastSlash > 0 ? page.slice(0, lastSlash) : "";
+  if (page.endsWith("/sitemap") || page.endsWith("/sitemap.xml")) return "";
+  const segments = parentPathname.split("/");
+  const hasInvisibleParent = segments.some(
+    (seg) => isGroupSegment(seg) || isParallelRouteSegment(seg),
+  );
+  if (!hasInvisibleParent) return "";
+  return hashMetadataRouteParentPath(parentPathname);
+}
+
+function computeMetadataRouteSuffix(
+  appDirPath: string,
+  leafName: string,
+): { route: string; suffix: string } {
+  const route = getStaticMetadataRoute(appDirPath);
+  const pagePath =
+    appDirPath === "" || appDirPath === "/" ? `/${leafName}` : `${appDirPath}/${leafName}`;
+  const suffix = getMetadataRouteSuffix(pagePath);
+  return { route, suffix };
+}
+
+function getMetadataRouteFilename(appDirPath: string, lastSegment: string): string {
+  const ext = path.posix.extname(lastSegment);
+  const name = lastSegment.slice(0, -ext.length || undefined);
+  const { suffix } = computeMetadataRouteSuffix(appDirPath, name);
+  const routeSuffix = suffix ? `-${suffix}` : "";
+  return `${name}${routeSuffix}${ext}`;
+}
+
+/**
+ * Compute the static URL for a metadata file given its app directory
+ * parent path and filename.
+ *
+ * Example:
+ *   fillStaticMetadataSegment("/", "favicon.ico") -> "/favicon.ico"
+ *   fillStaticMetadataSegment("/blog/[slug]", "favicon.ico") -> "/blog/-/favicon.ico"
+ *   fillStaticMetadataSegment("/(group)/group", "icon.png") -> "/group/icon-131tc6.png"
+ */
+export function fillStaticMetadataSegment(appDirPath: string, lastSegment: string): string {
+  const route = getStaticMetadataRoute(appDirPath);
+  const filename = getMetadataRouteFilename(appDirPath, lastSegment);
+  return route === "" ? `/${filename}` : `${route}/${filename}`;
+}
+
+// -------------------------------------------------------------------
 // Metadata route discovery
 // -------------------------------------------------------------------
 
-export interface MetadataFileRoute {
+export type MetadataFileRoute = {
   /** Type of metadata file */
   type: string;
   /** Whether this is a dynamic (code-generated) route */
   isDynamic: boolean;
+  /** Imported dynamic module for code-generated metadata routes. */
+  module?: Record<string, unknown>;
   /** Absolute file path */
   filePath: string;
+  /** Route prefix where this metadata applies, preserving dynamic segment names. */
+  routePrefix: string;
+  /** Raw app tree segments where this metadata file is colocated. */
+  routeSegments?: string[];
+  /** Pattern parts for matching dynamic metadata routes at request time. */
+  patternParts?: string[];
   /** URL path this file is served at */
   servedUrl: string;
   /** Content type for the response */
   contentType: string;
+  /** Optional metadata used to inject file-based routes into <head>. */
+  headData?: MetadataRouteHeadData;
+  /** Optional content hash for cache-busting metadata links. */
+  contentHash?: string;
+  /** Sibling .alt.txt file for static social image metadata routes. */
+  altFilePath?: string;
+};
+
+export type MetadataRouteHeadData =
+  | {
+      kind: "favicon" | "icon" | "apple";
+      href: string;
+      type?: string;
+      sizes?: string;
+    }
+  | {
+      kind: "openGraph" | "twitter";
+      href: string;
+      type?: string;
+      width?: number;
+      height?: number;
+      alt?: string;
+    }
+  | {
+      kind: "manifest";
+      href: string;
+    };
+
+export function getMetadataRouteKind(
+  route: Pick<MetadataFileRoute, "type">,
+): MetadataRouteHeadData["kind"] | null {
+  if (route.type === "favicon") return "favicon";
+  if (route.type === "icon") return "icon";
+  if (route.type === "apple-icon") return "apple";
+  if (route.type === "opengraph-image") return "openGraph";
+  if (route.type === "twitter-image") return "twitter";
+  if (route.type === "manifest") return "manifest";
+  return null;
+}
+
+export function getMetadataImageRouteKind(
+  route: Pick<MetadataFileRoute, "type">,
+): Extract<MetadataRouteHeadData["kind"], "icon" | "apple" | "openGraph" | "twitter"> | null {
+  const kind = getMetadataRouteKind(route);
+  if (kind === "icon" || kind === "apple" || kind === "openGraph" || kind === "twitter") {
+    return kind;
+  }
+  return null;
+}
+
+const metadataImageIdPattern = /^[a-zA-Z0-9-_.]+$/;
+
+export function isValidMetadataImageId(id: string): boolean {
+  return metadataImageIdPattern.test(id);
+}
+
+export function matchMetadataRoutePattern(
+  urlParts: string[],
+  patternParts: string[],
+): Record<string, string | string[]> | null {
+  return matchRoutePattern(urlParts, patternParts);
 }
 
 function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
-  if (metaType === "sitemap" || metaType === "robots" || metaType === "manifest") {
-    // Sitemap is exempt per Next.js. Robots and manifest are also safe to
-    // exempt because they are root-only in vinext, so invisible parents never apply.
+  if (metaType === "sitemap") {
+    // Sitemap is exempt per Next.js (robots/manifest are root-only, so
+    // invisible parents never apply — but we keep the exemption list
+    // matching getMetadataRouteSuffix for defensive consistency).
     return "";
   }
 
@@ -370,18 +549,71 @@ function metadataRouteSuffix(parentSegments: string[], metaType: string): string
   );
   if (!hasInvisibleParent) return "";
 
-  const parentPath = `/${parentSegments.join("/")}`;
-  let hash = 5381;
-  for (let i = 0; i < parentPath.length; i++) {
-    hash = ((hash << 5) + hash + parentPath.charCodeAt(i)) & 0xffffffff;
-  }
-  return (hash >>> 0).toString(36).slice(0, 6);
+  return hashMetadataRouteParentPath(`/${parentSegments.join("/")}`);
 }
 
 function withMetadataSuffix(urlPath: string, suffix: string): string {
   if (!suffix) return urlPath;
   const parsed = path.posix.parse(urlPath);
   return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+}
+
+function getMetadataServedUrl(
+  metaType: string,
+  config: { urlPath: string },
+  ext: string,
+  isDynamic: boolean,
+  suffix: string,
+  routeBaseName: string,
+): string {
+  if (
+    isDynamic &&
+    (metaType === "icon" ||
+      metaType === "apple-icon" ||
+      metaType === "opengraph-image" ||
+      metaType === "twitter-image")
+  ) {
+    return withMetadataSuffix(`/${routeBaseName}`, suffix);
+  }
+
+  if (isDynamic) {
+    return withMetadataSuffix(config.urlPath, suffix);
+  }
+
+  if (metaType === "manifest") {
+    return withMetadataSuffix(`/${routeBaseName}${ext}`, suffix);
+  }
+
+  if (
+    metaType === "icon" ||
+    metaType === "apple-icon" ||
+    metaType === "opengraph-image" ||
+    metaType === "twitter-image"
+  ) {
+    return withMetadataSuffix(`/${routeBaseName}${ext}`, suffix);
+  }
+
+  return withMetadataSuffix(config.urlPath, suffix);
+}
+
+export function matchMetadataFileBaseName(metaType: string, baseName: string): string | null {
+  if (baseName === metaType) {
+    return baseName;
+  }
+
+  if (
+    metaType === "icon" ||
+    metaType === "apple-icon" ||
+    metaType === "opengraph-image" ||
+    metaType === "twitter-image"
+  ) {
+    const suffix = baseName.slice(metaType.length);
+    if (/^\d$/.test(suffix)) {
+      return baseName;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -414,8 +646,8 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
       const ext = fileName.slice(baseName.length);
 
       for (const [metaType, config] of Object.entries(METADATA_FILE_MAP)) {
-        // Check if the base name matches
-        if (baseName !== metaType) continue;
+        const routeBaseName = matchMetadataFileBaseName(metaType, baseName);
+        if (!routeBaseName) continue;
 
         // Check nestability — non-nestable types only at root
         if (!config.nestable && urlPrefix !== "") continue;
@@ -425,17 +657,40 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const isDynamic = config.dynamicExtensions.includes(ext);
 
         if (!isStatic && !isDynamic) continue;
+        const appDirPath = parentSegments.length > 0 ? `/${parentSegments.join("/")}` : "";
         const suffix = metadataRouteSuffix(parentSegments, metaType);
-        const urlPath = withMetadataSuffix(config.urlPath, suffix);
+        const urlPath = getMetadataServedUrl(
+          metaType,
+          config,
+          ext,
+          isDynamic,
+          suffix,
+          routeBaseName,
+        );
+        const servedUrl = isStatic
+          ? fillStaticMetadataSegment(appDirPath, `${routeBaseName}${ext}`)
+          : urlPrefix === ""
+            ? urlPath
+            : `${urlPrefix}${urlPath}`;
+        const altFilePath =
+          isStatic && (metaType === "opengraph-image" || metaType === "twitter-image")
+            ? resolveStaticMetadataAltFilePath(dir, baseName)
+            : undefined;
 
         routes.push({
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
-          servedUrl: urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`,
-          contentType: isStatic
-            ? getStaticContentType(ext, config.contentType)
-            : config.contentType,
+          routePrefix: urlPrefix,
+          routeSegments: parentSegments,
+          servedUrl,
+          contentType:
+            isStatic && metaType === "manifest"
+              ? config.contentType
+              : isStatic
+                ? getStaticContentType(ext, config.contentType)
+                : config.contentType,
+          altFilePath,
         });
       }
     }
@@ -457,6 +712,11 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     // If both are static or both dynamic, keep the first one found
   }
   return Array.from(byUrl.values());
+}
+
+function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {
+  const altPath = path.join(dir, `${baseName}.alt.txt`);
+  return fs.existsSync(altPath) ? altPath : undefined;
 }
 
 function getStaticContentType(ext: string, fallback: string): string {

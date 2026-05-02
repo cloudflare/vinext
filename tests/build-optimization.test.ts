@@ -2,18 +2,27 @@
  * Build optimization tests — verifies tree-shaking and chunking configuration
  * is correctly applied to client builds.
  *
- * Tests the treeshake config, manualChunks function, and experimentalMinChunkSize
+ * Tests the treeshake config, manualChunks function, and minimum chunk sizing
  * to ensure large barrel-exporting libraries (e.g. mermaid) produce smaller bundles.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
+import { stripServerExports as _stripServerExports } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
-  clientManualChunks,
+  createClientManualChunks,
   clientTreeshakeConfig,
-  computeLazyChunks,
-  _augmentSsrManifestFromBundle,
-  _stripServerExports,
-  _asyncHooksStubPlugin,
-} from "../packages/vinext/src/index.js";
+  getClientTreeshakeConfigForVite,
+} from "../packages/vinext/src/build/client-build-config.js";
+import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+
+// Create a clientManualChunks instance with a test shims directory.
+// The exact path doesn't matter for the node_modules-focused tests;
+// shims-chunk tests would need a real path.
+const clientManualChunks = createClientManualChunks("/vinext/shims/");
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
@@ -31,6 +40,14 @@ afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
   }
 });
+
+function getBuildBundlerOptions(result: any) {
+  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+}
+
+function getEnvBuildBundlerOptions(env: any) {
+  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+}
 
 // ─── clientTreeshakeConfig ────────────────────────────────────────────────────
 
@@ -88,6 +105,16 @@ describe("clientManualChunks", () => {
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
 
 describe("optimizeDeps.exclude for vinext", () => {
+  const rscClientShimExcludes = [
+    "vinext/shims/error-boundary",
+    "vinext/shims/form",
+    "vinext/shims/layout-segment-context",
+    "vinext/shims/link",
+    "vinext/shims/script",
+    "vinext/shims/slot",
+    "vinext/shims/offline",
+  ];
+
   it("excludes vinext at top level for Pages Router builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -113,10 +140,91 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
-      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        optimizeDeps: { exclude: ["@lingui/macro"] },
+      };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
+      expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      // Incoming excludes from other plugins must survive the merge
+      expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
+      // No duplicates
+      expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("merges top-level optimizeDeps.exclude from other plugins into per-environment configs", async () => {
+    // Simulates plugins like @lingui/vite-plugin that add entries to
+    // config.optimizeDeps.exclude before vinext's config hook runs.
+    // See: https://github.com/cloudflare/vinext/issues/538
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-merge-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        optimizeDeps: {
+          // Include "vinext" to simulate overlap with vinext's own excludes
+          exclude: ["@lingui/macro", "@lingui/core/macro", "vinext"],
+          include: ["some-lib"],
+        },
+      };
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+
+      // All environments should contain the incoming excludes
+      for (const envName of ["rsc", "ssr", "client"]) {
+        const envExclude = result.environments[envName].optimizeDeps?.exclude;
+        expect(envExclude, `${envName} should contain @lingui/macro`).toContain("@lingui/macro");
+        expect(envExclude, `${envName} should contain @lingui/core/macro`).toContain(
+          "@lingui/core/macro",
+        );
+        // vinext's own excludes should still be present
+        expect(envExclude, `${envName} should contain vinext`).toContain("vinext");
+        expect(envExclude, `${envName} should contain @vercel/og`).toContain("@vercel/og");
+        // Verify no duplicates exist (Set-based dedup works correctly even
+        // when incoming config overlaps with vinext's own entries)
+        expect(new Set(envExclude).size, `${envName} should have no duplicate excludes`).toBe(
+          envExclude.length,
+        );
+      }
+
+      // Client environment should merge incoming includes
+      const clientInclude = result.environments.client.optimizeDeps?.include;
+      expect(clientInclude).toContain("some-lib");
+      expect(clientInclude).toContain("react");
+      expect(clientInclude).toContain("react-dom");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -160,6 +268,12 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+      for (const shimExclude of rscClientShimExcludes) {
+        expect(result.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.client.optimizeDeps?.exclude).toContain(shimExclude);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -293,9 +407,8 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // treeshake should be set on rollupOptions for non-SSR builds
-      expect(result.build.rollupOptions.treeshake).toEqual({
-        preset: "recommended",
+      // treeshake should be set on bundler options for non-SSR builds
+      expect(getBuildBundlerOptions(result).treeshake).toEqual({
         moduleSideEffects: "no-external",
       });
     } finally {
@@ -336,7 +449,7 @@ describe("treeshake config integration", () => {
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       // treeshake should NOT be set for SSR builds
-      expect(result.build.rollupOptions.treeshake).toBeUndefined();
+      expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -345,7 +458,7 @@ describe("treeshake config integration", () => {
   it("multi-env build scopes treeshake to client environment only", async () => {
     // In App Router builds (multi-env), treeshake must NOT be set globally
     // (which would leak into RSC/SSR) — it should only appear on the client
-    // environment's rollupOptions.
+    // environment's bundler options.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -382,24 +495,23 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // Global rollupOptions should NOT have treeshake (would leak into RSC/SSR)
-      expect(result.build.rollupOptions.treeshake).toBeUndefined();
+      // Global bundler options should NOT have treeshake (would leak into RSC/SSR)
+      expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
 
       // Client environment should have treeshake
-      expect(result.environments.client.build.rollupOptions.treeshake).toEqual({
-        preset: "recommended",
+      expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
         moduleSideEffects: "no-external",
       });
 
       // RSC and SSR environments should NOT have treeshake
-      expect(result.environments.rsc.build?.rollupOptions?.treeshake).toBeUndefined();
-      expect(result.environments.ssr.build?.rollupOptions?.treeshake).toBeUndefined();
+      expect(getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake).toBeUndefined();
+      expect(getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
 
-  it("client output config includes experimentalMinChunkSize", async () => {
+  it("client output config includes minimum chunk sizing", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -432,10 +544,14 @@ describe("treeshake config integration", () => {
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       // For standalone client builds (non-SSR, non-multi-env),
-      // output config should include experimentalMinChunkSize
-      const output = result.build.rollupOptions.output;
+      // output config should include the min chunk size setting.
+      const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
-      expect(output.experimentalMinChunkSize).toBe(10_000);
+      if (output.codeSplitting) {
+        expect(output.codeSplitting.minSize).toBe(10_000);
+      } else {
+        expect(output.experimentalMinChunkSize).toBe(10_000);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -874,6 +990,70 @@ describe("augmentSsrManifestFromBundle", () => {
 
     expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
   });
+
+  it("normalizes existing absolute manifest keys before merging bundle metadata", () => {
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          "/app/pages/counter.tsx": {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "/app/pages/counter.tsx": ["/assets/counter.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+    expect(augmented["/app/pages/counter.tsx"]).toBeUndefined();
+  });
+
+  it("normalizes manifest keys across symlinked project roots", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-manifest-root-"));
+    const realRoot = path.join(tmpDir, "real");
+    const aliasRoot = path.join(tmpDir, "alias");
+    const realModulePath = path.join(realRoot, "pages", "counter.tsx");
+
+    await fsp.mkdir(path.join(realRoot, "pages"), { recursive: true });
+    await fsp.writeFile(realModulePath, "export default function Counter() { return null; }\n");
+    await fsp.symlink(realRoot, aliasRoot, "junction");
+
+    const escapedAliasKey = path.relative(aliasRoot, realModulePath).replace(/\\/g, "/");
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          [realModulePath]: {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      [escapedAliasKey]: ["/assets/counter.js"],
+    };
+
+    try {
+      const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, aliasRoot);
+
+      expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+      expect(augmented[escapedAliasKey]).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── collectAssetTags lazy filtering (integration) ────────────────────────────
@@ -1159,14 +1339,6 @@ describe("vinext:async-hooks-stub", () => {
   });
 
   describe("load", () => {
-    it("returns stub source with AsyncLocalStorage class", () => {
-      const source = load(VIRTUAL_ID);
-      expect(source).toBeDefined();
-      expect(source).toContain("export class AsyncLocalStorage");
-      expect(source).toContain("getStore()");
-      expect(source).toContain("run(_store, fn, ...args)");
-    });
-
     it("returns undefined for other module ids", () => {
       expect(load("some-other-module")).toBeUndefined();
     });
@@ -1177,9 +1349,9 @@ describe("vinext:async-hooks-stub", () => {
       // string shape. This catches subtle syntax errors that string matching misses.
       // Strip the ES module `export` keyword so we can evaluate with new Function.
       const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
+      // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- evaluating generated source is the behavior under test
       const ALS = new Function(cjsSource)() as new () => {
         getStore(): unknown;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
         run(store: unknown, fn: Function, ...args: unknown[]): unknown;
         exit(fn: () => unknown): unknown;
       };
@@ -1470,5 +1642,36 @@ export const getStaticPaths = () => [
     expect(result).not.toBeNull();
     expect(result).toContain("export const getStaticPaths = undefined;");
     expect(result).not.toContain("a;b");
+  });
+});
+
+// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+
+describe("getClientTreeshakeConfigForVite", () => {
+  it("returns preset for Vite 7 (Rollup compatibility)", () => {
+    const config = getClientTreeshakeConfigForVite(7);
+    expect(config).toEqual({
+      preset: "recommended",
+      moduleSideEffects: "no-external",
+    });
+  });
+
+  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
+    const config = getClientTreeshakeConfigForVite(8);
+    expect(config).toEqual({
+      moduleSideEffects: "no-external",
+    });
+  });
+
+  it("returns config without preset for Vite 9+", () => {
+    const config9 = getClientTreeshakeConfigForVite(9);
+    expect(config9).toEqual({
+      moduleSideEffects: "no-external",
+    });
+
+    const config10 = getClientTreeshakeConfigForVite(10);
+    expect(config10).toEqual({
+      moduleSideEffects: "no-external",
+    });
   });
 });

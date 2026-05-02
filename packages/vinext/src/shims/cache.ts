@@ -25,17 +25,20 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
+import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
 // The cache-runtime module sets this on load.
 // ---------------------------------------------------------------------------
 
-interface CacheContextLike {
+type CacheContextLike = {
   tags: string[];
   lifeConfigs: import("./cache-runtime.js").CacheContext["lifeConfigs"];
   variant: string;
-}
+};
 
 /** @internal Set by cache-runtime.ts on import to avoid circular dependency */
 let _getCacheContextFn: (() => CacheContextLike | null) | null = null;
@@ -53,12 +56,18 @@ export function _registerCacheContextAccessor(fn: () => CacheContextLike | null)
 // Implement this to provide a custom cache backend.
 // ---------------------------------------------------------------------------
 
-export interface CacheHandlerValue {
+export type CacheHandlerValue = {
   lastModified: number;
   age?: number;
   cacheState?: string;
+  cacheControl?: CacheControlMetadata;
   value: IncrementalCacheValue | null;
-}
+};
+
+export type CacheControlMetadata = {
+  revalidate: number;
+  expire?: number;
+};
 
 /** Discriminated union of cache value types. */
 export type IncrementalCacheValue =
@@ -69,7 +78,7 @@ export type IncrementalCacheValue =
   | CachedRedirectValue
   | CachedImageValue;
 
-export interface CachedFetchValue {
+export type CachedFetchValue = {
   kind: "FETCH";
   data: {
     headers: Record<string, string>;
@@ -79,53 +88,53 @@ export interface CachedFetchValue {
   };
   tags?: string[];
   revalidate: number | false;
-}
+};
 
-export interface CachedAppPageValue {
+export type CachedAppPageValue = {
   kind: "APP_PAGE";
   html: string;
   rscData: ArrayBuffer | undefined;
   headers: Record<string, string | string[]> | undefined;
   postponed: string | undefined;
   status: number | undefined;
-}
+};
 
-export interface CachedPagesValue {
+export type CachedPagesValue = {
   kind: "PAGES";
   html: string;
   pageData: object;
   headers: Record<string, string | string[]> | undefined;
   status: number | undefined;
-}
+};
 
-export interface CachedRouteValue {
+export type CachedRouteValue = {
   kind: "APP_ROUTE";
   body: ArrayBuffer;
   status: number;
   headers: Record<string, string | string[]>;
-}
+};
 
-export interface CachedRedirectValue {
+export type CachedRedirectValue = {
   kind: "REDIRECT";
   props: object;
-}
+};
 
-export interface CachedImageValue {
+export type CachedImageValue = {
   kind: "IMAGE";
   etag: string;
   buffer: ArrayBuffer;
   extension: string;
   revalidate?: number;
-}
+};
 
-export interface CacheHandlerContext {
+export type CacheHandlerContext = {
   dev?: boolean;
   maxMemoryCacheSize?: number;
   revalidatedTags?: string[];
   [key: string]: unknown;
-}
+};
 
-export interface CacheHandler {
+export type CacheHandler = {
   get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
 
   set(
@@ -137,6 +146,31 @@ export interface CacheHandler {
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
 
   resetRequestCache?(): void;
+};
+
+// ---------------------------------------------------------------------------
+// No-op cache handler — used during prerender to skip wasteful isrSet writes.
+// All prerender requests are cold-start renders whose results are written to
+// static files on disk, not to a cache. Using a no-op handler avoids the
+// overhead of MemoryCacheHandler.set() calls that are discarded at process exit.
+// ---------------------------------------------------------------------------
+
+export class NoOpCacheHandler implements CacheHandler {
+  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    return null;
+  }
+
+  async set(
+    _key: string,
+    _data: IncrementalCacheValue | null,
+    _ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    // intentionally empty
+  }
+
+  async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+    // intentionally empty
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,11 +178,19 @@ export interface CacheHandler {
 // single-process production. Not shared across workers/instances.
 // ---------------------------------------------------------------------------
 
-interface MemoryEntry {
+type MemoryEntry = {
   value: IncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
   revalidateAt: number | null;
+  expireAt: number | null;
+  cacheControl?: CacheControlMetadata;
+};
+
+function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
+  const value = ctx?.[field];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 export class MemoryCacheHandler implements CacheHandler {
@@ -159,7 +201,9 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = this.store.get(key);
     if (!entry) return null;
 
-    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss
+    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss.
+    // Note: the stale entry is deleted here as a side effect of the read, not on write.
+    // This keeps memory bounded without a separate eviction pass.
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
@@ -168,19 +212,35 @@ export class MemoryCacheHandler implements CacheHandler {
       }
     }
 
-    // Check time-based expiry — return stale entry with cacheState="stale"
+    for (const tag of readStringArrayField(_ctx, "softTags")) {
+      const revalidatedAt = this.tagRevalidatedAt.get(tag);
+      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+        return null;
+      }
+    }
+
+    // Check hard expiry first. Past `expire`, Next.js blocks on fresh
+    // regeneration instead of serving stale with background work.
+    if (entry.expireAt !== null && Date.now() > entry.expireAt) {
+      this.store.delete(key);
+      return null;
+    }
+
+    // Check time-based revalidation — return stale entry with cacheState="stale"
     // instead of deleting, so ISR can serve stale-while-revalidate
     if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
       return {
         lastModified: entry.lastModified,
         value: entry.value,
         cacheState: "stale",
+        cacheControl: entry.cacheControl,
       };
     }
 
     return {
       lastModified: entry.lastModified,
       value: entry.value,
+      cacheControl: entry.cacheControl,
     };
   }
 
@@ -189,38 +249,49 @@ export class MemoryCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    const tags: string[] = [];
+    const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
-      tags.push(...data.tags);
+      for (const t of data.tags) tagSet.add(t);
     }
-    if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
-      tags.push(...(ctx.tags as string[]));
+    for (const t of readStringArrayField(ctx, "tags")) {
+      tagSet.add(t);
     }
+    const tags = [...tagSet];
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
-    if (ctx) {
-      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
-      if (typeof revalidate === "number") {
-        effectiveRevalidate = revalidate;
-      }
-    }
+    let effectiveExpire: number | undefined;
+    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    effectiveExpire = readCacheControlNumberField(ctx, "expire");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
     if (effectiveRevalidate === 0) return;
 
+    const now = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? Date.now() + effectiveRevalidate * 1000
+        ? now + effectiveRevalidate * 1000
         : null;
+    const expireAt =
+      typeof effectiveExpire === "number" && effectiveExpire > 0
+        ? now + effectiveExpire * 1000
+        : null;
+    const cacheControl =
+      typeof effectiveRevalidate === "number"
+        ? effectiveExpire === undefined
+          ? { revalidate: effectiveRevalidate }
+          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        : undefined;
 
     this.store.set(key, {
       value: data,
       tags,
-      lastModified: Date.now(),
+      lastModified: now,
       revalidateAt,
+      expireAt,
+      cacheControl,
     });
   }
 
@@ -295,11 +366,8 @@ export function getCacheHandler(): CacheHandler {
  *
  * Works with both `fetch(..., { next: { tags: ['myTag'] } })` and
  * `unstable_cache(fn, keys, { tags: ['myTag'] })`.
- */
-/**
- * Revalidate cached data associated with a specific cache tag.
  *
- * Next.js 16 updated signature: requires a cacheLife profile as second argument
+ * Next.js 16 updated signature: accepts a cacheLife profile as second argument
  * for stale-while-revalidate (SWR) behavior. The single-argument form is
  * deprecated but still supported for backward compatibility.
  *
@@ -326,49 +394,45 @@ export async function revalidateTag(
 /**
  * Revalidate cached data associated with a specific path.
  *
- * Under the hood, Next.js converts paths to internal tags.
- * We use a `_N_T_/path` prefix convention for path-based tags.
+ * Invalidation works through implicit tags generated at render time by
+ * `buildAppPageCacheTags`, matching Next.js's getDerivedTags:
+ *
+ * - `type: "layout"` → invalidates `_N_T_<path>/layout`, cascading to all
+ *   descendant pages (they carry ancestor layout tags from render time).
+ * - `type: "page"` → invalidates `_N_T_<path>/page`, targeting only the
+ *   exact route's page component.
+ * - No type → invalidates `_N_T_<path>` (broader, exact path).
+ *
+ * The `type` parameter is App Router only — Pages Router does not generate
+ * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
-export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
-  // Next.js internally converts paths to tags with a prefix
-  const pathTag = `_N_T_${path}`;
-  await _getActiveHandler().revalidateTag([path, pathTag]);
-}
-
-/**
- * Expire and immediately refresh cached data for a tag (Next.js 16).
- *
- * Server Actions-only API that provides read-your-writes semantics:
- * the cache entry is expired and fresh data is read within the same request,
- * so the user immediately sees their changes.
- *
- * Use this for interactive features (forms, user settings) where users
- * expect to see their updates instantly.
- *
- * @param tag - Cache tag to expire and refresh
- */
-export async function updateTag(tag: string): Promise<void> {
-  // Expire the tag immediately (same as revalidateTag without SWR)
+export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
+  // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
+  const stem = path.endsWith("/") ? path.slice(0, -1) : path;
+  const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
   await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
- * Refresh uncached data on the page (Next.js 16).
+ * No-op shim for API compatibility.
  *
- * Server Actions-only API that signals the client to re-fetch dynamic
- * (uncached) data without touching the cache. Complementary to the
- * client-side router.refresh().
- *
- * Use this when you need to refresh data like notification counts,
- * live metrics, or status indicators after performing a server action.
+ * In Next.js, calling `refresh()` inside a Server Action triggers a
+ * client-side router refresh so the user immediately sees updated data.
+ * vinext does not yet implement the Server Actions refresh protocol,
+ * so this function has no effect.
  */
-export function refresh(): void {
-  // In our implementation, this is a signal that the client should
-  // refresh dynamic data. The actual refresh happens on the client side
-  // via the RSC protocol — the server action response triggers a
-  // client-side navigation refresh.
-  // For now, this is a no-op on the server; the Server Action response
-  // mechanism already handles re-rendering the affected RSC tree.
+export function refresh(): void {}
+
+/**
+ * Expire a cache tag immediately (Next.js 16).
+ *
+ * Server Actions-only API that expires a tag so the next request
+ * fetches fresh data. Unlike `revalidateTag`, which uses stale-while-revalidate,
+ * `updateTag` invalidates synchronously within the same request context.
+ */
+export async function updateTag(tag: string): Promise<void> {
+  // Expire the tag immediately (same as revalidateTag without SWR)
+  await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
@@ -387,6 +451,73 @@ export function unstable_noStore(): void {
 // Also export as `noStore` (Next.js 15+ naming)
 export { unstable_noStore as noStore };
 
+/**
+ * A fulfilled thenable that React can unwrap synchronously via `use()`
+ * without ever suspending. Reusing a single instance avoids allocating
+ * on every call — matching Next.js's browser/client implementation.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/client/request/io.browser.ts
+ */
+const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
+(_resolvedIOPromise as unknown as Record<string, unknown>).status = "fulfilled";
+(_resolvedIOPromise as unknown as Record<string, unknown>).value = undefined;
+
+/**
+ * Marks an IO boundary in server components by returning a resolved promise
+ * during requests and a hanging promise during prerendering.
+ *
+ * See: https://github.com/vercel/next.js/pull/92521
+ * Guard removed: https://github.com/vercel/next.js/pull/92923
+ *
+ * Ported from Next.js: packages/next/src/server/request/io.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+ *
+ * Behavior by work unit type:
+ * - request → resolve immediately (no delay needed for dynamic SSR)
+ * - prerender / prerender-client / prerender-runtime → hang (prevent
+ *   execution past IO boundary during static generation)
+ * - cache / private-cache / unstable-cache → resolve immediately
+ *   (caches capture IO results at fill time)
+ * - generate-static-params → resolve immediately (build time, no prerender to stall)
+ * - prerender-legacy → resolve immediately (no cache components)
+ *
+ * When no work unit store is present (e.g. client-side, standalone script),
+ * resolves immediately — matching the browser/client implementation.
+ */
+export function unstable_io(): Promise<void> {
+  const workUnitStore = workUnitAsyncStorage.getStore();
+
+  if (workUnitStore) {
+    switch (workUnitStore.type) {
+      case "request":
+        return _resolvedIOPromise;
+      case "prerender":
+      case "prerender-client":
+      case "prerender-runtime":
+        // Prevent execution past the IO boundary during prerendering.
+        // The hanging promise suspends React's render indefinitely until
+        // the prerender is aborted or completed.
+        return makeHangingPromise(
+          workUnitStore.renderSignal,
+          /* route */ workUnitStore.route ?? "unknown",
+          "`unstable_io()`",
+        );
+      case "cache":
+      case "private-cache":
+      case "unstable-cache":
+      case "generate-static-params":
+      case "prerender-legacy":
+        return _resolvedIOPromise;
+      default:
+        workUnitStore satisfies never;
+        return _resolvedIOPromise;
+    }
+  }
+
+  // No work store — outside rendering context (client, standalone script).
+  return _resolvedIOPromise;
+}
+
 // ---------------------------------------------------------------------------
 // Request-scoped cacheLife for page-level "use cache" directives.
 // When cacheLife() is called outside a "use cache" function context (e.g.,
@@ -395,9 +526,12 @@ export { unstable_noStore as noStore };
 //
 // Uses AsyncLocalStorage for request isolation on concurrent workers.
 // ---------------------------------------------------------------------------
-export interface CacheState {
+export type UnstableCacheRevalidationMode = "foreground" | "background";
+
+export type CacheState = {
   requestScopedCacheLife: CacheLifeConfig | null;
-}
+  unstableCacheRevalidation: UnstableCacheRevalidationMode;
+};
 
 const _ALS_KEY = Symbol.for("vinext.cache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.cache.fallback");
@@ -407,6 +541,7 @@ const _cacheAls = (_g[_ALS_KEY] ??=
 
 const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   requestScopedCacheLife: null,
+  unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
 
 function _getCacheState(): CacheState {
@@ -422,14 +557,18 @@ function _getCacheState(): CacheState {
  * on concurrent runtimes.
  * @internal
  */
+export function _runWithCacheState<T>(fn: () => Promise<T>): Promise<T>;
+export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T>;
 export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.requestScopedCacheLife = null;
+      uCtx.unstableCacheRevalidation = "foreground";
     }, fn);
   }
   const state: CacheState = {
     requestScopedCacheLife: null,
+    unstableCacheRevalidation: "foreground",
   };
   return _cacheAls.run(state, fn);
 }
@@ -444,8 +583,8 @@ export function _initRequestScopedCacheState(): void {
 }
 
 /**
- * Set a request-scoped cache life config. Called by cacheLife() when outside
- * a "use cache" function context.
+ * Set a request-scoped cache life config. Called by cacheLife() so the route
+ * render can inherit cache policy from file-level and nested "use cache" work.
  * @internal
  */
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
@@ -476,6 +615,17 @@ export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
 }
 
 /**
+ * Read the request-scoped cache life without clearing it. Prerender response
+ * shaping needs the metadata before the manifest writer consumes it after the
+ * body has been fully rendered.
+ * @internal
+ */
+export function _peekRequestScopedCacheLife(): CacheLifeConfig | null {
+  const config = _getCacheState().requestScopedCacheLife;
+  return config === null ? null : { ...config };
+}
+
+/**
  * Consume and reset the request-scoped cache life. Returns null if none was set.
  * @internal
  */
@@ -493,14 +643,14 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
 /**
  * Cache life configuration. Controls stale-while-revalidate behavior.
  */
-export interface CacheLifeConfig {
+export type CacheLifeConfig = {
   /** How long (seconds) the client can cache without checking the server */
   stale?: number;
   /** How frequently (seconds) the server cache refreshes */
   revalidate?: number;
   /** Max staleness (seconds) before deoptimizing to dynamic */
   expire?: number;
-}
+};
 
 /**
  * Built-in cache life profiles matching Next.js 16.
@@ -549,7 +699,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     ) {
       console.warn("[vinext] cacheLife: expire must be >= revalidate");
     }
-    resolvedConfig = { ...profile };
+    resolvedConfig = { ...cacheLifeProfiles.default, ...profile };
   } else {
     return;
   }
@@ -559,6 +709,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
+      _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
   } catch {
@@ -604,18 +755,32 @@ export function cacheTag(...tags: string[]): void {
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
   new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>;
-const UNSTABLE_CACHE_UNDEFINED_SENTINEL = "__vinext_unstable_cache_undefined__";
+
+/**
+ * Wrapper used to serialize `unstable_cache` results so that `undefined` can
+ * round-trip through JSON without confusion.  Using a structural wrapper
+ * avoids any sentinel-string collision risk.
+ */
+type CacheResultWrapper = { v: unknown } | { undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
-  return value === undefined ? UNSTABLE_CACHE_UNDEFINED_SENTINEL : JSON.stringify(value);
+  const wrapper: CacheResultWrapper = value === undefined ? { undef: true } : { v: value };
+  return JSON.stringify(wrapper);
 }
 
 function deserializeUnstableCacheResult(body: string): unknown {
-  if (body === UNSTABLE_CACHE_UNDEFINED_SENTINEL) {
-    return undefined;
-  }
+  const wrapper = JSON.parse(body) as CacheResultWrapper;
+  return "undef" in wrapper ? undefined : wrapper.v;
+}
 
-  return JSON.parse(body);
+type UnstableCacheReadResult = { ok: true; value: unknown } | { ok: false };
+
+function tryDeserializeUnstableCacheResult(body: string): UnstableCacheReadResult {
+  try {
+    return { ok: true, value: deserializeUnstableCacheResult(body) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 /**
@@ -627,9 +792,86 @@ export function isInsideUnstableCacheScope(): boolean {
   return _unstableCacheAls.getStore() === true;
 }
 
-interface UnstableCacheOptions {
+type UnstableCacheOptions = {
   revalidate?: number | false;
   tags?: string[];
+};
+
+const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
+  "vinext.unstableCache.pendingRevalidations",
+);
+
+function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
+  const existing = _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY];
+  if (existing instanceof Map) return existing;
+
+  const pending = new Map<string, Promise<void>>();
+  _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY] = pending;
+  return pending;
+}
+
+function shouldServeStaleUnstableCacheEntry(): boolean {
+  return _getCacheState().unstableCacheRevalidation === "background";
+}
+
+function waitUntilUnstableCacheRevalidation(promise: Promise<void>): void {
+  if (!isInsideUnifiedScope()) return;
+  getRequestContext().executionContext?.waitUntil(promise);
+}
+
+function scheduleUnstableCacheBackgroundRevalidation(
+  cacheKey: string,
+  refresh: () => Promise<unknown>,
+): void {
+  const pending = getPendingUnstableCacheRevalidations();
+  if (pending.has(cacheKey)) return;
+
+  const revalidation = refresh()
+    .then(() => undefined)
+    .catch((err) => {
+      console.error(`[vinext] unstable_cache background revalidation failed for ${cacheKey}:`, err);
+    });
+  const trackedRevalidation = revalidation.finally(() => {
+    if (pending.get(cacheKey) === trackedRevalidation) {
+      pending.delete(cacheKey);
+    }
+  });
+
+  pending.set(cacheKey, trackedRevalidation);
+  waitUntilUnstableCacheRevalidation(trackedRevalidation);
+}
+
+async function refreshUnstableCacheResult<Args extends unknown[], Result>(
+  fn: (...args: Args) => Promise<Result>,
+  args: Args,
+  cacheKey: string,
+  tags: string[],
+  revalidateSeconds: number | false | undefined,
+): Promise<Result> {
+  const result = await _unstableCacheAls.run(true, () => fn(...args));
+
+  const cacheValue: CachedFetchValue = {
+    kind: "FETCH",
+    data: {
+      headers: {},
+      body: serializeUnstableCacheResult(result),
+      url: cacheKey,
+    },
+    tags,
+    // revalidate: false means "cache indefinitely" (no time-based expiry).
+    // A positive number means time-based revalidation in seconds.
+    // When unset (undefined), default to false (indefinite) matching
+    // Next.js behavior for unstable_cache without explicit revalidate.
+    revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
+  };
+
+  await _getActiveHandler().set(cacheKey, cacheValue, {
+    fetchCache: true,
+    tags,
+    revalidate: revalidateSeconds,
+  });
+
+  return result;
 }
 
 /**
@@ -638,61 +880,53 @@ interface UnstableCacheOptions {
  * Returns a new function that caches results. The cache key is derived
  * from keyParts + serialized arguments.
  */
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   fn: T,
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
   const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
+  // Warning: fn.toString() as a cache key is minification-sensitive. In
+  // production builds where the function body is mangled, two logically
+  // different functions may hash to the same key, or the same function may
+  // hash differently across builds. Always pass explicit keyParts in
+  // production to get a stable, collision-free cache key.
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 
-  const cachedFn = async (...args: any[]): Promise<any> => {
+  const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
 
-    // Try to get from cache. Check cacheState so time-expired entries
-    // trigger a re-fetch instead of being served indefinitely.
+    // Try to get from cache. Stale entries are usable in normal App Router
+    // requests, but foreground-refresh inside revalidation scopes so the
+    // regenerated page/route stores fresh data.
     const existing = await _getActiveHandler().get(cacheKey, {
       kind: "FETCH",
       tags,
     });
-    if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
-      try {
-        return deserializeUnstableCacheResult(existing.value.data.body);
-      } catch {
-        // Corrupted entry, fall through to re-fetch
+    if (existing?.value && existing.value.kind === "FETCH") {
+      const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+      if (cached.ok) {
+        if (existing.cacheState === "stale") {
+          if (shouldServeStaleUnstableCacheEntry()) {
+            scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
+              refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+            );
+            return cached.value;
+          }
+        } else {
+          return cached.value;
+        }
       }
+      // Corrupted entries fall through to a foreground refresh.
     }
 
     // Cache miss — call the function inside the unstable_cache ALS scope
     // so that headers()/cookies()/connection() can detect they're in a
     // cache scope and throw an appropriate error.
-    const result = await _unstableCacheAls.run(true, () => fn(...args));
-
-    // Store in cache using the FETCH kind
-    const cacheValue: CachedFetchValue = {
-      kind: "FETCH",
-      data: {
-        headers: {},
-        body: serializeUnstableCacheResult(result),
-        url: cacheKey,
-      },
-      tags,
-      // revalidate: false means "cache indefinitely" (no time-based expiry).
-      // A positive number means time-based revalidation in seconds.
-      // When unset (undefined), default to false (indefinite) matching
-      // Next.js behavior for unstable_cache without explicit revalidate.
-      revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
-    };
-
-    await _getActiveHandler().set(cacheKey, cacheValue, {
-      fetchCache: true,
-      tags,
-      revalidate: revalidateSeconds,
-    });
-
-    return result;
+    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   };
 
   return cachedFn as T;

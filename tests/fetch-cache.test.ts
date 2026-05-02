@@ -10,7 +10,7 @@
  * - Independent cache entries per URL
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 // We need to mock fetch at the module level BEFORE fetch-cache.ts captures
 // `originalFetch`. Use vi.stubGlobal to intercept at import time.
@@ -37,10 +37,11 @@ const {
   withFetchCache,
   runWithFetchCache,
   getCollectedFetchTags,
+  setCurrentFetchSoftTags,
   getOriginalFetch,
   _resetPendingRefetches,
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } =
+const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
@@ -503,12 +504,13 @@ describe("fetch cache shim", () => {
     }
 
     // Make the upstream return a 500 error for the background refetch
-    fetchMock.mockImplementationOnce(async () => {
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "content-type": "text/plain" },
-      });
-    });
+    fetchMock.mockImplementationOnce(
+      async () =>
+        new Response("Internal Server Error", {
+          status: 500,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
 
     // Should return stale data immediately (stale-while-revalidate)
     const res2 = await fetch("https://api.example.com/revalidate-error-test", {
@@ -769,6 +771,26 @@ describe("fetch cache shim", () => {
 
     const tags = getCollectedFetchTags();
     expect(tags.filter((t) => t === "data")).toHaveLength(1);
+  });
+
+  it("revalidatePath invalidates fetch cache through current render soft tags", async () => {
+    setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
+
+    const res1 = await fetch("https://api.example.com/path-soft-tag", {
+      next: { revalidate: 3600 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    await revalidatePath("/posts/hello");
+
+    const res2 = await fetch("https://api.example.com/path-soft-tag", {
+      next: { revalidate: 3600 },
+    });
+    const data2 = await res2.json();
+
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   // ── Only caches successful responses ────────────────────────────────
@@ -2017,6 +2039,38 @@ describe("fetch cache shim", () => {
       const data2 = await res2.json();
       expect(data2.count).toBe(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Set-Cookie stripping from cached responses ──────────────────────────
+
+  describe("Set-Cookie header stripping", () => {
+    it("does not include Set-Cookie in cached response headers", async () => {
+      fetchMock.mockImplementationOnce(
+        async () =>
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "set-cookie": "session=abc123; Path=/; HttpOnly",
+              "x-custom": "keep-me",
+            },
+          }),
+      );
+
+      // First request — response has Set-Cookie
+      const res1 = await fetch("https://api.example.com/set-cookie-test", {
+        next: { revalidate: 300 },
+      });
+      expect(res1.headers.get("set-cookie")).toBe("session=abc123; Path=/; HttpOnly");
+      expect(res1.headers.get("x-custom")).toBe("keep-me");
+
+      // Second request — served from cache, Set-Cookie must be absent
+      const res2 = await fetch("https://api.example.com/set-cookie-test", {
+        next: { revalidate: 300 },
+      });
+      expect(res2.headers.get("set-cookie")).toBeNull();
+      expect(res2.headers.get("x-custom")).toBe("keep-me");
     });
   });
 });

@@ -10,10 +10,10 @@
  *   const { publicRuntimeConfig, serverRuntimeConfig } = getConfig();
  */
 
-interface RuntimeConfig {
+type RuntimeConfig = {
   serverRuntimeConfig: Record<string, unknown>;
   publicRuntimeConfig: Record<string, unknown>;
-}
+};
 
 let runtimeConfig: RuntimeConfig = {
   serverRuntimeConfig: {},

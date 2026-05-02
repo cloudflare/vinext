@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vite-plus/test";
 
 describe("useServerInsertedHTML", () => {
   beforeEach(async () => {
@@ -66,6 +66,18 @@ describe("useServerInsertedHTML", () => {
     // Second flush should be empty
     const second = flushServerInsertedHTML();
     expect(second).toHaveLength(0);
+  });
+
+  it("renderServerInsertedHTML keeps callbacks registered for later streaming flushes", async () => {
+    const { useServerInsertedHTML, renderServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    let flushCount = 0;
+    useServerInsertedHTML(() => `style-${++flushCount}`);
+
+    expect(renderServerInsertedHTML()).toEqual(["style-1"]);
+    expect(renderServerInsertedHTML()).toEqual(["style-2"]);
+    expect(flushServerInsertedHTML()).toEqual(["style-3"]);
   });
 
   it("clearServerInsertedHTML discards callbacks without calling them", async () => {

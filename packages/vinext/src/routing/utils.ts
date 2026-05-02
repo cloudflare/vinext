@@ -21,7 +21,7 @@
  *     E.g. /:locale/blog/:path+ (with infix "blog") correctly beats /:locale/:path+
  *     even when both share the same "locale-test" static prefix.
  */
-export function routePrecedence(pattern: string): number {
+function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);
   let score = 0;
 
@@ -105,7 +105,7 @@ export function decodeRouteSegment(segment: string): string {
 /**
  * Strict variant for request pipelines that should reject malformed percent-encoding.
  */
-export function decodeRouteSegmentStrict(segment: string): string {
+function decodeRouteSegmentStrict(segment: string): string {
   return encodePathDelimiters(decodeURIComponent(segment));
 }
 

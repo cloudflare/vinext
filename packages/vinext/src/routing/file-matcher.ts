@@ -1,6 +1,6 @@
 import { glob } from "node:fs/promises";
 
-export const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
+const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -18,14 +18,14 @@ export function normalizePageExtensions(pageExtensions?: readonly string[] | nul
   return filtered.length > 0 ? [...filtered] : [...DEFAULT_PAGE_EXTENSIONS];
 }
 
-export function buildExtensionGlob(stem: string, extensions: readonly string[]): string {
+function buildExtensionGlob(stem: string, extensions: readonly string[]): string {
   if (extensions.length === 1) {
     return `${stem}.${extensions[0]}`;
   }
   return `${stem}.{${extensions.join(",")}}`;
 }
 
-export interface ValidFileMatcher {
+export type ValidFileMatcher = {
   extensions: string[];
   dottedExtensions: string[];
   extensionRegex: RegExp;
@@ -35,7 +35,7 @@ export interface ValidFileMatcher {
   isAppLayoutFile(filePath: string): boolean;
   isAppDefaultFile(filePath: string): boolean;
   stripExtension(filePath: string): string;
-}
+};
 
 /**
  * Ported in spirit from Next.js createValidFileMatcher:

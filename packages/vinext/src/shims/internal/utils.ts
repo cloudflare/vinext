@@ -5,7 +5,7 @@
  * Provides the NEXT_DATA type that matches window.__NEXT_DATA__.
  */
 
-export interface NEXT_DATA {
+export type NEXT_DATA = {
   props: Record<string, unknown>;
   page: string;
   query: Record<string, string | string[]>;
@@ -34,7 +34,7 @@ export interface NEXT_DATA {
   scriptLoader?: unknown[];
   isPreview?: boolean;
   notFoundSrcPage?: string;
-}
+};
 
 /**
  * Standard Next.js error shape.

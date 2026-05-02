@@ -1,22 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-/**
- * Wait for the RSC browser entry to hydrate.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await expect(async () => {
-    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
-    expect(ready).toBe(true);
-  }).toPass({ timeout: 10_000 });
-}
 
 test.describe("Server Actions", () => {
   test("like button calls server action and updates count", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Initial state
     await expect(page.locator('[data-testid="likes"]')).toContainText("Likes:");
@@ -41,7 +32,7 @@ test.describe("Server Actions", () => {
   test("message form calls server action with FormData", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Type a message and submit
     await page.fill('[data-testid="message-input"]', "Hello vinext!");
@@ -66,10 +57,39 @@ test.describe("Server Actions", () => {
     await expect(page.locator('[data-testid="like-btn"]')).toBeVisible();
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action-progressive-enhancement.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-progressive-enhancement.test.ts
+  test("server action formData redirect works without JavaScript", async ({ browser }) => {
+    let actionResponseStatus: number | undefined;
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    page.on("response", (response) => {
+      const url = new URL(response.url());
+      if (url.pathname === "/nextjs-compat/action-progressive") {
+        actionResponseStatus = response.status();
+      }
+    });
+
+    try {
+      await page.goto(`${BASE}/nextjs-compat/action-progressive`);
+      await page.fill("#name", "test");
+      await page.click("#submit");
+
+      await expect(page).toHaveURL(
+        `${BASE}/nextjs-compat/action-progressive/result?name=test&hidden-info=hi`,
+      );
+      await expect(page.locator("h1")).toHaveText("Action Progressive Result");
+      expect(actionResponseStatus).toBe(303);
+    } finally {
+      await context.close();
+    }
+  });
+
   test("server action with redirect() navigates to target page", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
 
     // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
     await page.click('[data-testid="redirect-btn"]');
@@ -83,7 +103,7 @@ test.describe("Server Actions", () => {
     test.slow();
     await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);
     await expect(page.locator("h1")).toHaveText("Action Cookie Phase");
-    await waitForHydration(page);
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#cookie-value")).toHaveText("missing");
     await expect(page.locator("#cookie-error")).toContainText(
       "Cookies can only be modified in a Server Action or Route Handler",
@@ -169,5 +189,24 @@ test.describe("useActionState", () => {
       await page.click('button:has-text("Decrement")');
       await expect(page.locator("#count")).toHaveText("Count: -1", { timeout: 3_000 });
     }).toPass({ timeout: 15_000 });
+  });
+
+  test("useActionState: redirect does not cause undefined state (issue #589)", async ({ page }) => {
+    await page.goto(`${BASE}/action-state-redirect`);
+    await expect(page.locator("h1")).toHaveText("useActionState Redirect Test");
+    await waitForAppRouterHydration(page);
+
+    // Initial state should be { success: false }
+    await expect(async () => {
+      const stateText = await page.locator("#state").textContent();
+      expect(stateText).toContain('"success":false');
+    }).toPass({ timeout: 5_000 });
+
+    // Click the redirect button — should navigate without state becoming undefined
+    await page.click("#redirect-btn");
+
+    // Should navigate to /action-state-test without crashing
+    await expect(page).toHaveURL(/\/action-state-test$/);
+    await expect(page.locator("h1")).toHaveText("useActionState Test");
   });
 });

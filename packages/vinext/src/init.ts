@@ -32,7 +32,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface InitOptions {
+export type InitOptions = {
   /** Project root directory */
   root: string;
   /** Dev server port (default: 3001) */
@@ -43,9 +43,9 @@ export interface InitOptions {
   force?: boolean;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
-}
+};
 
-export interface InitResult {
+type InitResult = {
   /** Whether dependencies were installed */
   installedDeps: string[];
   /** Whether "type": "module" was added */
@@ -60,7 +60,7 @@ export interface InitResult {
   skippedViteConfig: boolean;
   /** Whether .gitignore was updated to include /dist/ */
   updatedGitignore: boolean;
-}
+};
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
@@ -95,13 +95,18 @@ export function addScripts(root: string, port: number): string[] {
     const added: string[] = [];
 
     if (!pkg.scripts["dev:vinext"]) {
-      pkg.scripts["dev:vinext"] = `vite dev --port ${port}`;
+      pkg.scripts["dev:vinext"] = `vinext dev --port ${port}`;
       added.push("dev:vinext");
     }
 
     if (!pkg.scripts["build:vinext"]) {
-      pkg.scripts["build:vinext"] = "vite build";
+      pkg.scripts["build:vinext"] = "vinext build";
       added.push("build:vinext");
+    }
+
+    if (!pkg.scripts["start:vinext"]) {
+      pkg.scripts["start:vinext"] = "vinext start";
+      added.push("start:vinext");
     }
 
     if (added.length > 0) {
@@ -145,7 +150,7 @@ export function isDepInstalled(root: string, dep: string): boolean {
  * Check if react/react-dom need upgrading for react-server-dom-webpack compatibility.
  *
  * react-server-dom-webpack versions are pinned to match their React version
- * (e.g. rsdw@19.2.4 requires react@^19.2.4). When a project has an older
+ * (e.g. rsdw@19.2.5 requires react@^19.2.5). When a project has an older
  * React (e.g. create-next-app ships react@19.2.3), we need to upgrade
  * react/react-dom BEFORE installing rsdw to avoid peer-dep conflicts.
  *
@@ -164,12 +169,12 @@ export function getReactUpgradeDeps(root: string): string[] {
     const resolved = req.resolve("react");
     const version = findPackageVersion(resolved, "react");
     if (!version) return [];
-    // react-server-dom-webpack@latest currently requires react@^19.2.4
+    // react-server-dom-webpack@latest currently requires react@^19.2.5
     const parts = version.split(".");
     const major = parseInt(parts[0], 10);
     const minor = parseInt(parts[1], 10);
     const patch = parseInt(parts[2], 10);
-    if (major < 19 || (major === 19 && minor < 2) || (major === 19 && minor === 2 && patch < 4)) {
+    if (major < 19 || (major === 19 && minor < 2) || (major === 19 && minor === 2 && patch < 5)) {
       return ["react@latest", "react-dom@latest"];
     }
     return [];
@@ -288,7 +293,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
-  // to match exactly (e.g. rsdw@19.2.4 needs react@^19.2.4). If the installed
+  // to match exactly (e.g. rsdw@19.2.5 needs react@^19.2.5). If the installed
   // React is too old (common with create-next-app), upgrade it first as a
   // regular dependency to avoid ERESOLVE peer-dep conflicts.
   if (isApp && missingDeps.includes("react-server-dom-webpack")) {
@@ -360,6 +365,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   console.log(`
   Next steps:
     ${pmName} run dev:vinext    Start the vinext dev server
+    ${pmName} run build:vinext  Build production output
+    ${pmName} run start:vinext  Start vinext production server
     ${pmName} run dev           Start Next.js (still works as before)
 `);
 

@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { headers as nextHeaders } from "next/headers";
+import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
 
 /**
@@ -12,7 +13,7 @@ import { recordMiddlewareInvocation } from "./instrumentation-state";
  * - Block with 403
  * - Search params forwarding
  */
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
@@ -24,6 +25,18 @@ export function middleware(request: NextRequest) {
 
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");
+  const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
+
+  if (acceptsRsc && pathname === "/rsc-fetch-redirect-src") {
+    return NextResponse.redirect(new URL("/rsc-fetch-error-target.rsc", request.url), 307);
+  }
+
+  if (acceptsRsc && pathname === "/rsc-fetch-error-target") {
+    return new Response("<html><body><h1>Internal Server Error</h1></body></html>", {
+      status: 500,
+      headers: { "content-type": "text/html" },
+    });
+  }
 
   const response = NextResponse.next();
 
@@ -47,6 +60,25 @@ export function middleware(request: NextRequest) {
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite
   if (pathname === "/middleware-rewrite") {
     return NextResponse.rewrite(new URL("/", request.url));
+  }
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/app/middleware.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/app/middleware.js
+  if (pathname === "/middleware-external-rewrite") {
+    const target =
+      request.headers.get("x-middleware-test-rewrite-target") ??
+      process.env.TEST_MIDDLEWARE_EXTERNAL_PROXY_TARGET;
+    if (target) {
+      const rewriteTarget = new URL("/middleware-external-target", target);
+      rewriteTarget.search = request.nextUrl.search;
+      if (request.headers.get("x-middleware-test-request-override") === "1") {
+        const headers = new Headers(request.headers);
+        headers.set("x-hello-from-middleware1", "hello");
+        headers.set("x-hello-from-middleware2", "world");
+        return NextResponse.rewrite(rewriteTarget, { request: { headers } });
+      }
+      return NextResponse.rewrite(rewriteTarget);
+    }
   }
 
   // Rewrite with query params — the rewrite URL's query string should be
@@ -73,6 +105,15 @@ export function middleware(request: NextRequest) {
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
+  }
+
+  // Test event and event.waitUntil (needed for Clerk etc)
+  if (pathname === "/middleware-event") {
+    if (!event || typeof event.waitUntil !== "function") {
+      return new Response("Missing event.waitUntil", { status: 500 });
+    }
+    event.waitUntil(Promise.resolve());
+    return new Response("Event OK", { status: 200 });
   }
 
   // Inject mw-before-user=1 cookie for beforeFiles rewrite gating test.
@@ -118,7 +159,34 @@ export function middleware(request: NextRequest) {
     return res;
   }
 
-  if (pathname === "/header-override-delete") {
+  if (pathname === "/header-override-delete" || pathname === "/api/header-override-delete") {
+    const headers = new Headers(request.headers);
+    headers.delete("authorization");
+    headers.delete("cookie");
+    headers.set("x-from-middleware", "hello-from-middleware");
+    return NextResponse.next({ request: { headers } });
+  }
+
+  // Regression for a bug where a middleware that reads `next/headers` →
+  // `headers()` before returning a `NextResponse.next({ request: { headers } })`
+  // override leaked the pre-override snapshot into the Server Component.
+  //
+  // Discovered with @clerk/nextjs, whose internal `clerkClient()` calls
+  // `await headers()` via `buildRequestLike()` during middleware execution.
+  // That call cached the sealed read-only Headers view on the shared
+  // HeadersContext. Afterwards, `applyMiddlewareRequestHeaders()` replaced
+  // `ctx.headers` with the override view but never invalidated the cached
+  // sealed snapshot, so the Server Component's later `headers()` call
+  // returned the original request headers — `x-from-middleware` was missing
+  // and deleted credential headers were still visible.
+  if (pathname === "/header-override-after-prior-access") {
+    // 1. Prime the sealed Headers cache via an early `headers()` read — this
+    //    is the step that a real-world middleware like Clerk performs under
+    //    the covers.
+    await nextHeaders();
+
+    // 2. Apply the header override. A correct implementation must invalidate
+    //    the cached sealed snapshot so this override reaches the render.
     const headers = new Headers(request.headers);
     headers.delete("authorization");
     headers.delete("cookie");
@@ -144,6 +212,49 @@ export function middleware(request: NextRequest) {
   const r = NextResponse.next({
     request: { headers: requestHeaders },
   });
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-nonce")
+  ) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-default-src")
+  ) {
+    r.headers.set("content-security-policy", "default-src 'nonce-vinext-test-nonce';");
+  }
+  if (
+    pathname.startsWith("/use-client-page-pathname") &&
+    request.nextUrl.searchParams.has("csp-report-only")
+  ) {
+    r.headers.set(
+      "content-security-policy-report-only",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (pathname === "/script-nonce" || pathname.startsWith("/script-nonce/")) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
+  if (pathname === "/revalidate-test" && request.nextUrl.searchParams.has("csp-nonce")) {
+    const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
+    r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
+  }
+  if (
+    pathname.startsWith("/nextjs-compat/dynamic") &&
+    request.nextUrl.searchParams.has("csp-nonce")
+  ) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
   if (sessionToken) {
@@ -157,14 +268,26 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
+    "/middleware-external-rewrite",
     "/middleware-rewrite-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/middleware-throw",
+    "/middleware-event",
     "/search-query",
     "/headers/override-from-middleware",
     "/header-override-delete",
+    "/api/header-override-delete",
+    "/header-override-after-prior-access",
     "/pages-header-override-delete",
+    "/revalidate-test",
+    "/script-nonce/:path*",
+    "/script-manual-nonce",
+    "/pages-script-manual-nonce",
+    "/nextjs-compat/dynamic/:path*",
+    "/use-client-page-pathname/:path*",
+    "/rsc-fetch-redirect-src",
+    "/rsc-fetch-error-target",
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",
@@ -174,5 +297,7 @@ export const config = {
       missing: [{ type: "cookie", key: "mw-blocked" }],
     },
     "/mw-gated-fallback-pages",
+    "/photos/:path*",
+    "/actions",
   ],
 };

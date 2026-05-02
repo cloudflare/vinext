@@ -14,18 +14,29 @@
 
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
-import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { resolveStaticAssetSignal } from "./worker-utils.js";
+import { isOpenRedirectShaped } from "./request-pipeline.js";
+
+type WorkerAssetEnv = {
+  ASSETS?: {
+    fetch(request: Request): Promise<Response> | Response;
+  };
+};
 
 export default {
-  async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
+  async fetch(
+    request: Request,
+    env?: WorkerAssetEnv,
+    ctx?: ExecutionContextLike,
+  ): Promise<Response> {
     const url = new URL(request.url);
 
-    // Normalize backslashes (browsers treat /\ as //) before any other checks.
-    const rawPathname = url.pathname.replaceAll("\\", "/");
-
-    // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
-    // Check rawPathname BEFORE decode so the guard fires before normalization.
-    if (rawPathname.startsWith("//")) {
+    // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
+    // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
+    // percent-encoded variants are caught — encoded forms survive segment-wise
+    // decoding and would otherwise reach trailing-slash redirect emitters.
+    if (isOpenRedirectShaped(url.pathname)) {
       return new Response("404 Not Found", { status: 404 });
     }
 
@@ -33,7 +44,7 @@ export default {
     // the actual decode + normalize; we only check here to return a clean 400
     // instead of letting a malformed sequence crash downstream.
     try {
-      decodeURIComponent(rawPathname);
+      decodeURIComponent(url.pathname);
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
       return new Response("Bad Request", { status: 400 });
@@ -52,6 +63,13 @@ export default {
     const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     if (result instanceof Response) {
+      if (env?.ASSETS) {
+        const assetResponse = await resolveStaticAssetSignal(result, {
+          fetchAsset: (path) =>
+            Promise.resolve(env.ASSETS!.fetch(new Request(new URL(path, request.url)))),
+        });
+        if (assetResponse) return assetResponse;
+      }
       return result;
     }
 

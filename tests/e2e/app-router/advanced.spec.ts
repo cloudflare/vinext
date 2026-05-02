@@ -2,6 +2,12 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
+async function waitForAppRouterHydration(page: import("@playwright/test").Page) {
+  await page.waitForFunction(() => typeof window.__VINEXT_RSC_NAVIGATE__ === "function", null, {
+    timeout: 10_000,
+  });
+}
+
 test.describe("Parallel Routes", () => {
   test("dashboard renders all parallel slot content", async ({ page }) => {
     await page.goto(`${BASE}/dashboard`);
@@ -55,30 +61,243 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
   });
 
-  // TODO: This test is temporarily skipped due to a timing issue with embedded
-  // RSC hydration. The intercepting route feature still works - this is a test
-  // infrastructure issue that needs investigation. See issue #61 comments.
-  test.skip("RSC client navigation intercepts to show modal", async ({ page }) => {
-    // Start on the feed page
+  test("direct payload cache does not override intercepted navigation", async ({ page }) => {
+    await page.goto(`${BASE}/photos/42`);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+
     await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
 
-    // Wait for hydration
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function",
-      null,
-      { timeout: 10000 },
+    await page.click("#feed-photo-42-link");
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("intercepted payload cache is reused for repeated source-page navigations", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+
+    await page.goto(`${BASE}/about`);
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("chained intercepted navigations keep the original source context", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 42");
+
+    await page.click("#modal-photo-43-link");
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 43");
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("refresh on direct photo load preserves the full-page render", async ({ page }) => {
+    await page.goto(`${BASE}/photos/42`);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
+  test("hard reload after intercepted navigation renders the full page", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).not.toBeVisible();
+  });
+
+  test("router.refresh preserves intercepted modal view", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+
+    await page.click('[data-testid="photo-modal-refresh"]');
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("server action from intercepted modal preserves modal tree", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    const likesLocator = page.locator('[data-testid="photo-likes"]');
+    const baselineText = (await likesLocator.textContent()) ?? "";
+    const baseline = Number.parseInt(baselineText, 10);
+    expect(Number.isFinite(baseline)).toBe(true);
+
+    await page.click('[data-testid="photo-like-btn"]');
+
+    // Wait for the count to change before asserting — avoids a timing race
+    // between action fetch and client state update.
+    await expect.poll(async () => (await likesLocator.textContent()) ?? "").not.toBe(baselineText);
+
+    const afterText = (await likesLocator.textContent()) ?? "";
+    const after = Number.parseInt(afterText, 10);
+    expect(after).toBe(baseline + 1);
+
+    // Critical parity assertion: the server-action rerender must keep the
+    // intercepted tree mounted — modal visible, source feed layout intact,
+    // direct /photos/[id] page NOT rendered, URL unchanged.
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/photos/42");
+
+    // Sanity: a hard refresh still routes to the direct page, mirroring the
+    // final assertion in the Next.js reference test.
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
+  test("sibling (..) intercepted navigation mounts the modal slot", async ({ page }) => {
+    // Ported from the sibling-interception behavior covered by Next.js:
+    // test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    await page.goto(`${BASE}/sibling-source`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#sibling-target-42-link");
+
+    await page.waitForURL(`${BASE}/sibling-target/42`);
+    await expect(page.locator('[data-testid="sibling-source-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sibling-target-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sibling-target-modal-id"]')).toContainText(
+      "target-id:42",
     );
+    await expect(page.locator('[data-testid="sibling-target-page"]')).not.toBeVisible();
+  });
 
-    // Click a photo link — this should be intercepted and show a modal
-    await page.click('a[href="/photos/1"]');
+  test("top-level sibling (..) film navigation mounts the modal slot", async ({ page }) => {
+    await page.goto(`${BASE}/top`);
+    await waitForAppRouterHydration(page);
 
-    // Wait for RSC navigation to complete
-    await page.waitForTimeout(1000);
+    await page.click("#godfather-film-link");
 
-    // The modal version of the photo should appear
-    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible({
-      timeout: 5000,
-    });
+    await page.waitForURL(`${BASE}/film/tt0068646-the-godfather-1972`);
+    await expect(page.locator('[data-testid="top-page"]')).toBeVisible();
+    await expect(page.locator("h1")).toContainText("Top 1000");
+    await expect(page.locator('[data-testid="film-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="film-panel-id"]')).toContainText(
+      "tt0068646-the-godfather-1972",
+    );
+    await expect(page.locator('[data-testid="detail-page"]')).not.toBeVisible();
+  });
+
+  test("sibling (..) modal preserves source content in a parallel feed slot", async ({ page }) => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/app/(group)/intercepting-parallel-modal
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/parallel-routes-and-interception/app/(group)/intercepting-parallel-modal
+    await page.goto(`${BASE}/parallel-sibling-modal/vercel`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#parallel-photo-42-link");
+
+    await page.waitForURL(`${BASE}/parallel-sibling-modal/photo/42`);
+    await expect(page.locator('[data-testid="parallel-feed-page"]')).toContainText(
+      "Feed for vercel",
+    );
+    await expect(page.locator('[data-testid="parallel-photo-modal"]')).toHaveText("Photo MODAL 42");
+    await expect(page.locator('[data-testid="parallel-photo-page"]')).not.toBeVisible();
+  });
+
+  test("direct navigation to slot-only parallel source route renders feed slot", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/parallel-sibling-modal/vercel`);
+
+    await expect(page.locator('[data-testid="parallel-sibling-layout"]')).toBeVisible();
+    await expect(page.locator('[data-testid="parallel-feed-page"]')).toContainText(
+      "Feed for vercel",
+    );
+    await expect(page.locator('[data-testid="parallel-modal-default"]')).toBeVisible();
+    await expect(page.locator('[data-testid="parallel-photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="parallel-photo-page"]')).not.toBeVisible();
+  });
+
+  test("back then forward restores intercepted modal view", async ({ page }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.goBack();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+
+    await page.goForward();
+    await expect(page.locator('[data-testid="photo-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+  });
+
+  test("prefetches keep separate cache entries for feed and gallery interception contexts", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          Array.from(window.__VINEXT_RSC_PREFETCH_CACHE__?.keys() ?? []).filter((key) =>
+            key.includes("/photos/42.rsc"),
+          ),
+        ),
+      )
+      .toEqual(["/photos/42.rsc\u0000/feed"]);
+
+    await page.click("#gallery-link");
+    await page.waitForURL(`${BASE}/gallery`);
+    await waitForAppRouterHydration(page);
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          Array.from(window.__VINEXT_RSC_PREFETCH_CACHE__?.keys() ?? [])
+            .filter((key) => key.includes("/photos/42.rsc"))
+            .sort(),
+        ),
+      )
+      .toEqual(["/photos/42.rsc\u0000/feed", "/photos/42.rsc\u0000/gallery"]);
   });
 });
 
