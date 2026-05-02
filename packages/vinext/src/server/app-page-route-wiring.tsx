@@ -40,7 +40,7 @@ export type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
 };
 
-type AppPageErrorModule = Record<string, unknown> & {
+export type AppPageErrorModule = Record<string, unknown> & {
   default?: AppPageErrorComponent | null | undefined;
 };
 
@@ -59,7 +59,7 @@ type AppPageRouteWiringSlot<
   routeSegments?: readonly string[] | null;
 };
 
-type AppPageRouteWiringRoute<
+export type AppPageRouteWiringRoute<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {

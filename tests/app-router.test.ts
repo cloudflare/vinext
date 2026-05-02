@@ -4734,12 +4734,10 @@ describe("generateRscEntry ISR code generation", () => {
 
     expect(code).toContain("interceptLayouts: [mod_");
     expect(code).toContain("interceptLayouts: intercept.interceptLayouts");
-    expect(code).toContain("layoutModules: opts.interceptLayouts || null");
-    expect(code).toContain(
-      "resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs",
-    );
-    expect(code).toContain("parallelRoutes: __resolveActiveParallelRouteHeadInputs({");
-    expect(code).toContain("interceptPage: opts?.interceptPage ?? null");
+    // Slot override construction and head resolution are now in the extracted
+    // app-page-element-builder helper module, not inlined in the generated entry.
+    expect(code).toContain("pageRequest,");
+    expect(code).toContain("__buildPageElements({");
   });
 
   it("generated code seeds root params around prerender generateStaticParams", () => {

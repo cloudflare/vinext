@@ -78,6 +78,10 @@ const metadataRouteResponsePath = resolveEntryPath(
   "../server/metadata-route-response.js",
   import.meta.url,
 );
+const appPageElementBuilderPath = resolveEntryPath(
+  "../server/app-page-element-builder.js",
+  import.meta.url,
+);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 
 /**
@@ -184,7 +188,7 @@ function renderToReadableStream(model, options) {
 }
 import { createElement } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
@@ -221,17 +225,14 @@ import {
   createAppPayloadRouteId as __createAppPayloadRouteId,
 } from ${JSON.stringify(appElementsPath)};
 import {
-  buildAppPageElements as __buildAppPageElements,
-  createAppPageTreePath as __createAppPageTreePath,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
+import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
 import {
   resolveAppPageSegmentParams as __resolveAppPageSegmentParams,
 } from ${JSON.stringify(appPageParamsPath)};
 import {
   collectAppPageSearchParams as __collectAppPageSearchParams,
-  resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs,
-  resolveAppPageHead as __resolveAppPageHead,
 } from ${JSON.stringify(appPageHeadPath)};
 import {
   mergeMiddlewareResponseHeaders as __mergeMiddlewareResponseHeaders,
@@ -520,110 +521,16 @@ function findIntercept(pathname, sourcePathname = null) {
 }
 
 async function buildPageElements(route, params, routePath, pageRequest) {
-  const {
-    opts,
-    searchParams,
-    isRscRequest,
-    request,
-    mountedSlotsHeader,
-  } = pageRequest;
-  const hasPageModule = !!route.page;
-  const PageComponent = route.page?.default;
-  if (hasPageModule && !PageComponent) {
-    const _interceptionContext = opts?.interceptionContext ?? null;
-    const _noExportRouteId = __createAppPayloadRouteId(routePath, _interceptionContext);
-    let _noExportRootLayout = null;
-    if (route.layouts?.length > 0) {
-      // Compute the root layout tree path for this error payload using the
-      // canonical helper so it stays aligned with buildAppPageElements().
-      const _tp = route.layoutTreePositions?.[0] ?? 0;
-      _noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);
-    }
-    return {
-      [__APP_INTERCEPTION_CONTEXT_KEY]: _interceptionContext,
-      __route: _noExportRouteId,
-      __rootLayout: _noExportRootLayout,
-      [_noExportRouteId]: createElement("div", null, "Page has no default export"),
-    };
-  }
-
-  const {
-    hasSearchParams,
-    metadata: resolvedMetadata,
-    pageSearchParams,
-    viewport: resolvedViewport,
-  } = await __resolveAppPageHead({
-    layoutModules: route.layouts,
-    layoutTreePositions: route.layoutTreePositions,
-    metadataRoutes,
-    pageModule: route.page,
-    parallelRoutes: __resolveActiveParallelRouteHeadInputs({
-      interceptLayouts: opts?.interceptLayouts ?? null,
-      interceptPage: opts?.interceptPage ?? null,
-      interceptParams: opts?.interceptParams ?? null,
-      interceptSlotKey: opts?.interceptSlotKey ?? null,
-      params,
-      routeSegments: route.routeSegments,
-      slots: route.slots,
-    }),
+  return __buildPageElements({
+    route,
     params,
-    routePath: route.pattern,
-    routeSegments: route.routeSegments,
-    searchParams,
-  });
-
-  // Build the route tree from the leaf page, then delegate the boundary/layout/
-  // template/segment wiring to a typed runtime helper so the generated entry
-  // stays thin and the wiring logic can be unit tested directly.
-  const pageProps = { params: makeThenableParams(params) };
-  if (searchParams) {
-    // Always provide searchParams prop when the URL object is available, even
-    // when the query string is empty -- pages that do "await searchParams" need
-    // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(pageSearchParams);
-    // If the URL has query parameters, mark the page as dynamic.
-    // In Next.js, only accessing the searchParams prop signals dynamic usage,
-    // but a Proxy-based approach doesn't work here because React's RSC debug
-    // serializer accesses properties on all props (e.g. $$typeof check in
-    // isClientReference), triggering the Proxy even when user code doesn't
-    // read searchParams. Checking for non-empty query params is a safe
-    // approximation: pages with query params in the URL are almost always
-    // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
-  }
-  // mountedSlotsHeader is threaded through from the handler scope so every
-  // call site shares one source of truth for request-derived values. Reading
-  // the same header in two places invites silent drift when a future refactor
-  // changes only one of them.
-  const mountedSlotIds = mountedSlotsHeader
-    ? new Set(mountedSlotsHeader.split(" "))
-    : null;
-
-  return __buildAppPageElements({
-    element: PageComponent ? createElement(PageComponent, pageProps) : null,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    mountedSlotIds,
-    makeThenableParams,
-    matchedParams: params,
-    resolvedMetadata,
-    resolvedViewport,
-    interceptionContext: opts?.interceptionContext ?? null,
     routePath,
+    pageRequest,
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
     rootForbiddenModule: ${rootForbiddenVar ? rootForbiddenVar : "null"},
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
-    route,
-    slotOverrides:
-      opts && opts.interceptSlotKey && opts.interceptPage
-        ? {
-            [opts.interceptSlotKey]: {
-              layoutModules: opts.interceptLayouts || null,
-              pageModule: opts.interceptPage,
-              params: opts.interceptParams || params,
-            },
-          }
-        : null,
+    metadataRoutes,
   });
 }
 

@@ -551,13 +551,17 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("return __renderAppPageLifecycle({");
   });
 
-  it("generateRscEntry reuses the canonical tree-path helper for no-export page payloads", () => {
+  it("generateRscEntry delegates buildPageElements to the extracted helper module", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("createAppPageTreePath as __createAppPageTreePath");
-    expect(code).toContain(
-      "_noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);",
-    );
+    // The generated entry imports the helper and delegates the full options.
+    expect(code).toContain("buildPageElements as __buildPageElements");
+    expect(code).toContain("return __buildPageElements({");
+    expect(code).toContain("globalErrorModule:");
+    // The old inline logic (createAppPageTreePath, resolveAppPageHead) is now in the helper.
+    expect(code).not.toContain("__createAppPageTreePath(route.routeSegments");
+    expect(code).not.toContain("__resolveAppPageHead({");
+    expect(code).not.toContain("__resolveActiveParallelRouteHeadInputs({");
   });
 
   it("generateRscEntry delegates React Flight preload hint normalization", () => {
