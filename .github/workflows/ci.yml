@@ -47,7 +47,9 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
         run: vp run build
-      - run: vp test run --project integration --coverage --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      # Coverage is gated to push-to-main runs to keep PR feedback fast.
+      # Istanbul instrumentation adds ~10–25% to each shard's wall-clock.
+      - run: vp test run --project integration ${{ github.event_name == 'push' && '--coverage' || '' }} --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
         env:
           CI: true
       - uses: actions/upload-artifact@v7
@@ -73,7 +75,8 @@ jobs:
           merge-multiple: true
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
-      - run: vp test run --merge-reports --coverage
+      # Only enabled on push-to-main, matching the shard config above.
+      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
@@ -163,7 +166,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - run: vp exec playwright install chromium
 
