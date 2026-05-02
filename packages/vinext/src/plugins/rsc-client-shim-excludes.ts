@@ -8,6 +8,7 @@ const RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   "vinext/shims/link",
   "vinext/shims/script",
   "vinext/shims/slot",
+  "vinext/shims/offline",
 ]);
 
 export const VINEXT_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
