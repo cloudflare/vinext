@@ -10118,9 +10118,8 @@ describe("next/image component rendering", () => {
 
   // ── SSR-only smoke tests: verify SSR output does not crash when onLoad / onError /
   // ref are provided. The hydration replay logic (useLayoutEffect, img.src = img.src,
-  // mergedRef DOM node capture) requires a client-side mount and is tested via the
-  // onLoad/onError handler attachment tests in image-component.test.ts and by the
-  // Playwright E2E test suite.
+  // mergedRef DOM node capture) requires a client-side mount; the handler wiring is
+  // tested in the Playwright E2E test suite.
 
   it("renders with onError callback attached (SSR smoke test)", async () => {
     const React = await import("react");

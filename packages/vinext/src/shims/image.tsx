@@ -105,6 +105,10 @@ const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : us
 /**
  * Create a synthetic React load event for replaying onLoad/onLoadingComplete
  * during hydration when the image already completed loading.
+ *
+ * This function creates a native Event("load") via the DOM Event constructor
+ * and must only be called in a browser context (client-side layout effect).
+ * It mirrors the pattern used in Next.js `handleLoading`.
  */
 function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<HTMLImageElement> {
   const nativeEvent = new Event("load");
@@ -344,8 +348,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       // Replay onLoad for images that completed loading before React hydrated
       // (e.g. SSR streaming where the image arrives and renders before hydration
       // finishes). Without this, onLoad never fires for those images.
+      //
+      // img.complete is true for both successfully-loaded and errored images
+      // (the HTML spec defines complete as true when the browser finished
+      // fetching, regardless of outcome). We must check naturalWidth > 0 to
+      // distinguish success from error — a failed image has naturalWidth === 0.
       // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
-      if (img.complete) {
+      if (img.complete && img.naturalWidth > 0) {
         const currentOnLoad = onLoadRef.current;
         const currentOnLoadingComplete = onLoadingCompleteRef.current;
         if (currentOnLoad || currentOnLoadingComplete) {
@@ -362,7 +371,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
       didInsertRef.current = true;
     }
-  }, [src, placeholder, sizes, _unoptimized]);
+  }, [placeholder, sizes, _unoptimized]);
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
