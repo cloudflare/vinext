@@ -251,17 +251,39 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
   const didInsertRef = useRef(false);
   const imgElementRef = useRef<HTMLImageElement | null>(null);
-  const mergedRef = useCallback(
-    (node: HTMLImageElement | null) => {
-      imgElementRef.current = node;
-      if (typeof ref === "function") {
-        ref(node);
-      } else if (ref) {
-        (ref as React.MutableRefObject<HTMLImageElement | null>).current = node;
-      }
-    },
-    [ref],
-  );
+
+  // Store forwarded ref in a stable ref to avoid callback identity changes
+  // when parent passes an inline ref callback. Next.js uses useMergedRef
+  // internally; here we inline the same pattern with a useRef to decouple
+  // the callback identity from the ref prop.
+  const forwardedRef = useRef(ref);
+  forwardedRef.current = ref;
+
+  const mergedRef = useCallback((node: HTMLImageElement | null) => {
+    imgElementRef.current = node;
+    const currentRef = forwardedRef.current;
+    if (typeof currentRef === "function") {
+      currentRef(node);
+    } else if (currentRef) {
+      (currentRef as React.RefObject<HTMLImageElement | null>).current = node;
+    }
+  }, []);
+
+  // Stable refs for onLoad / onError / onLoadingComplete so the layout effect
+  // does not re-run (and re-assign img.src) when handler identity changes.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const onLoadRef = useRef(onLoad);
+  useEffect(() => {
+    onLoadRef.current = onLoad;
+  }, [onLoad]);
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+  const onLoadingCompleteRef = useRef(onLoadingComplete);
+  useEffect(() => {
+    onLoadingCompleteRef.current = onLoadingComplete;
+  }, [onLoadingComplete]);
 
   const {
     src,
@@ -272,13 +294,63 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   useNonWarningLayoutEffect(() => {
     if (!didInsertRef.current && imgElementRef.current !== null) {
-      if (onError) {
+      const img = imgElementRef.current;
+      // Replay error events lost during SSR/hydration.
+      if (onErrorRef.current) {
         // eslint-disable-next-line no-self-assign
-        imgElementRef.current.src = imgElementRef.current.src;
+        img.src = img.src;
+      }
+      // Replay onLoad for images that completed loading before React hydrated
+      // (e.g. SSR streaming where the image arrives and renders before hydration
+      // finishes). Without this, onLoad never fires for those images.
+      // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+      if (img.complete) {
+        const currentOnLoad = onLoadRef.current;
+        const currentOnLoadingComplete = onLoadingCompleteRef.current;
+        if (currentOnLoad || currentOnLoadingComplete) {
+          // Dedup — fire at most once per src per mount, matching onLoad dedup
+          if (lastLoadedSrcRef.current !== src) {
+            lastLoadedSrcRef.current = src;
+            // Create a synthetic React event with the expected shape.
+            // next/image uses a similar pattern in `handleLoading`.
+            const nativeEvent = new Event("load");
+            Object.defineProperty(nativeEvent, "target", { writable: false, value: img });
+            let prevented = false;
+            let stopped = false;
+            // next/image uses a similar pattern in `handleLoading`.
+            // We avoid spreading nativeEvent (no-misused-spread) by
+            // explicitly listing the Event prototype properties we need.
+            const syntheticEvent: React.SyntheticEvent<HTMLImageElement> = {
+              bubbles: nativeEvent.bubbles,
+              cancelable: nativeEvent.cancelable,
+              currentTarget: img,
+              defaultPrevented: false,
+              eventPhase: nativeEvent.eventPhase,
+              isTrusted: false,
+              nativeEvent,
+              target: img,
+              timeStamp: nativeEvent.timeStamp,
+              type: "load",
+              isDefaultPrevented: () => prevented,
+              isPropagationStopped: () => stopped,
+              persist: () => {},
+              preventDefault: () => {
+                prevented = true;
+                nativeEvent.preventDefault();
+              },
+              stopPropagation: () => {
+                stopped = true;
+                nativeEvent.stopPropagation();
+              },
+            };
+            currentOnLoad?.(syntheticEvent);
+            currentOnLoadingComplete?.(img);
+          }
+        }
       }
       didInsertRef.current = true;
     }
-  }, [src, placeholder, onLoad, onError, sizes, _unoptimized, loading]);
+  }, [src, placeholder, onLoadRef, onErrorRef, sizes, _unoptimized]);
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.

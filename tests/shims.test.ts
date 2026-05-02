@@ -10116,7 +10116,13 @@ describe("next/image component rendering", () => {
     expect(html).toContain('decoding="async"');
   });
 
-  it("renders with onError callback attached", async () => {
+  // ── SSR-only smoke tests: verify SSR output does not crash when onLoad / onError /
+  // ref are provided. The hydration replay logic (useLayoutEffect, img.src = img.src,
+  // mergedRef DOM node capture) requires a client-side mount and is tested via the
+  // onLoad/onError handler attachment tests in image-component.test.ts and by the
+  // Playwright E2E test suite.
+
+  it("renders with onError callback attached (SSR smoke test)", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Image = (await import("../packages/vinext/src/shims/image.js")).default;
@@ -10135,7 +10141,7 @@ describe("next/image component rendering", () => {
     expect(html).toContain("/_vinext/image");
   });
 
-  it("renders with both onLoad and onError callbacks", async () => {
+  it("renders with both onLoad and onError callbacks (SSR smoke test)", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Image = (await import("../packages/vinext/src/shims/image.js")).default;
@@ -10154,7 +10160,7 @@ describe("next/image component rendering", () => {
     expect(html).toContain("/_vinext/image");
   });
 
-  it("forwards ref to img element via mergedRef", async () => {
+  it("forwards ref to img element via mergedRef (SSR smoke test)", async () => {
     const React = await import("react");
     const { renderToString } = await import("react-dom/server");
 
@@ -10176,7 +10182,7 @@ describe("next/image component rendering", () => {
     expect(ref.current).toBeNull();
   });
 
-  it("renders with onError in loader path", async () => {
+  it("renders with onError in loader path (SSR smoke test)", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Image = (await import("../packages/vinext/src/shims/image.js")).default;
