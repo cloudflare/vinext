@@ -112,6 +112,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     "vinext/shims/link",
     "vinext/shims/script",
     "vinext/shims/slot",
+    "vinext/shims/offline",
   ];
 
   it("excludes vinext at top level for Pages Router builds", async () => {
