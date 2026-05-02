@@ -6,7 +6,7 @@ declare module "next/head" {
 }
 declare module "next/link" {
   import type { AnchorHTMLAttributes } from "react";
-  export interface LinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
+  export type LinkProps = {
     href: string;
     as?: string;
     replace?: boolean;
@@ -16,7 +16,7 @@ declare module "next/link" {
     prefetch?: boolean;
     locale?: string | false;
     legacyBehavior?: boolean;
-  }
+  } & AnchorHTMLAttributes<HTMLAnchorElement>;
   export default function Link(props: LinkProps): React.ReactElement;
 }
 declare module "next/router" {

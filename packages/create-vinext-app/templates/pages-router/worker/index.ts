@@ -24,7 +24,12 @@ import {
 import { mergeHeaders } from "vinext/server/worker-utils";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
+import {
+  renderPage,
+  handleApiRoute,
+  runMiddleware,
+  vinextConfig,
+} from "virtual:vinext-server-entry";
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
@@ -173,9 +178,10 @@ export default {
       if (configRedirects.length) {
         const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
         if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
+          const dest =
+            basePath && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination;
           return new Response(null, {
             status: redirect.permanent ? 308 : 307,
             headers: { Location: dest },
@@ -197,9 +203,10 @@ export default {
 
       // API routes
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
-        const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl)
-          : new Response("404 - API route not found", { status: 404 });
+        const response =
+          typeof handleApiRoute === "function"
+            ? await handleApiRoute(request, resolvedUrl)
+            : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
 

@@ -149,7 +149,7 @@ jobs:
         template: [app, pages]
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: ./.github/actions/setup
       - name: Build packages
         run: pnpm run build
 
