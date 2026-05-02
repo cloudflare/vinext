@@ -710,4 +710,46 @@ describe("app page cache helpers", () => {
       ["RSC cache write skipped (dynamic usage during render)", "rsc:/dynamic-rsc"],
     ]);
   });
+
+  it("skips cache writes when request cacheLife resolves to a non-finite revalidate", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const debugCalls: Array<[string, string]> = [];
+    const isrSet = vi.fn();
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/invalid-cache-life",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/invalid-cache-life"];
+      },
+      getRequestCacheLife() {
+        return { revalidate: Number.NaN };
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      revalidateSeconds: null,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(true);
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(debugCalls).toEqual([
+      ["RSC cache write skipped (no cache policy)", "rsc:/invalid-cache-life"],
+    ]);
+  });
 });

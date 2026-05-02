@@ -66,6 +66,8 @@ export async function isrSet(
       expireSeconds === undefined
         ? { revalidate: revalidateSeconds }
         : { revalidate: revalidateSeconds, expire: expireSeconds },
+    // `revalidate` is the legacy vinext CacheHandler context field. `expire`
+    // is new metadata and intentionally only lives inside cacheControl.
     revalidate: revalidateSeconds,
     tags: tags ?? [],
   });

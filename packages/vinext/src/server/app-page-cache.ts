@@ -136,7 +136,7 @@ function resolveAppPageCacheWritePolicy(options: {
     expireSeconds = requestCacheLife.expire;
   }
 
-  if (revalidateSeconds === null || revalidateSeconds <= 0 || revalidateSeconds === Infinity) {
+  if (revalidateSeconds === null || revalidateSeconds <= 0 || !Number.isFinite(revalidateSeconds)) {
     return null;
   }
 

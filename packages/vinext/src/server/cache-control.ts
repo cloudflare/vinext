@@ -18,14 +18,19 @@ export function buildRevalidateCacheControl(
   revalidateSeconds: number,
   expireSeconds?: number,
 ): string {
-  const staleWhileRevalidate =
-    expireSeconds === undefined
-      ? ", stale-while-revalidate"
-      : revalidateSeconds < expireSeconds
-        ? `, stale-while-revalidate=${expireSeconds - revalidateSeconds}`
-        : "";
+  if (expireSeconds === undefined) {
+    return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
+  }
 
-  return `s-maxage=${revalidateSeconds}${staleWhileRevalidate}`;
+  // `expire <= revalidate` is a zero-width stale window: downstream caches
+  // should refetch after s-maxage instead of serving stale.
+  if (revalidateSeconds >= expireSeconds) {
+    return `s-maxage=${revalidateSeconds}`;
+  }
+
+  return `s-maxage=${revalidateSeconds}, stale-while-revalidate=${
+    expireSeconds - revalidateSeconds
+  }`;
 }
 
 /**

@@ -129,6 +129,9 @@ function buildResponseTiming(
 function readRequestCacheLifeForPrerender(
   options: Pick<RenderAppPageLifecycleOptions, "getRequestCacheLife" | "peekRequestCacheLife">,
 ): AppPageRequestCacheLife | null {
+  // Prefer the non-destructive reader so prerender.ts can consume metadata
+  // after the handler returns. The consume fallback supports older entry glue
+  // and is only safe because this path reads at most once per prerender.
   return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
 }
 
