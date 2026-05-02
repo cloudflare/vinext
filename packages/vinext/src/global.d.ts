@@ -18,7 +18,7 @@
 
 import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
-import type { CachedRscResponse, PrefetchCacheEntry } from "./shims/navigation";
+import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
 
 // ---------------------------------------------------------------------------
 // Window globals — browser-side state shared across module boundaries
