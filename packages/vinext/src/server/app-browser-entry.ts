@@ -1508,6 +1508,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           renderId: ++nextNavigationRenderId,
           type: "replace",
         });
+        // createPendingNavigationCommit awaits the new RSC payload. While
+        // suspended, the prior broken render can unmount BrowserRoot, which
+        // clears setBrowserRouterState. Re-check before dispatching so a
+        // racing unmount doesn't surface as "setter is not initialized".
+        if (!setBrowserRouterState) {
+          return;
+        }
         dispatchBrowserTree(
           pending.action.elements,
           navigationSnapshot,
