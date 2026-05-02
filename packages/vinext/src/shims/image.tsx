@@ -102,6 +102,40 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
  */
 const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+/**
+ * Create a synthetic React load event for replaying onLoad/onLoadingComplete
+ * during hydration when the image already completed loading.
+ */
+function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<HTMLImageElement> {
+  const nativeEvent = new Event("load");
+  Object.defineProperty(nativeEvent, "target", { writable: false, value: img });
+  let prevented = false;
+  let stopped = false;
+  return {
+    bubbles: nativeEvent.bubbles,
+    cancelable: nativeEvent.cancelable,
+    currentTarget: img,
+    defaultPrevented: false,
+    eventPhase: nativeEvent.eventPhase,
+    isTrusted: false,
+    nativeEvent,
+    target: img,
+    timeStamp: nativeEvent.timeStamp,
+    type: "load",
+    isDefaultPrevented: () => prevented,
+    isPropagationStopped: () => stopped,
+    persist: () => {},
+    preventDefault: () => {
+      prevented = true;
+      nativeEvent.preventDefault();
+    },
+    stopPropagation: () => {
+      stopped = true;
+      nativeEvent.stopPropagation();
+    },
+  };
+}
+
 type ImageProps = {
   src: string | StaticImageData;
   alt: string;
@@ -272,6 +306,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Stable refs for onLoad / onError / onLoadingComplete so the layout effect
   // does not re-run (and re-assign img.src) when handler identity changes.
   // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  //
+  // IMPORTANT: The useRef+useEffect sync pattern has a subtle timing gap:
+  // during the first render, onLoadRef.current holds the initial value from
+  // useRef(onLoad), and the useEffect to sync it runs AFTER the layout effect.
+  // This means on first mount the layout effect reads the correct initial
+  // value (passed to useRef). If someone changes useRef(onLoad) to
+  // useRef(undefined), the layout effect would read undefined on first mount.
   const onLoadRef = useRef(onLoad);
   useEffect(() => {
     onLoadRef.current = onLoad;
@@ -313,36 +354,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
             lastLoadedSrcRef.current = src;
             // Create a synthetic React event with the expected shape.
             // next/image uses a similar pattern in `handleLoading`.
-            const nativeEvent = new Event("load");
-            Object.defineProperty(nativeEvent, "target", { writable: false, value: img });
-            let prevented = false;
-            let stopped = false;
-            // next/image uses a similar pattern in `handleLoading`.
-            // We avoid spreading nativeEvent (no-misused-spread) by
-            // explicitly listing the Event prototype properties we need.
-            const syntheticEvent: React.SyntheticEvent<HTMLImageElement> = {
-              bubbles: nativeEvent.bubbles,
-              cancelable: nativeEvent.cancelable,
-              currentTarget: img,
-              defaultPrevented: false,
-              eventPhase: nativeEvent.eventPhase,
-              isTrusted: false,
-              nativeEvent,
-              target: img,
-              timeStamp: nativeEvent.timeStamp,
-              type: "load",
-              isDefaultPrevented: () => prevented,
-              isPropagationStopped: () => stopped,
-              persist: () => {},
-              preventDefault: () => {
-                prevented = true;
-                nativeEvent.preventDefault();
-              },
-              stopPropagation: () => {
-                stopped = true;
-                nativeEvent.stopPropagation();
-              },
-            };
+            const syntheticEvent = createSyntheticLoadEvent(img);
             currentOnLoad?.(syntheticEvent);
             currentOnLoadingComplete?.(img);
           }
@@ -350,7 +362,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
       didInsertRef.current = true;
     }
-  }, [src, placeholder, onLoadRef, onErrorRef, sizes, _unoptimized]);
+  }, [src, placeholder, sizes, _unoptimized]);
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
