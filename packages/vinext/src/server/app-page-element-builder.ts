@@ -1,6 +1,6 @@
 import { createElement } from "react";
-import { markDynamicUsage } from "../shims/headers.js";
-import { makeThenableParams } from "../shims/thenable-params.js";
+import { markDynamicUsage } from "vinext/shims/headers";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
 import {
   buildAppPageElements,
