@@ -4669,7 +4669,9 @@ describe("generateRscEntry ISR code generation", () => {
       "buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams)",
     );
     expect(code).toContain("renderErrorBoundaryPage(renderErr) {");
+    expect(code).toContain("__fallbackRenderer.renderErrorBoundary(route, renderErr");
     expect(code).toContain("renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {");
+    expect(code).toContain("__fallbackRenderer.renderHttpAccessFallback(route, statusCode");
     expect(code).toContain("getFontLinks: _getSSRFontLinks");
     expect(code).toContain("getFontPreloads: _getSSRFontPreloads");
     expect(code).toContain("getFontStyles: _getSSRFontStyles");
@@ -4776,26 +4778,36 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
   });
 
-  it("generated code delegates page boundary rendering to typed helpers", () => {
+  it("generated code constructs a single fallback renderer factory", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("renderAppPageErrorBoundary as __renderAppPageErrorBoundary");
-    expect(code).toContain("renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback");
-    expect(code).toContain(
-      "const _scriptNonce = __getScriptNonceFromHeaderSources(request.headers, _mwCtx.headers);",
-    );
-    expect(code).toContain("return __renderAppPageHttpAccessFallback({");
-    expect(code).toContain("return __renderAppPageErrorBoundary({");
+    expect(code).toContain("createAppFallbackRenderer as __createAppFallbackRenderer");
+    expect(code).toContain("const __fallbackRenderer = __createAppFallbackRenderer({");
+    expect(code).toContain("rootBoundaries: {");
+    expect(code).toContain("rootForbiddenModule,");
+    expect(code).toContain("rootLayouts,");
+    expect(code).toContain("rootNotFoundModule,");
+    expect(code).toContain("rootUnauthorizedModule,");
+    expect(code).toContain("fontProviders: {");
+    expect(code).toContain("buildFontLinkHeader: __buildAppPageFontLinkHeader");
+    expect(code).toContain("getFontLinks: _getSSRFontLinks");
+    expect(code).toContain("getFontPreloads: _getSSRFontPreloads");
+    expect(code).toContain("getFontStyles: _getSSRFontStyles");
+    expect(code).toContain("sanitizer: __sanitizeErrorForClient");
+    expect(code).toContain("rscRenderer: renderToReadableStream");
+    expect(code).not.toContain("return __renderAppPageHttpAccessFallback({");
+    expect(code).not.toContain("return __renderAppPageErrorBoundary({");
   });
 
   it("generated code threads middleware context into page dispatch and boundary rendering", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
 
-    expect(code).toContain("const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };");
-    expect(code).toContain("middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX");
+    // Empty-middleware fallback is now internal to the factory module.
+    expect(code).not.toContain("const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };");
+    expect(code).not.toContain("middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX");
     expect(code).toContain("middlewareContext: _mwCtx");
     expect(code).toContain("__mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers)");
-    expect(code).toContain("renderHTTPAccessFallbackPage(route, statusCode");
-    expect(code).toContain("return renderErrorBoundaryPage(route, renderErr");
+    expect(code).toContain("__fallbackRenderer.renderHttpAccessFallback(route, statusCode");
+    expect(code).toContain("__fallbackRenderer.renderErrorBoundary(route, renderErr");
     expect(code).not.toContain("renderSpecialError(__buildSpecialError)");
   });
 

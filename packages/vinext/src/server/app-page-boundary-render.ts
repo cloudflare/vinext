@@ -45,7 +45,7 @@ type AppPageBoundaryRscPayloadOptions<TModule extends AppPageModule = AppPageMod
   route?: AppPageBoundaryRoute<TModule> | null;
 };
 
-type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
+export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
   error?: TModule | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;

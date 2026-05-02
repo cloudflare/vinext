@@ -44,8 +44,8 @@ const appServerActionExecutionPath = resolveEntryPath(
 const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
 const implicitTagsPath = resolveEntryPath("../server/implicit-tags.js", import.meta.url);
 const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
-const appPageBoundaryRenderPath = resolveEntryPath(
-  "../server/app-page-boundary-render.js",
+const appFallbackRendererPath = resolveEntryPath(
+  "../server/app-fallback-renderer.js",
   import.meta.url,
 );
 const appElementsPath = resolveEntryPath("../server/app-elements.js", import.meta.url);
@@ -213,9 +213,8 @@ import {
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
 } from ${JSON.stringify(appPageExecutionPath)};
 import {
-  renderAppPageErrorBoundary as __renderAppPageErrorBoundary,
-  renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback,
-} from ${JSON.stringify(appPageBoundaryRenderPath)};
+  createAppFallbackRenderer as __createAppFallbackRenderer,
+} from ${JSON.stringify(appFallbackRendererPath)};
 import {
   APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
   createAppPayloadRouteId as __createAppPayloadRouteId,
@@ -416,96 +415,35 @@ const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
-const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };
 
-/**
- * Render an HTTP access fallback page (not-found/forbidden/unauthorized) with layouts and noindex meta.
- * Returns null if no matching component is available.
- *
- * @param opts.boundaryComponent - Override the boundary component (for layout-level notFound)
- * @param opts.layouts - Override the layouts to wrap with (for layout-level notFound, excludes the throwing layout)
- */
-async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts, scriptNonce, middlewareContext) {
-  return __renderAppPageHttpAccessFallback({
-    boundaryComponent: opts?.boundaryComponent ?? null,
+const __fallbackRenderer = __createAppFallbackRenderer({
+  rootBoundaries: {
+    rootForbiddenModule,
+    rootLayouts,
+    rootNotFoundModule,
+    rootUnauthorizedModule,
+  },
+  globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+  metadataRoutes,
+  ssrLoader() {
+    return import.meta.viteRsc.loadModule("ssr", "index");
+  },
+  fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createRscOnErrorHandler(request, pathname, routePath);
-    },
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    layoutModules: opts?.layouts ?? null,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: opts?.matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootForbiddenModule: rootForbiddenModule,
-    rootLayouts: rootLayouts,
-    rootNotFoundModule: rootNotFoundModule,
-    rootUnauthorizedModule: rootUnauthorizedModule,
-    route,
-    renderToReadableStream,
-    scriptNonce,
-    statusCode,
-  });
-}
-
-/** Convenience: render a not-found page (404) */
-async function renderNotFoundPage(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { matchedParams }, scriptNonce, middlewareContext);
-}
-
-/**
- * Render an error.tsx boundary page when a server component or generateMetadata() throws.
- * Returns null if no error boundary component is available for this route.
- *
- * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
- * by the boundary). This matches that behavior intentionally.
- */
-async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return __renderAppPageErrorBoundary({
-    buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createRscOnErrorHandler(request, pathname, routePath);
-    },
-    error,
-    getFontLinks: _getSSRFontLinks,
-    getFontPreloads: _getSSRFontPreloads,
-    getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootLayouts: rootLayouts,
-    route,
-    renderToReadableStream,
-    sanitizeErrorForClient: __sanitizeErrorForClient,
-    scriptNonce,
-  });
-}
+  },
+  makeThenableParams,
+  sanitizer: __sanitizeErrorForClient,
+  rscRenderer: renderToReadableStream,
+  getNavigationContext: _getNavigationContext,
+  resolveChildSegments: __resolveAppPageChildSegments,
+  clearRequestContext() {
+    __clearRequestContext();
+  },
+  createRscOnErrorHandler,
+});
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
@@ -1109,7 +1047,7 @@ ${prerenderPagesLoaderOption}
         : ""
     }
     // Render custom not-found page if available, otherwise plain 404
-    const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
+    const notFoundResponse = await __fallbackRenderer.renderNotFound(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
     if (notFoundResponse) return notFoundResponse;
     __clearRequestContext();
     const notFoundHeaders = new Headers();
@@ -1228,10 +1166,10 @@ ${prerenderPagesLoaderOption}
       return PageComponent({ params: _asyncRouteParams, searchParams: _asyncSearchParams });
     },
     renderErrorBoundaryPage(renderErr) {
-      return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params, _scriptNonce, _mwCtx);
+      return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, _scriptNonce, _mwCtx);
     },
     renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {
-      return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts, _scriptNonce, middlewareContext);
+      return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, _scriptNonce, middlewareContext);
     },
     renderToReadableStream,
     request,
