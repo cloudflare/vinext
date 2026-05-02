@@ -14,6 +14,7 @@ import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
+import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
@@ -1980,7 +1981,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configureServer(server: ViteDevServer) {
-        // Watch pages directory for file additions/removals to invalidate route cache.
+        // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
         // Build a long-lived ModuleRunner for loading all Pages Router modules
@@ -2037,6 +2038,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
+        function invalidateAppRoutingModules() {
+          invalidateAppRouteCache();
+          invalidateRscEntryModule();
+          invalidateRootParamsModule();
+        }
+
         // Node throws on unhandled 'error' events on sockets. When a browser
         // drops the connection mid-response (common in dev: HMR triggers a
         // reload while an RSC stream is still flushing), the next res.write
@@ -2053,20 +2060,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
           }
-          if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
-            invalidateAppRouteCache();
-            invalidateRscEntryModule();
-            invalidateRootParamsModule();
+          if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
+            invalidateAppRoutingModules();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
           }
-          if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
-            invalidateAppRouteCache();
-            invalidateRscEntryModule();
-            invalidateRootParamsModule();
+          if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
+            invalidateAppRoutingModules();
           }
         });
 
