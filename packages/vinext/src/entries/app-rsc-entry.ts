@@ -94,7 +94,7 @@ const instrumentationRuntimePath = resolveEntryPath(
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
-export type AppRouterConfig = {
+type AppRouterConfig = {
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
