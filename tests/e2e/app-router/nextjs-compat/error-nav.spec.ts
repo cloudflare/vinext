@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -18,6 +18,9 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
       timeout: 10_000,
     });
 
+    // The dev overlay opens on a caught error and would intercept the next
+    // click; hide it so we can interact with the error.tsx fallback below.
+    await disableDevErrorOverlay(page);
     await page.click("#link-to-result");
     await expect(page.locator("#result-page")).toHaveText("Result Page", {
       timeout: 10_000,
@@ -60,6 +63,7 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
       timeout: 10_000,
     });
 
+    await disableDevErrorOverlay(page);
     await page.click("#link-back-home");
     await expect(page.locator("#error-nav-home")).toHaveText("Error Nav Home", {
       timeout: 10_000,

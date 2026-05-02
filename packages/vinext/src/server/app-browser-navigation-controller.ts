@@ -73,6 +73,15 @@ type BrowserNavigationController = {
     nextElements: Promise<AppElements>,
     navigationSnapshot: ClientNavigationRenderSnapshot,
   ): Promise<void>;
+  /**
+   * Force-drain the queued pre-paint effect for the given renderId without
+   * waiting for NavigationCommitSignal to commit. Used by the dev recovery
+   * boundary in app-browser-entry.ts: when a render error replaces
+   * NavigationCommitSignal with the boundary's null fallback, its
+   * useLayoutEffect never fires, so the URL update for the in-flight
+   * navigation would otherwise be lost.
+   */
+  drainPrePaintEffects(renderId: number): void;
   NavigationCommitSignal(
     this: void,
     {
@@ -577,6 +586,7 @@ export function createAppBrowserNavigationController(
     renderNavigationPayload,
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
+    drainPrePaintEffects,
     NavigationCommitSignal,
   };
 }

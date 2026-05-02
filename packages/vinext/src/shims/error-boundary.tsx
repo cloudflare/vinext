@@ -292,3 +292,87 @@ export function UnauthorizedBoundary({ fallback, children }: UnauthorizedBoundar
     </UnauthorizedBoundaryInner>
   );
 }
+
+// ---------------------------------------------------------------------------
+// DevRecoveryBoundary — dev-only top-level boundary inside BrowserRoot.
+// Catches any render error that isn't already handled by a user-defined
+// error.tsx (or the access-fallback boundaries above), renders nothing, and
+// keeps BrowserRoot mounted so HMR can dispatch a new RSC payload without a
+// full page reload. Resets on resetKey change — the caller bumps that key
+// (e.g. via treeState.renderId) when a fresh tree is dispatched.
+//
+// Routing sentinels are re-thrown so notFound()/redirect()/forbidden()/
+// unauthorized() still reach their dedicated boundaries above.
+// ---------------------------------------------------------------------------
+
+export type DevRecoveryBoundaryProps = {
+  resetKey: number;
+  // Called from componentDidCatch with the current resetKey so the host can
+  // run any pending side effects that NavigationCommitSignal would normally
+  // drive on commit — most importantly the URL update for the in-flight
+  // soft-nav. Without this, a navigation that fails mid-render leaves the
+  // browser on the previous URL even though the boundary recovered.
+  //
+  // The error itself is intentionally not passed: React's onCaughtError option
+  // already routes the error to the dev overlay, so this callback is only for
+  // commit-side effects keyed by resetKey.
+  onCatch?: (resetKey: number) => void;
+  // Children come through React.Component's PropsWithChildren default; declared
+  // optional so callers can pass them positionally to createElement without
+  // tripping the eslint no-children-prop rule.
+  children?: React.ReactNode;
+};
+
+type DevRecoveryBoundaryState = {
+  error: CapturedError | null;
+  previousResetKey: number;
+};
+
+export class DevRecoveryBoundary extends React.Component<
+  DevRecoveryBoundaryProps,
+  DevRecoveryBoundaryState
+> {
+  constructor(props: DevRecoveryBoundaryProps) {
+    super(props);
+    this.state = { error: null, previousResetKey: props.resetKey };
+  }
+
+  static getDerivedStateFromProps(
+    props: DevRecoveryBoundaryProps,
+    state: DevRecoveryBoundaryState,
+  ): DevRecoveryBoundaryState | null {
+    if (props.resetKey === state.previousResetKey) {
+      return null;
+    }
+    return { error: null, previousResetKey: props.resetKey };
+  }
+
+  static getDerivedStateFromError(error: unknown): Partial<DevRecoveryBoundaryState> {
+    if (error && typeof error === "object" && "digest" in error) {
+      const digest = String(error.digest);
+      if (
+        digest === "NEXT_NOT_FOUND" ||
+        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
+        digest.startsWith("NEXT_REDIRECT;")
+      ) {
+        throw error;
+      }
+    }
+    return { error: { thrownValue: error } };
+  }
+
+  componentDidCatch(): void {
+    this.props.onCatch?.(this.props.resetKey);
+  }
+
+  render() {
+    if (this.state.error) {
+      // Render nothing — the dev overlay (mounted in a separate React root)
+      // shows the actual error to the developer. HMR pushing a new payload
+      // bumps resetKey above, clearing this state and letting the children
+      // re-render with the fixed code.
+      return null;
+    }
+    return this.props.children;
+  }
+}

@@ -1,10 +1,8 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  createOnUncaughtError,
-  devOnCaughtError,
-} from "../packages/vinext/src/server/app-browser-error.js";
+import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser-error.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { devOnCaughtError } from "../packages/vinext/src/server/dev-error-overlay.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,

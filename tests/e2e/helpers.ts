@@ -26,3 +26,24 @@ export async function waitForAppRouterHydration(page: Page): Promise<void> {
   }).toPass({ timeout: 10_000 });
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
 }
+
+/**
+ * Hide both Vite's HMR error overlay and vinext's dev error overlay so their
+ * modal backdrops don't intercept page clicks during tests that intentionally
+ * trigger an error and then need to interact with the error.tsx fallback
+ * (Try Again, navigate away, etc.).
+ *
+ * Best-effort — silently no-ops if the page isn't ready yet.
+ */
+export async function disableDevErrorOverlay(page: Page): Promise<void> {
+  await page
+    .addStyleTag({
+      content: `
+        vite-error-overlay{display:none !important;pointer-events:none !important;}
+        #__vinext_dev_error_overlay_root{display:none !important;pointer-events:none !important;}
+      `,
+    })
+    .catch(() => {
+      // best effort
+    });
+}

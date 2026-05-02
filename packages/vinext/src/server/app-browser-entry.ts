@@ -62,8 +62,15 @@ import {
   resolveServerActionRequestState,
   type AppRouterState,
 } from "./app-browser-state.js";
+import { DevRecoveryBoundary } from "vinext/shims/error-boundary";
 import { ElementsContext, Slot } from "vinext/shims/slot";
-import { createOnUncaughtError, devOnCaughtError } from "./app-browser-error.js";
+import { createOnUncaughtError } from "./app-browser-error.js";
+import {
+  devOnCaughtError,
+  devOnUncaughtError,
+  dismissOverlay,
+  installDevErrorOverlay,
+} from "./dev-error-overlay.js";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   getServerActionNotFoundClientMessage,
@@ -391,6 +398,19 @@ function createRscRequestHeaders(interceptionContext: string | null): Headers {
   return headers;
 }
 
+// Dev-only callback invoked when DevRecoveryBoundary catches. The replaced
+// subtree means NavigationCommitSignal's useLayoutEffect never fires, so the
+// URL update for the in-flight navigation would otherwise be lost. Force-drain
+// the queued pre-paint effect for this renderId so the URL still moves to the
+// navigation target, the dev overlay shows which URL is broken, and HMR's
+// rsc:update fetches the right payload after the bug is fixed.
+function handleDevRecoveryBoundaryCatch(resetKey: number): void {
+  // React's onCaughtError option already routes the error to the dev overlay.
+  // Our job here is purely to drive the URL update for the in-flight
+  // navigation that this failed render belonged to.
+  browserNavigationController.drainPrePaintEffects(resetKey);
+}
+
 function normalizeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
   // Wrap in Promise.resolve() because createFromReadableStream() returns a
   // React Flight thenable whose .then() returns undefined (not a new Promise).
@@ -461,7 +481,7 @@ function BrowserRoot({
     );
   }, [treeState.previousNextUrl, treeState.renderId]);
 
-  const committedTree = createElement(
+  const innerTree = createElement(
     NavigationCommitSignal,
     { renderId: treeState.renderId },
     createElement(
@@ -470,6 +490,32 @@ function BrowserRoot({
       createElement(Slot, { id: treeState.routeId }),
     ),
   );
+
+  // In dev, wrap the route tree in a top-level recovery boundary. A render
+  // error (e.g. a slot's RSC reference rejects) is caught here instead of
+  // tearing down BrowserRoot, so HMR can dispatch the next payload —
+  // identified by an incremented renderId, which doubles as the boundary's
+  // reset key — without a full page reload. The dev overlay (a separate
+  // React root) shows the error itself.
+  //
+  // onCatch drains the pending pre-paint effect for the failed render so
+  // the URL update bound to that navigation still runs. Without this, a
+  // soft-nav whose target throws would leave the browser on the previous
+  // URL, hiding which route is broken and mis-targeting the next HMR
+  // payload (which fetches RSC for window.location.pathname).
+  //
+  // This file is .ts, not .tsx — children are passed positionally to satisfy
+  // both the createElement overload and eslint's no-children-prop rule.
+  const committedTree = import.meta.env.DEV
+    ? createElement(
+        DevRecoveryBoundary,
+        {
+          resetKey: treeState.renderId,
+          onCatch: handleDevRecoveryBoundaryCatch,
+        },
+        innerTree,
+      )
+    : innerTree;
 
   const ClientNavigationRenderContext = getClientNavigationRenderContext();
   if (!ClientNavigationRenderContext) {
@@ -788,6 +834,10 @@ async function main(): Promise<void> {
 }
 
 function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
+  if (import.meta.env.DEV) {
+    installDevErrorOverlay();
+  }
+
   const root = normalizeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
@@ -799,7 +849,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     window.location.href,
   );
 
-  const onUncaughtError = createOnUncaughtError(() => pendingNavigationRecoveryHref);
+  // In dev we route uncaught errors into the dev overlay rather than the
+  // hard-nav recovery: the overlay is what the developer needs to see, and a
+  // recovery nav would wipe it. In prod we keep the recovery hard-nav so the
+  // user lands on a renderable URL with the actual error UI.
+  const onUncaughtError = import.meta.env.DEV
+    ? devOnUncaughtError
+    : createOnUncaughtError(() => pendingNavigationRecoveryHref);
   window.__VINEXT_RSC_ROOT__ = hydrateRoot(
     document,
     createElement(BrowserRoot, {
@@ -1153,6 +1209,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           window.location.href,
           latestClientParams,
         );
+        // Clear stale errors from the dev overlay before dispatching the
+        // fresh tree. If the new tree renders cleanly, the overlay stays
+        // empty; if it throws again, devOnCaughtError/devOnUncaughtError
+        // re-populates it. Without this, an old "DropZone is not defined"
+        // error would linger after the developer fixed the bug.
+        dismissOverlay();
         // Interception context on HMR re-renders is intentionally deferred:
         // preserving intercepted modal state across HMR reloads is out of scope
         // for the previousNextUrl mechanism.

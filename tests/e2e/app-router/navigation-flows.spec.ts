@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -200,6 +200,10 @@ test.describe("App Router navigation flows", () => {
         timeout: 2000,
       });
     }).toPass({ timeout: 15_000 });
+
+    // Hide the dev error overlay so its backdrop doesn't intercept the
+    // error.tsx "Try again" button click below.
+    await disableDevErrorOverlay(page);
 
     // Reset
     await page.click("#error-boundary button");

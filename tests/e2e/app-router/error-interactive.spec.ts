@@ -1,24 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { disableDevErrorOverlay } from "../helpers";
 
 const BASE = "http://localhost:4174";
-
-async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
-  // Vite's dev error overlay can appear during tests (even for expected errors)
-  // and intercept pointer events, causing flaky click failures.
-  await page
-    .addStyleTag({
-      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
-    })
-    .catch(() => {
-      // best effort
-    });
-}
 
 /**
  * Trigger an error by clicking the button, using polling to handle hydration timing.
  */
 async function triggerError(page: import("@playwright/test").Page) {
-  await disableViteErrorOverlay(page);
+  await disableDevErrorOverlay(page);
 
   await expect(page.locator('[data-testid="trigger-error"]')).toBeVisible({
     timeout: 10_000,
@@ -46,7 +35,7 @@ test.describe("Error boundary interactive behavior", () => {
     // Click "Try again" — should reset the error boundary and re-render the page
     await page.click("#error-boundary button");
 
-    await disableViteErrorOverlay(page);
+    await disableDevErrorOverlay(page);
 
     await expect(page.locator("#error-boundary")).not.toBeVisible({
       timeout: 10_000,

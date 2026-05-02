@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -192,6 +192,10 @@ test.describe("Error recovery across navigation", () => {
 
     // Error boundary should be visible
     await expect(page.locator("#error-boundary")).toBeVisible({ timeout: 10_000 });
+
+    // Hide the dev error overlay so its modal backdrop doesn't block the
+    // error.tsx fallback's "Go home" link.
+    await disableDevErrorOverlay(page);
 
     // Client-navigate away to home via the link in the error boundary
     await page.click('[data-testid="error-go-home"]');
