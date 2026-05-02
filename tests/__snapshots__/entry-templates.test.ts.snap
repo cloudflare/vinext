@@ -562,6 +562,7 @@ const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __publicFiles = new Set([]);
 const __allowedOrigins = [];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -1722,6 +1723,7 @@ const __configRewrites = {"beforeFiles":[{"source":"/api/:path*","destination":"
 const __configHeaders = [{"source":"/api/:path*","headers":[{"key":"X-Custom","value":"test"}]}];
 const __publicFiles = new Set([]);
 const __allowedOrigins = ["https://example.com"];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -2889,6 +2891,7 @@ const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __publicFiles = new Set([]);
 const __allowedOrigins = [];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -4079,6 +4082,7 @@ const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __publicFiles = new Set([]);
 const __allowedOrigins = [];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -5252,6 +5256,7 @@ const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __publicFiles = new Set([]);
 const __allowedOrigins = [];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -6412,6 +6417,7 @@ const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __publicFiles = new Set([]);
 const __allowedOrigins = [];
+const __expireTime = 31536000;
 
 
 // ── Dev server origin verification ──────────────────────────────────────

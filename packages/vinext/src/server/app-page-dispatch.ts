@@ -536,6 +536,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     isDynamicError,
     isForceDynamic,
     isForceStatic,
+    isPrerender: process.env.VINEXT_PRERENDER === "1",
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     isrDebug: options.isrDebug,

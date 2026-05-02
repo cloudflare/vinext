@@ -4605,16 +4605,14 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
   });
 
-  it("generated code delegates ISR cache access to shared runtime helpers", () => {
+  it("generated code imports ISR cache access from the shared runtime module", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("isrGet as __sharedIsrGet");
-    expect(code).toContain("isrSet as __sharedIsrSet");
-    expect(code).toContain("return __sharedIsrGet(key);");
-    expect(code).toContain("return __sharedIsrSet(");
-    expect(code).not.toContain("getCacheHandler");
     expect(code).toContain("server/isr-cache.js");
     expect(code).toContain("isrGet as __isrGet");
     expect(code).toContain("isrSet as __isrSet");
+    expect(code).not.toContain("getCacheHandler");
+    expect(code).not.toContain("isrGet as __sharedIsrGet");
+    expect(code).not.toContain("return __sharedIsrGet(key);");
   });
 
   it("generated code stores root layout params separately from leaf params", () => {
