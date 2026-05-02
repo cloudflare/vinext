@@ -77,6 +77,20 @@ describe("vinext:local-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
+  // ── Helper: assert a font file string was promoted to an ESM import ──
+  // The transform's contract is that font path strings get rewritten to ESM
+  // imports so Vite can fingerprint and serve them. We don't care about the
+  // generated identifier names, only that the file is imported and the
+  // original quoted path no longer appears as a property value.
+  function expectImported(code: string, fontPath: string) {
+    expect(code).toMatch(
+      new RegExp(`import\\s+\\w+\\s+from\\s+"${fontPath.replace(/[.+]/g, "\\$&")}"`),
+    );
+    expect(code).not.toMatch(
+      new RegExp(`(?:src|path):\\s*["']${fontPath.replace(/[.+]/g, "\\$&")}["']`),
+    );
+  }
+
   // ── Simple string src ────────────────────────────────────────
 
   it("transforms a simple string src path", () => {
@@ -88,12 +102,7 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    // Should add an import for the font file
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./my-font.woff2";`);
-    // Should replace the path string with the import variable
-    expect(result.code).toContain("src: __vinext_local_font_0");
-    // Should NOT contain the original quoted path in the src property
-    expect(result.code).not.toMatch(/src:\s*["']\.\/my-font\.woff2["']/);
+    expectImported(result.code, "./my-font.woff2");
     expect(result.map).toBeDefined();
   });
 
@@ -108,9 +117,7 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff2";`);
-    expect(result.code).toContain("path: __vinext_local_font_0");
-    expect(result.code).not.toMatch(/path:\s*["']\.\/font\.woff2["']/);
+    expectImported(result.code, "./font.woff2");
   });
 
   // ── Array of source objects ──────────────────────────────────
@@ -130,96 +137,37 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    // Two imports should be added
-    expect(result.code).toContain(
-      `import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`,
-    );
-    expect(result.code).toContain(
-      `import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`,
-    );
-    // Both paths should be replaced
-    expect(result.code).toContain("path: __vinext_local_font_0");
-    expect(result.code).toContain("path: __vinext_local_font_1");
-    // Original paths should be gone
-    expect(result.code).not.toMatch(/path:\s*["']\.\/fonts\/InterVariable\.woff2["']/);
-    expect(result.code).not.toMatch(/path:\s*["']\.\/fonts\/InterVariable-Italic\.woff2["']/);
+    expectImported(result.code, "./fonts/InterVariable.woff2");
+    expectImported(result.code, "./fonts/InterVariable-Italic.woff2");
   });
 
   // ── Font file extensions ─────────────────────────────────────
 
-  it("handles .woff files", () => {
+  it.each([".woff", ".ttf", ".otf", ".eot"])("transforms %s files", (ext) => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./font.woff" });`,
+      `const f = localFont({ src: "./font${ext}" });`,
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff";`);
+    expectImported(result.code, `./font${ext}`);
   });
 
-  it("handles .ttf files", () => {
+  // ── Quote styles ─────────────────────────────────────────────
+
+  it("handles both single- and double-quoted paths", () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./font.ttf" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.ttf";`);
-  });
-
-  it("handles .otf files", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./font.otf" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.otf";`);
-  });
-
-  it("handles .eot files", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./font.eot" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.eot";`);
-  });
-
-  // ── Quote styles ─��───────────────────────────────────────────
-
-  it("handles single-quoted paths", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: './font.woff2' });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff2";`);
-    expect(result.code).toContain("src: __vinext_local_font_0");
-  });
-
-  it("handles double-quoted paths", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./font.woff2" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("src: __vinext_local_font_0");
+    for (const code of [
+      `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`,
+      `import localFont from 'next/font/local';\nconst f = localFont({ src: "./font.woff2" });`,
+    ]) {
+      const result = transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expectImported(result.code, "./font.woff2");
+    }
   });
 
   // ── Preserves other code ─────────────────────────────────────
@@ -238,13 +186,11 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    // Non-font imports should be preserved
+    expectImported(result.code, "./font.woff2");
+    // Non-font imports and export should be preserved
     expect(result.code).toContain(`import React from 'react'`);
     expect(result.code).toContain(`import { useState } from 'react'`);
     expect(result.code).toContain(`import localFont from 'next/font/local'`);
-    // Font path should be transformed
-    expect(result.code).toContain("src: __vinext_local_font_0");
-    // Export should be preserved
     expect(result.code).toContain("export default function Layout");
   });
 
@@ -267,31 +213,20 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Path styles ──────────────────────────────────────────────
 
-  it("handles relative paths with subdirectories", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "./assets/fonts/my-font.woff2" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(
-      `import __vinext_local_font_0 from "./assets/fonts/my-font.woff2";`,
-    );
-  });
-
-  it("handles parent-relative paths", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const f = localFont({ src: "../fonts/my-font.woff2" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "../fonts/my-font.woff2";`);
-  });
+  it.each(["./assets/fonts/my-font.woff2", "../fonts/my-font.woff2"])(
+    "handles path %s",
+    (fontPath) => {
+      const plugin = getLocalFontsPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const f = localFont({ src: "${fontPath}" });`,
+      ].join("\n");
+      const result = transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expectImported(result.code, fontPath);
+    },
+  );
 
   // ── Security: CSS injection via font file paths ────────────
 
@@ -451,16 +386,8 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    // Should add two font imports
-    expect(result.code).toContain(
-      `import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`,
-    );
-    expect(result.code).toContain(
-      `import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`,
-    );
-    // Paths should be replaced
-    expect(result.code).toContain("path: __vinext_local_font_0");
-    expect(result.code).toContain("path: __vinext_local_font_1");
+    expectImported(result.code, "./fonts/InterVariable.woff2");
+    expectImported(result.code, "./fonts/InterVariable-Italic.woff2");
     // Other options and JSX should be preserved
     expect(result.code).toContain('variable: "--font-inter"');
     expect(result.code).toContain('display: "swap"');

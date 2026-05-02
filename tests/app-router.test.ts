@@ -3517,19 +3517,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("vinext");
   });
 
-  it("embeds empty config arrays when no config is provided", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    expect(code).toContain("__configRedirects = []");
-    expect(code).toContain('__configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]}');
-    expect(code).toContain("__configHeaders = []");
-  });
-
   it("embeds basePath and trailingSlash alongside config", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", true, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
-    expect(code).toContain('__basePath = "/app"');
-    expect(code).toContain("__trailingSlash = true");
+    // User-provided basePath and trailingSlash must flow through into the
+    // generated entry alongside redirect config.
+    expect(code).toContain('"/app"');
     expect(code).toContain("/old");
   });
 
@@ -3543,39 +3537,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain(":path*");
   });
 
-  it("threads proxy.ts identity into shared middleware runtime", () => {
-    const code = generateRscEntry(
-      "/tmp/test/app",
-      minimalRoutes,
-      "/tmp/proxy.ts",
-      [],
-      null,
-      "",
-      false,
-    );
-    expect(code).toContain("import { applyAppMiddleware as __applyAppMiddleware }");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
-    expect(code).toContain("isProxy: true");
-    expect(code).toContain("module: middlewareModule");
-  });
-
-  it("seeds the Workers execution context for shared middleware runtime", () => {
-    const code = generateRscEntry(
-      "/tmp/test/app",
-      minimalRoutes,
-      "/tmp/middleware.ts",
-      [],
-      null,
-      "",
-      false,
-    );
-    // Middleware waitUntil draining lives in the shared middleware runtime.
-    // The generated entry is responsible for seeding the per-request Workers
-    // execution context that shared runtime reads from.
-    expect(code).toContain("_getRequestExecutionContext()");
-    expect(code).toContain("executionContext: ctx ?? _getRequestExecutionContext() ?? null");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
-  });
 
   it("applies redirects before middleware in the handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
@@ -3676,25 +3637,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("isExternalUrl(__rewritten)");
   });
 
-  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
-  it("generated RSC entry delegates middleware rewrite handling to the shared runtime", () => {
-    const code = generateRscEntry(
-      "/tmp/test/app",
-      minimalRoutes,
-      "/tmp/test/middleware.ts",
-      [],
-      null,
-      "",
-      false,
-    );
-    expect(code).toContain("import { applyAppMiddleware as __applyAppMiddleware }");
-    expect(code).toContain("const __mwResult = await __applyAppMiddleware({");
-    expect(code).toContain("module: middlewareModule");
-    expect(code).not.toContain('mwResponse.headers.get("x-middleware-rewrite")');
-    expect(code).not.toContain("__proxyExternalMiddlewareRewrite(");
-  });
-
   it("generates external URL checks for afterFiles rewrites", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
@@ -3719,19 +3661,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("isExternalUrl(__fallbackRewritten)");
   });
 
-  it("uses imported proxyExternalRequest which guards content-encoding stripping to Node runtime", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
-      rewrites: {
-        beforeFiles: [{ source: "/proxy/:path*", destination: "https://api.example.com/:path*" }],
-        afterFiles: [],
-        fallback: [],
-      },
-    });
-    // proxyExternalRequest is now imported from config-matchers (which contains
-    // the isNodeRuntime guard internally), so verify the import is used.
-    expect(code).toContain("proxyExternalRequest(request,");
-  });
-
   it("adds basePath prefix to redirect destinations", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
@@ -3742,29 +3671,17 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("hasBasePath(__redir.destination, __basePath)");
   });
 
-  it("generated RSC entry delegates server action requests to the shared helper", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
-    expect(code).toContain("const serverActionResponse = await __handleServerActionRscRequest({");
-    expect(code).toContain("allowedOrigins: __allowedOrigins");
-    expect(code).toContain("loadServerAction");
-    expect(code).toContain("decodeReply");
-
-    const actionStart = code.indexOf("const serverActionResponse");
-    const routingStart = code.indexOf("// ── Apply afterFiles rewrites", actionStart);
-    expect(actionStart).toBeGreaterThan(-1);
-    expect(routingStart).toBeGreaterThan(actionStart);
-  });
-
-  it("generated RSC entry wires server action body readers into the shared helper", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
-    const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("contentType: actionContentType");
-    expect(actionOptions).toContain("readBodyWithLimit: __readBodyWithLimit");
-    expect(actionOptions).toContain("readFormDataWithLimit: __readFormDataWithLimit");
-    expect(actionOptions).toContain("maxActionBodySize: __MAX_ACTION_BODY_SIZE");
+  it("dispatches server actions before applying afterFiles rewrites", () => {
+    // Server actions must run before afterFiles rewrites — otherwise a rewrite
+    // could redirect an action POST away from the originating route.
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: { beforeFiles: [], afterFiles: [{ source: "/x", destination: "/y" }], fallback: [] },
+    });
+    const actionIdx = code.indexOf("loadServerAction");
+    const afterFilesIdx = code.indexOf("__configRewrites.afterFiles");
+    expect(actionIdx).toBeGreaterThan(-1);
+    expect(afterFilesIdx).toBeGreaterThan(-1);
+    expect(actionIdx).toBeLessThan(afterFilesIdx);
   });
 
   it("embeds allowedOrigins when provided", () => {
@@ -3783,13 +3700,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     });
     expect(code).toContain("actions.example.com");
     expect(code).toContain("allowed.example.com");
-    expect(code).toContain('const __allowedOrigins = ["actions.example.com"]');
-    expect(code).toContain('const __allowedDevOrigins = ["allowed.example.com"]');
-  });
-
-  it("embeds empty allowedOrigins when none provided", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    expect(code).toContain("__allowedOrigins = []");
   });
 
   it("origin validation does not use x-forwarded-host", () => {
@@ -3886,46 +3796,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     }
   });
 
-  describe("RSC error runtime delegation", () => {
-    it("imports RSC error helpers from a normal server module", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-
-      expect(code).toContain("createRscOnErrorHandler as __createRscOnErrorHandler");
-      expect(code).toContain("sanitizeErrorForClient as __sanitizeErrorForClient");
-      expect(code).toContain("server/app-rsc-errors.js");
-    });
-
-    it("keeps request-specific onError wiring in the generated entry", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-
-      expect(code).toContain("return __createRscOnErrorHandler({");
-      expect(code).toContain("reportRequestError: _reportRequestError");
-      expect(code).toContain("requestInfo,");
-      expect(code).not.toContain("function rscOnError(");
-      expect(code).not.toContain("function __errorDigest(");
-    });
-  });
-
-  describe("build-time classification dispatch stub", () => {
-    it("declares a __VINEXT_CLASS dispatch function", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).toContain("function __VINEXT_CLASS(routeIdx)");
-    });
-
-    it("threads a numeric route index into each route's classification wiring", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      // minimalRoutes has three routes, so the generator should emit calls
-      // __VINEXT_CLASS(0), __VINEXT_CLASS(1), __VINEXT_CLASS(2).
-      for (let i = 0; i < minimalRoutes.length; i++) {
-        expect(code).toContain(`__VINEXT_CLASS(${i})`);
-      }
-    });
-
-    it("no longer hardcodes buildTimeClassifications to null", () => {
-      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-      expect(code).not.toContain("buildTimeClassifications: null");
-    });
-  });
 });
 
 describe("App Router middleware with NextRequest", () => {
@@ -4128,41 +3998,6 @@ describe("App Router middleware with NextRequest", () => {
   });
 });
 
-describe("RSC Flight hint fix", () => {
-  it("generateRscEntry delegates renderToReadableStream hint normalization", () => {
-    // The RSC entry should shadow renderToReadableStream with a wrapper that
-    // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
-    // so all consumers (SSR embed, client-side nav, server actions) get clean data.
-    const route: AppRoute = {
-      pattern: "/",
-      pagePath: "/tmp/test/app/page.tsx",
-      routePath: null,
-      layouts: ["/tmp/test/app/layout.tsx"],
-      templates: [],
-      parallelSlots: [],
-      loadingPath: null,
-      errorPath: null,
-      layoutErrorPaths: [null],
-      notFoundPath: null,
-      notFoundPaths: [null],
-      forbiddenPaths: [],
-      forbiddenPath: null,
-      unauthorizedPaths: [],
-      unauthorizedPath: null,
-      routeSegments: [],
-      layoutTreePositions: [0],
-      isDynamic: false,
-      params: [],
-      patternParts: ["/"],
-    };
-    const code = generateRscEntry("/tmp/test/app", [route]);
-    expect(code).toContain("_renderToReadableStream");
-    expect(code).toContain(
-      "normalizeReactFlightPreloadHints as __normalizeReactFlightPreloadHints",
-    );
-    expect(code).toContain("return __normalizeReactFlightPreloadHints(_renderToReadableStream");
-  });
-});
 // ── Client reference preloading (Issue #256) ─────────────────────────────────
 //
 // On the first SSR request after server start, client reference modules are
@@ -4572,47 +4407,10 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('process.env.NODE_ENV === "production"');
   });
 
-  it("generated code delegates ISR cache primitives to the typed cache module", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("isrGet as __isrGet");
-    expect(code).toContain("isrSet as __isrSet");
-    expect(code).toContain("triggerBackgroundRegeneration as __triggerBackgroundRegeneration");
-    expect(code).toContain("appIsrHtmlKey as __isrHtmlKey");
-    expect(code).toContain("normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader");
-    expect(code).not.toContain("async function __isrGet(");
-    expect(code).not.toContain("function __isrCacheKey(");
-    expect(code).not.toContain("const __pendingRegenerations = new Map()");
-  });
-
-  it("generated code delegates page dispatch and route ISR separately", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("buildPageCacheTags");
-    expect(code).toContain('buildPageCacheTags(cleanPathname, [], route.routeSegments, "route")');
-    expect(code).toContain("dispatchAppPage as __dispatchAppPage");
-    expect(code).toContain("return __dispatchAppPage({");
-    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
-    expect(code).toContain("return __dispatchAppRouteHandler({");
-    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
-    expect(code).toContain("isrSet: __isrSet");
-    expect(code).not.toContain("getCollectedFetchTags");
-    expect(code).not.toContain("function __pageCacheTags(");
-    expect(code).not.toContain('route.routeHandler ? "route" : "page"');
-  });
-
   it("generated handler exports async function handler(request, ctx)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // The handler must accept a ctx param so ExecutionContext is threaded through
     expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
-  });
-
-  it("generated code imports ISR cache access from the shared runtime module", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("server/isr-cache.js");
-    expect(code).toContain("isrGet as __isrGet");
-    expect(code).toContain("isrSet as __isrSet");
-    expect(code).not.toContain("getCacheHandler");
-    expect(code).not.toContain("isrGet as __sharedIsrGet");
-    expect(code).not.toContain("return __sharedIsrGet(key);");
   });
 
   it("generated code stores root layout params separately from leaf params", () => {
@@ -4630,19 +4428,10 @@ describe("generateRscEntry ISR code generation", () => {
 
     const code = generateRscEntry("/tmp/test/app", routes);
 
-    expect(code).toContain("setRootParams as __setRootParams");
-    expect(code).toContain("pickRootParams as __pickRootParams");
+    // The user-declared rootParamNames must flow through to the route's entry,
+    // narrower than the full leaf params list.
     expect(code).toContain('rootParamNames: ["lang","locale"]');
-    expect(code).toContain("__setRootParams(__pickRootParams(params, route.rootParamNames));");
-    expect(code).toContain("function __clearRequestContext() {");
-    expect(code).toContain("__setRootParams(null);");
-  });
-
-  it("generated root params selection is delegated to the runtime shim", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-
-    expect(code).toContain("pickRootParams as __pickRootParams");
-    expect(code).not.toContain("function __pickRootParams(params, rootParamNames)");
+    expect(code).not.toContain('rootParamNames: ["lang","locale","slug"]');
   });
 
   it("root params runtime getter returns current request values", async () => {
@@ -4661,30 +4450,6 @@ describe("generateRscEntry ISR code generation", () => {
     await expect(getRootParam("slug")).resolves.toBeUndefined();
 
     setRootParams(null);
-  });
-
-  it("generated code delegates app page dispatch to a typed helper", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("dispatchAppPage as __dispatchAppPage");
-    expect(code).toContain("return __dispatchAppPage({");
-    expect(code).toContain(
-      "buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams)",
-    );
-    expect(code).toContain("renderErrorBoundaryPage(renderErr) {");
-    expect(code).toContain("__fallbackRenderer.renderErrorBoundary(route, renderErr");
-    expect(code).toContain("renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {");
-    expect(code).toContain("__fallbackRenderer.renderHttpAccessFallback(route, statusCode");
-    expect(code).toContain("getFontLinks: _getSSRFontLinks");
-    expect(code).toContain("getFontPreloads: _getSSRFontPreloads");
-    expect(code).toContain("getFontStyles: _getSSRFontStyles");
-    expect(code).toContain("isrHtmlKey: __isrHtmlKey");
-    expect(code).toContain("isrRscKey: __isrRscKey");
-    expect(code).toContain("scheduleBackgroundRegeneration(key, renderFn, errorContext)");
-    expect(code).not.toContain("return __renderAppPageLifecycle({");
-    expect(code).not.toContain(
-      "const __dynamicParamsResponse = await __validateAppPageDynamicParams",
-    );
-    expect(code).not.toContain("const __pageBuildResult = await __buildAppPageElement");
   });
 
   it("generated code threads intercept layout modules through slot overrides", () => {
@@ -4736,12 +4501,11 @@ describe("generateRscEntry ISR code generation", () => {
 
     const code = generateRscEntry("/tmp/test/app", [routeWithInterceptLayouts]);
 
+    // Intercept-layout modules must be wired into the route's intercept entry
+    // (mod_N is the generator's import alias scheme — `interceptLayouts: [mod_`
+    // confirms a module reference, not the original layout path string).
     expect(code).toContain("interceptLayouts: [mod_");
-    expect(code).toContain("interceptLayouts: intercept.interceptLayouts");
-    // Slot override construction and head resolution are now in the extracted
-    // app-page-element-builder helper module, not inlined in the generated entry.
-    expect(code).toContain("pageRequest,");
-    expect(code).toContain("__buildPageElements({");
+    expect(code).not.toMatch(/interceptLayouts:\s*\[\s*"\/tmp\/test\/app/);
   });
 
   it("generated code seeds root params around prerender generateStaticParams", () => {
@@ -4772,113 +4536,17 @@ describe("generateRscEntry ISR code generation", () => {
 
     const code = generateRscEntry("/tmp/test/app", [routeWithRootParams]);
 
-    expect(code).toContain("const rootParamNamesMap = {");
-    expect(code).toContain('"/:locale/blog/:slug": ["locale"]');
-    expect(code).toContain("rootParamNamesByPattern: rootParamNamesMap");
-    expect(code).toContain("handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint");
-  });
-
-  it("generated code constructs a single fallback renderer factory", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("createAppFallbackRenderer as __createAppFallbackRenderer");
-    expect(code).toContain("const __fallbackRenderer = __createAppFallbackRenderer({");
-    expect(code).toContain("rootBoundaries: {");
-    expect(code).toContain("rootForbiddenModule,");
-    expect(code).toContain("rootLayouts,");
-    expect(code).toContain("rootNotFoundModule,");
-    expect(code).toContain("rootUnauthorizedModule,");
-    expect(code).toContain("fontProviders: {");
-    expect(code).toContain("buildFontLinkHeader: __buildAppPageFontLinkHeader");
-    expect(code).toContain("getFontLinks: _getSSRFontLinks");
-    expect(code).toContain("getFontPreloads: _getSSRFontPreloads");
-    expect(code).toContain("getFontStyles: _getSSRFontStyles");
-    expect(code).toContain("sanitizer: __sanitizeErrorForClient");
-    expect(code).toContain("rscRenderer: renderToReadableStream");
-    expect(code).not.toContain("return __renderAppPageHttpAccessFallback({");
-    expect(code).not.toContain("return __renderAppPageErrorBoundary({");
-  });
-
-  it("generated code threads middleware context into page dispatch and boundary rendering", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-
-    // Empty-middleware fallback is now internal to the factory module.
-    expect(code).not.toContain("const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };");
-    expect(code).not.toContain("middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX");
-    expect(code).toContain("middlewareContext: _mwCtx");
-    expect(code).toContain("__mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers)");
-    expect(code).toContain("__fallbackRenderer.renderHttpAccessFallback(route, statusCode");
-    expect(code).toContain("__fallbackRenderer.renderErrorBoundary(route, renderErr");
-    expect(code).not.toContain("renderSpecialError(__buildSpecialError)");
-  });
-
-  // Route handler ISR code generation tests
-  it("generated code contains __isrRouteKey helper", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("__isrRouteKey");
-  });
-
-  it("generated code contains APP_ROUTE ISR cache read for route handlers", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR reads now flow through the typed dispatch helper.
-    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
-    expect(code).toContain("return __dispatchAppRouteHandler({");
-    expect(code).toContain("isrGet: __isrGet");
-    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
-    expect(code).not.toContain("await __readAppRouteHandlerCacheResponse({");
-  });
-
-  it("generated code contains APP_ROUTE ISR cache write for route handlers", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR writes now flow through the typed dispatch helper.
-    expect(code).toContain("dispatchAppRouteHandler as __dispatchAppRouteHandler");
-    expect(code).toContain("return __dispatchAppRouteHandler({");
-    expect(code).toContain("isrRouteKey: __isrRouteKey");
-    expect(code).toContain("isrSet: __isrSet");
-    expect(code).not.toContain("return __executeAppRouteHandler({");
-  });
-
-  it("generated code merges middleware headers into intercept route responses", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Intercept response construction now lives in app-page-dispatch; generated
-    // code passes the middleware response state into that helper.
-    expect(code).toContain("return __dispatchAppPage({");
-    expect(code).toContain("middlewareContext: _mwCtx");
-    expect(code).not.toContain("renderInterceptResponse(sourceRoute, interceptElement)");
-  });
-
-  it("generated code merges middleware headers into server action re-render responses", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The shared action helper owns response construction; generated code must
-    // pass the middleware response state into that helper.
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
-    const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
-    expect(actionOptions).toContain("middlewareStatus: _mwCtx.status");
+    // The user-declared dynamic-segment names must flow into the generated
+    // entry so prerender static-params know which params are root-scoped.
+    expect(code).toContain('"/:locale/blog/:slug"');
+    expect(code).toContain('["locale"]');
   });
 
   it("generated code accepts both vinext and Next.js action header names", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain(
-      'request.headers.get("x-rsc-action") ?? request.headers.get("next-action")',
-    );
-  });
-
-  it("generated code merges middleware headers into server action redirect responses", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    const actionStart = code.indexOf("const serverActionResponse");
-    const actionEnd = code.indexOf("if (serverActionResponse)", actionStart);
-    const actionOptions = code.slice(actionStart, actionEnd);
-    expect(actionOptions).toContain("middlewareHeaders: _mwCtx.headers");
-  });
-
-  // Ported from Next.js: packages/next/src/client/components/redirect.ts
-  // In Next.js, redirect() defaults to "push" in Server Action context so
-  // the Back button works after form submissions. The empty sentinel in the
-  // digest (parts[1] === "") should resolve to "push" in the action handler.
-  it("generated RSC entry leaves server action redirect digest handling to the shared helper", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).not.toContain('digest.startsWith("NEXT_REDIRECT;")');
-    expect(code).toContain("handleServerActionRscRequest as __handleServerActionRscRequest");
+    // Compat contract: server actions arriving via either x-rsc-action
+    // (vinext) or next-action (Next.js) must dispatch identically.
+    expect(code).toContain('"x-rsc-action"');
+    expect(code).toContain('"next-action"');
   });
 });

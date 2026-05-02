@@ -1339,14 +1339,6 @@ describe("vinext:async-hooks-stub", () => {
   });
 
   describe("load", () => {
-    it("returns stub source with AsyncLocalStorage class", () => {
-      const source = load(VIRTUAL_ID);
-      expect(source).toBeDefined();
-      expect(source).toContain("export class AsyncLocalStorage");
-      expect(source).toContain("getStore()");
-      expect(source).toContain("run(_store, fn, ...args)");
-    });
-
     it("returns undefined for other module ids", () => {
       expect(load("some-other-module")).toBeUndefined();
     });

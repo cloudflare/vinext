@@ -224,11 +224,9 @@ describe("build-time classification integration", () => {
     // os.tmpdir() periodically. Matching the pattern used by buildAppFixture.
   });
 
-  it("patches __VINEXT_CLASS with a populated switch statement", () => {
-    // The untouched stub body is `{ return null; }`; the patched body must
-    // contain a switch dispatcher.
-    expect(built.chunkSource).toMatch(/function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{[^}]*switch/);
-  });
+  // (the dispatch-was-patched contract is enforced by extractDispatch in
+  // beforeAll — if the stub still returned null, every other test below
+  // would also fail with a clearer setup error).
 
   it("gates the reasons sidecar behind __classDebug in the route table", () => {
     expect(built.chunkSource).toMatch(
