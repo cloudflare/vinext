@@ -1478,6 +1478,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   if (import.meta.hot) {
     import.meta.hot.on("rsc:update", async () => {
       try {
+        // HMR can fire before BrowserRoot's layout effect publishes
+        // browserRouterStateRef (e.g. saving a file while the initial RSC
+        // stream is still suspended). Wait for readiness to avoid
+        // getBrowserRouterState() throwing.
+        await waitForBrowserRouterStateReady();
         clearClientNavigationCaches();
         const navigationSnapshot = createClientNavigationRenderSnapshot(
           window.location.href,
