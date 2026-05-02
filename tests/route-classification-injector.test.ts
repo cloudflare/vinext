@@ -140,6 +140,22 @@ describe("planRouteClassificationInjection", () => {
     ).toThrow(/referenced in server\/app\.js but no chunk contains the stub body/);
   });
 
+  it("fails loudly when multiple chunks contain the dispatch stub body", () => {
+    expect(() =>
+      planRouteClassificationInjection({
+        chunks: [makeChunk(STUBS, "server/app-a.js"), makeChunk(STUBS, "server/app-b.js")],
+        dynamicShimPaths: new Set(),
+        enableDebugReasons: false,
+        manifest: makeManifest(),
+        moduleInfo: {
+          getModuleInfo() {
+            return null;
+          },
+        },
+      }),
+    ).toThrow(/expected __VINEXT_CLASS stub in exactly one RSC chunk, found 2/);
+  });
+
   it("fails loudly when debug reasons are enabled but the reasons stub is missing", () => {
     expect(() =>
       planRouteClassificationInjection({

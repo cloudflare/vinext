@@ -66,12 +66,13 @@ function findClassificationChunk(
   // will reference `__VINEXT_CLASS` via per-route calls.
   const chunksMentioningStub = chunks.filter((chunk) => chunk.code.includes("__VINEXT_CLASS"));
   const chunksWithStubBody = chunksMentioningStub.filter((chunk) => CLASS_STUB_RE.test(chunk.code));
+  const chunkWithStubBody = chunksWithStubBody[0];
 
   if (chunksMentioningStub.length === 0) {
     return null;
   }
 
-  if (chunksWithStubBody.length === 0) {
+  if (chunkWithStubBody === undefined) {
     throw new Error(
       `vinext: build-time classification — __VINEXT_CLASS is referenced in ${chunksMentioningStub
         .map((chunk) => chunk.fileName)
@@ -87,7 +88,7 @@ function findClassificationChunk(
     );
   }
 
-  return chunksWithStubBody[0] ?? null;
+  return chunkWithStubBody;
 }
 
 function buildLayer2Classifications(
