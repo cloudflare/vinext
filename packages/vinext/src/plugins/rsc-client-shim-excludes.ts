@@ -14,6 +14,10 @@ const RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
 export const VINEXT_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   "vinext",
   "@vercel/og",
+  // Aliased to the user's instrumentation-client source file (or an empty
+  // shim). Not a real npm dep, so pre-bundling it would break HMR and cause
+  // a "new dependencies optimized" reload on the first request.
+  "private-next-instrumentation-client",
   ...RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE,
 ]);
 
