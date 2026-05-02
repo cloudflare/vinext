@@ -86,6 +86,25 @@ export default defineConfig({
       __VINEXT_DRAFT_SECRET: randomUUID(),
     },
 
+    // Coverage activated only via --coverage flag (or CLI/config override).
+    // Istanbul provider is required because vinext source loads through Vite's
+    // module runner (helpers.ts:15 imports from packages/vinext/src directly,
+    // and integration tests start in-process Vite servers via createServer()).
+    // V8 coverage misses code under that runner.
+    coverage: {
+      provider: "istanbul",
+      include: ["packages/vinext/src/**/*.{ts,tsx}"],
+      exclude: ["**/*.d.ts", "**/*.test.ts", "**/*.spec.ts"],
+      reporter: ["text", "html", "json-summary", "lcov"],
+      reportsDirectory: "coverage",
+      clean: true,
+      skipFull: true,
+      // Always emit the report, even if some test files failed. A failing
+      // integration test (e.g. timing-sensitive teardown) shouldn't suppress
+      // coverage data we already collected.
+      reportOnFailure: true,
+    },
+
     projects: [
       {
         resolve: {

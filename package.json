@@ -27,6 +27,7 @@
     "@types/react-dom": "catalog:",
     "@typescript/native-preview": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "@vitest/coverage-istanbul": "catalog:",
     "knip": "catalog:",
     "next": "catalog:",
     "playwright": "catalog:",
