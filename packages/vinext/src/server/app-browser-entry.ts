@@ -147,6 +147,10 @@ const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
 let resolveBrowserRouterStateReady: (() => void) | null = null;
 let browserRouterStateReadyPromise: Promise<void> | null = null;
 let browserRouterStateHasCommitted = false;
+// Sticky bit: stays true once BrowserRoot has committed at least once. Used by
+// the HMR handler to distinguish "still hydrating" (wait) from "was up, then
+// torn down by a render error" (full reload to recover).
+let browserRouterStateHasEverCommitted = false;
 
 function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
@@ -182,6 +186,7 @@ function waitForBrowserRouterStateReady(): Promise<void> {
 
 function markBrowserRouterStateReady(): void {
   browserRouterStateHasCommitted = true;
+  browserRouterStateHasEverCommitted = true;
   const resolveReady = resolveBrowserRouterStateReady;
   resolveBrowserRouterStateReady = null;
   browserRouterStateReadyPromise = null;
@@ -1478,13 +1483,23 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   if (import.meta.hot) {
     import.meta.hot.on("rsc:update", async () => {
       try {
-        // HMR can fire before BrowserRoot's layout effect publishes
+        // If BrowserRoot has been mounted before but isn't now, a render
+        // error tore down the tree (e.g. a server route threw). HMR can't
+        // dispatch into a missing setter, and waitForBrowserRouterStateReady
+        // would block forever — the tree won't remount until the page reloads.
+        // Trigger that reload so the user's fix actually lands without a
+        // manual refresh. Cleared after a successful mount, so this only
+        // fires once per teardown.
+        if (browserRouterStateHasEverCommitted && !browserRouterStateRef) {
+          window.location.reload();
+          return;
+        }
+        // HMR can also fire before BrowserRoot's layout effect publishes
         // browserRouterStateRef (e.g. saving a file while the initial RSC
-        // stream is still suspended), or while it is between unmount and
-        // remount. Wait for readiness, then re-check the ref — readiness can
-        // race with cleanup, which nulls the ref again. Skip silently when
-        // the tree is not currently mounted; the next HMR push or full
-        // reload will reconcile.
+        // stream is still suspended). Wait for readiness, then re-check the
+        // ref — readiness can race with cleanup, which nulls the ref again.
+        // Skip silently when the tree is not currently mounted; the next
+        // HMR push or full reload will reconcile.
         await waitForBrowserRouterStateReady();
         if (!browserRouterStateRef) {
           return;
