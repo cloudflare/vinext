@@ -1480,9 +1480,15 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       try {
         // HMR can fire before BrowserRoot's layout effect publishes
         // browserRouterStateRef (e.g. saving a file while the initial RSC
-        // stream is still suspended). Wait for readiness to avoid
-        // getBrowserRouterState() throwing.
+        // stream is still suspended), or while it is between unmount and
+        // remount. Wait for readiness, then re-check the ref — readiness can
+        // race with cleanup, which nulls the ref again. Skip silently when
+        // the tree is not currently mounted; the next HMR push or full
+        // reload will reconcile.
         await waitForBrowserRouterStateReady();
+        if (!browserRouterStateRef) {
+          return;
+        }
         clearClientNavigationCaches();
         const navigationSnapshot = createClientNavigationRenderSnapshot(
           window.location.href,
