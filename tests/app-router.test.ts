@@ -3537,7 +3537,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain(":path*");
   });
 
-
   it("applies redirects before middleware in the handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
@@ -3675,7 +3674,11 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Server actions must run before afterFiles rewrites — otherwise a rewrite
     // could redirect an action POST away from the originating route.
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
-      rewrites: { beforeFiles: [], afterFiles: [{ source: "/x", destination: "/y" }], fallback: [] },
+      rewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/x", destination: "/y" }],
+        fallback: [],
+      },
     });
     const actionIdx = code.indexOf("loadServerAction");
     const afterFilesIdx = code.indexOf("__configRewrites.afterFiles");
@@ -3795,7 +3798,6 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
-
 });
 
 describe("App Router middleware with NextRequest", () => {
