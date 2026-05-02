@@ -10115,6 +10115,87 @@ describe("next/image component rendering", () => {
     );
     expect(html).toContain('decoding="async"');
   });
+
+  it("renders with onError callback attached", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/broken.jpg",
+        alt: "Broken",
+        width: 400,
+        height: 300,
+        onError: () => {},
+      }),
+    );
+    // SSR should render without errors — the onError replay is client-side only
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("renders with both onLoad and onError callbacks", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Photo",
+        width: 800,
+        height: 600,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("forwards ref to img element via mergedRef", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+
+    const ref = React.createRef<HTMLImageElement>();
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToString(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Ref test",
+        width: 800,
+        height: 600,
+        ref,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+    // ref.current is null after SSR — that's expected since refs don't hydrate in SSR
+    expect(ref.current).toBeNull();
+  });
+
+  it("renders with onError in loader path", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Loader",
+        width: 800,
+        height: 600,
+        onError: () => {},
+        loader: ({ src, width, quality }) =>
+          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).not.toContain("/_vinext/image");
+    expect(html).toContain("cdn.example.com");
+  });
 });
 
 describe("image remote pattern matching", () => {

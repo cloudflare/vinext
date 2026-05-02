@@ -12,7 +12,7 @@
  * `images.domains` from next.config.js. Unmatched URLs are blocked
  * in production and warn in development, matching Next.js behavior.
  */
-import React, { forwardRef, useRef } from "react";
+import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
@@ -93,6 +93,14 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
     reason: `Image URL "${src}" is not configured in images.remotePatterns or images.domains in next.config.js. See: https://nextjs.org/docs/messages/next-image-unconfigured-host`,
   };
 }
+
+/**
+ * A version of useLayoutEffect that doesn't warn during SSR.
+ * Do not rename this to "isomorphic layout effect". There is no such thing as
+ * an isomorphic Layout Effect since there is no Layout on the server.
+ * Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+ */
+const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type ImageProps = {
   src: string | StaticImageData;
@@ -236,12 +244,41 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const lastLoadedSrcRef = useRef<string | undefined>(undefined);
   const lastErrorSrcRef = useRef<string | undefined>(undefined);
 
+  // Hydration-level onError replay: when an image fails to load during SSR
+  // streaming or initial HTML parse (before React hydrates), the native browser
+  // error event is lost. Re-trigger it via `img.src = img.src` in a layout
+  // effect once hydration completes, mirroring the upstream Next.js fix.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const didInsertRef = useRef(false);
+  const imgElementRef = useRef<HTMLImageElement | null>(null);
+  const mergedRef = useCallback(
+    (node: HTMLImageElement | null) => {
+      imgElementRef.current = node;
+      if (typeof ref === "function") {
+        ref(node);
+      } else if (ref) {
+        (ref as React.MutableRefObject<HTMLImageElement | null>).current = node;
+      }
+    },
+    [ref],
+  );
+
   const {
     src,
     width: imgWidth,
     height: imgHeight,
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
+
+  useNonWarningLayoutEffect(() => {
+    if (!didInsertRef.current && imgElementRef.current !== null) {
+      if (onError) {
+        // eslint-disable-next-line no-self-assign
+        imgElementRef.current.src = imgElementRef.current.src;
+      }
+      didInsertRef.current = true;
+    }
+  }, [src, placeholder, onLoad, onError, sizes, _unoptimized, loading]);
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
@@ -273,7 +310,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: quality ?? 75 });
     return (
       <img
-        ref={ref}
+        ref={mergedRef}
         src={resolvedSrc}
         alt={alt}
         width={fill ? undefined : imgWidth}
@@ -335,6 +372,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           background={bg}
           onLoad={handleLoad}
           onError={handleError}
+          ref={mergedRef}
         />
       );
     }
@@ -355,6 +393,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           background={bg}
           onLoad={handleLoad}
           onError={handleError}
+          ref={mergedRef}
         />
       );
     }
@@ -408,7 +447,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // The src and srcSet point to the /_vinext/image optimization endpoint.
   return (
     <img
-      ref={ref}
+      ref={mergedRef}
       src={optimizedSrc}
       alt={alt}
       width={fill ? undefined : imgWidth}
