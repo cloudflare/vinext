@@ -12,9 +12,10 @@
  * `images.domains` from next.config.js. Unmatched URLs are blocked
  * in production and warn in development, matching Next.js behavior.
  */
-import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import React, { forwardRef, useEffect, useLayoutEffect, useRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
+import { useMergedRef } from "./use-merged-ref.js";
 
 export type StaticImageData = {
   src: string;
@@ -290,22 +291,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const didInsertRef = useRef(false);
   const imgElementRef = useRef<HTMLImageElement | null>(null);
 
-  // Store forwarded ref in a stable ref to avoid callback identity changes
-  // when parent passes an inline ref callback. Next.js uses useMergedRef
-  // internally; here we inline the same pattern with a useRef to decouple
-  // the callback identity from the ref prop.
-  const forwardedRef = useRef(ref);
-  forwardedRef.current = ref;
-
-  const mergedRef = useCallback((node: HTMLImageElement | null) => {
-    imgElementRef.current = node;
-    const currentRef = forwardedRef.current;
-    if (typeof currentRef === "function") {
-      currentRef(node);
-    } else if (currentRef) {
-      (currentRef as React.RefObject<HTMLImageElement | null>).current = node;
-    }
-  }, []);
+  // Merge forwarded ref with internal img ref for layout effect access.
+  const mergedRef = useMergedRef(ref, imgElementRef);
 
   // Stable refs for onLoad / onError / onLoadingComplete so the layout effect
   // does not re-run (and re-assign img.src) when handler identity changes.
