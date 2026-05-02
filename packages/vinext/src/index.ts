@@ -1565,25 +1565,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
-      configEnvironment(_name, env) {
-        if (!hasCloudflarePlugin) return;
-        if (env.consumer === "client") return;
-
-        const reactDeps = [
-          "react",
-          "react-dom",
-          "react-dom/server.edge",
-          "react/jsx-runtime",
-          "react/jsx-dev-runtime",
-        ];
-
-        env.optimizeDeps ??= {};
-        env.optimizeDeps.include = [
-          ...(env.optimizeDeps.include ?? []),
-          ...reactDeps.filter((d) => !(env.optimizeDeps!.include ?? []).includes(d)),
-        ];
-      },
-
       resolveId: {
         // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",

@@ -23,6 +23,7 @@ function defaultOpts(overrides: Partial<ScaffoldOptions> = {}): ScaffoldOptions 
     install: true,
     git: true,
     pm: "npm",
+    vinextVersion: "^0.0.1",
     _exec: exec,
     ...overrides,
   };
@@ -90,6 +91,15 @@ describe("scaffold", () => {
     scaffold(defaultOpts({ projectPath, projectName: "cool-project" }));
     const pkg = readJson(projectPath, "package.json");
     expect(pkg.name).toBe("cool-project");
+  });
+
+  it("substitutes {{VINEXT_VERSION}} in package.json", () => {
+    const projectPath = path.join(tmpDir, "my-app");
+    scaffold(defaultOpts({ projectPath, vinextVersion: "^0.5.0" }));
+    const pkg = readJson(projectPath, "package.json") as { dependencies: Record<string, string> };
+    expect(pkg.dependencies.vinext).toBe("^0.5.0");
+    expect(pkg.dependencies.vinext).not.toBe("latest");
+    expect(pkg.dependencies.vinext).not.toBe("{{VINEXT_VERSION}}");
   });
 
   it("substitutes {{WORKER_NAME}} in wrangler.jsonc", () => {

@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TEMPLATES_DIR = path.resolve(import.meta.dirname, "../templates");
+const TEMPLATES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../templates");
 
 describe("app-router template", () => {
   const dir = path.join(TEMPLATES_DIR, "app-router");
@@ -60,6 +61,20 @@ describe("app-router template", () => {
   it("package.json.tmpl has {{PROJECT_NAME}} placeholder", () => {
     const content = fs.readFileSync(path.join(dir, "package.json.tmpl"), "utf-8");
     expect(content).toContain("{{PROJECT_NAME}}");
+  });
+
+  it("package.json.tmpl has {{VINEXT_VERSION}} placeholder, not 'latest'", () => {
+    const content = fs.readFileSync(path.join(dir, "package.json.tmpl"), "utf-8");
+    expect(content).toContain("{{VINEXT_VERSION}}");
+    expect(content).not.toContain('"vinext": "latest"');
+  });
+
+  it("package.json.tmpl has devDependencies with @cloudflare/workers-types", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json.tmpl"), "utf-8"));
+    expect(pkg.devDependencies).toBeDefined();
+    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBeDefined();
+    expect(pkg.devDependencies.typescript).toBeDefined();
+    expect(pkg.devDependencies.wrangler).toBeDefined();
   });
 
   it("wrangler.jsonc.tmpl uses vinext entry (no custom worker)", () => {
@@ -128,5 +143,19 @@ describe("pages-router template", () => {
     const worker = fs.readFileSync(path.join(dir, "worker/index.ts"), "utf-8");
     expect(worker).toContain("virtual:vinext-server-entry");
     expect(worker).toContain("fetch");
+  });
+
+  it("package.json.tmpl has {{VINEXT_VERSION}} placeholder, not 'latest'", () => {
+    const content = fs.readFileSync(path.join(dir, "package.json.tmpl"), "utf-8");
+    expect(content).toContain("{{VINEXT_VERSION}}");
+    expect(content).not.toContain('"vinext": "latest"');
+  });
+
+  it("package.json.tmpl has devDependencies with @cloudflare/workers-types", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json.tmpl"), "utf-8"));
+    expect(pkg.devDependencies).toBeDefined();
+    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBeDefined();
+    expect(pkg.devDependencies.typescript).toBeDefined();
+    expect(pkg.devDependencies.wrangler).toBeDefined();
   });
 });

@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { main, parseArgs } from "../src/index.js";
+import { scaffold } from "../src/scaffold.js";
 
-// Mock scaffold module before any imports that reference it
+// Mock scaffold module
 vi.mock("../src/scaffold.js", () => ({
   scaffold: vi.fn(),
 }));
@@ -12,9 +14,6 @@ vi.mock("../src/scaffold.js", () => ({
 vi.mock("../src/prompts.js", () => ({
   runPrompts: vi.fn(),
 }));
-
-import { main, parseArgs } from "../src/index.js";
-import { scaffold } from "../src/scaffold.js";
 
 const mockedScaffold = vi.mocked(scaffold);
 
@@ -33,7 +32,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
     consoleErrors.push(args.join(" "));
   });
-  vi.spyOn(process, "exit").mockImplementation((code?: string | number | null | undefined) => {
+  vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
     exitCode = (code ?? 0) as number;
     throw new Error(`process.exit(${code})`);
   });
@@ -222,7 +221,7 @@ describe("main", () => {
     expect(consoleErrors.join(" ")).toContain("Invalid project name");
   });
 
-  it("'.' uses cwd basename as project name", async () => {
+  it("'.' uses cwd basename as project name (normalized)", async () => {
     // Create an empty temp dir to act as cwd so isDirectoryEmpty passes
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dot-test-"));
     const originalCwd = process.cwd;
@@ -231,9 +230,10 @@ describe("main", () => {
       await main([".", "-y", "--skip-install", "--no-git"]);
       expect(mockedScaffold).toHaveBeenCalledOnce();
       const opts = mockedScaffold.mock.calls[0][0];
-      // projectName should be the basename of the temp dir, not "."
+      // projectName should be the basename, normalized to lowercase
+      const expectedName = path.basename(tmpDir).toLowerCase();
       expect(opts.projectName).not.toBe(".");
-      expect(opts.projectName).toBe(path.basename(tmpDir));
+      expect(opts.projectName).toBe(expectedName);
       expect(opts.projectPath).toBe(tmpDir);
     } finally {
       process.cwd = originalCwd;
@@ -274,6 +274,30 @@ describe("main", () => {
     expect(mockedScaffold).toHaveBeenCalledOnce();
     const opts = mockedScaffold.mock.calls[0][0];
     expect(opts.projectName).toBe("my-app");
+  });
+
+  it("detects bare relative path as path not project name", async () => {
+    await main(["projects/my-app", "-y", "--skip-install", "--no-git"]);
+    expect(mockedScaffold).toHaveBeenCalledOnce();
+    const opts = mockedScaffold.mock.calls[0][0];
+    expect(opts.projectName).toBe("my-app");
+  });
+
+  it("'.' normalizes uppercase cwd basename", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "Vinext-Dot-Test-"));
+    const originalCwd = process.cwd;
+    process.cwd = () => tmpDir;
+    try {
+      await main([".", "-y", "--skip-install", "--no-git"]);
+      expect(mockedScaffold).toHaveBeenCalledOnce();
+      const opts = mockedScaffold.mock.calls[0][0];
+      // projectName should be the lowercased basename
+      expect(opts.projectName).toBe(path.basename(tmpDir).toLowerCase());
+      expect(opts.projectPath).toBe(tmpDir);
+    } finally {
+      process.cwd = originalCwd;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("prints success message after scaffolding", async () => {

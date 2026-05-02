@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf-8"));
 const VERSION: string = pkg.version;
 
-interface CliOptions {
+type CliOptions = {
   projectName?: string;
   template?: "app" | "pages";
   yes: boolean;
@@ -20,7 +20,7 @@ interface CliOptions {
   noGit: boolean;
   help: boolean;
   version: boolean;
-}
+};
 
 export function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
@@ -59,7 +59,7 @@ export function parseArgs(argv: string[]): CliOptions {
           console.error(`Invalid template: "${tmpl}". Must be "app" or "pages".`);
           process.exit(1);
         }
-        opts.template = tmpl;
+        opts.template = tmpl as "app" | "pages";
         break;
       }
       default:
@@ -134,15 +134,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     template = answers.template;
   }
 
-  // When a path is provided (absolute, or relative like ./my-app or ../my-app),
-  // use the resolved path for the directory and the basename as the project name.
+  // When a path is provided (absolute, relative like ./my-app or ../my-app,
+  // or bare relative like subdir/my-app), use the resolved path for the
+  // directory and the basename as the project name.
   let targetDir: string | undefined;
   const looksLikePath =
     path.isAbsolute(projectName) ||
     projectName.startsWith("./") ||
     projectName.startsWith("../") ||
     projectName.startsWith(".\\") ||
-    projectName.startsWith("..\\");
+    projectName.startsWith("..\\") ||
+    projectName.includes(path.sep) ||
+    projectName.includes("/");
 
   if (looksLikePath) {
     targetDir = path.resolve(projectName);
@@ -150,7 +153,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // Validate project name
-  const validation = validateProjectName(projectName);
+  let validation = validateProjectName(projectName);
   if (!validation.valid) {
     console.error(`Invalid project name: ${validation.message}`);
     process.exit(1);
@@ -160,6 +163,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (validation.valid && "useCwd" in validation && validation.useCwd) {
     targetDir = process.cwd();
     projectName = path.basename(process.cwd());
+    // Re-validate the cwd-derived name so normalization (e.g. lowercase) applies
+    validation = validateProjectName(projectName);
+    if (!validation.valid) {
+      console.error(`Invalid project name derived from cwd: ${validation.message}`);
+      process.exit(1);
+    }
   }
 
   // Use normalized name if available
@@ -186,6 +195,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     install: !opts.skipInstall,
     git: !opts.noGit,
     pm,
+    vinextVersion: `^${VERSION}`,
   });
 
   // Success message

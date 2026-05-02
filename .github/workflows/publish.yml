@@ -87,7 +87,7 @@ jobs:
 
       - name: Publish create-vinext-app (OIDC trusted publishing)
         working-directory: packages/create-vinext-app
-        run: npm publish --access public --provenance
+        run: vp pm publish --no-git-checks --access public -- --provenance
 
       - name: Tag release
         run: |

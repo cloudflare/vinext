@@ -4,16 +4,17 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { buildInstallCommand, type PackageManager } from "./install.js";
 
-export interface ScaffoldOptions {
+export type ScaffoldOptions = {
   projectPath: string;
   projectName: string;
   template: "app" | "pages";
   install: boolean;
   git: boolean;
   pm: PackageManager;
+  vinextVersion: string;
   /** Injectable exec for testing */
   _exec?: (cmd: string, args: string[], opts: { cwd: string }) => void;
-}
+};
 
 function defaultExec(cmd: string, args: string[], opts: { cwd: string }): void {
   execFileSync(cmd, args, { cwd: opts.cwd, stdio: "inherit" });
@@ -71,7 +72,7 @@ function processTmplFiles(dir: string, vars: Record<string, string>): void {
 }
 
 export function scaffold(options: ScaffoldOptions): void {
-  const { projectPath, projectName, template, install, git, pm } = options;
+  const { projectPath, projectName, template, install, git, pm, vinextVersion } = options;
   const exec = options._exec ?? defaultExec;
 
   // Create project directory
@@ -87,11 +88,11 @@ export function scaffold(options: ScaffoldOptions): void {
   copyDir(templateDir, projectPath);
 
   // Substitute .tmpl variables
-  // Template uses "vinext": "latest" in package.json. Pin to caret range once vinext reaches 1.0.
   const workerName = sanitizeWorkerName(projectName);
   processTmplFiles(projectPath, {
     "{{PROJECT_NAME}}": projectName,
     "{{WORKER_NAME}}": workerName,
+    "{{VINEXT_VERSION}}": vinextVersion,
   });
 
   // Rename _gitignore -> .gitignore
