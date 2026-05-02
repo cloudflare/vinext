@@ -89,6 +89,19 @@ const instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
 );
+const appPostMiddlewareContextPath = resolveEntryPath(
+  "../server/app-post-middleware-context.js",
+  import.meta.url,
+);
+const appRscErrorHandlerPath = resolveEntryPath(
+  "../server/app-rsc-error-handler.js",
+  import.meta.url,
+);
+const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
+const appHookWarningSuppressionPath = resolveEntryPath(
+  "../server/app-hook-warning-suppression.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -186,18 +199,12 @@ import {
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
 
-import {
-  normalizeReactFlightPreloadHints as __normalizeReactFlightPreloadHints,
-} from ${JSON.stringify(rscStreamHintsPath)};
-
-function renderToReadableStream(model, options) {
-  return __normalizeReactFlightPreloadHints(_renderToReadableStream(model, options));
-}
+const renderToReadableStream = createRscRenderer(_renderToReadableStream);
 import { createElement } from "react";
-import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { getNavigationContext as _getNavigationContext } from "next/navigation";
+import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${
@@ -207,7 +214,8 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
     : ""
 }
 import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
-import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { requestContextFromRequest, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { buildPostMwRequestContext } from ${JSON.stringify(appPostMiddlewareContextPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
 import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
@@ -223,9 +231,9 @@ import {
   readActionFormDataWithLimit as __readFormDataWithLimit,
 } from ${JSON.stringify(appServerActionExecutionPath)};
 import {
-  createRscOnErrorHandler as __createRscOnErrorHandler,
   sanitizeErrorForClient as __sanitizeErrorForClient,
 } from ${JSON.stringify(appRscErrorsPath)};
+import { createAppRscOnErrorHandler } from ${JSON.stringify(appRscErrorHandlerPath)};
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
@@ -286,35 +294,12 @@ function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRF
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 ${hasPagesDir ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.` : ""}
 
-// ALS used to suppress the expected "Invalid hook call" dev warning when
-// layout/page components are probed outside React's render cycle. Patching
-// console.error once at module load (instead of per-request) avoids the
-// concurrent-request issue where request A's suppression filter could
-// swallow real errors from request B.
-const _suppressHookWarningAls = new AsyncLocalStorage();
-const _origConsoleError = console.error;
-console.error = (...args) => {
-  if (_suppressHookWarningAls.getStore() === true &&
-      typeof args[0] === "string" &&
-      args[0].includes("Invalid hook call")) return;
-  _origConsoleError.apply(console, args);
-};
-
-// Set navigation context in the ALS-backed store. "use client" components
-// rendered during SSR need the pathname/searchParams/params but the SSR
-// environment has a separate module instance of next/navigation.
-// Use _getNavigationContext() to read the current context — never cache
-// it in a module-level variable (that would leak between concurrent requests).
-function setNavigationContext(ctx) {
-  _setNavigationContextOrig(ctx);
-  if (ctx === null) __setRootParams(null);
-}
-
-function __clearRequestContext() {
-  setHeadersContext(null);
-  setNavigationContext(null);
-  // setNavigationContext(null) already clears root params internally
-}
+// Suppress expected "Invalid hook call" dev warning when layout/page
+// components are probed outside React's render cycle. The import patches
+// console.error once at module load (side-effect) and exposes the ALS
+// so per-route dispatch can opt into suppression via .run(true, ...).
+import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressionPath)};
+import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -342,24 +327,6 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
       console.debug("[vinext] CLS:", layoutId, reason);
     }
   : undefined;
-
-function createRscOnErrorHandler(request, pathname, routePath) {
-  const requestInfo = {
-    path: pathname,
-    method: request.method,
-    headers: Object.fromEntries(request.headers.entries()),
-  };
-  const errorContext = {
-    routerKind: "App Router",
-    routePath: routePath || pathname,
-    routeType: "render",
-  };
-  return __createRscOnErrorHandler({
-    errorContext,
-    reportRequestError: _reportRequestError,
-    requestInfo,
-  });
-}
 
 ${imports.join("\n")}
 
@@ -418,20 +385,83 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   },
   fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    clearRequestContext() {
+      __clearRequestContext();
+    },
+    createRscOnErrorHandler(pathname, routePath) {
+      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+    },
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
-  },
-  makeThenableParams,
-  sanitizer: __sanitizeErrorForClient,
-  rscRenderer: renderToReadableStream,
-  getNavigationContext: _getNavigationContext,
-  resolveChildSegments: __resolveAppPageChildSegments,
-  clearRequestContext() {
-    __clearRequestContext();
-  },
-  createRscOnErrorHandler,
-});
+    getNavigationContext: _getNavigationContext,
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+    isRscRequest,
+    layoutModules: opts?.layouts ?? null,
+    loadSsrHandler() {
+      return import.meta.viteRsc.loadModule("ssr", "index");
+    },
+    makeThenableParams,
+    matchedParams: opts?.matchedParams ?? route?.params ?? {},
+    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
+    requestUrl: request.url,
+    resolveChildSegments: __resolveAppPageChildSegments,
+    rootForbiddenModule: rootForbiddenModule,
+    rootLayouts: rootLayouts,
+    rootNotFoundModule: rootNotFoundModule,
+    rootUnauthorizedModule: rootUnauthorizedModule,
+    route,
+    renderToReadableStream,
+    scriptNonce,
+    statusCode,
+  });
+}
+
+/** Convenience: render a not-found page (404) */
+async function renderNotFoundPage(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
+  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { matchedParams }, scriptNonce, middlewareContext);
+}
+
+/**
+ * Render an error.tsx boundary page when a server component or generateMetadata() throws.
+ * Returns null if no error boundary component is available for this route.
+ *
+ * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
+ * by the boundary). This matches that behavior intentionally.
+ */
+async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
+  return __renderAppPageErrorBoundary({
+    buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    clearRequestContext() {
+      __clearRequestContext();
+    },
+    createRscOnErrorHandler(pathname, routePath) {
+      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+    },
+    error,
+    getFontLinks: _getSSRFontLinks,
+    getFontPreloads: _getSSRFontPreloads,
+    getFontStyles: _getSSRFontStyles,
+    getNavigationContext: _getNavigationContext,
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+    isRscRequest,
+    loadSsrHandler() {
+      return import.meta.viteRsc.loadModule("ssr", "index");
+    },
+    makeThenableParams,
+    matchedParams: matchedParams ?? route?.params ?? {},
+    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
+    metadataRoutes,
+    requestUrl: request.url,
+    resolveChildSegments: __resolveAppPageChildSegments,
+    rootLayouts: rootLayouts,
+    route,
+    renderToReadableStream,
+    sanitizeErrorForClient: __sanitizeErrorForClient,
+    scriptNonce,
+  });
+}
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
@@ -477,28 +507,6 @@ ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 //    This eliminates ~250 lines of duplicated inline code and ensures the
 //    single-pass tokenizer in config-matchers.ts is used consistently
 //    (fixing the chained .replace() divergence flagged by CodeQL).
-
-/**
- * Build a request context from the live ALS HeadersContext, which reflects
- * any x-middleware-request-* header mutations applied by middleware.
- * Used for afterFiles and fallback rewrite has/missing evaluation — these
- * run after middleware in the App Router execution order.
- */
-function __buildPostMwRequestContext(request) {
-  const url = new URL(request.url);
-  const ctx = getHeadersContext();
-  if (!ctx) return requestContextFromRequest(request);
-  // ctx.cookies is a Map<string, string> (HeadersContext), but RequestContext
-  // requires a plain Record<string, string> for has/missing cookie evaluation
-  // (config-matchers.ts uses obj[key] not Map.get()). Convert here.
-  const cookiesRecord = Object.fromEntries(ctx.cookies);
-  return {
-    headers: ctx.headers,
-    cookies: cookiesRecord,
-    query: url.searchParams,
-    host: normalizeHost(ctx.headers.get("host"), url.hostname),
-  };
-}
 
 /**
  * Maximum server-action request body size.
@@ -711,7 +719,7 @@ ${prerenderPagesLoaderOption}
   // These run after middleware in the App Router execution order and should
   // evaluate has/missing conditions against middleware-modified headers.
   // When no middleware is present, this falls back to requestContextFromRequest.
-  const __postMwReqCtx = __buildPostMwRequestContext(request);
+  const __postMwReqCtx = buildPostMwRequestContext(request);
 
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   // In App Router execution order, beforeFiles runs after middleware so that
@@ -825,7 +833,7 @@ ${prerenderPagesLoaderOption}
       return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
     },
     createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
-      return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+      return createAppRscOnErrorHandler(_reportRequestError, actionRequest, actionPathname, routePattern);
     },
     createTemporaryReferenceSet,
     decodeReply,
@@ -1008,7 +1016,7 @@ ${prerenderPagesLoaderOption}
       __clearRequestContext();
     },
     createRscOnErrorHandler(pathname, routePath) {
-      return createRscOnErrorHandler(request, pathname, routePath);
+      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
     },
     debugClassification: __classDebug,
     dynamicConfig: route.page?.dynamic,
@@ -1076,7 +1084,7 @@ ${prerenderPagesLoaderOption}
     rootUnauthorizedModule,
     route,
     runWithSuppressedHookWarning(probe) {
-      return _suppressHookWarningAls.run(true, probe);
+      return suppressHookWarningAls.run(true, probe);
     },
     scheduleBackgroundRegeneration(key, renderFn, errorContext) {
       __triggerBackgroundRegeneration(key, renderFn, errorContext);
