@@ -1,6 +1,9 @@
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { devOnCaughtError } from "../packages/vinext/src/server/app-browser-error.js";
+import {
+  createOnUncaughtError,
+  devOnCaughtError,
+} from "../packages/vinext/src/server/app-browser-error.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_ROOT_LAYOUT_KEY,
@@ -505,6 +508,84 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
     try {
       devOnCaughtError(new Error("regression"), {});
       expect(consoleSpy.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+});
+
+describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
+  function withFakeWindow<T>(fn: (assignSpy: ReturnType<typeof vi.fn>) => T): T {
+    const assignSpy = vi.fn();
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      location: { assign: assignSpy },
+    };
+    try {
+      return fn(assignSpy);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = originalWindow;
+      }
+    }
+  }
+
+  it("hard-navigates to the recovery href when one is pending", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      withFakeWindow((assignSpy) => {
+        const handler = createOnUncaughtError(() => "/broken-route");
+        handler(new Error("render boom"), {});
+        expect(assignSpy).toHaveBeenCalledWith("/broken-route");
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("does not navigate when no navigation is in flight (initial hydration error)", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      withFakeWindow((assignSpy) => {
+        const handler = createOnUncaughtError(() => null);
+        handler(new Error("hydration boom"), {});
+        expect(assignSpy).not.toHaveBeenCalled();
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("logs the error and component stack regardless of recovery", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      withFakeWindow(() => {
+        const handler = createOnUncaughtError(() => null);
+        const err = new Error("boom");
+        handler(err, { componentStack: "\n    at Page (page.tsx:10)" });
+        const loggedFirst = consoleSpy.mock.calls[0]?.[0];
+        expect(loggedFirst).toBe(err);
+        expect(String(consoleSpy.mock.calls[1]?.[0])).toContain("page.tsx:10");
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("reads the recovery href lazily so newer navigations win", () => {
+    // Module-level pendingNavigationRecoveryHref is reassigned across
+    // navigations; the handler must read it at call time, not at construction.
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      withFakeWindow((assignSpy) => {
+        let current: string | null = "/first";
+        const handler = createOnUncaughtError(() => current);
+        current = "/second";
+        handler(new Error("late error"), {});
+        expect(assignSpy).toHaveBeenCalledWith("/second");
+      });
     } finally {
       consoleSpy.mockRestore();
     }

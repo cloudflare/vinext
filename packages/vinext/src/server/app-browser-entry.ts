@@ -75,7 +75,7 @@ import {
   type AppRouterState,
 } from "./app-browser-state.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
-import { devOnCaughtError } from "./app-browser-error.js";
+import { createOnUncaughtError, devOnCaughtError } from "./app-browser-error.js";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   getServerActionNotFoundClientMessage,
@@ -151,6 +151,12 @@ let browserRouterStateHasCommitted = false;
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
+// Most recent navigation target that has been dispatched but not yet committed.
+// Read by the onUncaughtError handler so a render error tearing down the tree
+// can land the browser on the URL the user was actually navigating to, instead
+// of stranding them on the previous URL with a blank page. Cleared once the
+// commit effect runs (URL update succeeded) or the navigation is superseded.
+let pendingNavigationRecoveryHref: string | null = null;
 
 function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
@@ -342,6 +348,8 @@ function createNavigationCommitEffect(
       pushHistoryStateWithoutNotify(historyState, "", href);
     }
 
+    // URL has been updated; the recovery hard-nav target is no longer needed.
+    pendingNavigationRecoveryHref = null;
     commitClientNavigationState(navId);
   };
 }
@@ -781,6 +789,10 @@ async function renderNavigationPayload(
     );
     activateNavigationSnapshot();
     snapshotActivated = true;
+    // Record the target so onUncaughtError can land the browser on this URL
+    // if the dispatched tree throws during render. Cleared in the commit
+    // effect on success and in the catch below on synchronous failure.
+    pendingNavigationRecoveryHref = targetHref;
     dispatchBrowserTree(
       pending.action.elements,
       navigationSnapshot,
@@ -807,6 +819,10 @@ async function renderNavigationPayload(
     }
     settlePendingBrowserRouterState(pendingRouterState);
     resolve?.();
+    // The outer navigateRsc catch handles the hard-nav for synchronous
+    // failures; clear the recovery href so a later async error from a stale
+    // navigation doesn't trigger a redundant hard-nav.
+    pendingNavigationRecoveryHref = null;
     throw error;
   }
 
@@ -1129,13 +1145,16 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     window.location.href,
   );
 
+  const onUncaughtError = createOnUncaughtError(() => pendingNavigationRecoveryHref);
   window.__VINEXT_RSC_ROOT__ = hydrateRoot(
     document,
     createElement(BrowserRoot, {
       initialElements: root,
       initialNavigationSnapshot,
     }),
-    import.meta.env.DEV ? { onCaughtError: devOnCaughtError } : undefined,
+    import.meta.env.DEV
+      ? { onCaughtError: devOnCaughtError, onUncaughtError }
+      : { onUncaughtError },
   );
   window.__VINEXT_HYDRATED_AT = performance.now();
 
