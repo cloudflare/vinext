@@ -79,6 +79,10 @@ const metadataRouteResponsePath = resolveEntryPath(
   import.meta.url,
 );
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
+const instrumentationRuntimePath = resolveEntryPath(
+  "../server/instrumentation-runtime.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -187,7 +191,12 @@ import { setNavigationContext as _setNavigationContextOrig, getNavigationContext
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
-${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
+${
+  instrumentationPath
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
+    : ""
+}
 import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
@@ -351,37 +360,10 @@ ${imports.join("\n")}
 
 ${
   instrumentationPath
-    ? `// Run instrumentation register() exactly once, lazily on the first request.
-// Previously this was a top-level await, which blocked the entire module graph
-// from finishing initialization until register() resolved — adding that latency
-// to every cold start. Moving it here preserves the "runs before any request is
-// handled" guarantee while not blocking V8 isolate initialization.
-// On Cloudflare Workers, module evaluation happens synchronously in the isolate
-// startup phase; a top-level await extends that phase and increases cold-start
-// wall time for all requests, not just the first.
-let __instrumentationInitialized = false;
-let __instrumentationInitPromise = null;
-async function __ensureInstrumentation() {
-  if (process.env.VINEXT_PRERENDER === "1") return;
-  if (__instrumentationInitialized) return;
-  if (__instrumentationInitPromise) return __instrumentationInitPromise;
-  __instrumentationInitPromise = (async () => {
-    if (typeof _instrumentation.register === "function") {
-      await _instrumentation.register();
-    }
-    // Store the onRequestError handler on globalThis so it is visible to
-    // reportRequestError() (imported as _reportRequestError above) regardless
-    // of which Vite environment module graph it is called from. With
-    // @vitejs/plugin-rsc the RSC and SSR environments run in the same Node.js
-    // process and share globalThis. With @cloudflare/vite-plugin everything
-    // runs inside the Worker so globalThis is the Worker's global — also correct.
-    if (typeof _instrumentation.onRequestError === "function") {
-      globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
-    }
-    __instrumentationInitialized = true;
-  })();
-  return __instrumentationInitPromise;
-}`
+    ? `// Lazy instrumentation initialisation is handled by ensureInstrumentationRegistered
+// (imported from vinext/instrumentation-runtime). The generated entry only passes
+// the user module in; all bookkeeping (initialized flag, shared promise, prerender
+// skip) lives in the typed helper so it can be unit-tested independently.`
     : ""
 }
 
@@ -698,8 +680,9 @@ export default async function handler(request, ctx) {
   ${
     instrumentationPath
       ? `// Ensure instrumentation.register() has run before handling the first request.
-  // This is a no-op after the first call (guarded by __instrumentationInitialized).
-  await __ensureInstrumentation();
+  // This is a no-op after the first call (guarded by the shared promise in
+  // ensureInstrumentationRegistered).
+  await __ensureInstrumentationRegistered(_instrumentation);
   `
       : ""
   }
