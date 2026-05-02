@@ -20,15 +20,13 @@ export function mergeOptimizeDepsExclude(
   ...excludeGroups: readonly (readonly string[])[]
 ): string[] {
   const seen = new Set<string>();
-  const merged: string[] = [];
 
   for (const group of excludeGroups) {
     for (const entry of group) {
       if (seen.has(entry)) continue;
       seen.add(entry);
-      merged.push(entry);
     }
   }
 
-  return merged;
+  return [...seen];
 }
