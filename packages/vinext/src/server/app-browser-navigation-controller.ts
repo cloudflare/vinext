@@ -3,8 +3,8 @@ import {
   activateNavigationSnapshot,
   clearPendingPathname,
   commitClientNavigationState,
-} from "../shims/navigation.js";
-import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
+} from "vinext/shims/navigation";
+import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import {
   createPendingNavigationCommit,
   resolveAndClassifyNavigationCommit,
@@ -89,13 +89,16 @@ type BrowserNavigationController = {
     navigationSnapshot: ClientNavigationRenderSnapshot,
     returnValue?: { ok: boolean; data: unknown },
   ): Promise<unknown>;
-  NavigationCommitSignal({
-    renderId,
-    children,
-  }: {
-    renderId: number;
-    children?: ReactNode;
-  }): ReactNode;
+  NavigationCommitSignal(
+    this: void,
+    {
+      renderId,
+      children,
+    }: {
+      renderId: number;
+      children?: ReactNode;
+    },
+  ): ReactNode;
 };
 
 export function createAppBrowserNavigationController(
@@ -271,13 +274,16 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function NavigationCommitSignal({
-    renderId,
-    children,
-  }: {
-    renderId: number;
-    children?: ReactNode;
-  }): ReactNode {
+  function NavigationCommitSignal(
+    this: void,
+    {
+      renderId,
+      children,
+    }: {
+      renderId: number;
+      children?: ReactNode;
+    },
+  ): ReactNode {
     useLayoutEffect(() => {
       drainPrePaintEffects(renderId);
 
