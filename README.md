@@ -4,7 +4,7 @@ The Next.js API surface, reimplemented on Vite.
 
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 
-> 🚧 **Experimental — under heavy development.** This project is an experiment in AI-driven software development. The vast majority of the code, tests, and documentation were written by AI (Claude Code). Humans direct architecture, priorities, and design decisions, but have not reviewed most of the code line-by-line. Treat this accordingly — there will be bugs, rough edges, and things that don't work. Use at your own risk.
+> 🚧 **Experimental — under heavy development.** This project is an experiment in AI-driven software development. The vast majority of the code, tests, and documentation are written by AI, with humans steering throughout: setting architecture and priorities, making design decisions, reviewing changes, triaging complex problems, and shipping fixes. There may be bugs, rough edges, or things that don't work. Use at your own risk.
 
 ## Quick start
 
@@ -124,7 +124,7 @@ Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to sk
 
 Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
 
-vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes — about 94% of the API surface works.
+vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes.
 
 vinext works everywhere. It natively supports Cloudflare Workers (with `vinext deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
@@ -161,7 +161,7 @@ Yes. Next.js supports [self-hosting](https://nextjs.org/docs/app/building-your-a
 The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This includes tests ported directly from the [Next.js test suite](https://github.com/vercel/next.js/tree/canary/test) and [OpenNext's Cloudflare conformance suite](https://github.com/opennextjs/opennextjs-cloudflare), covering routing, SSR, RSC, server actions, caching, metadata, middleware, streaming, and more. Vercel's [App Router Playground](https://github.com/vercel/next-app-router-playground) also runs on vinext as an integration test. See the [Tests](#tests) section and `tests/nextjs-compat/TRACKING.md` for details.
 
 **Who is reviewing this code?**
-Mostly nobody. This is an experiment in seeing how far AI-driven development can go. The test suite is the primary quality gate — not human code review. Contributions and code review are welcome.
+A mix of humans and AI agents. Humans review PRs before they merge, focused on behavior, structure, and long-term direction. We lean heavily on agent-driven code review to catch issues at PR time and across the codebase. The test suite is the primary quality gate. Outside contributions and deeper human code review are very welcome.
 
 **Why Vite?**
 Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
@@ -544,7 +544,7 @@ The `CacheHandler` interface matches Next.js 16's shape, so community adapters s
 
 ## What's NOT supported (and won't be)
 
-These are intentional exclusions:
+These are intentional exclusions. For things that are missing today but on the roadmap, see [Known limitations](#known-limitations) below.
 
 - **Vercel-specific features** — `@vercel/og` edge runtime, Vercel Analytics integration, Vercel KV/Blob/Postgres bindings. Use platform equivalents.
 - **AMP** — Deprecated since Next.js 13. `useAmp()` returns `false`.
@@ -555,6 +555,8 @@ These are intentional exclusions:
 - **Bug-for-bug parity with undocumented behavior** — If it's not in the Next.js docs, we probably don't replicate it.
 
 ## Known limitations
+
+These are gaps we'd like to close — distinct from the [intentional exclusions](#whats-not-supported-and-wont-be) above.
 
 - **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_vinext/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
 - **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
@@ -693,7 +695,7 @@ pnpm install
 pnpm run build
 ```
 
-This builds the vinext package to `packages/vinext/dist/` via `vp pack`. For active development, use `pnpm --filter vinext run dev` to run `vp pack --watch`.
+This builds the vinext package to `packages/vinext/dist/`. For active development, use `pnpm --filter vinext run dev` to rebuild on changes.
 
 To use it against an external Next.js app, link the built package:
 
