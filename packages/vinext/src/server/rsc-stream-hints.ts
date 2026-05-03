@@ -41,3 +41,9 @@ export function normalizeReactFlightPreloadHints(
     }),
   );
 }
+
+type RscRawRenderer = (model: unknown, options?: unknown) => ReadableStream<Uint8Array>;
+
+export function createRscRenderer(render: RscRawRenderer): RscRawRenderer {
+  return (model, options) => normalizeReactFlightPreloadHints(render(model, options));
+}

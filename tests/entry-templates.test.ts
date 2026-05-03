@@ -371,4 +371,14 @@ describe("App Router entry templates", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("generateRscEntry delegates React Flight preload hint normalization", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("createRscRenderer");
+    expect(code).toContain(
+      "const renderToReadableStream = createRscRenderer(_renderToReadableStream",
+    );
+    expect(code).not.toContain("const _hlFixRe =");
+  });
 });

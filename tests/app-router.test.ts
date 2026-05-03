@@ -3798,6 +3798,28 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  describe("RSC error runtime delegation", () => {
+    it("imports RSC error helpers from a normal server module", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+
+      expect(code).toContain("sanitizeErrorForClient as __sanitizeErrorForClient");
+      expect(code).toContain("server/app-rsc-errors.js");
+      expect(code).toContain("createAppRscOnErrorHandler");
+      expect(code).toContain("server/app-rsc-error-handler.js");
+    });
+
+    it("keeps request-specific onError wiring in the generated entry", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+
+      expect(code).toContain("createRscOnErrorHandler(pathname, routePath)");
+      expect(code).toContain(
+        "createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath)",
+      );
+      expect(code).not.toContain("function createRscOnErrorHandler(request, pathname, routePath)");
+      expect(code).not.toContain("return __createRscOnErrorHandler({");
+    });
+  });
 });
 
 describe("App Router middleware with NextRequest", () => {
@@ -4000,6 +4022,41 @@ describe("App Router middleware with NextRequest", () => {
   });
 });
 
+describe("RSC Flight hint fix", () => {
+  it("generateRscEntry delegates renderToReadableStream hint normalization", () => {
+    // The RSC entry should shadow renderToReadableStream with a wrapper that
+    // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
+    // so all consumers (SSR embed, client-side nav, server actions) get clean data.
+    const route: AppRoute = {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPaths: [],
+      forbiddenPath: null,
+      unauthorizedPaths: [],
+      unauthorizedPath: null,
+      routeSegments: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+      patternParts: ["/"],
+    };
+    const code = generateRscEntry("/tmp/test/app", [route]);
+    expect(code).toContain("_renderToReadableStream");
+    expect(code).toContain("createRscRenderer");
+    expect(code).toContain(
+      "const renderToReadableStream = createRscRenderer(_renderToReadableStream",
+    );
+  });
+});
 // ── Client reference preloading (Issue #256) ─────────────────────────────────
 //
 // On the first SSR request after server start, client reference modules are
@@ -4434,6 +4491,10 @@ describe("generateRscEntry ISR code generation", () => {
     // narrower than the full leaf params list.
     expect(code).toContain('rootParamNames: ["lang","locale"]');
     expect(code).not.toContain('rootParamNames: ["lang","locale","slug"]');
+    expect(code).toContain("__setRootParams(__pickRootParams(params, route.rootParamNames));");
+    expect(code).toContain("clearAppRequestContext as __clearRequestContext");
+    expect(code).toContain("server/app-request-context.js");
+    expect(code).not.toContain("function __clearRequestContext() {");
   });
 
   it("root params runtime getter returns current request values", async () => {
