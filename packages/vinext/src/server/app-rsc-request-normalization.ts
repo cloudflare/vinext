@@ -2,7 +2,6 @@ import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
 export type NormalizedRscRequest = {
   /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
@@ -18,6 +17,24 @@ export type NormalizedRscRequest = {
   /** Normalized x-vinext-mounted-slots header (deduplicated, sorted). null when absent or blank. */
   mountedSlotsHeader: string | null;
 };
+
+/**
+ * Normalize the `x-vinext-mounted-slots` header for request handling and cache keying.
+ *
+ * The browser sends mounted slot ids as a space-separated list in the order slots were
+ * rendered, which changes across navigations. This normalizes to a canonical form
+ * (sorted, deduplicated) so equivalent slot sets map to the same RSC cache entry.
+ *
+ * Exported for use in isr-cache (RSC cache key generation) and app-elements (outgoing
+ * x-vinext-mounted-slots construction).
+ */
+export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
+    .sort()
+    .join(" ");
+  return normalized || null;
+}
 
 /**
  * Normalize an App Router RSC request.

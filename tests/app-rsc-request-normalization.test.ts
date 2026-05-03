@@ -14,9 +14,9 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   normalizeRscRequest,
+  normalizeMountedSlotsHeader,
   type NormalizedRscRequest,
 } from "../packages/vinext/src/server/app-rsc-request-normalization.js";
-import { normalizeMountedSlotsHeader } from "../packages/vinext/src/server/app-mounted-slots-header.js";
 
 function req(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://localhost${path}`, { headers });
