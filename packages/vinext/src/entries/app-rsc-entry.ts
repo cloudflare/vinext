@@ -204,7 +204,7 @@ import { createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
 const renderToReadableStream = createRscRenderer(_renderToReadableStream);
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
-import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, setHeadersAccessPhase } from "next/headers";
+import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${
