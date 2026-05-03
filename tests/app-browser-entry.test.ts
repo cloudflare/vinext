@@ -392,21 +392,53 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("allocates render ids independently from navigation ids", () => {
-    const { controller, detach } = createControllerHarness();
+  it("uses render ids independent from navigation ids", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
 
     try {
-      expect(controller.beginNavigation()).toBe(1);
-      expect(controller.beginNavigation()).toBe(2);
-      expect(controller.allocateRenderId()).toBe(1);
-      expect(controller.allocateRenderId()).toBe(2);
+      // Navigation counter advances independently from render-id counter.
+      controller.beginNavigation(); // 1
+      controller.beginNavigation(); // 2
+      const navId = controller.beginNavigation(); // 3
+
+      const nextElements = Promise.resolve(
+        createResolvedElements("route:/dashboard", "/", null, {
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        }),
+      );
+
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => vi.fn(),
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+        useTransition: false,
+      });
+
+      // Yield microticks so the async function reaches dispatch and sets state.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // renderId is 1 (first render allocation), independent from navId = 3.
+      expect(stateRef.current.renderId).toBe(1);
+      expect(stateRef.current.routeId).toBe("route:/dashboard");
     } finally {
+      clearSpy.mockRestore();
       detach();
     }
   });
 
   it("settles the previous pending browser-router promise when a newer pending state begins", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
+    const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
 
     try {
       const firstPending = controller.beginPendingBrowserRouterState();
@@ -417,10 +449,11 @@ describe("app browser navigation controller", () => {
       await expect(firstPending.promise).resolves.toBe(stateRef.current);
       expect(firstPending.settled).toBe(true);
 
-      controller.settlePendingBrowserRouterState(secondPending);
+      controller.finalizeNavigation(controller.beginNavigation(), secondPending);
       await expect(secondPending.promise).resolves.toBe(stateRef.current);
       expect(secondPending.settled).toBe(true);
     } finally {
+      clearSpy.mockRestore();
       detach();
     }
   });
@@ -502,6 +535,53 @@ describe("app browser navigation controller", () => {
       await expect(renderPromise).resolves.toBeUndefined();
       expect(createNavigationCommitEffect).not.toHaveBeenCalled();
       expect(assign).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("renderNavigationPayload stays pending until NavigationCommitSignal settles the commit", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    const commitEffect = vi.fn();
+    const nextElements = Promise.resolve(
+      createResolvedElements("route:/dashboard", "/", null, {
+        "page:/dashboard": React.createElement("main", null, "dashboard"),
+      }),
+    );
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+        useTransition: false,
+      });
+
+      // Yield enough microticks for the async function to reach dispatch
+      // and return the committed promise.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Pre-paint effect is queued but not yet run (drainPrePaintEffects
+      // only fires inside NavigationCommitSignal's useLayoutEffect).
+      expect(commitEffect).not.toHaveBeenCalled();
+
+      // The promise must not resolve — NavigationCommitSignal has not
+      // mounted, so resolveCommittedNavigations has no way to fire.
+      const settled = await Promise.race([
+        renderPromise.then(() => true),
+        Promise.resolve().then(() => false),
+      ]);
+      expect(settled).toBe(false);
     } finally {
       detach();
     }

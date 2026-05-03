@@ -57,7 +57,6 @@ import {
 } from "./app-elements.js";
 import {
   createHistoryStateWithPreviousNextUrl,
-  createPendingNavigationCommit,
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
@@ -1157,36 +1156,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // Interception context on HMR re-renders is intentionally deferred:
         // preserving intercepted modal state across HMR reloads is out of scope
         // for the previousNextUrl mechanism.
-        const pending = await createPendingNavigationCommit({
-          currentState: browserNavigationController.getBrowserRouterState(),
-          nextElements: normalizeAppElementsPromise(
+        await browserNavigationController.hmrReplaceTree(
+          normalizeAppElementsPromise(
             createFromFetch<AppWireElements>(
               fetch(toRscUrl(window.location.pathname + window.location.search)),
             ),
           ),
           navigationSnapshot,
-          renderId: browserNavigationController.allocateRenderId(),
-          type: "replace",
-        });
-        // createPendingNavigationCommit awaits the new RSC payload. While
-        // suspended, the prior broken render can unmount BrowserRoot. Re-check
-        // before dispatching so a racing unmount doesn't surface as an
-        // initialized-setter error.
-        if (!browserNavigationController.hasBrowserRouterState()) {
-          return;
-        }
-        browserNavigationController.dispatchBrowserTree(
-          pending.action.elements,
-          navigationSnapshot,
-          pending.action.renderId,
-          "replace",
-          pending.interceptionContext,
-          pending.action.layoutFlags,
-          pending.previousNextUrl,
-          pending.routeId,
-          pending.rootLayoutTreePath,
-          null,
-          false,
         );
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);

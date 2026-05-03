@@ -41,7 +41,6 @@ type BrowserNavigationControllerDeps = {
 
 type BrowserNavigationController = {
   beginNavigation(): number;
-  allocateRenderId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
@@ -52,25 +51,6 @@ type BrowserNavigationController = {
   ): () => void;
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
-  settlePendingBrowserRouterState(pending: PendingBrowserRouterState | null | undefined): void;
-  resolvePendingBrowserRouterState(
-    pending: PendingBrowserRouterState | null | undefined,
-    action: AppRouterAction,
-  ): void;
-  queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void;
-  dispatchBrowserTree(
-    elements: AppElements,
-    navigationSnapshot: ClientNavigationRenderSnapshot,
-    renderId: number,
-    actionType: "navigate" | "replace" | "traverse",
-    interceptionContext: string | null,
-    layoutFlags: LayoutFlags,
-    previousNextUrl: string | null,
-    routeId: string,
-    rootLayoutTreePath: string | null,
-    pendingRouterState: PendingBrowserRouterState | null,
-    useTransitionMode: boolean,
-  ): void;
   renderNavigationPayload(options: {
     actionType: "navigate" | "replace" | "traverse";
     createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
@@ -89,6 +69,10 @@ type BrowserNavigationController = {
     navigationSnapshot: ClientNavigationRenderSnapshot,
     returnValue?: { ok: boolean; data: unknown },
   ): Promise<unknown>;
+  hmrReplaceTree(
+    nextElements: Promise<AppElements>,
+    navigationSnapshot: ClientNavigationRenderSnapshot,
+  ): Promise<void>;
   NavigationCommitSignal(
     this: void,
     {
@@ -107,6 +91,18 @@ export function createAppBrowserNavigationController(
   const commitClientNavigationStateImpl =
     deps.commitClientNavigationState ?? commitClientNavigationState;
 
+  // These are plain module-level variables (inside the controller closure),
+  // unlike ClientNavigationState which uses Symbol.for to survive multiple
+  // Vite module instances. The browser entry is loaded exactly once (via the
+  // RSC plugin's generated bootstrap), so the controller running in a single
+  // module instance is safe. If that assumption ever changes, these should be
+  // migrated to a Symbol.for-backed global.
+  //
+  // The most severe consequence of multiple instances would be Map fragmentation:
+  // pendingNavigationCommits and pendingNavigationPrePaintEffects would split
+  // across instances, so drainPrePaintEffects in one instance could never drain
+  // effects queued by the other, permanently leaking navigationSnapshotActiveCount
+  // and causing hooks to prefer stale snapshot values indefinitely.
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
   const pendingNavigationCommits = new Map<number, () => void>();
@@ -247,6 +243,17 @@ export function createAppBrowserNavigationController(
     pendingNavigationPrePaintEffects.set(renderId, effect);
   }
 
+  /**
+   * Run all queued pre-paint effects for renderIds up to and including the
+   * given renderId. When React supersedes a startTransition update (rapid
+   * clicks on same-route links), the superseded NavigationCommitSignal never
+   * mounts, so its pre-paint effect never fires. By draining all effects
+   * <= the committed renderId here, the winning transition cleans up after
+   * any superseded ones, keeping the counter balanced.
+   *
+   * Invariant: each superseded navigation gets a commitClientNavigationState()
+   * to balance the activateNavigationSnapshot() from its renderNavigationPayload call.
+   */
   function drainPrePaintEffects(upToRenderId: number): void {
     for (const [id, effect] of pendingNavigationPrePaintEffects) {
       if (id > upToRenderId) {
@@ -263,6 +270,12 @@ export function createAppBrowserNavigationController(
     }
   }
 
+  /**
+   * Resolve all pending navigation commits with renderId <= the committed renderId.
+   * Note: Map iteration handles concurrent deletion safely — entries are visited in
+   * insertion order and deletion doesn't affect the iterator's view of remaining entries.
+   * This pattern is also used in drainPrePaintEffects with the same semantics.
+   */
   function resolveCommittedNavigations(renderId: number): void {
     for (const [pendingId, resolve] of pendingNavigationCommits) {
       if (pendingId > renderId) {
@@ -272,6 +285,43 @@ export function createAppBrowserNavigationController(
       pendingNavigationCommits.delete(pendingId);
       resolve();
     }
+  }
+
+  async function hmrReplaceTree(
+    nextElements: Promise<AppElements>,
+    navigationSnapshot: ClientNavigationRenderSnapshot,
+  ): Promise<void> {
+    if (!hasBrowserRouterState()) return;
+
+    const currentState = getBrowserRouterState();
+    const renderId = allocateRenderId();
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      nextElements,
+      navigationSnapshot,
+      renderId,
+      type: "replace",
+    });
+
+    // createPendingNavigationCommit awaits the new RSC payload. While
+    // suspended, the prior broken render can unmount BrowserRoot. Re-check
+    // before dispatching so a racing unmount doesn't surface as an
+    // initialized-setter error.
+    if (!hasBrowserRouterState()) return;
+
+    dispatchBrowserTree(
+      pending.action.elements,
+      navigationSnapshot,
+      pending.action.renderId,
+      "replace",
+      pending.interceptionContext,
+      pending.action.layoutFlags,
+      pending.previousNextUrl,
+      pending.routeId,
+      pending.rootLayoutTreePath,
+      null,
+      false,
+    );
   }
 
   function NavigationCommitSignal(
@@ -293,6 +343,8 @@ export function createAppBrowserNavigationController(
 
       return () => {
         cancelAnimationFrame(frame);
+        // Resolve pending commits to prevent callers from hanging if React
+        // unmounts this component without committing (e.g., error boundary).
         resolveCommittedNavigations(renderId);
       };
     }, [renderId]);
@@ -328,6 +380,9 @@ export function createAppBrowserNavigationController(
 
     const applyAction = () => {
       if (pendingRouterState) {
+        // The programmatic navigation is already running inside React.startTransition
+        // (from router.push/replace/refresh), so resolving the deferred promise is
+        // sufficient — no additional startTransition wrapper is needed below.
         resolvePendingBrowserRouterState(pendingRouterState, action);
         return;
       }
@@ -441,6 +496,11 @@ export function createAppBrowserNavigationController(
   ): Promise<unknown> {
     const currentState = getBrowserRouterState();
     const startedNavigationId = activeNavigationId;
+    // Known limitation: if a same-URL navigation fully commits while this
+    // server action is awaiting resolveAndClassifyNavigationCommit(), the action
+    // can still dispatch its older payload afterward. The old pre-2c code had
+    // the same race, and Next.js has similar behavior. Tightening this would
+    // need a stronger commit-version gate than activeNavigationId alone.
     const { disposition, pending } = await resolveAndClassifyNavigationCommit({
       activeNavigationId,
       currentState,
@@ -472,6 +532,10 @@ export function createAppBrowserNavigationController(
       );
     }
 
+    // Same-URL server actions still return their action value even if the UI
+    // update was skipped due to a superseding navigation. That preserves the
+    // existing caller contract; a future Phase 2 router state model could make
+    // skipped UI updates observable to the caller without conflating them here.
     if (returnValue) {
       if (!returnValue.ok) {
         throw returnValue.data;
@@ -503,20 +567,16 @@ export function createAppBrowserNavigationController(
 
   return {
     beginNavigation,
-    allocateRenderId,
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,
     beginPendingBrowserRouterState,
-    settlePendingBrowserRouterState,
-    resolvePendingBrowserRouterState,
-    queuePrePaintNavigationEffect,
-    dispatchBrowserTree,
     finalizeNavigation,
     renderNavigationPayload,
     commitSameUrlNavigatePayload,
+    hmrReplaceTree,
     NavigationCommitSignal,
   };
 }
