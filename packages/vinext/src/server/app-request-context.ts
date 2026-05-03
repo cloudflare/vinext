@@ -24,6 +24,5 @@ export function setAppNavigationContext(ctx: NavigationContext | null): void {
  */
 export function clearAppRequestContext(): void {
   setHeadersContext(null);
-  setNavigationContextOrig(null);
-  setRootParams(null);
+  setAppNavigationContext(null);
 }

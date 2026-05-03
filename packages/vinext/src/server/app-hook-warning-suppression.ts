@@ -7,7 +7,7 @@ console.error = (...args: unknown[]) => {
   if (
     suppressHookWarningAls.getStore() === true &&
     typeof args[0] === "string" &&
-    (args[0] as string).includes("Invalid hook call")
+    args[0].includes("Invalid hook call")
   )
     return;
   _origConsoleError.apply(console, args);
