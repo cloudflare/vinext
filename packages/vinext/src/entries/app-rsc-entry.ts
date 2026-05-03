@@ -601,7 +601,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
-  const url = new URL(request.url);
 
   // ── Cross-origin request protection (dev only) ─────────────────────
   // Block requests from non-localhost origins to prevent data exfiltration.
