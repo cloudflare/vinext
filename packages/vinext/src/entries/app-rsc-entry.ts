@@ -38,7 +38,6 @@ const middlewareRequestHeadersPath = resolveEntryPath(
 );
 const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
-const routingUtilsPath = resolveEntryPath("../routing/utils.js", import.meta.url);
 const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
@@ -104,6 +103,10 @@ const appRscErrorHandlerPath = resolveEntryPath(
 const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
 const appHookWarningSuppressionPath = resolveEntryPath(
   "../server/app-hook-warning-suppression.js",
+  import.meta.url,
+);
+const appRscResponseFinalizerPath = resolveEntryPath(
+  "../server/app-rsc-response-finalizer.js",
   import.meta.url,
 );
 
@@ -221,10 +224,10 @@ import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSO
 import { requestContextFromRequest, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { normalizeRscRequest as __normalizeRscRequest } from ${JSON.stringify(appRscRequestNormalizationPath)};
 import { buildPostMwRequestContext } from ${JSON.stringify(appPostMiddlewareContextPath)};
-import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
-import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch } from ${JSON.stringify(routingUtilsPath)};
+import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { applyConfigHeadersToResponse, resolvePublicFileRoute, validateImageUrl, hasBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
+import { resolvePublicFileRoute, validateImageUrl, hasBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
+import { finalizeAppRscResponse as __finalizeAppRscResponse } from ${JSON.stringify(appRscResponseFinalizerPath)};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
@@ -522,23 +525,11 @@ export default async function handler(request, ctx) {
       }
       throw err;
     }
-    // Apply custom headers from next.config.js to non-redirect responses.
-    // Skip redirects (3xx) because Response.redirect() creates immutable headers,
-    // and Next.js doesn't apply custom headers to redirects anyway.
-    if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
-      if (__configHeaders.length) {
-        const url = new URL(request.url);
-        let pathname;
-        try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
-        ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-        applyConfigHeadersToResponse(response.headers, {
-          configHeaders: __configHeaders,
-          pathname,
-          requestContext: __reqCtx,
-        });
-      }
-    }
-    return response;
+    return __finalizeAppRscResponse(response, request, {
+      basePath: __basePath,
+      configHeaders: __configHeaders,
+      requestContext: __reqCtx,
+    });
     }, { route: () => new URL(request.url).pathname })
   );
 }
