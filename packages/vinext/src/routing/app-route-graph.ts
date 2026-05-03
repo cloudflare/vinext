@@ -749,22 +749,25 @@ function discoverInheritedParallelSlots(
   // Walk from appDir through each segment, tracking layout indices.
   // layoutIndex tracks which position in the route's layouts[] array corresponds
   // to a given directory. Only directories with a layout.tsx file increment.
+  // segmentIndex aligns each entry with `segments`: dirsToCheck[i] is reached
+  // after consuming segments[0..i-1], so segments.slice(i) are the segments
+  // below this directory (used to mirror inherited slot sub-pages).
   let currentDir = appDir;
-  const dirsToCheck: { dir: string; layoutIdx: number }[] = [];
+  const dirsToCheck: { dir: string; layoutIdx: number; segmentIndex: number }[] = [];
   let layoutIdx = findFile(appDir, "layout", matcher) ? 0 : -1;
-  dirsToCheck.push({ dir: appDir, layoutIdx });
+  dirsToCheck.push({ dir: appDir, layoutIdx, segmentIndex: 0 });
 
-  for (const segment of segments) {
-    currentDir = path.join(currentDir, segment);
+  for (let i = 0; i < segments.length; i++) {
+    currentDir = path.join(currentDir, segments[i]);
     if (findFile(currentDir, "layout", matcher)) {
       layoutIdx++;
     }
-    dirsToCheck.push({ dir: currentDir, layoutIdx });
+    dirsToCheck.push({ dir: currentDir, layoutIdx, segmentIndex: i + 1 });
   }
 
   const routeHasLayout = layoutIdx >= 0;
 
-  for (const { dir, layoutIdx: lvlLayoutIdx } of dirsToCheck) {
+  for (const { dir, layoutIdx: lvlLayoutIdx, segmentIndex } of dirsToCheck) {
     // Once a route has a root layout below app/, slots discovered before that
     // layout are above the root and cannot be owned by any layout in this route.
     // Layout-less routes keep their legacy slot metadata here; validation is separate.
@@ -773,6 +776,7 @@ function discoverInheritedParallelSlots(
     const isOwnDir = dir === routeDir;
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
     const slotsAtLevel = discoverParallelSlots(dir, appDir, matcher);
+    const segmentsBelow = segments.slice(segmentIndex);
 
     for (const slot of slotsAtLevel) {
       if (isOwnDir) {
@@ -780,13 +784,16 @@ function discoverInheritedParallelSlots(
         slot.layoutIndex = slotLayoutIdx;
         slotMap.set(slot.key, slot);
       } else {
-        // At an ancestor directory: use default.tsx as the page, not page.tsx
-        // (the slot's page.tsx is for the parent route, not this child route)
+        // At an ancestor directory: the slot's own page.tsx belongs to the
+        // parent route. Look for a mirrored sub-page at @slot/<segments-below>
+        // (e.g. @breadcrumbs/about/page.tsx for /about), falling back to
+        // default.tsx when no mirror exists.
+        const mirror = findMirroredSlotPage(slot.ownerDir, segmentsBelow, matcher);
         const inheritedSlot: ParallelSlot = {
           ...slot,
-          pagePath: null, // Don't use ancestor's page.tsx
+          pagePath: mirror?.pagePath ?? null,
           layoutIndex: slotLayoutIdx,
-          routeSegments: null,
+          routeSegments: mirror?.segments ?? null,
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
         slotMap.set(slot.key, inheritedSlot);
@@ -795,6 +802,57 @@ function discoverInheritedParallelSlots(
   }
 
   return Array.from(slotMap.values());
+}
+
+/**
+ * Look for a page file inside a parallel slot directory that mirrors the
+ * route's path below the slot's owner. Tries a literal filesystem match first
+ * (cheap), then enumerates the slot's sub-pages and matches by URL parts so
+ * that route groups on either side don't break the mirror — e.g. a route at
+ * (marketing)/about/page.tsx still pairs with @breadcrumbs/about/page.tsx.
+ * Dynamic markers (`[id]`, `[...slug]`) are preserved through the conversion,
+ * so route params continue to flow into the slot page under the same names.
+ * Returns the slot sub-page's absolute path and its raw filesystem segments,
+ * or null when no mirror matches.
+ */
+function findMirroredSlotPage(
+  slotDir: string,
+  segmentsBelow: readonly string[],
+  matcher: ValidFileMatcher,
+): { pagePath: string; segments: string[] } | null {
+  if (segmentsBelow.length === 0) return null;
+
+  // Literal filesystem match — fast path when route and slot share groups.
+  const literalDir = path.join(slotDir, ...segmentsBelow);
+  const literalPage = findFile(literalDir, "page", matcher);
+  if (literalPage) {
+    return { pagePath: literalPage, segments: [...segmentsBelow] };
+  }
+
+  // URL-parts match — handles route groups (which are filesystem-visible but
+  // URL-invisible) appearing on only one side. convertSegmentsToRouteParts
+  // strips `(group)`, `@slot`, and `.` while preserving dynamic markers.
+  const routeUrl = convertSegmentsToRouteParts([...segmentsBelow]);
+  if (!routeUrl || routeUrl.urlSegments.length === 0) return null;
+
+  for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
+    const slotSegments = relativePath.split(path.sep);
+    const slotUrl = convertSegmentsToRouteParts(slotSegments);
+    if (!slotUrl) continue;
+    if (urlPartsEqual(slotUrl.urlSegments, routeUrl.urlSegments)) {
+      return { pagePath, segments: slotSegments };
+    }
+  }
+
+  return null;
+}
+
+function urlPartsEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 /**
