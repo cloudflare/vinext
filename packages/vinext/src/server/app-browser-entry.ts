@@ -1117,7 +1117,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             ),
           ),
           navigationSnapshot,
-          renderId: browserNavigationController.beginNavigation(),
+          renderId: browserNavigationController.allocateRenderId(),
           type: "replace",
         });
         browserNavigationController.dispatchBrowserTree(

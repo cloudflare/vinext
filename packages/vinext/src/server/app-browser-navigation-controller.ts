@@ -41,6 +41,7 @@ type BrowserNavigationControllerDeps = {
 
 type BrowserNavigationController = {
   beginNavigation(): number;
+  allocateRenderId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
@@ -156,6 +157,11 @@ export function createAppBrowserNavigationController(
     return activeNavigationId;
   }
 
+  function allocateRenderId(): number {
+    nextNavigationRenderId += 1;
+    return nextNavigationRenderId;
+  }
+
   function hasBrowserRouterState(): boolean {
     return browserRouterStateRef !== null;
   }
@@ -265,13 +271,13 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  const NavigationCommitSignal = ({
+  function NavigationCommitSignal({
     renderId,
     children,
   }: {
     renderId: number;
     children?: ReactNode;
-  }): ReactNode => {
+  }): ReactNode {
     useLayoutEffect(() => {
       drainPrePaintEffects(renderId);
 
@@ -286,7 +292,7 @@ export function createAppBrowserNavigationController(
     }, [renderId]);
 
     return children;
-  };
+  }
 
   function dispatchBrowserTree(
     elements: AppElements,
@@ -343,7 +349,7 @@ export function createAppBrowserNavigationController(
     navId: number;
     useTransition?: boolean;
   }): Promise<void> {
-    const renderId = ++nextNavigationRenderId;
+    const renderId = allocateRenderId();
     let resolveCommitted: (() => void) | undefined;
     const committed = new Promise<void>((resolve) => {
       resolveCommitted = resolve;
@@ -417,10 +423,6 @@ export function createAppBrowserNavigationController(
       settlePendingBrowserRouterState(options.pendingRouterState);
       resolveCommitted?.();
       throw error;
-    } finally {
-      if (isCurrentNavigation(options.navId)) {
-        clearPendingPathname(options.navId);
-      }
     }
 
     return committed;
@@ -438,7 +440,7 @@ export function createAppBrowserNavigationController(
       currentState,
       navigationSnapshot,
       nextElements,
-      renderId: ++nextNavigationRenderId,
+      renderId: allocateRenderId(),
       startedNavigationId,
       type: "navigate",
     });
@@ -495,6 +497,7 @@ export function createAppBrowserNavigationController(
 
   return {
     beginNavigation,
+    allocateRenderId,
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,

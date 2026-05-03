@@ -389,6 +389,19 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("allocates render ids independently from navigation ids", () => {
+    const { controller, detach } = createControllerHarness();
+
+    try {
+      expect(controller.beginNavigation()).toBe(1);
+      expect(controller.beginNavigation()).toBe(2);
+      expect(controller.allocateRenderId()).toBe(1);
+      expect(controller.allocateRenderId()).toBe(2);
+    } finally {
+      detach();
+    }
+  });
+
   it("settles the previous pending browser-router promise when a newer pending state begins", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
 
