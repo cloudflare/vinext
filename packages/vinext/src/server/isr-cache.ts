@@ -23,7 +23,7 @@ import {
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
-import { normalizeMountedSlotsHeader } from "./app-rsc-request-normalization.js";
+import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 export { normalizeMountedSlotsHeader };
 
 export type ISRCacheEntry = {

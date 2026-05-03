@@ -14,9 +14,9 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   normalizeRscRequest,
-  normalizeMountedSlotsHeader,
   type NormalizedRscRequest,
 } from "../packages/vinext/src/server/app-rsc-request-normalization.js";
+import { normalizeMountedSlotsHeader } from "../packages/vinext/src/server/app-mounted-slots-header.js";
 
 function req(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://localhost${path}`, { headers });
@@ -254,6 +254,24 @@ describe("normalizeRscRequest — interception context sanitization", () => {
       ),
     );
     expect(result.interceptionContextHeader).toBe("(..)/(.)slot/nested");
+  });
+
+  it("strips null bytes from interception context header to prevent header injection", () => {
+    // new Request() rejects \0 in header values, so construct a structural fake.
+    const request = {
+      url: "http://localhost/page",
+      headers: {
+        get(name: string) {
+          if (name.toLowerCase() === "x-vinext-interception-context") {
+            return "foo\0bar";
+          }
+          return null;
+        },
+      },
+    } as unknown as Request;
+
+    const result = normalized(normalizeRscRequest(request, ""));
+    expect(result.interceptionContextHeader).toBe("foobar");
   });
 });
 
