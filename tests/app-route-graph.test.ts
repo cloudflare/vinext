@@ -228,6 +228,45 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("captures distinct slotPatternParts/slotParamNames when slot and route use different param names", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/[id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@breadcrumbs/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@breadcrumbs/shop/[name]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/shop/:id");
+      expect(route.parallelSlots[0]).toMatchObject({
+        name: "breadcrumbs",
+        pagePath: path.join(appDir, "@breadcrumbs/shop/[name]/page.tsx"),
+        routeSegments: ["shop", "[name]"],
+        slotPatternParts: ["shop", ":name"],
+        slotParamNames: ["name"],
+      });
+    });
+  });
+
+  it("mirrors when the slot is owned at an intermediate ancestor (not appDir)", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/items/detail/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@sidebar/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@sidebar/items/detail/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const detail = findRoute(graph.routes, "/shop/items/detail");
+      expect(detail.parallelSlots[0]).toMatchObject({
+        name: "sidebar",
+        pagePath: path.join(appDir, "shop/@sidebar/items/detail/page.tsx"),
+        defaultPath: path.join(appDir, "shop/@sidebar/default.tsx"),
+        routeSegments: ["items", "detail"],
+        slotPatternParts: ["shop", "items", "detail"],
+      });
+    });
+  });
+
   it("rejects page and route handlers that materialize to the same URL", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);

@@ -831,15 +831,16 @@ function discoverInheritedParallelSlots(
 
 /**
  * Look for a page file inside a parallel slot directory that mirrors the
- * route's path below the slot's owner. The match falls through three tiers,
- * each more permissive than the last:
+ * route's path below the slot's owner. The match falls through two tiers:
  *   1. Literal filesystem path — fast path when route and slot share shape.
- *   2. URL-parts equality — handles route groups appearing on only one side
- *      (e.g. `(marketing)/about` ↔ `@breadcrumbs/about`).
- *   3. Pattern compatibility — accepts slot patterns whose dynamic markers
- *      have different names than the route's (e.g. slot `[name]` for route
- *      `[id]`) or whose catch-alls subsume the route. The most-specific
- *      compatible sub-page wins.
+ *   2. Scored pattern compatibility — enumerate sub-pages, accept those
+ *      whose URL pattern can match the route's URL space (slot dynamic
+ *      markers may have different names than the route's, and slot
+ *      catch-alls may subsume the route), and pick the most-specific via
+ *      `scoreSlotPattern`. Exact URL-parts equality (e.g. through route
+ *      groups appearing on only one side, like `(marketing)/about` ↔
+ *      `@breadcrumbs/about`) naturally wins because all literal segments
+ *      score highest.
  *
  * Returns the slot sub-page's absolute path, its raw filesystem segments
  * (for `routeSegments`), and its URL parts / param names (for
@@ -873,8 +874,8 @@ function findMirroredSlotPage(
   const routeUrl = convertSegmentsToRouteParts([...segmentsBelow]);
   if (!routeUrl || routeUrl.urlSegments.length === 0) return null;
 
-  // Tiers 2+3: enumerate slot sub-pages, prefer URL-equal, then most-specific
-  // pattern-compatible match.
+  // Tier 2: enumerate slot sub-pages and pick the most-specific compatible
+  // pattern. Exact URL-parts matches naturally win the score.
   type Candidate = {
     pagePath: string;
     segments: string[];
@@ -913,8 +914,11 @@ function findMirroredSlotPage(
  * - `:name` (single dynamic) consumes exactly one segment, matching any
  *   route segment (literal or dynamic).
  * - Literal slot segments must equal the route's segment exactly; a literal
- *   slot segment paired with a dynamic route segment is rejected (we can't
- *   know statically whether the runtime value will equal the literal).
+ *   slot segment paired with a dynamic route segment is rejected because we
+ *   can't know statically whether the runtime value will equal the literal.
+ *   This also means a literal slot sub-page never matches a catch-all route
+ *   (e.g. slot `about/page.tsx` is not bound to a route `[...slug]`) — the
+ *   catch-all might or might not resolve to "about" at request time.
  */
 function patternsCompatible(slotParts: readonly string[], routeParts: readonly string[]): boolean {
   let i = 0;
@@ -939,15 +943,17 @@ function patternsCompatible(slotParts: readonly string[], routeParts: readonly s
 }
 
 /**
- * Score a slot pattern by specificity: literals beat single dynamics beat
- * optional catch-alls beat catch-alls. Used to pick the most-specific
- * mirror when multiple slot sub-pages are pattern-compatible.
+ * Score a slot pattern by specificity so the most-specific match wins:
+ *   literal > single dynamic > catch-all > optional catch-all.
+ *
+ * Required catch-all (`:name+`, ≥1 segment) is more constrained than the
+ * optional variant (`:name*`, ≥0 segments), so it scores higher.
  */
 function scoreSlotPattern(urlSegments: readonly string[]): number {
   let score = 0;
   for (const seg of urlSegments) {
-    if (seg.endsWith("+")) score += 1;
-    else if (seg.endsWith("*")) score += 2;
+    if (seg.endsWith("*")) score += 1;
+    else if (seg.endsWith("+")) score += 2;
     else if (seg.startsWith(":")) score += 3;
     else score += 4;
   }

@@ -220,6 +220,8 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
       if (!patternParts || patternParts.length === 0) continue;
       // Skip when every slot param is already a route param — the route's
       // matched params already carry the values the slot page expects.
+      // Empty `paramNames` (slot pattern has no dynamic markers) also skips:
+      // there's nothing to extract, so the route's matched params suffice.
       if (paramNames && paramNames.every((name) => routeParamSet.has(name))) continue;
 
       if (urlParts === null) {
