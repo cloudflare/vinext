@@ -25,19 +25,12 @@ const DEFAULT_EXPIRE_TIME = 31_536_000;
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
-const appRscRequestNormalizationPath = resolveEntryPath(
-  "../server/app-rsc-request-normalization.js",
-  import.meta.url,
-);
-const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
-const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
-const appMiddlewarePath = resolveEntryPath("../server/app-middleware.js", import.meta.url);
 const middlewareRequestHeadersPath = resolveEntryPath(
   "../server/middleware-request-headers.js",
   import.meta.url,
 );
-const requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
+const appRscHandlerPath = resolveEntryPath("../server/app-rsc-handler.js", import.meta.url);
 const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
@@ -47,7 +40,6 @@ const appServerActionExecutionPath = resolveEntryPath(
   import.meta.url,
 );
 const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
-const implicitTagsPath = resolveEntryPath("../server/implicit-tags.js", import.meta.url);
 const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
 const appFallbackRendererPath = resolveEntryPath(
   "../server/app-fallback-renderer.js",
@@ -60,42 +52,22 @@ const appPageRouteWiringPath = resolveEntryPath(
 );
 const appPageHeadPath = resolveEntryPath("../server/app-page-head.js", import.meta.url);
 const appPageParamsPath = resolveEntryPath("../server/app-page-params.js", import.meta.url);
-const appPageResponsePath = resolveEntryPath("../server/app-page-response.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
-const cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const appRscRouteMatchingPath = resolveEntryPath(
   "../server/app-rsc-route-matching.js",
   import.meta.url,
 );
-const appPrerenderEndpointsPath = resolveEntryPath(
-  "../server/app-prerender-endpoints.js",
-  import.meta.url,
-);
-const prerenderWorkUnitSetupPath = resolveEntryPath(
-  "../server/prerender-work-unit-setup.js",
-  import.meta.url,
-);
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
-const rootParamsShimPath = resolveEntryPath("../shims/root-params.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
-const metadataRouteResponsePath = resolveEntryPath(
-  "../server/metadata-route-response.js",
-  import.meta.url,
-);
 const appPageElementBuilderPath = resolveEntryPath(
   "../server/app-page-element-builder.js",
   import.meta.url,
 );
-const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
 const instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
-  import.meta.url,
-);
-const appPostMiddlewareContextPath = resolveEntryPath(
-  "../server/app-post-middleware-context.js",
   import.meta.url,
 );
 const appRscErrorHandlerPath = resolveEntryPath(
@@ -105,10 +77,6 @@ const appRscErrorHandlerPath = resolveEntryPath(
 const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
 const appHookWarningSuppressionPath = resolveEntryPath(
   "../server/app-hook-warning-suppression.js",
-  import.meta.url,
-);
-const appRscResponseFinalizerPath = resolveEntryPath(
-  "../server/app-rsc-response-finalizer.js",
   import.meta.url,
 );
 
@@ -196,9 +164,6 @@ async function __loadPrerenderPagesRoutes() {
 }
 `
     : "";
-  const prerenderPagesLoaderOption = hasPagesDir
-    ? "    loadPagesRoutes: __loadPrerenderPagesRoutes,\n"
-    : "";
 
   return `
 import {
@@ -222,15 +187,9 @@ ${
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
-import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
-import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
-import { normalizeRscRequest as __normalizeRscRequest } from ${JSON.stringify(appRscRequestNormalizationPath)};
-import { buildPostMwRequestContext } from ${JSON.stringify(appPostMiddlewareContextPath)};
+import { createAppRscHandler as __createAppRscHandler } from ${JSON.stringify(appRscHandlerPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { resolvePublicFileRoute, validateImageUrl, hasBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
-import { finalizeAppRscResponse as __finalizeAppRscResponse } from ${JSON.stringify(appRscResponseFinalizerPath)};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
 } from ${JSON.stringify(appRouteHandlerDispatchPath)};
@@ -266,9 +225,6 @@ import {
   collectAppPageSearchParams as __collectAppPageSearchParams,
 } from ${JSON.stringify(appPageHeadPath)};
 import {
-  mergeMiddlewareResponseHeaders as __mergeMiddlewareResponseHeaders,
-} from ${JSON.stringify(appPageResponsePath)};
-import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
 import {
@@ -278,18 +234,10 @@ import {
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
 } from ${JSON.stringify(appSegmentConfigPath)};
-import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(cspPath)};
-import { buildPageCacheTags } from ${JSON.stringify(implicitTagsPath)};
-import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
-import { setRootParams as __setRootParams, pickRootParams as __pickRootParams } from ${JSON.stringify(rootParamsShimPath)};
 import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
-import { ensureFetchPatch as _ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/fetch-cache";
 import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
-import {
-  handleAppPrerenderEndpoint as __handleAppPrerenderEndpoint,
-} from ${JSON.stringify(appPrerenderEndpointsPath)};
 import {
   appIsrHtmlKey as __isrHtmlKey,
   appIsrRscKey as __isrRscKey,
@@ -300,10 +248,7 @@ import {
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
-import { runWithPrerenderWorkUnit as __runWithPrerenderWorkUnit } from ${JSON.stringify(prerenderWorkUnitSetupPath)};
-import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
-import { flattenErrorCauses as __flattenErrorCauses } from ${JSON.stringify(errorCausePath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
@@ -316,13 +261,6 @@ ${hasPagesDir ? `// Pages Router routes are loaded lazily from the SSR environme
 // so per-route dispatch can opt into suppression via .run(true, ...).
 import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressionPath)};
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
-
-function __resolveRouteFetchCacheMode(route) {
-  return __resolveAppPageFetchCacheMode({
-    layouts: route.layouts,
-    page: route.page,
-  });
-}
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -350,6 +288,13 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
       console.debug("[vinext] CLS:", layoutId, reason);
     }
   : undefined;
+
+function __resolveRouteFetchCacheMode(route) {
+  return __resolveAppPageFetchCacheMode({
+    layouts: route.layouts,
+    page: route.page,
+  });
+}
 
 ${imports.join("\n")}
 
@@ -394,6 +339,9 @@ const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
 
+const createRscOnErrorHandler = (request, pathname, routePath) =>
+  createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+
 const __fallbackRenderer = __createAppFallbackRenderer({
   rootBoundaries: {
     rootForbiddenModule,
@@ -421,7 +369,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
     __clearRequestContext();
   },
   createRscOnErrorHandler(request, pathname, routePath) {
-    return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+    return createRscOnErrorHandler(request, pathname, routePath);
   },
 });
 
@@ -463,13 +411,6 @@ const __expireTime = ${JSON.stringify(expireTime)};
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
-// ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
-//    external URL proxy, cookie parsing, and request context are imported from
-//    config-matchers.ts and request-pipeline.ts (see import statements above).
-//    This eliminates ~250 lines of duplicated inline code and ensures the
-//    single-pass tokenizer in config-matchers.ts is used consistently
-//    (fixing the chained .replace() divergence flagged by CodeQL).
-
 /**
  * Maximum server-action request body size.
  * Configurable via experimental.serverActions.bodySizeLimit in next.config.
@@ -497,410 +438,148 @@ ${routes
   .join("\n")}
 };
 
-export default async function handler(request, ctx) {
-  ${
-    instrumentationPath
-      ? `// Ensure instrumentation.register() has run before handling the first request.
-  // This is a no-op after the first call (guarded by the shared promise in
-  // ensureInstrumentationRegistered).
-  await __ensureInstrumentationRegistered(_instrumentation);
-  `
-      : ""
-  }
-  // Wrap the entire request in a single unified ALS scope for per-request
-  // isolation. All state modules (headers, navigation, cache, fetch-cache,
-  // execution-context) read from this store via isInsideUnifiedScope().
-  const headersCtx = headersContextFromRequest(request);
-  const __uCtx = _createUnifiedCtx({
-    headersContext: headersCtx,
-    executionContext: ctx ?? _getRequestExecutionContext() ?? null,
-    unstableCacheRevalidation: "background",
-  });
-  return _runWithUnifiedCtx(__uCtx, () =>
-    __runWithPrerenderWorkUnit(async () => {
-    _ensureFetchPatch();
-    const __reqCtx = requestContextFromRequest(request);
-    // Per-request container for middleware state. Passed into
-    // _handleRequest which fills in .headers and .status;
-    // avoids module-level variables that race on Workers.
-    const _mwCtx = { headers: null, requestHeaders: null, status: null };
-    let response;
-    try {
-      response = await _handleRequest(request, __reqCtx, _mwCtx);
-    } catch (err) {
-      // Dev only: embed err.cause chain into err.message/err.stack so Vite's
-      // dev-server "Internal server error:" logger (which builds output from
-      // message + stack only) reveals the underlying root cause (ECONNREFUSED,
-      // role missing, workerd socket error, etc.) instead of dropping it.
-      // Skipped in production because Node's util.inspect / workerd's logger
-      // already render .cause natively, so flattening would double-print it.
-      // NODE_ENV is build-time-replaced by Vite, so the prod bundle compiles
-      // this branch out entirely.
-      if (process.env.NODE_ENV !== "production") {
-        __flattenErrorCauses(err);
-      }
-      throw err;
-    }
-    return __finalizeAppRscResponse(response, request, {
-      basePath: __basePath,
-      configHeaders: __configHeaders,
-      requestContext: __reqCtx,
-    });
-    }, { route: () => new URL(request.url).pathname })
-  );
-}
-
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
-  // __reqStart is included in the timing header so the Node logging middleware
-  // can compute true compile time as: handlerStart - middlewareStart.
-  // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
-
-  // ── Cross-origin request protection (dev only) ─────────────────────
-  // Block requests from non-localhost origins to prevent data exfiltration.
-  // Skipped in production — Vite replaces NODE_ENV at build time.
-  if (process.env.NODE_ENV !== "production") {
-    const __originBlock = __validateDevRequestOrigin(request);
-    if (__originBlock) return __originBlock;
-  }
-
-  // Normalize the request: protocol-relative guard, strict percent-decode,
-  // path normalization, basePath check/strip, RSC detection, and header sanitization.
-  const __norm = __normalizeRscRequest(request, __basePath);
-  if (__norm instanceof Response) return __norm;
-  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader: __mountedSlotsHeader } = __norm;
-  let { pathname, cleanPathname } = __norm;
-
-  const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
-    isPrerenderEnabled() {
-      return process.env.VINEXT_PRERENDER === "1";
-    },
-${prerenderPagesLoaderOption}
-    pathname,
-    rootParamNamesByPattern: rootParamNamesMap,
-    staticParamsMap: generateStaticParamsMap,
-  });
-  if (__prerenderEndpointResponse) return __prerenderEndpointResponse;
-
-  // Trailing slash normalization (redirect to canonical form)
-  const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
-  if (__tsRedirect) return __tsRedirect;
-
-  // ── Apply redirects from next.config.js ───────────────────────────────
-  if (__configRedirects.length) {
-    // Strip .rsc suffix before matching redirect rules - RSC (client-side nav) requests
-    // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
-    // /some/path). Without this, soft-nav fetches bypass all config redirects.
-    const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __redir = matchRedirect(__redirPathname, __configRedirects, __reqCtx);
-    if (__redir) {
-      const __redirDest = sanitizeDestination(
-        __basePath &&
-          !isExternalUrl(__redir.destination) &&
-          !hasBasePath(__redir.destination, __basePath)
-          ? __basePath + __redir.destination
-          : __redir.destination
-      );
-      return new Response(null, {
-        status: __redir.permanent ? 308 : 307,
-        headers: { Location: __redirDest },
-      });
-    }
-  }
-
-  // Middleware response headers and custom rewrite status are stored in
-  // _mwCtx (per-request container) so handler() can merge them into
-  // every response path without module-level state that races on Workers.
-
-  ${
-    middlewarePath
-      ? `
-  const __mwResult = await __applyAppMiddleware({
-    basePath: __basePath,
-    cleanPathname,
-    context: _mwCtx,
-    i18nConfig: __i18nConfig,
-    isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
-    module: middlewareModule,
-    request,
-  });
-  if (__mwResult.kind === "response") return __mwResult.response;
-  cleanPathname = __mwResult.cleanPathname;
-  if (__mwResult.search !== null) {
-    url.search = __mwResult.search;
-  }
-  `
-      : ""
-  }
-
-  const _scriptNonce = __getScriptNonceFromHeaderSources(request.headers, _mwCtx.headers);
-
-  // Build post-middleware request context for afterFiles/fallback rewrites.
-  // These run after middleware in the App Router execution order and should
-  // evaluate has/missing conditions against middleware-modified headers.
-  // When no middleware is present, this falls back to requestContextFromRequest.
-  const __postMwReqCtx = buildPostMwRequestContext(request);
-
-  // ── Apply beforeFiles rewrites from next.config.js ────────────────────
-  // In App Router execution order, beforeFiles runs after middleware so that
-  // has/missing conditions can evaluate against middleware-modified headers.
-  if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
-    if (__rewritten) {
-      if (isExternalUrl(__rewritten)) {
-        __clearRequestContext();
-        return proxyExternalRequest(request, __rewritten);
-      }
-      cleanPathname = __rewritten;
-    }
-  }
-
-  // ── Image optimization passthrough (dev mode — no transformation) ───────
-  if (cleanPathname === "/_vinext/image") {
-    const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
-    if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
-    return Response.redirect(new URL(__imgResult, url.origin).href, 302);
-  }
-
-  const metadataRouteResponse = await __handleMetadataRouteRequest({
-    metadataRoutes,
-    cleanPathname,
-    makeThenableParams,
-  });
-  if (metadataRouteResponse) return metadataRouteResponse;
-
-  // Serve public/ files as filesystem routes after middleware and before
-  // afterFiles/fallback rewrites, matching Next.js routing semantics.
-  const __publicFileResponse = resolvePublicFileRoute({
-    cleanPathname,
-    middlewareContext: _mwCtx,
-    pathname,
-    publicFiles: __publicFiles,
-    request,
-  });
-  if (__publicFileResponse) {
+export default __createAppRscHandler({
+  basePath: __basePath,
+  clearRequestContext() {
     __clearRequestContext();
-    return __publicFileResponse;
-  }
-
-  // Set navigation context for Server Components.
-  // Note: Headers context is already set by runWithRequestContext in the handler wrapper.
-  setNavigationContext({
-    pathname: cleanPathname,
-    searchParams: url.searchParams,
-    params: {},
-  });
-
-  // Handle server action POST requests
-  const actionId = request.headers.get("x-rsc-action") ?? request.headers.get("next-action");
-  const actionContentType = request.headers.get("content-type") || "";
-  const progressiveActionResponse = await __handleProgressiveServerActionRequest({
-    actionId,
-    allowedOrigins: __allowedOrigins,
+  },
+  configHeaders: __configHeaders,
+  configRedirects: __configRedirects,
+  configRewrites: __configRewrites,
+  dispatchMatchedPage({
     cleanPathname,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    contentType: actionContentType,
-    decodeAction,
-    getAndClearPendingCookies,
-    getDraftModeCookieHeader,
-    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
-    middlewareHeaders: _mwCtx.headers,
-    readFormDataWithLimit: __readFormDataWithLimit,
-    reportRequestError: _reportRequestError,
-    request,
-    setHeadersAccessPhase,
-  });
-  if (progressiveActionResponse) return progressiveActionResponse;
-
-  const serverActionResponse = await __handleServerActionRscRequest({
-    actionId,
-    allowedOrigins: __allowedOrigins,
-    buildPageElement({
-      route: actionRoute,
-      params: actionParams,
-      cleanPathname: actionCleanPathname,
-      interceptOpts,
-      searchParams,
-      isRscRequest: actionIsRscRequest,
-      request: actionRequest,
-      mountedSlotsHeader,
-    }) {
-      return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
-        opts: interceptOpts,
-        searchParams,
-        isRscRequest: actionIsRscRequest,
-        request: actionRequest,
-        mountedSlotsHeader,
-      });
-    },
-    cleanPathname,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    contentType: actionContentType,
-    createNotFoundElement(actionRouteId) {
-      return {
-        [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-        __route: actionRouteId,
-        __rootLayout: null,
-        [actionRouteId]: createElement("div", null, "Page not found"),
-      };
-    },
-    createPayloadRouteId(pathnameToRender, interceptionContext) {
-      return __createAppPayloadRouteId(pathnameToRender, interceptionContext);
-    },
-    createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
-      return createAppRscOnErrorHandler(_reportRequestError, actionRequest, actionPathname, routePattern);
-    },
-    createTemporaryReferenceSet,
-    decodeReply,
-    findIntercept(pathnameToMatch) {
-      return findIntercept(pathnameToMatch, interceptionContextHeader);
-    },
-    getAndClearPendingCookies,
-    getDraftModeCookieHeader,
-    getRouteParamNames(sourceRoute) {
-      return sourceRoute.params;
-    },
-    getSourceRoute(sourceRouteIndex) {
-      return routes[sourceRouteIndex];
-    },
+    handlerStart,
+    interceptionContext,
     isRscRequest,
-    loadServerAction,
-    matchRoute(pathnameToMatch) {
-      return matchRoute(pathnameToMatch);
-    },
-    maxActionBodySize: __MAX_ACTION_BODY_SIZE,
-    middlewareHeaders: _mwCtx.headers,
-    middlewareStatus: _mwCtx.status,
-    mountedSlotsHeader: __mountedSlotsHeader,
-    readBodyWithLimit: __readBodyWithLimit,
-    readFormDataWithLimit: __readFormDataWithLimit,
-    renderToReadableStream,
-    reportRequestError: _reportRequestError,
-    resolveRouteFetchCacheMode(actionRoute) {
-      return __resolveRouteFetchCacheMode(actionRoute);
-    },
-    request,
-    sanitizeErrorForClient(error) {
-      return __sanitizeErrorForClient(error);
-    },
-    searchParams: url.searchParams,
-    setHeadersAccessPhase,
-    setNavigationContext,
-    toInterceptOpts(intercept) {
-      return {
-        interceptionContext: interceptionContextHeader,
-        interceptLayouts: intercept.interceptLayouts,
-        interceptSlotKey: intercept.slotKey,
-        interceptPage: intercept.page,
-        interceptParams: intercept.matchedParams,
-      };
-    },
-  });
-  if (serverActionResponse) return serverActionResponse;
-
-  // ── Apply afterFiles rewrites from next.config.js ──────────────────────
-  if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
-    if (__afterRewritten) {
-      if (isExternalUrl(__afterRewritten)) {
-        __clearRequestContext();
-        return proxyExternalRequest(request, __afterRewritten);
-      }
-      cleanPathname = __afterRewritten;
-    }
-  }
-
-  let match = matchRoute(cleanPathname);
-
-  // ── Fallback rewrites from next.config.js (if no route matched) ───────
-  if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
-    if (__fallbackRewritten) {
-      if (isExternalUrl(__fallbackRewritten)) {
-        __clearRequestContext();
-        return proxyExternalRequest(request, __fallbackRewritten);
-      }
-      cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname);
-    }
-  }
-
-  if (!match) {
-    ${
-      hasPagesDir
-        ? `
-    // ── Pages Router fallback ────────────────────────────────────────────
-    // When a request doesn't match any App Router route, delegate to the
-    // Pages Router handler (available in the SSR environment). This covers
-    // both production request serving and prerender fetches from wrangler.
-    // RSC requests (.rsc suffix or Accept: text/x-component) cannot be
-    // handled by the Pages Router, so skip the delegation for those.
-    if (!isRscRequest) {
-      const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-      if (typeof __pagesEntry.renderPage === "function") {
-        const __pagesRequestHeaders = _mwCtx.requestHeaders
-          ? __buildRequestHeadersFromMiddlewareResponse(request.headers, _mwCtx.requestHeaders)
-          : null;
-        const __pagesRequest = __pagesRequestHeaders
-          ? new Request(request.url, { method: request.method, headers: __pagesRequestHeaders })
-          : request;
-        // Use segment-wise decoding to preserve encoded path delimiters (%2F).
-        // decodeURIComponent would turn /admin%2Fpanel into /admin/panel,
-        // changing the path structure and bypassing middleware matchers.
-        // Ported from Next.js: packages/next/src/server/lib/router-utils/decode-path-params.ts
-        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/decode-path-params.ts
-        const __pagesRes = await __pagesEntry.renderPage(
-          __pagesRequest,
-          __decodePathParams(url.pathname) + (url.search || ""),
-          {},
-          undefined,
-          _mwCtx.requestHeaders,
-        );
-        // Only return the Pages Router response if it matched a route
-        // (non-404). A 404 means the path isn't a Pages route either,
-        // so fall through to the App Router not-found page below.
-        if (__pagesRes.status !== 404) {
-          __clearRequestContext();
-          return __pagesRes;
-        }
-      }
-    }
-    `
-        : ""
-    }
-    // Render custom not-found page if available, otherwise plain 404
-    const notFoundResponse = await __fallbackRenderer.renderNotFound(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
-    if (notFoundResponse) return notFoundResponse;
-    __clearRequestContext();
-    const notFoundHeaders = new Headers();
-    __mergeMiddlewareResponseHeaders(notFoundHeaders, _mwCtx.headers);
-    return new Response("Not Found", { status: 404, headers: notFoundHeaders });
-  }
-
-  const { route, params } = match;
-
-  // Update navigation context with matched params
-  setNavigationContext({
-    pathname: cleanPathname,
-    searchParams: url.searchParams,
+    middlewareContext,
+    mountedSlotsHeader,
     params,
-  });
-  __setRootParams(__pickRootParams(params, route.rootParamNames));
-
-  // Handle route.ts API handlers
-  if (route.routeHandler) {
-    setCurrentFetchSoftTags(
-      buildPageCacheTags(cleanPathname, [], route.routeSegments, "route"),
-    );
+    request,
+    route,
+    scriptNonce,
+    searchParams,
+  }) {
+    const PageComponent = route.page?.default;
+    const __segmentConfig = __resolveAppPageSegmentConfig({
+      layouts: route.layouts,
+      page: route.page,
+    });
+    const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.page,
+      routeSegments: route.routeSegments,
+    });
+    const _asyncRouteParams = makeThenableParams(params);
+    return __dispatchAppPage({
+      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
+        return buildPageElements(targetRoute, targetParams, cleanPathname, {
+          opts: targetOpts,
+          searchParams: targetSearchParams,
+          isRscRequest,
+          request,
+          mountedSlotsHeader,
+        });
+      },
+      cleanPathname,
+      clearRequestContext() {
+        __clearRequestContext();
+      },
+      createRscOnErrorHandler(pathname, routePath) {
+        return createRscOnErrorHandler(request, pathname, routePath);
+      },
+      debugClassification: __classDebug,
+      dynamicConfig: __segmentConfig.dynamicConfig,
+      dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      fetchCache: __segmentConfig.fetchCache ?? null,
+      findIntercept(pathname) {
+        return findIntercept(pathname, interceptionContext);
+      },
+      generateStaticParams: __generateStaticParams,
+      getFontLinks: _getSSRFontLinks,
+      getFontPreloads: _getSSRFontPreloads,
+      getFontStyles: _getSSRFontStyles,
+      getNavigationContext: _getNavigationContext,
+      getSourceRoute(sourceRouteIndex) {
+        return routes[sourceRouteIndex];
+      },
+      hasGenerateStaticParams: __generateStaticParams.length > 0,
+      hasPageDefaultExport: !!PageComponent,
+      hasPageModule: !!route.page,
+      handlerStart,
+      interceptionContext,
+      expireSeconds: __expireTime,
+      isProduction: process.env.NODE_ENV === "production",
+      isRscRequest,
+      isrDebug: __isrDebug,
+      isrGet: __isrGet,
+      isrHtmlKey: __isrHtmlKey,
+      isrRscKey: __isrRscKey,
+      isrSet: __isrSet,
+      loadSsrHandler() {
+        return import.meta.viteRsc.loadModule("ssr", "index");
+      },
+      middlewareContext,
+      mountedSlotsHeader,
+      params,
+      probeLayoutAt(li) {
+        const LayoutComp = route.layouts[li]?.default;
+        if (!LayoutComp) return null;
+        return LayoutComp({
+          params: makeThenableParams(__resolveAppPageSegmentParams(
+            route.routeSegments,
+            route.layoutTreePositions?.[li] ?? 0,
+            params,
+          )),
+          children: null,
+        });
+      },
+      probePage() {
+        if (!PageComponent) return null;
+        const _asyncSearchParams = makeThenableParams(
+          __collectAppPageSearchParams(searchParams).searchParamsObject,
+        );
+        return PageComponent({ params: _asyncRouteParams, searchParams: _asyncSearchParams });
+      },
+      renderErrorBoundaryPage(renderErr) {
+        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext);
+      },
+      renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
+        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext);
+      },
+      renderToReadableStream,
+      request,
+      revalidateSeconds: __segmentConfig.revalidateSeconds,
+      resolveRouteFetchCacheMode(targetRoute) {
+        return __resolveRouteFetchCacheMode(targetRoute);
+      },
+      rootForbiddenModule,
+      rootNotFoundModule,
+      rootUnauthorizedModule,
+      route,
+      runWithSuppressedHookWarning(probe) {
+        return suppressHookWarningAls.run(true, probe);
+      },
+      scheduleBackgroundRegeneration(key, renderFn, errorContext) {
+        __triggerBackgroundRegeneration(key, renderFn, errorContext);
+      },
+      scriptNonce,
+      searchParams,
+      setNavigationContext,
+    });
+  },
+  dispatchMatchedRouteHandler({
+    cleanPathname,
+    middlewareContext,
+    params,
+    request,
+    route,
+    searchParams,
+  }) {
     return __dispatchAppRouteHandler({
       basePath: __basePath,
       cleanPathname,
-      clearRequestContext: function() {
+      clearRequestContext() {
         __clearRequestContext();
       },
       i18n: __i18nConfig,
@@ -908,8 +587,8 @@ ${prerenderPagesLoaderOption}
       isrGet: __isrGet,
       isrRouteKey: __isrRouteKey,
       isrSet: __isrSet,
-      middlewareContext: _mwCtx,
-      middlewareRequestHeaders: _mwCtx.requestHeaders,
+      middlewareContext,
+      middlewareRequestHeaders: middlewareContext.requestHeaders,
       params,
       request,
       route: {
@@ -918,119 +597,179 @@ ${prerenderPagesLoaderOption}
         routeSegments: route.routeSegments,
       },
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
-      searchParams: url.searchParams,
+      searchParams,
     });
+  },
+  ${
+    instrumentationPath
+      ? `ensureInstrumentation() {
+    return __ensureInstrumentationRegistered(_instrumentation);
+  },`
+      : ""
   }
-
-  const PageComponent = route.page?.default;
-  const __segmentConfig = __resolveAppPageSegmentConfig({
-    layouts: route.layouts,
-    page: route.page,
-  });
-  const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
-    layouts: route.layouts,
-    layoutTreePositions: route.layoutTreePositions,
-    page: route.page,
-    routeSegments: route.routeSegments,
-  });
-  const _asyncRouteParams = makeThenableParams(params);
-  return __dispatchAppPage({
-    buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
-      return buildPageElements(targetRoute, targetParams, cleanPathname, {
-        opts: targetOpts,
-        searchParams: targetSearchParams,
-        isRscRequest,
-        request,
-        mountedSlotsHeader: __mountedSlotsHeader,
-      });
-    },
+  handleProgressiveActionRequest({
+    actionId,
     cleanPathname,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
-    },
-    debugClassification: __classDebug,
-    dynamicConfig: __segmentConfig.dynamicConfig,
-    dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
-    fetchCache: __segmentConfig.fetchCache ?? null,
-    findIntercept(pathname) {
-      return findIntercept(pathname, interceptionContextHeader);
-    },
-    generateStaticParams: __generateStaticParams,
-    getFontLinks: _getSSRFontLinks,
-    getFontPreloads: _getSSRFontPreloads,
-    getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    getSourceRoute(sourceRouteIndex) {
-      return routes[sourceRouteIndex];
-    },
-    hasGenerateStaticParams: __generateStaticParams.length > 0,
-    hasPageDefaultExport: !!PageComponent,
-    hasPageModule: !!route.page,
-    handlerStart: __reqStart,
-    interceptionContext: interceptionContextHeader,
-    expireSeconds: __expireTime,
-    isProduction: process.env.NODE_ENV === "production",
-    isRscRequest,
-    isrDebug: __isrDebug,
-    isrGet: __isrGet,
-    isrHtmlKey: __isrHtmlKey,
-    isrRscKey: __isrRscKey,
-    isrSet: __isrSet,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    middlewareContext: _mwCtx,
-    mountedSlotsHeader: __mountedSlotsHeader,
-    params,
-    probeLayoutAt(li) {
-      const LayoutComp = route.layouts[li]?.default;
-      if (!LayoutComp) return null;
-      return LayoutComp({
-        params: makeThenableParams(__resolveAppPageSegmentParams(
-          route.routeSegments,
-          route.layoutTreePositions?.[li] ?? 0,
-          params,
-        )),
-        children: null,
-      });
-    },
-    probePage() {
-      if (!PageComponent) return null;
-      const _asyncSearchParams = makeThenableParams(
-        __collectAppPageSearchParams(url.searchParams).searchParamsObject,
-      );
-      return PageComponent({ params: _asyncRouteParams, searchParams: _asyncSearchParams });
-    },
-    renderErrorBoundaryPage(renderErr) {
-      return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, _scriptNonce, _mwCtx);
-    },
-    renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {
-      return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, _scriptNonce, middlewareContext);
-    },
-    renderToReadableStream,
+    contentType,
+    middlewareContext,
     request,
-    revalidateSeconds: __segmentConfig.revalidateSeconds,
-    resolveRouteFetchCacheMode(targetRoute) {
-      return __resolveRouteFetchCacheMode(targetRoute);
-    },
-    rootForbiddenModule,
-    rootNotFoundModule,
-    rootUnauthorizedModule,
-    route,
-    runWithSuppressedHookWarning(probe) {
-      return suppressHookWarningAls.run(true, probe);
-    },
-    scheduleBackgroundRegeneration(key, renderFn, errorContext) {
-      __triggerBackgroundRegeneration(key, renderFn, errorContext);
-    },
-    scriptNonce: _scriptNonce,
-    searchParams: url.searchParams,
-    setNavigationContext,
-  });
-}
+  }) {
+    return __handleProgressiveServerActionRequest({
+      actionId,
+      allowedOrigins: __allowedOrigins,
+      cleanPathname,
+      clearRequestContext() {
+        __clearRequestContext();
+      },
+      contentType,
+      decodeAction,
+      getAndClearPendingCookies,
+      getDraftModeCookieHeader,
+      maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+      middlewareHeaders: middlewareContext.headers,
+      readFormDataWithLimit: __readFormDataWithLimit,
+      reportRequestError: _reportRequestError,
+      request,
+      setHeadersAccessPhase,
+    });
+  },
+  handleServerActionRequest({
+    actionId,
+    cleanPathname,
+    contentType,
+    interceptionContext,
+    isRscRequest,
+    middlewareContext,
+    mountedSlotsHeader,
+    request,
+    searchParams,
+  }) {
+    return __handleServerActionRscRequest({
+      actionId,
+      allowedOrigins: __allowedOrigins,
+      buildPageElement({
+        route: actionRoute,
+        params: actionParams,
+        cleanPathname: actionCleanPathname,
+        interceptOpts,
+        searchParams: actionSearchParams,
+        isRscRequest: actionIsRscRequest,
+        request: actionRequest,
+        mountedSlotsHeader: actionMountedSlotsHeader,
+      }) {
+        return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
+          opts: interceptOpts,
+          searchParams: actionSearchParams,
+          isRscRequest: actionIsRscRequest,
+          request: actionRequest,
+          mountedSlotsHeader: actionMountedSlotsHeader,
+        });
+      },
+      cleanPathname,
+      clearRequestContext() {
+        __clearRequestContext();
+      },
+      contentType,
+      createNotFoundElement(actionRouteId) {
+        return {
+          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
+          __route: actionRouteId,
+          __rootLayout: null,
+          [actionRouteId]: createElement("div", null, "Page not found"),
+        };
+      },
+      createPayloadRouteId(pathnameToRender, currentInterceptionContext) {
+        return __createAppPayloadRouteId(pathnameToRender, currentInterceptionContext);
+      },
+      createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
+        return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+      },
+      createTemporaryReferenceSet,
+      decodeReply,
+      findIntercept(pathnameToMatch) {
+        return findIntercept(pathnameToMatch, interceptionContext);
+      },
+      getAndClearPendingCookies,
+      getDraftModeCookieHeader,
+      getRouteParamNames(sourceRoute) {
+        return sourceRoute.params;
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return routes[sourceRouteIndex];
+      },
+      isRscRequest,
+      loadServerAction,
+      matchRoute(pathnameToMatch) {
+        return matchRoute(pathnameToMatch);
+      },
+      maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+      middlewareHeaders: middlewareContext.headers,
+      middlewareStatus: middlewareContext.status,
+      mountedSlotsHeader,
+      readBodyWithLimit: __readBodyWithLimit,
+      readFormDataWithLimit: __readFormDataWithLimit,
+      renderToReadableStream,
+      reportRequestError: _reportRequestError,
+      request,
+      sanitizeErrorForClient(error) {
+        return __sanitizeErrorForClient(error);
+      },
+      searchParams,
+      setHeadersAccessPhase,
+      setNavigationContext,
+      toInterceptOpts(intercept) {
+        return {
+          interceptionContext,
+          interceptLayouts: intercept.interceptLayouts,
+          interceptSlotKey: intercept.slotKey,
+          interceptPage: intercept.page,
+          interceptParams: intercept.matchedParams,
+        };
+      },
+    });
+  },
+  i18nConfig: __i18nConfig,
+  isMiddlewareProxy: ${JSON.stringify(middlewarePath ? isProxyFile(middlewarePath) : false)},
+  ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
+  makeThenableParams,
+  matchRoute,
+  metadataRoutes,
+  middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},
+  publicFiles: __publicFiles,
+  renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
+    return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext);
+  },
+  ${
+    hasPagesDir
+      ? `async renderPagesFallback({ isRscRequest, middlewareContext, request, url }) {
+    if (isRscRequest) return null;
+
+    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+    if (typeof __pagesEntry.renderPage !== "function") return null;
+
+    const __pagesRequestHeaders = middlewareContext.requestHeaders
+      ? __buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareContext.requestHeaders)
+      : null;
+    const __pagesRequest = __pagesRequestHeaders
+      ? new Request(request.url, { method: request.method, headers: __pagesRequestHeaders })
+      : request;
+    const __pagesRes = await __pagesEntry.renderPage(
+      __pagesRequest,
+      __decodePathParams(url.pathname) + (url.search || ""),
+      {},
+      undefined,
+      middlewareContext.requestHeaders,
+    );
+    return __pagesRes.status !== 404 ? __pagesRes : null;
+  },`
+      : ""
+  }
+  rootParamNamesByPattern: rootParamNamesMap,
+  setNavigationContext,
+  staticParamsMap: generateStaticParamsMap,
+  trailingSlash: __trailingSlash,
+  validateDevRequestOrigin: __validateDevRequestOrigin,
+});
 
 if (import.meta.hot) {
   import.meta.hot.accept();

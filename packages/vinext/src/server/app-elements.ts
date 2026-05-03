@@ -1,5 +1,5 @@
 import { isValidElement, type ReactNode } from "react";
-import { normalizeMountedSlotsHeader } from "./app-rsc-request-normalization.js";
+import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 
