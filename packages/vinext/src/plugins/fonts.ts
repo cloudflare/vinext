@@ -30,6 +30,7 @@ import MagicString from "magic-string";
 import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
+import { CONTENT_TYPES } from "../server/static-file-cache.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -641,7 +642,6 @@ export function _findCallEnd(code: string, objEnd: number): number | null {
 export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: string): Plugin {
   // Vite does not bind `this` to the plugin object when calling hooks, so
   // plugin state must be held in closure variables rather than as properties.
-  let isBuild = false;
   const fontCache = new Map<string, string>(); // url -> local @font-face CSS
   let cacheDir = "";
 
@@ -650,8 +650,52 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
     enforce: "pre",
 
     configResolved(config) {
-      isBuild = config.command === "build";
       cacheDir = path.join(config.root, ".vinext", "fonts");
+    },
+
+    // Dev-mode equivalent of the production `writeBundle` copy step. In dev
+    // there is no client output directory to copy files into, so the cached
+    // .vinext/fonts/ tree is served directly under the same URL prefix that
+    // `_rewriteCachedFontCssToServedUrls()` embeds into the @font-face CSS
+    // (`/<assetsDir>/_vinext_fonts/...`). Without this hook the rewritten
+    // URLs 404 — and once `_selfHostedCSS` is injected, the shim no longer
+    // emits the fonts.googleapis.com `<link>`, so a 404 here means no
+    // glyphs render at all (no CDN fallback path).
+    configureServer(server) {
+      if (!cacheDir) return;
+      const assetsDir =
+        server.environments?.client?.config?.build?.assetsDir ??
+        server.config?.build?.assetsDir ??
+        DEFAULT_ASSETS_DIR;
+      const urlPrefix = `/${assetsDir}/${VINEXT_FONT_URL_NAMESPACE}/`;
+      server.middlewares.use((req, res, next) => {
+        const url = req.url;
+        if (!url || !url.startsWith(urlPrefix)) return next();
+        const rawPath = url.slice(urlPrefix.length).split("?")[0];
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(rawPath);
+        } catch {
+          return next();
+        }
+        const filePath = path.resolve(cacheDir, decoded);
+        // Path traversal guard — `decoded` came from the URL, so refuse
+        // anything that escapes the cache root (e.g. `..%2F..%2Fetc/passwd`).
+        if (filePath !== cacheDir && !filePath.startsWith(cacheDir + path.sep)) {
+          return next();
+        }
+        fs.stat(filePath, (err, stat) => {
+          if (err || !stat.isFile()) return next();
+          const ext = path.extname(filePath).toLowerCase();
+          // CONTENT_TYPES is the same map prod-server uses, so fonts get
+          // identical MIME types in dev and prod. fetchAndCacheFont only
+          // ever writes .woff2/.woff/.ttf, all of which are covered.
+          res.setHeader("Content-Type", CONTENT_TYPES[ext] ?? "application/octet-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          fs.createReadStream(filePath).pipe(res);
+        });
+      });
     },
 
     transform: {
@@ -887,68 +931,72 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           hasChanges = true;
         }
 
-        if (isBuild) {
-          // Match: Identifier( — where the argument starts with {
-          // The regex intentionally does NOT capture the options object; we use
-          // _findBalancedObject() to handle nested braces correctly.
-          const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
-          let namedCallMatch;
-          while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
-            const [fullMatch, localName] = namedCallMatch;
-            const importedName = fontLocals.get(localName);
-            if (!importedName) continue;
+        // Self-host injection runs in both dev and build. In dev, the
+        // companion `configureServer` hook serves the cached files
+        // directly from `.vinext/fonts/` so the rewritten URLs resolve
+        // against the dev origin; in build, the `writeBundle` hook copies
+        // them into the client output directory.
 
-            const callStart = namedCallMatch.index;
-            // The regex consumed up to (but not including) the '{' due to the
-            // lookahead — find the balanced object starting at the lookahead pos.
-            const openParenEnd = callStart + fullMatch.length;
-            const objRange = _findBalancedObject(code, openParenEnd);
-            if (!objRange) continue;
-            const optionsStr = code.slice(objRange[0], objRange[1]);
-            const callEnd = _findCallEnd(code, objRange[1]);
-            if (callEnd === null) continue;
+        // Match: Identifier( — where the argument starts with {
+        // The regex intentionally does NOT capture the options object; we use
+        // _findBalancedObject() to handle nested braces correctly.
+        const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
+        let namedCallMatch;
+        while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
+          const [fullMatch, localName] = namedCallMatch;
+          const importedName = fontLocals.get(localName);
+          if (!importedName) continue;
 
-            if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
-              continue;
-            }
+          const callStart = namedCallMatch.index;
+          // The regex consumed up to (but not including) the '{' due to the
+          // lookahead — find the balanced object starting at the lookahead pos.
+          const openParenEnd = callStart + fullMatch.length;
+          const objRange = _findBalancedObject(code, openParenEnd);
+          if (!objRange) continue;
+          const optionsStr = code.slice(objRange[0], objRange[1]);
+          const callEnd = _findCallEnd(code, objRange[1]);
+          if (callEnd === null) continue;
 
-            await injectSelfHostedCss(
-              callStart,
-              callEnd,
-              optionsStr,
-              importedName.replace(/_/g, " "),
-              localName,
-            );
+          if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+            continue;
           }
 
-          // Match: Identifier.Identifier( — where the argument starts with {
-          const memberCallRe =
-            /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
-          let memberCallMatch;
-          while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
-            const [fullMatch, objectName, propName] = memberCallMatch;
-            if (!proxyObjectLocals.has(objectName)) continue;
+          await injectSelfHostedCss(
+            callStart,
+            callEnd,
+            optionsStr,
+            importedName.replace(/_/g, " "),
+            localName,
+          );
+        }
 
-            const callStart = memberCallMatch.index;
-            const openParenEnd = callStart + fullMatch.length;
-            const objRange = _findBalancedObject(code, openParenEnd);
-            if (!objRange) continue;
-            const optionsStr = code.slice(objRange[0], objRange[1]);
-            const callEnd = _findCallEnd(code, objRange[1]);
-            if (callEnd === null) continue;
+        // Match: Identifier.Identifier( — where the argument starts with {
+        const memberCallRe =
+          /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
+        let memberCallMatch;
+        while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
+          const [fullMatch, objectName, propName] = memberCallMatch;
+          if (!proxyObjectLocals.has(objectName)) continue;
 
-            if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
-              continue;
-            }
+          const callStart = memberCallMatch.index;
+          const openParenEnd = callStart + fullMatch.length;
+          const objRange = _findBalancedObject(code, openParenEnd);
+          if (!objRange) continue;
+          const optionsStr = code.slice(objRange[0], objRange[1]);
+          const callEnd = _findCallEnd(code, objRange[1]);
+          if (callEnd === null) continue;
 
-            await injectSelfHostedCss(
-              callStart,
-              callEnd,
-              optionsStr,
-              propertyNameToGoogleFontFamily(propName),
-              `${objectName}.${propName}`,
-            );
+          if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+            continue;
           }
+
+          await injectSelfHostedCss(
+            callStart,
+            callEnd,
+            optionsStr,
+            propertyNameToGoogleFontFamily(propName),
+            `${objectName}.${propName}`,
+          );
         }
 
         if (!hasChanges) return null;

@@ -422,10 +422,16 @@ describe("vinext:google-fonts plugin", () => {
   });
 
   it("rewrites named font imports in dev mode", async () => {
+    // Verifies the import-rewrite path runs in `command: "serve"` (it gates
+    // on the transform filter, not on the build mode). The constructor-call
+    // self-hosting branch also runs in dev now — covered separately by the
+    // Playwright spec under tests/e2e/font-google/ — so this unit test
+    // intentionally omits a constructor call to keep the assertion focused
+    // on the import shape and avoid coupling to a network fetch.
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
-    const code = `import { Inter } from 'next/font/google';\nconst inter = Inter({ weight: ['400'] });`;
+    const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
@@ -472,7 +478,7 @@ describe("vinext:google-fonts plugin", () => {
     const code = [
       `import type { Metadata } from 'next'`,
       `import { Inter } from 'next/font/google'`,
-      `const inter = Inter({ subsets: ['latin'] })`,
+      `export { Inter }`,
     ].join("\n");
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
@@ -497,7 +503,7 @@ describe("vinext:google-fonts plugin", () => {
       `  Roboto,`,
       `  Architects_Daughter,`,
       `} from 'next/font/google'`,
-      `const inter = Inter({ subsets: ['latin'] })`,
+      `export { Inter, Roboto, Architects_Daughter }`,
     ].join("\n");
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
@@ -541,7 +547,10 @@ describe("vinext:google-fonts plugin", () => {
     const plugin = getGoogleFontsPlugin();
     initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
-    const code = `import * as fonts from 'next/font/google';\nconst inter = fonts.Inter({ weight: ['400'] });`;
+    // No constructor call here — the assertion is about the namespace
+    // rewrite, and the call-site rewrite path (which would fetch from
+    // Google) is exercised by the build/dev integration tests.
+    const code = `import * as fonts from 'next/font/google';\nexport const Inter = fonts.Inter;`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("__vinext_google_fonts_proxy_0");
