@@ -29,6 +29,7 @@ import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
+import { parseArgs } from "./cli-args.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -92,47 +93,6 @@ const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.met
 
 const command = process.argv[2];
 const rawArgs = process.argv.slice(3);
-
-type ParsedArgs = {
-  port?: number;
-  hostname?: string;
-  help?: boolean;
-  verbose?: boolean;
-  turbopack?: boolean; // accepted for compat, always ignored
-  experimental?: boolean; // accepted for compat, always ignored
-  prerenderAll?: boolean;
-  precompress?: boolean;
-};
-
-function parseArgs(args: string[]): ParsedArgs {
-  const result: ParsedArgs = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--help" || arg === "-h") {
-      result.help = true;
-    } else if (arg === "--verbose") {
-      result.verbose = true;
-    } else if (arg === "--turbopack") {
-      result.turbopack = true; // no-op, accepted for script compat
-    } else if (arg === "--experimental-https") {
-      result.experimental = true; // no-op
-    } else if (arg === "--prerender-all") {
-      result.prerenderAll = true;
-    } else if (arg === "--precompress") {
-      result.precompress = true;
-      process.env.VINEXT_PRECOMPRESS = "1";
-    } else if (arg === "--port" || arg === "-p") {
-      result.port = parseInt(args[++i], 10);
-    } else if (arg.startsWith("--port=")) {
-      result.port = parseInt(arg.split("=")[1], 10);
-    } else if (arg === "--hostname" || arg === "-H") {
-      result.hostname = args[++i];
-    } else if (arg.startsWith("--hostname=")) {
-      result.hostname = arg.split("=")[1];
-    }
-  }
-  return result;
-}
 
 // ─── Build logger ─────────────────────────────────────────────────────────────
 
@@ -353,6 +313,10 @@ async function dev() {
 async function buildApp() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("build");
+
+  if (parsed.precompress) {
+    process.env.VINEXT_PRECOMPRESS = "1";
+  }
 
   loadDotenv({
     root: process.cwd(),
