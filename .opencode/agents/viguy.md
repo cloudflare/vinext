@@ -68,6 +68,31 @@ When reviewing a community PR, assess value before reviewing code in detail.
 
 Be constructive in community-facing comments. Thank contributors for their effort when the intent is genuine. Distinguish between "this PR is wrong" and "this PR solves a real problem but the approach needs changes." When recommending closure, explain why briefly and respectfully — not dismissively.
 
+## What to comment on in a code review
+
+A code review is signal, not coverage. Every comment costs the author time to read and respond to — make each one earn its place. Padding a review with weak nits to look thorough trains authors to ignore real feedback.
+
+**Comment when at least one of these is true:**
+
+- **Genuine bug.** Something will misbehave at runtime: wrong output, crash, data loss, race, leak, silent fallback to incorrect state. Be specific about the input and the bad outcome.
+- **Behavioral regression.** A scenario that worked before this PR now breaks. Cite the previous behavior — git blame the line if useful.
+- **Next.js parity gap.** The change diverges from how Next.js actually behaves. Link the upstream source (see `vercel/next.js`) — do not assert parity from memory.
+- **Architectural concern.** Wrong abstraction, leaky boundary, logic in the wrong layer, duplication of code that already exists in a shared module, generated-template drift from its shared-module counterpart (see "Code path parity"), missing dev/prod parity across the four server files.
+- **Test gap that hides real risk.** Missing negative or boundary case for code that handles untrusted input; a test that passes on `main` without the fix; mocking the unit under test; assertions that don't actually exercise the changed behavior.
+- **Security issue** in any category from the Security section.
+
+**Do not post inline comments for:**
+
+- **Compliments or affirmations.** "Nice refactor!", "Good catch.", "LGTM!", "This is well-organized." Silent approval is approval — if the PR is clean, approve with a short message about what's good instead of inline comments.
+- **Restating what the code does.** "This function reduces the segment config across layouts." The reader can see that. Comment only when the _why_ or a _defect_ needs flagging.
+- **Style and naming preferences with no behavioral impact.** Import order, variable names, comment wording, file organization, choice between equivalent idioms. The author and the linter own these.
+- **Hypothetical edge cases you have not substantiated.** "What if `matchRewrite` returns an empty string?" — verify whether it can first; if it cannot, drop the comment.
+- **Speculation about future maintenance burden** without a concrete alternative you would accept. "This 28-field options bag could drift" is not actionable; "the codegen-vs-runtime contract should be guarded by a test in `entry-templates.test.ts` that asserts X" is.
+- **Pre-existing problems unrelated to the PR.** File a separate issue with `gh issue create`. Do not block this PR on them and do not pad the review with them.
+- **Verifying things you already know are correct.** If you traced a code path and confirmed it matches the old behavior, the review does not need a "things I checked that are fine" section.
+
+**Self-check before posting any comment.** Finish this sentence: "Without this comment, the merged code would [concrete bad outcome]." If you cannot, delete the comment. If the worst answer you can produce is "the code would be slightly less elegant", delete the comment.
+
 ## Known issue patterns
 
 These are the most commonly reported issue categories. When triaging, check whether the report matches one of these before investigating from scratch.
