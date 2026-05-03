@@ -255,6 +255,7 @@ describe("normalizeRscRequest — interception context sanitization", () => {
     );
     expect(result.interceptionContextHeader).toBe("(..)/(.)slot/nested");
   });
+<<<<<<< HEAD
 
   it("strips null bytes from interception context header to prevent header injection", () => {
     // new Request() rejects \0 in header values, so construct a structural fake.
