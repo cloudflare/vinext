@@ -163,7 +163,7 @@ export async function buildPageElements<
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
-  const slotOverrides = buildSlotOverrides(route, params, pageRequest.request, opts);
+  const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
 
   return buildAppPageElements({
     element: PageComponent ? createElement(PageComponent, pageProps) : null,
@@ -190,14 +190,18 @@ export async function buildPageElements<
  *    and its layouts when the request is intercepted into this slot).
  *  - Slot-specific param extraction for inherited slots whose URL pattern
  *    has different param names than the route's. The runtime matches the
- *    request URL against `slot.slotPatternParts` to produce slot-scoped
- *    params, which `app-page-route-wiring` then hands to the slot page
- *    instead of the route's matched params.
+ *    cleaned request path against `slot.slotPatternParts` to produce
+ *    slot-scoped params, which `app-page-route-wiring` then hands to the
+ *    slot page instead of the route's matched params.
+ *
+ * `routePath` is the already-normalized request pathname (basePath stripped,
+ * RSC suffix removed). Re-parsing `request.url` here would re-introduce the
+ * basePath and silently break the match for any app that configures one.
  */
 function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
   route: AppPageBuildRoute<TModule, TErrorModule>,
   routeParams: AppPageParams,
-  request: Request,
+  routePath: string,
   opts?: AppPageInterceptOptions<TModule> | null,
 ): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
   const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
@@ -225,7 +229,7 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
       if (paramNames && paramNames.every((name) => routeParamSet.has(name))) continue;
 
       if (urlParts === null) {
-        urlParts = new URL(request.url).pathname.split("/").filter(Boolean);
+        urlParts = routePath.split("/").filter(Boolean);
       }
       const matched = matchRoutePattern(urlParts, patternParts);
       if (!matched) continue;

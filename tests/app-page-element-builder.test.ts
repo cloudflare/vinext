@@ -269,6 +269,66 @@ describe("buildPageElements", () => {
     expect(Object.prototype.hasOwnProperty.call(record, "page:/user/[id]")).toBe(true);
   });
 
+  it("extracts slot params from routePath, not request.url, so basePath does not break the match", async () => {
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+    function SlotPage(): React.ReactNode {
+      return React.createElement("span", null, "slot");
+    }
+
+    // Inherited slot whose mirrored sub-page has a dynamic marker (`:name`)
+    // with a different name than the route's (`:id`). The slotPatternParts
+    // are app-relative — basePath was already stripped during graph build.
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      layouts: [],
+      routeSegments: ["distinct", "[id]"],
+      pattern: "/distinct/[id]",
+      params: ["id"],
+      slots: {
+        "@bc": {
+          name: "bc",
+          page: createSyntheticPageModule(SlotPage),
+          layoutIndex: -1,
+          routeSegments: ["distinct", "[id]"],
+          slotPatternParts: ["distinct", ":name"],
+          slotParamNames: ["name"],
+        },
+      },
+    });
+
+    // Simulate a basePath-configured app: request URL still carries `/base`,
+    // but the entry passes the cleaned pathname as routePath. The fix must
+    // match against routePath, not against `new URL(request.url).pathname`.
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        params: { id: "alice" },
+        routePath: "/distinct/alice",
+      }),
+      pageRequest: {
+        opts: null,
+        searchParams: null,
+        isRscRequest: false,
+        request: new Request("http://localhost/base/distinct/alice"),
+        mountedSlotsHeader: null,
+      },
+    });
+
+    const record = result as Record<string, unknown>;
+    const slotElement = record["slot:bc:/"] as React.ReactElement<{
+      params: PromiseLike<AppPageParams>;
+    }>;
+    expect(slotElement).toBeDefined();
+    const slotParams = await slotElement.props.params;
+    // Without the fix, urlParts would be ["base","distinct","alice"], the
+    // pattern match would fail, and slotParams would silently fall back to
+    // the route's matched params ({ id: "alice" }) — leaving the slot
+    // page's `name` undefined. With the fix, the slot gets its own params.
+    expect(slotParams).toEqual({ name: "alice" });
+  });
+
   it("makeThenableParams wraps params as a proxy supporting both Promise and property access", () => {
     const plainParams: AppPageParams = { id: "99" };
     const thenable = makeThenableParams(plainParams);

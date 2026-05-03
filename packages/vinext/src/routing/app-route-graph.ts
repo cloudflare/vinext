@@ -436,11 +436,28 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
  * Skips the root page.tsx (already handled as the slot's main page)
  * and intercepting route directories.
  */
-function findSlotSubPages(
-  slotDir: string,
-  matcher: ValidFileMatcher,
-): Array<{ relativePath: string; pagePath: string }> {
-  const results: Array<{ relativePath: string; pagePath: string }> = [];
+type SlotSubPageEntry = { relativePath: string; pagePath: string };
+
+// Per-build memo: a slot directory's sub-pages depend only on the directory
+// contents and the matcher's accepted extensions. Inherited slots get scanned
+// once per descendant route, so without memoization a route N segments deep
+// pays O(N) full subtree walks for every shared ancestor slot.
+//
+// Keyed by matcher (one matcher per build) so the cache is naturally scoped
+// to a single build run and gets collected when the build finishes — no
+// cross-build pollution in long-lived dev servers.
+const findSlotSubPagesCache = new WeakMap<ValidFileMatcher, Map<string, SlotSubPageEntry[]>>();
+
+function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPageEntry[] {
+  let perMatcher = findSlotSubPagesCache.get(matcher);
+  if (!perMatcher) {
+    perMatcher = new Map();
+    findSlotSubPagesCache.set(matcher, perMatcher);
+  }
+  const cached = perMatcher.get(slotDir);
+  if (cached) return cached;
+
+  const results: SlotSubPageEntry[] = [];
 
   function scan(dir: string): void {
     if (!fs.existsSync(dir)) return;
@@ -464,6 +481,7 @@ function findSlotSubPages(
   }
 
   scan(slotDir);
+  perMatcher.set(slotDir, results);
   return results;
 }
 
@@ -858,20 +876,22 @@ function findMirroredSlotPage(
 } | null {
   if (segmentsBelow.length === 0) return null;
 
+  // Convert once: both tiers need the URL form of the route's segments below
+  // this directory.
+  const routeUrl = convertSegmentsToRouteParts([...segmentsBelow]);
+
   // Tier 1: literal filesystem match.
   const literalDir = path.join(slotDir, ...segmentsBelow);
   const literalPage = findFile(literalDir, "page", matcher);
   if (literalPage) {
-    const converted = convertSegmentsToRouteParts([...segmentsBelow]);
     return {
       pagePath: literalPage,
       segments: [...segmentsBelow],
-      slotUrlSegments: converted?.urlSegments ?? [],
-      slotParamNames: converted?.params ?? [],
+      slotUrlSegments: routeUrl?.urlSegments ?? [],
+      slotParamNames: routeUrl?.params ?? [],
     };
   }
 
-  const routeUrl = convertSegmentsToRouteParts([...segmentsBelow]);
   if (!routeUrl || routeUrl.urlSegments.length === 0) return null;
 
   // Tier 2: enumerate slot sub-pages and pick the most-specific compatible
