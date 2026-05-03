@@ -13,7 +13,7 @@ describe("app-router template", () => {
       "app/layout.tsx",
       "app/page.tsx",
       "app/api/hello/route.ts",
-      "vite.config.ts",
+      "vite.config.ts.tmpl",
       "tsconfig.json",
       "wrangler.jsonc.tmpl",
       "package.json.tmpl",
@@ -41,8 +41,8 @@ describe("app-router template", () => {
     expect(pkg.scripts.build).toBe("vite build");
   });
 
-  it("vite.config.ts has cloudflare and RSC env config", () => {
-    const config = fs.readFileSync(path.join(dir, "vite.config.ts"), "utf-8");
+  it("vite.config.ts.tmpl has cloudflare and RSC env config", () => {
+    const config = fs.readFileSync(path.join(dir, "vite.config.ts.tmpl"), "utf-8");
     expect(config).toContain("cloudflare");
     expect(config).toContain("rsc");
     expect(config).toContain("childEnvironments");
@@ -92,8 +92,8 @@ describe("pages-router template", () => {
       "pages/index.tsx",
       "pages/about.tsx",
       "pages/api/hello.ts",
-      "worker/index.ts",
-      "vite.config.ts",
+      "worker/index.ts.tmpl",
+      "vite.config.ts.tmpl",
       "tsconfig.json",
       "next-shims.d.ts",
       "wrangler.jsonc.tmpl",
@@ -122,8 +122,8 @@ describe("pages-router template", () => {
     expect(pkg.scripts.build).toBe("vite build");
   });
 
-  it("vite.config.ts has cloudflare plugin without RSC", () => {
-    const config = fs.readFileSync(path.join(dir, "vite.config.ts"), "utf-8");
+  it("vite.config.ts.tmpl has cloudflare plugin without RSC", () => {
+    const config = fs.readFileSync(path.join(dir, "vite.config.ts.tmpl"), "utf-8");
     expect(config).toContain("cloudflare");
     expect(config).not.toContain("rsc");
     expect(config).not.toContain("childEnvironments");
@@ -140,7 +140,7 @@ describe("pages-router template", () => {
   });
 
   it("has worker entry for Pages Router", () => {
-    const worker = fs.readFileSync(path.join(dir, "worker/index.ts"), "utf-8");
+    const worker = fs.readFileSync(path.join(dir, "worker/index.ts.tmpl"), "utf-8");
     expect(worker).toContain("virtual:vinext-server-entry");
     expect(worker).toContain("fetch");
   });

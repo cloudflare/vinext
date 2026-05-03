@@ -224,7 +224,7 @@ describe("main", () => {
   it("'.' uses cwd basename as project name (normalized)", async () => {
     // Create an empty temp dir to act as cwd so isDirectoryEmpty passes
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dot-test-"));
-    const originalCwd = process.cwd;
+    const originalCwd = process.cwd.bind(process);
     process.cwd = () => tmpDir;
     try {
       await main([".", "-y", "--skip-install", "--no-git"]);
@@ -285,7 +285,7 @@ describe("main", () => {
 
   it("'.' normalizes uppercase cwd basename", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "Vinext-Dot-Test-"));
-    const originalCwd = process.cwd;
+    const originalCwd = process.cwd.bind(process);
     process.cwd = () => tmpDir;
     try {
       await main([".", "-y", "--skip-install", "--no-git"]);

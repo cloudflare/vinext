@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - name: Build packages
-        run: pnpm run build
+        run: vp run build
 
       - name: Pack vinext for local install
         run: npm pack --pack-destination "${{ runner.temp }}"

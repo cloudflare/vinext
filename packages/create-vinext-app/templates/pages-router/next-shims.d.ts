@@ -20,6 +20,18 @@ declare module "next/link" {
   export default function Link(props: LinkProps): React.ReactElement;
 }
 declare module "next/router" {
-  export function useRouter(): any;
-  export function setSSRContext(ctx: any): void;
+  export function useRouter(): {
+    pathname: string;
+    route: string;
+    query: Record<string, string | string[]>;
+    asPath: string;
+    basePath: string;
+    isReady: boolean;
+    push(url: string | object, as?: string): Promise<boolean>;
+    replace(url: string | object, as?: string): Promise<boolean>;
+    back(): void;
+    reload(): void;
+    prefetch(url: string): Promise<void>;
+  };
+  export function setSSRContext(ctx: object | null): void;
 }
