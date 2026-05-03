@@ -1,4 +1,4 @@
-import { getHeadersContext } from "../shims/headers.js";
+import { getHeadersContext } from "vinext/shims/headers";
 import { normalizeHost, requestContextFromRequest } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 

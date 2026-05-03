@@ -1,7 +1,9 @@
-import { setHeadersContext } from "../shims/headers.js";
-import { setNavigationContext as setNavigationContextOrig } from "../shims/navigation.js";
-import { setRootParams } from "../shims/root-params.js";
-import type { NavigationContext } from "../shims/navigation.js";
+import { setHeadersContext } from "vinext/shims/headers";
+import {
+  setNavigationContext as setNavigationContextOrig,
+  type NavigationContext,
+} from "vinext/shims/navigation";
+import { setRootParams } from "vinext/shims/root-params";
 
 /**
  * Set navigation context in the ALS-backed store. "use client" components

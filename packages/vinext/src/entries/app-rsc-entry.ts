@@ -385,83 +385,22 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   },
   fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
-    },
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    layoutModules: opts?.layouts ?? null,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: opts?.matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootForbiddenModule: rootForbiddenModule,
-    rootLayouts: rootLayouts,
-    rootNotFoundModule: rootNotFoundModule,
-    rootUnauthorizedModule: rootUnauthorizedModule,
-    route,
-    renderToReadableStream,
-    scriptNonce,
-    statusCode,
-  });
-}
-
-/** Convenience: render a not-found page (404) */
-async function renderNotFoundPage(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { matchedParams }, scriptNonce, middlewareContext);
-}
-
-/**
- * Render an error.tsx boundary page when a server component or generateMetadata() throws.
- * Returns null if no error boundary component is available for this route.
- *
- * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
- * by the boundary). This matches that behavior intentionally.
- */
-async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return __renderAppPageErrorBoundary({
-    buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
-    },
-    error,
-    getFontLinks: _getSSRFontLinks,
-    getFontPreloads: _getSSRFontPreloads,
-    getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootLayouts: rootLayouts,
-    route,
-    renderToReadableStream,
-    sanitizeErrorForClient: __sanitizeErrorForClient,
-    scriptNonce,
-  });
-}
+  },
+  makeThenableParams,
+  sanitizer: __sanitizeErrorForClient,
+  rscRenderer: renderToReadableStream,
+  getNavigationContext: _getNavigationContext,
+  resolveChildSegments: __resolveAppPageChildSegments,
+  clearRequestContext() {
+    __clearRequestContext();
+  },
+  createRscOnErrorHandler(request, pathname, routePath) {
+    return createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+  },
+});
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
