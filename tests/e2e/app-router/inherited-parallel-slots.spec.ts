@@ -22,4 +22,13 @@ test.describe("inherited parallel slot", () => {
     // no @breadcrumbs/page.tsx exists at the slot root
     await expect(page.getByTestId("bc")).toHaveText("[default]");
   });
+
+  test("renders mirrored sub-page when slot's dynamic param has a different name", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/inherited-slot/distinct/foo`);
+    // route has [id], slot has [name] — both single dynamics, distinct names.
+    await expect(page.getByTestId("page")).toHaveText("id:foo");
+    await expect(page.getByTestId("bc")).toHaveText("name:foo");
+  });
 });

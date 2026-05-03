@@ -126,6 +126,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         error: ${slot.errorPath ? imports.getImportVar(slot.errorPath) : "null"},
         layoutIndex: ${slot.layoutIndex},
         routeSegments: ${JSON.stringify(slot.routeSegments)},
+        slotPatternParts: ${slot.slotPatternParts ? JSON.stringify(slot.slotPatternParts) : "null"},
+        slotParamNames: ${slot.slotParamNames ? JSON.stringify(slot.slotParamNames) : "null"},
         intercepts: [
 ${interceptEntries.join(",\n")}
         ],

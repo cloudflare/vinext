@@ -57,6 +57,15 @@ type AppPageRouteWiringSlot<
   loading?: TModule | null;
   page?: TModule | null;
   routeSegments?: readonly string[] | null;
+  /**
+   * Full URL pattern parts for the slot's mirrored sub-page. Set when the
+   * slot's params may differ from the route's (e.g. inherited slot whose
+   * dynamic markers have different names than the route's). The runtime
+   * matches the request URL against these parts to extract slot params.
+   */
+  slotPatternParts?: readonly string[] | null;
+  /** Param names captured by `slotPatternParts`, in order. */
+  slotParamNames?: readonly string[] | null;
 };
 
 export type AppPageRouteWiringRoute<
@@ -85,7 +94,12 @@ export type AppPageRouteWiringRoute<
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
   layoutModules?: readonly (TModule | null | undefined)[] | null;
-  pageModule: TModule;
+  /**
+   * The page module to render for this slot. Optional — when omitted, the
+   * slot's existing `page` is used (e.g. when the override only changes the
+   * slot's `params` for an inherited mirror with distinct param names).
+   */
+  pageModule?: TModule | null;
   params?: AppPageParams;
   props?: Readonly<Record<string, unknown>>;
 };

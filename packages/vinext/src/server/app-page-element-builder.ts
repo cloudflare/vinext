@@ -8,6 +8,7 @@ import {
   type AppPageErrorModule,
   type AppPageModule,
   type AppPageRouteWiringRoute,
+  type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
@@ -15,6 +16,7 @@ import {
   type AppElements,
 } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
@@ -30,6 +32,8 @@ export type AppPageBuildRoute<
 > = AppPageRouteWiringRoute<TModule, TErrorModule> & {
   page?: TModule | null;
   pattern: string;
+  /** Param names captured by the route's URL pattern, in order. */
+  params?: readonly string[] | null;
 };
 
 export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -159,6 +163,8 @@ export async function buildPageElements<
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
+  const slotOverrides = buildSlotOverrides(route, params, pageRequest.request, opts);
+
   return buildAppPageElements({
     element: PageComponent ? createElement(PageComponent, pageProps) : null,
     globalErrorModule: globalErrorModule ?? null,
@@ -174,15 +180,66 @@ export async function buildPageElements<
     rootForbiddenModule: rootForbiddenModule ?? null,
     rootUnauthorizedModule: rootUnauthorizedModule ?? null,
     route,
-    slotOverrides:
-      opts && opts.interceptSlotKey && opts.interceptPage
-        ? {
-            [opts.interceptSlotKey]: {
-              layoutModules: opts.interceptLayouts || null,
-              pageModule: opts.interceptPage,
-              params: opts.interceptParams || params,
-            },
-          }
-        : null,
+    slotOverrides,
   });
+}
+
+/**
+ * Build the per-request `slotOverrides` map. Combines:
+ *  - Interception overrides (existing behavior — swap in the intercepting page
+ *    and its layouts when the request is intercepted into this slot).
+ *  - Slot-specific param extraction for inherited slots whose URL pattern
+ *    has different param names than the route's. The runtime matches the
+ *    request URL against `slot.slotPatternParts` to produce slot-scoped
+ *    params, which `app-page-route-wiring` then hands to the slot page
+ *    instead of the route's matched params.
+ */
+function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
+  route: AppPageBuildRoute<TModule, TErrorModule>,
+  routeParams: AppPageParams,
+  request: Request,
+  opts?: AppPageInterceptOptions<TModule> | null,
+): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
+  const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
+
+  if (opts && opts.interceptSlotKey && opts.interceptPage) {
+    overrides[opts.interceptSlotKey] = {
+      layoutModules: opts.interceptLayouts || null,
+      pageModule: opts.interceptPage,
+      params: opts.interceptParams || routeParams,
+    };
+  }
+
+  const slots = route.slots;
+  if (slots) {
+    let urlParts: string[] | null = null;
+    const routeParamSet = collectParamNameSet(route.params);
+    for (const [slotKey, slot] of Object.entries(slots)) {
+      const patternParts = slot.slotPatternParts;
+      const paramNames = slot.slotParamNames;
+      if (!patternParts || patternParts.length === 0) continue;
+      // Skip when every slot param is already a route param — the route's
+      // matched params already carry the values the slot page expects.
+      if (paramNames && paramNames.every((name) => routeParamSet.has(name))) continue;
+
+      if (urlParts === null) {
+        urlParts = new URL(request.url).pathname.split("/").filter(Boolean);
+      }
+      const matched = matchRoutePattern(urlParts, patternParts);
+      if (!matched) continue;
+
+      const existing = overrides[slotKey];
+      overrides[slotKey] = existing ? { ...existing, params: matched } : { params: matched };
+    }
+  }
+
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function collectParamNameSet(params: readonly string[] | undefined | null): Set<string> {
+  const set = new Set<string>();
+  if (params) {
+    for (const name of params) set.add(name);
+  }
+  return set;
 }

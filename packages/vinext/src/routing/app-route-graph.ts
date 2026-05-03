@@ -56,6 +56,19 @@ export type ParallelSlot = {
    * null when the slot has no active page (showing default.tsx fallback).
    */
   routeSegments: string[] | null;
+  /**
+   * Full URL pattern parts for the slot's active page (owner prefix +
+   * slot-relative pattern). Set when an inherited slot mirrors a sub-page
+   * whose param names may differ from the route's. The runtime matches the
+   * request URL against these parts to extract slot-specific params.
+   */
+  slotPatternParts?: string[];
+  /**
+   * Param names captured by `slotPatternParts`, in order of appearance.
+   * Used at runtime to decide whether to extract slot-specific params or
+   * reuse the route's matched params.
+   */
+  slotParamNames?: string[];
 };
 
 export type AppRoute = {
@@ -787,13 +800,25 @@ function discoverInheritedParallelSlots(
         // At an ancestor directory: the slot's own page.tsx belongs to the
         // parent route. Look for a mirrored sub-page at @slot/<segments-below>
         // (e.g. @breadcrumbs/about/page.tsx for /about), falling back to
-        // default.tsx when no mirror exists.
+        // default.tsx when no mirror exists. The mirror search also accepts
+        // pattern-compatible matches (e.g. slot's [name] for route's [id]) so
+        // the runtime can extract slot-specific params via slotPatternParts.
         const mirror = findMirroredSlotPage(slot.ownerDir, segmentsBelow, matcher);
+        let slotPatternParts: string[] | undefined;
+        let slotParamNames: string[] | undefined;
+        if (mirror) {
+          const ownerSegments = segments.slice(0, segmentIndex);
+          const ownerUrl = convertSegmentsToRouteParts([...ownerSegments]);
+          slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
+          slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
+        }
         const inheritedSlot: ParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
           layoutIndex: slotLayoutIdx,
           routeSegments: mirror?.segments ?? null,
+          slotPatternParts,
+          slotParamNames,
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
         slotMap.set(slot.key, inheritedSlot);
@@ -806,53 +831,127 @@ function discoverInheritedParallelSlots(
 
 /**
  * Look for a page file inside a parallel slot directory that mirrors the
- * route's path below the slot's owner. Tries a literal filesystem match first
- * (cheap), then enumerates the slot's sub-pages and matches by URL parts so
- * that route groups on either side don't break the mirror — e.g. a route at
- * (marketing)/about/page.tsx still pairs with @breadcrumbs/about/page.tsx.
- * Dynamic markers (`[id]`, `[...slug]`) are preserved through the conversion,
- * so route params continue to flow into the slot page under the same names.
- * Returns the slot sub-page's absolute path and its raw filesystem segments,
- * or null when no mirror matches.
+ * route's path below the slot's owner. The match falls through three tiers,
+ * each more permissive than the last:
+ *   1. Literal filesystem path — fast path when route and slot share shape.
+ *   2. URL-parts equality — handles route groups appearing on only one side
+ *      (e.g. `(marketing)/about` ↔ `@breadcrumbs/about`).
+ *   3. Pattern compatibility — accepts slot patterns whose dynamic markers
+ *      have different names than the route's (e.g. slot `[name]` for route
+ *      `[id]`) or whose catch-alls subsume the route. The most-specific
+ *      compatible sub-page wins.
+ *
+ * Returns the slot sub-page's absolute path, its raw filesystem segments
+ * (for `routeSegments`), and its URL parts / param names (for
+ * `slotPatternParts` / `slotParamNames`). Returns null when no mirror matches.
  */
 function findMirroredSlotPage(
   slotDir: string,
   segmentsBelow: readonly string[],
   matcher: ValidFileMatcher,
-): { pagePath: string; segments: string[] } | null {
+): {
+  pagePath: string;
+  segments: string[];
+  slotUrlSegments: string[];
+  slotParamNames: string[];
+} | null {
   if (segmentsBelow.length === 0) return null;
 
-  // Literal filesystem match — fast path when route and slot share groups.
+  // Tier 1: literal filesystem match.
   const literalDir = path.join(slotDir, ...segmentsBelow);
   const literalPage = findFile(literalDir, "page", matcher);
   if (literalPage) {
-    return { pagePath: literalPage, segments: [...segmentsBelow] };
+    const converted = convertSegmentsToRouteParts([...segmentsBelow]);
+    return {
+      pagePath: literalPage,
+      segments: [...segmentsBelow],
+      slotUrlSegments: converted?.urlSegments ?? [],
+      slotParamNames: converted?.params ?? [],
+    };
   }
 
-  // URL-parts match — handles route groups (which are filesystem-visible but
-  // URL-invisible) appearing on only one side. convertSegmentsToRouteParts
-  // strips `(group)`, `@slot`, and `.` while preserving dynamic markers.
   const routeUrl = convertSegmentsToRouteParts([...segmentsBelow]);
   if (!routeUrl || routeUrl.urlSegments.length === 0) return null;
 
+  // Tiers 2+3: enumerate slot sub-pages, prefer URL-equal, then most-specific
+  // pattern-compatible match.
+  type Candidate = {
+    pagePath: string;
+    segments: string[];
+    slotUrlSegments: string[];
+    slotParamNames: string[];
+    score: number;
+  };
+  let best: Candidate | null = null;
   for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
     const slotSegments = relativePath.split(path.sep);
     const slotUrl = convertSegmentsToRouteParts(slotSegments);
     if (!slotUrl) continue;
-    if (urlPartsEqual(slotUrl.urlSegments, routeUrl.urlSegments)) {
-      return { pagePath, segments: slotSegments };
+    if (!patternsCompatible(slotUrl.urlSegments, routeUrl.urlSegments)) continue;
+    const score = scoreSlotPattern(slotUrl.urlSegments);
+    if (!best || score > best.score) {
+      best = {
+        pagePath,
+        segments: slotSegments,
+        slotUrlSegments: slotUrl.urlSegments,
+        slotParamNames: slotUrl.params,
+        score,
+      };
     }
   }
 
-  return null;
+  return best;
 }
 
-function urlPartsEqual(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+/**
+ * Whether a slot pattern can match the same URL space as the route's URL
+ * parts (where the route's parts are themselves a pattern, since a route
+ * file like `[id]/page.tsx` produces `:id`).
+ *
+ * - `:name+` (catch-all) consumes one-or-more remaining segments.
+ * - `:name*` (optional catch-all) consumes zero-or-more.
+ * - `:name` (single dynamic) consumes exactly one segment, matching any
+ *   route segment (literal or dynamic).
+ * - Literal slot segments must equal the route's segment exactly; a literal
+ *   slot segment paired with a dynamic route segment is rejected (we can't
+ *   know statically whether the runtime value will equal the literal).
+ */
+function patternsCompatible(slotParts: readonly string[], routeParts: readonly string[]): boolean {
+  let i = 0;
+  let j = 0;
+  while (i < slotParts.length) {
+    const sp = slotParts[i];
+    if (sp.endsWith("+")) return j < routeParts.length;
+    if (sp.endsWith("*")) return true;
+    if (j >= routeParts.length) return false;
+    const rp = routeParts[j];
+    if (sp.startsWith(":")) {
+      i++;
+      j++;
+      continue;
+    }
+    if (rp.startsWith(":")) return false;
+    if (sp !== rp) return false;
+    i++;
+    j++;
   }
-  return true;
+  return j === routeParts.length;
+}
+
+/**
+ * Score a slot pattern by specificity: literals beat single dynamics beat
+ * optional catch-alls beat catch-alls. Used to pick the most-specific
+ * mirror when multiple slot sub-pages are pattern-compatible.
+ */
+function scoreSlotPattern(urlSegments: readonly string[]): number {
+  let score = 0;
+  for (const seg of urlSegments) {
+    if (seg.endsWith("+")) score += 1;
+    else if (seg.endsWith("*")) score += 2;
+    else if (seg.startsWith(":")) score += 3;
+    else score += 4;
+  }
+  return score;
 }
 
 /**
