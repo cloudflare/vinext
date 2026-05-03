@@ -4,8 +4,8 @@ import {
   getRequestExecutionContext,
   runWithExecutionContext,
   type ExecutionContextLike,
-} from "../shims/request-context.js";
-import { NextFetchEvent, NextRequest } from "../shims/server.js";
+} from "vinext/shims/request-context";
+import { NextFetchEvent, NextRequest } from "vinext/shims/server";
 import { normalizePath } from "./normalize-path.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";

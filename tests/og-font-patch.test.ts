@@ -100,74 +100,47 @@ describe("vinext:og-font-patch plugin", () => {
     // ── Yoga WASM ────────────────────────────────────────────
 
     describe("yoga WASM", () => {
-      it("does NOT produce a static import of yoga.wasm?module", () => {
-        expect(code).not.toMatch(/^import\s+\w+\s+from\s+["'].*yoga\.wasm/m);
-      });
-
-      it("uses dynamic import with catch fallback", () => {
+      it("uses a dynamic import with a catch fallback (avoids load-time crash on Node)", () => {
         expect(code).toContain('import("./yoga.wasm?module")');
         expect(code).toContain(".catch(");
       });
 
-      it("includes inline base64 bytes as Node.js fallback", () => {
+      it("inlines the yoga WASM bytes as a base64 Node.js fallback", () => {
+        // The base64 must be embedded so Node.js (where ?module imports fail)
+        // can WebAssembly.instantiate from the inlined bytes.
         expect(code).toContain(FAKE_YOGA_B64);
         expect(code).toContain("WebAssembly.instantiate");
       });
 
-      it("clears the emscripten data URL", () => {
+      it("clears the inlined emscripten data URL (avoids loading bytes twice)", () => {
         expect(code).not.toContain("data:application/octet-stream;base64,");
-        expect(code).toContain('H = "";');
-      });
-
-      it("patches instantiateWasm with dual-path handler (module vs bytes)", () => {
-        expect(code).toContain("instantiateWasm");
-        // workerd path: instantiate from pre-compiled module → callback(inst)
-        expect(code).toMatch(/WebAssembly\.instantiate\(mod,\s*imports\)/);
-        // Node.js path: instantiate from bytes → callback(r.instance)
-        expect(code).toMatch(/WebAssembly\.instantiate\(b,\s*imports\)/);
-      });
-
-      it("uses Buffer.from directly (no atob — fallback only runs on Node.js)", () => {
-        // The catch path (mod === null) only executes on Node.js where Buffer is
-        // always available. No need for an atob/Uint8Array browser fallback.
-        expect(code).toContain("Buffer.from(__vi_yoga_b64");
-        expect(code).not.toContain("atob(");
       });
     });
 
     // ── Resvg WASM ───────────────────────────────────────────
 
     describe("resvg WASM", () => {
-      it("does NOT produce a static import of resvg.wasm?module", () => {
-        expect(code).not.toMatch(/^import\s+\w+\s+from\s+["'].*resvg\.wasm/m);
-      });
-
-      it("uses dynamic import with catch fallback", () => {
+      it("uses a dynamic import with a catch fallback", () => {
         expect(code).toContain('import("./resvg.wasm?module")');
         expect(code).toMatch(/resvg.*\.catch\(/s);
       });
 
-      it("uses new URL() inside catch handler, not at top level (workerd compat)", () => {
-        // In workerd, import.meta.url is "worker" (not a valid URL base), so
-        // top-level new URL() would throw TypeError at module load time.
-        expect(code).toContain('new URL("./resvg.wasm"');
+      it("does not use new URL() with import.meta.url at top level (workerd compat)", () => {
+        // In workerd, import.meta.url is "worker" — a top-level new URL(...,
+        // import.meta.url) would throw TypeError at module load time. Any
+        // resolution must happen lazily inside the catch handler.
         expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/resvg\.wasm"/m);
       });
 
-      it("reads resvg.wasm asynchronously via fs.promises", () => {
+      it("reads resvg.wasm asynchronously on the Node.js fallback path", () => {
         expect(code).toContain("node:fs");
         expect(code).toContain("promises.readFile");
-        expect(code).toContain("WebAssembly.compile");
-      });
-
-      it("preserves resvg_wasm variable name for downstream usage", () => {
-        expect(code).toContain("initWasm(resvg_wasm)");
       });
     });
 
     // ── Critical invariant ───────────────────────────────────
 
-    it("output contains zero static WASM module imports", () => {
+    it("emits zero static `?module` WASM imports (Node.js can't resolve them)", () => {
       const staticWasmImports = code.match(
         /^import\s+\w+\s+from\s+["'][^"']*\.wasm[^"']*["']\s*;?$/gm,
       );

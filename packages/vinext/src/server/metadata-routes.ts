@@ -596,7 +596,7 @@ function getMetadataServedUrl(
   return withMetadataSuffix(config.urlPath, suffix);
 }
 
-function matchMetadataFileBaseName(metaType: string, baseName: string): string | null {
+export function matchMetadataFileBaseName(metaType: string, baseName: string): string | null {
   if (baseName === metaType) {
     return baseName;
   }

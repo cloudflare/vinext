@@ -20,6 +20,8 @@ import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
 
+const DEFAULT_EXPIRE_TIME = 31_536_000;
+
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
@@ -44,8 +46,8 @@ const appServerActionExecutionPath = resolveEntryPath(
 const appRscErrorsPath = resolveEntryPath("../server/app-rsc-errors.js", import.meta.url);
 const implicitTagsPath = resolveEntryPath("../server/implicit-tags.js", import.meta.url);
 const appPageExecutionPath = resolveEntryPath("../server/app-page-execution.js", import.meta.url);
-const appPageBoundaryRenderPath = resolveEntryPath(
-  "../server/app-page-boundary-render.js",
+const appFallbackRendererPath = resolveEntryPath(
+  "../server/app-fallback-renderer.js",
   import.meta.url,
 );
 const appElementsPath = resolveEntryPath("../server/app-elements.js", import.meta.url);
@@ -78,13 +80,21 @@ const metadataRouteResponsePath = resolveEntryPath(
   "../server/metadata-route-response.js",
   import.meta.url,
 );
+const appPageElementBuilderPath = resolveEntryPath(
+  "../server/app-page-element-builder.js",
+  import.meta.url,
+);
 const errorCausePath = resolveEntryPath("../utils/error-cause.js", import.meta.url);
+const instrumentationRuntimePath = resolveEntryPath(
+  "../server/instrumentation-runtime.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
-export type AppRouterConfig = {
+type AppRouterConfig = {
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -98,6 +108,8 @@ export type AppRouterConfig = {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
+  expireTime?: number;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   /**
@@ -138,6 +150,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -184,10 +197,15 @@ function renderToReadableStream(model, options) {
 }
 import { createElement } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, markDynamicUsage, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
-${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
+${
+  instrumentationPath
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
+    : ""
+}
 import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
@@ -213,25 +231,21 @@ import {
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
 } from ${JSON.stringify(appPageExecutionPath)};
 import {
-  renderAppPageErrorBoundary as __renderAppPageErrorBoundary,
-  renderAppPageHttpAccessFallback as __renderAppPageHttpAccessFallback,
-} from ${JSON.stringify(appPageBoundaryRenderPath)};
+  createAppFallbackRenderer as __createAppFallbackRenderer,
+} from ${JSON.stringify(appFallbackRendererPath)};
 import {
   APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
   createAppPayloadRouteId as __createAppPayloadRouteId,
 } from ${JSON.stringify(appElementsPath)};
 import {
-  buildAppPageElements as __buildAppPageElements,
-  createAppPageTreePath as __createAppPageTreePath,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
+import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
 import {
   resolveAppPageSegmentParams as __resolveAppPageSegmentParams,
 } from ${JSON.stringify(appPageParamsPath)};
 import {
   collectAppPageSearchParams as __collectAppPageSearchParams,
-  resolveActiveParallelRouteHeadInputs as __resolveActiveParallelRouteHeadInputs,
-  resolveAppPageHead as __resolveAppPageHead,
 } from ${JSON.stringify(appPageHeadPath)};
 import {
   mergeMiddlewareResponseHeaders as __mergeMiddlewareResponseHeaders,
@@ -351,37 +365,10 @@ ${imports.join("\n")}
 
 ${
   instrumentationPath
-    ? `// Run instrumentation register() exactly once, lazily on the first request.
-// Previously this was a top-level await, which blocked the entire module graph
-// from finishing initialization until register() resolved — adding that latency
-// to every cold start. Moving it here preserves the "runs before any request is
-// handled" guarantee while not blocking V8 isolate initialization.
-// On Cloudflare Workers, module evaluation happens synchronously in the isolate
-// startup phase; a top-level await extends that phase and increases cold-start
-// wall time for all requests, not just the first.
-let __instrumentationInitialized = false;
-let __instrumentationInitPromise = null;
-async function __ensureInstrumentation() {
-  if (process.env.VINEXT_PRERENDER === "1") return;
-  if (__instrumentationInitialized) return;
-  if (__instrumentationInitPromise) return __instrumentationInitPromise;
-  __instrumentationInitPromise = (async () => {
-    if (typeof _instrumentation.register === "function") {
-      await _instrumentation.register();
-    }
-    // Store the onRequestError handler on globalThis so it is visible to
-    // reportRequestError() (imported as _reportRequestError above) regardless
-    // of which Vite environment module graph it is called from. With
-    // @vitejs/plugin-rsc the RSC and SSR environments run in the same Node.js
-    // process and share globalThis. With @cloudflare/vite-plugin everything
-    // runs inside the Worker so globalThis is the Worker's global — also correct.
-    if (typeof _instrumentation.onRequestError === "function") {
-      globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
-    }
-    __instrumentationInitialized = true;
-  })();
-  return __instrumentationInitPromise;
-}`
+    ? `// Lazy instrumentation initialisation is handled by ensureInstrumentationRegistered
+// (imported from vinext/instrumentation-runtime). The generated entry only passes
+// the user module in; all bookkeeping (initialized flag, shared promise, prerender
+// skip) lives in the typed helper so it can be unit-tested independently.`
     : ""
 }
 
@@ -416,96 +403,35 @@ const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
-const __APP_PAGE_EMPTY_MW_CTX = { headers: null, status: null };
 
-/**
- * Render an HTTP access fallback page (not-found/forbidden/unauthorized) with layouts and noindex meta.
- * Returns null if no matching component is available.
- *
- * @param opts.boundaryComponent - Override the boundary component (for layout-level notFound)
- * @param opts.layouts - Override the layouts to wrap with (for layout-level notFound, excludes the throwing layout)
- */
-async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts, scriptNonce, middlewareContext) {
-  return __renderAppPageHttpAccessFallback({
-    boundaryComponent: opts?.boundaryComponent ?? null,
+const __fallbackRenderer = __createAppFallbackRenderer({
+  rootBoundaries: {
+    rootForbiddenModule,
+    rootLayouts,
+    rootNotFoundModule,
+    rootUnauthorizedModule,
+  },
+  globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+  metadataRoutes,
+  ssrLoader() {
+    return import.meta.viteRsc.loadModule("ssr", "index");
+  },
+  fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createRscOnErrorHandler(request, pathname, routePath);
-    },
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    layoutModules: opts?.layouts ?? null,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: opts?.matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootForbiddenModule: rootForbiddenModule,
-    rootLayouts: rootLayouts,
-    rootNotFoundModule: rootNotFoundModule,
-    rootUnauthorizedModule: rootUnauthorizedModule,
-    route,
-    renderToReadableStream,
-    scriptNonce,
-    statusCode,
-  });
-}
-
-/** Convenience: render a not-found page (404) */
-async function renderNotFoundPage(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { matchedParams }, scriptNonce, middlewareContext);
-}
-
-/**
- * Render an error.tsx boundary page when a server component or generateMetadata() throws.
- * Returns null if no error boundary component is available for this route.
- *
- * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
- * by the boundary). This matches that behavior intentionally.
- */
-async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams, scriptNonce, middlewareContext) {
-  return __renderAppPageErrorBoundary({
-    buildFontLinkHeader: __buildAppPageFontLinkHeader,
-    clearRequestContext() {
-      __clearRequestContext();
-    },
-    createRscOnErrorHandler(pathname, routePath) {
-      return createRscOnErrorHandler(request, pathname, routePath);
-    },
-    error,
-    getFontLinks: _getSSRFontLinks,
-    getFontPreloads: _getSSRFontPreloads,
-    getFontStyles: _getSSRFontStyles,
-    getNavigationContext: _getNavigationContext,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    loadSsrHandler() {
-      return import.meta.viteRsc.loadModule("ssr", "index");
-    },
-    makeThenableParams,
-    matchedParams: matchedParams ?? route?.params ?? {},
-    middlewareContext: middlewareContext ?? __APP_PAGE_EMPTY_MW_CTX,
-    metadataRoutes,
-    requestUrl: request.url,
-    resolveChildSegments: __resolveAppPageChildSegments,
-    rootLayouts: rootLayouts,
-    route,
-    renderToReadableStream,
-    sanitizeErrorForClient: __sanitizeErrorForClient,
-    scriptNonce,
-  });
-}
+  },
+  makeThenableParams,
+  sanitizer: __sanitizeErrorForClient,
+  rscRenderer: renderToReadableStream,
+  getNavigationContext: _getNavigationContext,
+  resolveChildSegments: __resolveAppPageChildSegments,
+  clearRequestContext() {
+    __clearRequestContext();
+  },
+  createRscOnErrorHandler,
+});
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
@@ -520,110 +446,16 @@ function findIntercept(pathname, sourcePathname = null) {
 }
 
 async function buildPageElements(route, params, routePath, pageRequest) {
-  const {
-    opts,
-    searchParams,
-    isRscRequest,
-    request,
-    mountedSlotsHeader,
-  } = pageRequest;
-  const hasPageModule = !!route.page;
-  const PageComponent = route.page?.default;
-  if (hasPageModule && !PageComponent) {
-    const _interceptionContext = opts?.interceptionContext ?? null;
-    const _noExportRouteId = __createAppPayloadRouteId(routePath, _interceptionContext);
-    let _noExportRootLayout = null;
-    if (route.layouts?.length > 0) {
-      // Compute the root layout tree path for this error payload using the
-      // canonical helper so it stays aligned with buildAppPageElements().
-      const _tp = route.layoutTreePositions?.[0] ?? 0;
-      _noExportRootLayout = __createAppPageTreePath(route.routeSegments, _tp);
-    }
-    return {
-      [__APP_INTERCEPTION_CONTEXT_KEY]: _interceptionContext,
-      __route: _noExportRouteId,
-      __rootLayout: _noExportRootLayout,
-      [_noExportRouteId]: createElement("div", null, "Page has no default export"),
-    };
-  }
-
-  const {
-    hasSearchParams,
-    metadata: resolvedMetadata,
-    pageSearchParams,
-    viewport: resolvedViewport,
-  } = await __resolveAppPageHead({
-    layoutModules: route.layouts,
-    layoutTreePositions: route.layoutTreePositions,
-    metadataRoutes,
-    pageModule: route.page,
-    parallelRoutes: __resolveActiveParallelRouteHeadInputs({
-      interceptLayouts: opts?.interceptLayouts ?? null,
-      interceptPage: opts?.interceptPage ?? null,
-      interceptParams: opts?.interceptParams ?? null,
-      interceptSlotKey: opts?.interceptSlotKey ?? null,
-      params,
-      routeSegments: route.routeSegments,
-      slots: route.slots,
-    }),
+  return __buildPageElements({
+    route,
     params,
-    routePath: route.pattern,
-    routeSegments: route.routeSegments,
-    searchParams,
-  });
-
-  // Build the route tree from the leaf page, then delegate the boundary/layout/
-  // template/segment wiring to a typed runtime helper so the generated entry
-  // stays thin and the wiring logic can be unit tested directly.
-  const pageProps = { params: makeThenableParams(params) };
-  if (searchParams) {
-    // Always provide searchParams prop when the URL object is available, even
-    // when the query string is empty -- pages that do "await searchParams" need
-    // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(pageSearchParams);
-    // If the URL has query parameters, mark the page as dynamic.
-    // In Next.js, only accessing the searchParams prop signals dynamic usage,
-    // but a Proxy-based approach doesn't work here because React's RSC debug
-    // serializer accesses properties on all props (e.g. $$typeof check in
-    // isClientReference), triggering the Proxy even when user code doesn't
-    // read searchParams. Checking for non-empty query params is a safe
-    // approximation: pages with query params in the URL are almost always
-    // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
-  }
-  // mountedSlotsHeader is threaded through from the handler scope so every
-  // call site shares one source of truth for request-derived values. Reading
-  // the same header in two places invites silent drift when a future refactor
-  // changes only one of them.
-  const mountedSlotIds = mountedSlotsHeader
-    ? new Set(mountedSlotsHeader.split(" "))
-    : null;
-
-  return __buildAppPageElements({
-    element: PageComponent ? createElement(PageComponent, pageProps) : null,
-    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-    isRscRequest,
-    mountedSlotIds,
-    makeThenableParams,
-    matchedParams: params,
-    resolvedMetadata,
-    resolvedViewport,
-    interceptionContext: opts?.interceptionContext ?? null,
     routePath,
+    pageRequest,
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
     rootForbiddenModule: ${rootForbiddenVar ? rootForbiddenVar : "null"},
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
-    route,
-    slotOverrides:
-      opts && opts.interceptSlotKey && opts.interceptPage
-        ? {
-            [opts.interceptSlotKey]: {
-              layoutModules: opts.interceptLayouts || null,
-              pageModule: opts.interceptPage,
-              params: opts.interceptParams || params,
-            },
-          }
-        : null,
+    metadataRoutes,
   });
 }
 
@@ -635,6 +467,7 @@ const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
+const __expireTime = ${JSON.stringify(expireTime)};
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
@@ -698,8 +531,9 @@ export default async function handler(request, ctx) {
   ${
     instrumentationPath
       ? `// Ensure instrumentation.register() has run before handling the first request.
-  // This is a no-op after the first call (guarded by __instrumentationInitialized).
-  await __ensureInstrumentation();
+  // This is a no-op after the first call (guarded by the shared promise in
+  // ensureInstrumentationRegistered).
+  await __ensureInstrumentationRegistered(_instrumentation);
   `
       : ""
   }
@@ -1109,7 +943,7 @@ ${prerenderPagesLoaderOption}
         : ""
     }
     // Render custom not-found page if available, otherwise plain 404
-    const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
+    const notFoundResponse = await __fallbackRenderer.renderNotFound(null, isRscRequest, request, undefined, _scriptNonce, _mwCtx);
     if (notFoundResponse) return notFoundResponse;
     __clearRequestContext();
     const notFoundHeaders = new Headers();
@@ -1195,6 +1029,7 @@ ${prerenderPagesLoaderOption}
     hasPageModule: !!route.page,
     handlerStart: __reqStart,
     interceptionContext: interceptionContextHeader,
+    expireSeconds: __expireTime,
     isProduction: process.env.NODE_ENV === "production",
     isRscRequest,
     isrDebug: __isrDebug,
@@ -1228,10 +1063,10 @@ ${prerenderPagesLoaderOption}
       return PageComponent({ params: _asyncRouteParams, searchParams: _asyncSearchParams });
     },
     renderErrorBoundaryPage(renderErr) {
-      return renderErrorBoundaryPage(route, renderErr, isRscRequest, request, params, _scriptNonce, _mwCtx);
+      return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, _scriptNonce, _mwCtx);
     },
     renderHttpAccessFallbackPage(statusCode, opts, middlewareContext) {
-      return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts, _scriptNonce, middlewareContext);
+      return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, _scriptNonce, middlewareContext);
     },
     renderToReadableStream,
     request,

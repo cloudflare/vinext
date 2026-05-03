@@ -1,8 +1,8 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { setHeadersContext, type HeadersAccessPhase } from "../shims/headers.js";
-import type { ExecutionContextLike } from "../shims/request-context.js";
-import type { CachedRouteValue } from "../shims/cache.js";
-import type { NextRequest } from "../shims/server.js";
+import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
+import type { ExecutionContextLike } from "vinext/shims/request-context";
+import type { CachedRouteValue } from "vinext/shims/cache";
+import type { NextRequest } from "vinext/shims/server";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -40,6 +40,7 @@ export type RouteHandlerCacheSetter = (
   data: CachedRouteValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 type AppRouteErrorReporter = (
   error: Error,
@@ -84,6 +85,7 @@ type ExecuteAppRouteHandlerOptions = {
   method: string;
   middlewareContext: RouteHandlerMiddlewareContext;
   reportRequestError: AppRouteErrorReporter;
+  expireSeconds?: number;
   revalidateSeconds: number | null;
   routePattern: string;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
@@ -162,7 +164,7 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler revalidate seconds");
       }
-      applyRouteHandlerRevalidateHeader(response, revalidateSeconds);
+      applyRouteHandlerRevalidateHeader(response, revalidateSeconds, options.expireSeconds);
     }
 
     if (
@@ -190,7 +192,13 @@ export async function executeAppRouteHandler(
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
-          await options.isrSet(routeKey, routeCacheValue, revalidateSeconds, routeTags);
+          await options.isrSet(
+            routeKey,
+            routeCacheValue,
+            revalidateSeconds,
+            routeTags,
+            options.expireSeconds,
+          );
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {
           console.error("[vinext] ISR route cache write error:", cacheErr);

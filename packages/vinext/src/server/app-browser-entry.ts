@@ -34,7 +34,7 @@ import {
   toRscUrl,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
-} from "../shims/navigation.js";
+} from "vinext/shims/navigation";
 import { stripBasePath } from "../utils/base-path.js";
 import {
   chunksToReadableStream,
@@ -63,9 +63,9 @@ import {
   resolveServerActionRequestState,
   type AppRouterState,
 } from "./app-browser-state.js";
-import { ElementsContext, Slot } from "../shims/slot.js";
-import { devOnCaughtError } from "./app-browser-error.js";
-import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "../shims/url-safety.js";
+import { ElementsContext, Slot } from "vinext/shims/slot";
+import { createOnUncaughtError, devOnCaughtError } from "./app-browser-error.js";
+import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   getServerActionNotFoundClientMessage,
   isServerActionNotFoundResponse,
@@ -110,6 +110,16 @@ function isRouterStatePromise(
 
 let latestClientParams: Record<string, string | string[]> = {};
 const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
+// Sticky bit: stays true once BrowserRoot has committed at least once. Used by
+// the HMR handler to distinguish "still hydrating" (wait) from "was up, then
+// torn down by a render error" (full reload to recover).
+let browserRouterStateHasEverCommitted = false;
+// Most recent navigation target that has been dispatched but not yet committed.
+// Read by the onUncaughtError handler so a render error tearing down the tree
+// can land the browser on the URL the user was actually navigating to, instead
+// of stranding them on the previous URL with a blank page. Cleared once the
+// commit effect runs (URL update succeeded) or the navigation is superseded.
+let pendingNavigationRecoveryHref: string | null = null;
 
 function isServerActionResult(value: unknown): value is ServerActionResult {
   return !!value && typeof value === "object" && "root" in value;
@@ -195,6 +205,8 @@ function createNavigationCommitEffect(options: {
       pushHistoryStateWithoutNotify(historyState, "", href);
     }
 
+    // URL has been updated; the recovery hard-nav target is no longer needed.
+    pendingNavigationRecoveryHref = null;
     commitClientNavigationState(navId);
   };
 }
@@ -211,19 +223,27 @@ async function renderNavigationPayload(
   useTransition = true,
   actionType: "navigate" | "replace" | "traverse" = "navigate",
 ): Promise<void> {
-  return browserNavigationController.renderNavigationPayload({
-    actionType,
-    createNavigationCommitEffect,
-    historyUpdateMode,
-    navigationSnapshot,
-    nextElements: payload,
-    params,
-    pendingRouterState,
-    previousNextUrl,
-    targetHref,
-    navId,
-    useTransition,
-  });
+  try {
+    return await browserNavigationController.renderNavigationPayload({
+      actionType,
+      createNavigationCommitEffect: (options) => {
+        pendingNavigationRecoveryHref = options.href;
+        return createNavigationCommitEffect(options);
+      },
+      historyUpdateMode,
+      navigationSnapshot,
+      nextElements: payload,
+      params,
+      pendingRouterState,
+      previousNextUrl,
+      targetHref,
+      navId,
+      useTransition,
+    });
+  } catch (error) {
+    pendingNavigationRecoveryHref = null;
+    throw error;
+  }
 }
 
 async function commitSameUrlNavigatePayload(
@@ -419,6 +439,7 @@ function BrowserRoot({
       setTreeStateValue,
       stateRef,
     );
+    browserRouterStateHasEverCommitted = true;
     return () => {
       detach();
       setMountedSlotsHeader(null);
@@ -779,13 +800,16 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     window.location.href,
   );
 
+  const onUncaughtError = createOnUncaughtError(() => pendingNavigationRecoveryHref);
   window.__VINEXT_RSC_ROOT__ = hydrateRoot(
     document,
     createElement(BrowserRoot, {
       initialElements: root,
       initialNavigationSnapshot,
     }),
-    import.meta.env.DEV ? { onCaughtError: devOnCaughtError } : undefined,
+    import.meta.env.DEV
+      ? { onCaughtError: devOnCaughtError, onUncaughtError }
+      : { onUncaughtError },
   );
   window.__VINEXT_HYDRATED_AT = performance.now();
 
@@ -1101,6 +1125,30 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   if (import.meta.hot) {
     import.meta.hot.on("rsc:update", async () => {
       try {
+        // If BrowserRoot has been mounted before but isn't now, a render
+        // error tore down the tree (e.g. a server route threw). HMR can't
+        // dispatch into a missing setter, and waitForBrowserRouterStateReady
+        // would block forever — the tree won't remount until the page reloads.
+        // Trigger that reload so the user's fix actually lands without a
+        // manual refresh. Cleared after a successful mount, so this only
+        // fires once per teardown.
+        if (
+          browserRouterStateHasEverCommitted &&
+          !browserNavigationController.hasBrowserRouterState()
+        ) {
+          window.location.reload();
+          return;
+        }
+        // HMR can also fire before BrowserRoot's layout effect publishes
+        // the browser router state (e.g. saving a file while the initial RSC
+        // stream is still suspended). Wait for readiness, then re-check the
+        // mounted state — readiness can race with cleanup, which nulls it again.
+        // Skip silently when the tree is not currently mounted; the next
+        // HMR push or full reload will reconcile.
+        await waitForBrowserRouterStateReady();
+        if (!browserNavigationController.hasBrowserRouterState()) {
+          return;
+        }
         clearClientNavigationCaches();
         const navigationSnapshot = createClientNavigationRenderSnapshot(
           window.location.href,
@@ -1120,6 +1168,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           renderId: browserNavigationController.allocateRenderId(),
           type: "replace",
         });
+        // createPendingNavigationCommit awaits the new RSC payload. While
+        // suspended, the prior broken render can unmount BrowserRoot. Re-check
+        // before dispatching so a racing unmount doesn't surface as an
+        // initialized-setter error.
+        if (!browserNavigationController.hasBrowserRouterState()) {
+          return;
+        }
         browserNavigationController.dispatchBrowserTree(
           pending.action.elements,
           navigationSnapshot,

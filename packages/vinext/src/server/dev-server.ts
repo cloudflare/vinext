@@ -14,17 +14,17 @@ import {
   setRevalidateDuration,
   getRevalidateDuration,
 } from "./isr-cache.js";
-import type { CachedPagesValue } from "../shims/cache.js";
-import { _runWithCacheState } from "../shims/cache.js";
-import { runWithPrivateCache } from "../shims/cache-runtime.js";
-import { ensureFetchPatch, runWithFetchCache } from "../shims/fetch-cache.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+import type { CachedPagesValue } from "vinext/shims/cache";
+import { _runWithCacheState } from "vinext/shims/cache";
+import { runWithPrivateCache } from "vinext/shims/cache-runtime";
+import { ensureFetchPatch, runWithFetchCache } from "vinext/shims/fetch-cache";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
-import "../shims/router-state.js";
-import { runWithHeadState } from "../shims/head-state.js";
-import { runWithServerInsertedHTMLState } from "../shims/navigation-state.js";
-import { withScriptNonce } from "../shims/script-nonce-context.js";
+import "vinext/shims/router-state";
+import { runWithHeadState } from "vinext/shims/head-state";
+import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
+import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";

@@ -27,6 +27,7 @@ import {
 } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -59,7 +60,13 @@ export type CacheHandlerValue = {
   lastModified: number;
   age?: number;
   cacheState?: string;
+  cacheControl?: CacheControlMetadata;
   value: IncrementalCacheValue | null;
+};
+
+export type CacheControlMetadata = {
+  revalidate: number;
+  expire?: number;
 };
 
 /** Discriminated union of cache value types. */
@@ -176,6 +183,8 @@ type MemoryEntry = {
   tags: string[];
   lastModified: number;
   revalidateAt: number | null;
+  expireAt: number | null;
+  cacheControl?: CacheControlMetadata;
 };
 
 function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
@@ -183,19 +192,6 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
 }
-
-/**
- * Shape of the optional `ctx` argument passed to `CacheHandler.set()`.
- * Covers both the older `{ revalidate: number }` shape and the newer
- * `{ cacheControl: { revalidate: number } }` shape (Next.js 16).
- */
-type SetCtx = {
-  tags?: string[];
-  fetchCache?: boolean;
-  revalidate?: number;
-  cacheControl?: { revalidate?: number };
-  [key: string]: unknown;
-};
 
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
@@ -223,19 +219,28 @@ export class MemoryCacheHandler implements CacheHandler {
       }
     }
 
-    // Check time-based expiry — return stale entry with cacheState="stale"
+    // Check hard expiry first. Past `expire`, Next.js blocks on fresh
+    // regeneration instead of serving stale with background work.
+    if (entry.expireAt !== null && Date.now() > entry.expireAt) {
+      this.store.delete(key);
+      return null;
+    }
+
+    // Check time-based revalidation — return stale entry with cacheState="stale"
     // instead of deleting, so ISR can serve stale-while-revalidate
     if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
       return {
         lastModified: entry.lastModified,
         value: entry.value,
         cacheState: "stale",
+        cacheControl: entry.cacheControl,
       };
     }
 
     return {
       lastModified: entry.lastModified,
       value: entry.value,
+      cacheControl: entry.cacheControl,
     };
   }
 
@@ -244,40 +249,49 @@ export class MemoryCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    const typedCtx = ctx as SetCtx | undefined;
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
       for (const t of data.tags) tagSet.add(t);
     }
-    if (typedCtx && Array.isArray(typedCtx.tags)) {
-      for (const t of typedCtx.tags) tagSet.add(t);
+    for (const t of readStringArrayField(ctx, "tags")) {
+      tagSet.add(t);
     }
     const tags = [...tagSet];
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
-    if (typedCtx) {
-      const revalidate = typedCtx.cacheControl?.revalidate ?? typedCtx.revalidate;
-      if (typeof revalidate === "number") {
-        effectiveRevalidate = revalidate;
-      }
-    }
+    let effectiveExpire: number | undefined;
+    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    effectiveExpire = readCacheControlNumberField(ctx, "expire");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
     if (effectiveRevalidate === 0) return;
 
+    const now = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? Date.now() + effectiveRevalidate * 1000
+        ? now + effectiveRevalidate * 1000
         : null;
+    const expireAt =
+      typeof effectiveExpire === "number" && effectiveExpire > 0
+        ? now + effectiveExpire * 1000
+        : null;
+    const cacheControl =
+      typeof effectiveRevalidate === "number"
+        ? effectiveExpire === undefined
+          ? { revalidate: effectiveRevalidate }
+          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        : undefined;
 
     this.store.set(key, {
       value: data,
       tags,
-      lastModified: Date.now(),
+      lastModified: now,
       revalidateAt,
+      expireAt,
+      cacheControl,
     });
   }
 
@@ -569,8 +583,8 @@ export function _initRequestScopedCacheState(): void {
 }
 
 /**
- * Set a request-scoped cache life config. Called by cacheLife() when outside
- * a "use cache" function context.
+ * Set a request-scoped cache life config. Called by cacheLife() so the route
+ * render can inherit cache policy from file-level and nested "use cache" work.
  * @internal
  */
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
@@ -598,6 +612,17 @@ export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
           : config.expire;
     }
   }
+}
+
+/**
+ * Read the request-scoped cache life without clearing it. Prerender response
+ * shaping needs the metadata before the manifest writer consumes it after the
+ * body has been fully rendered.
+ * @internal
+ */
+export function _peekRequestScopedCacheLife(): CacheLifeConfig | null {
+  const config = _getCacheState().requestScopedCacheLife;
+  return config === null ? null : { ...config };
 }
 
 /**
@@ -674,7 +699,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     ) {
       console.warn("[vinext] cacheLife: expire must be >= revalidate");
     }
-    resolvedConfig = { ...profile };
+    resolvedConfig = { ...cacheLifeProfiles.default, ...profile };
   } else {
     return;
   }
@@ -684,6 +709,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
+      _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
   } catch {

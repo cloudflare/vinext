@@ -1,4 +1,4 @@
-import { mergeElements } from "../shims/slot.js";
+import { mergeElements } from "vinext/shims/slot";
 import { stripBasePath } from "../utils/base-path.js";
 import {
   getMountedSlotIdsHeader,
@@ -6,7 +6,7 @@ import {
   type AppElements,
   type LayoutFlags,
 } from "./app-elements.js";
-import type { ClientNavigationRenderSnapshot } from "../shims/navigation.js";
+import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 

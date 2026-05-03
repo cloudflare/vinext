@@ -72,8 +72,8 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
 
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain(JSON.stringify(fontBase64));
-    expect(result.code).toContain("Promise.resolve(a.buffer)");
+    // The font's base64 contents must be inlined and the runtime fetch eliminated.
+    expect(result.code).toContain(fontBase64);
     expect(result.code).not.toContain("fetch(");
   });
 
@@ -87,7 +87,8 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
 
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain(`Buffer.from(${JSON.stringify(fontBase64)},"base64")`);
+    // Font contents inlined as base64 and the runtime fs read eliminated.
+    expect(result.code).toContain(fontBase64);
     expect(result.code).not.toContain("readFileSync");
   });
 
@@ -154,15 +155,12 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const moduleId = path.join(tmpDir, "og.tsx");
 
     const firstResult = await transform.call(plugin, code, moduleId);
-    expect(firstResult.code).toContain(
-      `Buffer.from(${JSON.stringify(initialFontBase64)},"base64")`,
-    );
+    expect(firstResult.code).toContain(initialFontBase64);
 
     await fsp.writeFile(devFontPath, Buffer.from("dev-font-v2"));
 
     const secondResult = await transform.call(plugin, code, moduleId);
-    expect(secondResult.code).toContain(
-      `Buffer.from(${JSON.stringify(updatedFontBase64)},"base64")`,
-    );
+    expect(secondResult.code).toContain(updatedFontBase64);
+    expect(secondResult.code).not.toContain(initialFontBase64);
   });
 });

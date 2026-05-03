@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { CachedAppPageValue } from "../shims/cache.js";
+import type { CachedAppPageValue } from "vinext/shims/cache";
 import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
 import {
   finalizeAppPageHtmlCacheResponse,
@@ -44,10 +44,12 @@ type AppPageCacheSetter = (
   data: CachedAppPageValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 
 type AppPageRequestCacheLife = {
   revalidate?: number;
+  expire?: number;
 };
 
 type RenderAppPageLifecycleOptions = {
@@ -63,12 +65,14 @@ type RenderAppPageLifecycleOptions = {
   getNavigationContext: () => unknown;
   getPageTags: () => string[];
   getRequestCacheLife: () => AppPageRequestCacheLife | null;
+  peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
   hasLoadingBoundary: boolean;
   isDynamicError: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
+  isPrerender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
@@ -81,6 +85,7 @@ type RenderAppPageLifecycleOptions = {
   params: Record<string, unknown>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
+  expireSeconds?: number;
   revalidateSeconds: number | null;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderLayoutSpecialError: (
@@ -119,6 +124,39 @@ function buildResponseTiming(
     renderEnd: options.renderEnd,
     responseKind: options.responseKind,
   };
+}
+
+function readRequestCacheLifeForPrerender(
+  options: Pick<RenderAppPageLifecycleOptions, "getRequestCacheLife" | "peekRequestCacheLife">,
+): AppPageRequestCacheLife | null {
+  // Prefer the non-destructive reader so prerender.ts can consume metadata
+  // after the handler returns. The consume fallback supports older entry glue
+  // and is only safe because this path reads at most once per prerender.
+  return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+}
+
+function applyRequestCacheLife(options: {
+  expireSeconds?: number;
+  requestCacheLife: AppPageRequestCacheLife | null;
+  revalidateSeconds: number | null;
+}): { expireSeconds?: number; revalidateSeconds: number | null } {
+  let revalidateSeconds = options.revalidateSeconds;
+  let expireSeconds = options.expireSeconds;
+  const requestCacheLife = options.requestCacheLife;
+
+  if (requestCacheLife?.revalidate !== undefined) {
+    revalidateSeconds =
+      revalidateSeconds === null
+        ? requestCacheLife.revalidate
+        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
+  }
+  if (requestCacheLife?.expire !== undefined) {
+    // cacheLife() supplies the effective hard-expire ceiling for this render,
+    // so it replaces the config fallback instead of min-merging with it.
+    expireSeconds = requestCacheLife.expire;
+  }
+
+  return { expireSeconds, revalidateSeconds };
 }
 
 /**
@@ -229,14 +267,12 @@ export async function renderAppPageLifecycle(
   });
 
   let revalidateSeconds = options.revalidateSeconds;
-  const rscCapture = teeAppPageRscStreamForCapture(
-    rscStream,
-    options.isProduction &&
-      revalidateSeconds !== null &&
-      revalidateSeconds > 0 &&
-      revalidateSeconds !== Infinity &&
-      !options.isForceDynamic,
-  );
+  let expireSeconds = options.expireSeconds;
+  const shouldCaptureRscForCacheMetadata =
+    (options.isProduction || options.isPrerender === true) &&
+    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    !options.isForceDynamic;
+  const rscCapture = teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
   const rscForResponse = rscCapture.ssrStream;
 
   // When the fused tee (#981) is active, the sideStream carries both the embed
@@ -250,6 +286,15 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
+    if (options.isPrerender === true) {
+      await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+      ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+        expireSeconds,
+        requestCacheLife: readRequestCacheLifeForPrerender(options),
+        revalidateSeconds,
+      }));
+    }
+
     const dynamicUsedDuringBuild = options.consumeDynamicUsage();
     const rscResponsePolicy = resolveAppPageRscResponsePolicy({
       dynamicUsedDuringBuild,
@@ -257,6 +302,7 @@ export async function renderAppPageLifecycle(
       isForceDynamic: options.isForceDynamic,
       isForceStatic: options.isForceStatic,
       isProduction: options.isProduction,
+      expireSeconds,
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
@@ -290,18 +336,24 @@ export async function renderAppPageLifecycle(
         : rscResponse;
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
-      capturedRscDataPromise: options.isProduction ? capturedRscDataRef.value : null,
+      capturedRscDataPromise:
+        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
       dynamicUsedDuringBuild,
       getPageTags() {
         return options.getPageTags();
       },
+      getRequestCacheLife() {
+        return options.getRequestCacheLife();
+      },
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      revalidateSeconds: revalidateSeconds ?? 0,
+      preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
+      expireSeconds,
+      revalidateSeconds,
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -365,12 +417,16 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
+  if (options.isPrerender === true) {
+    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+      expireSeconds,
+      requestCacheLife: readRequestCacheLifeForPrerender(options),
+      revalidateSeconds,
+    }));
+  }
   const draftCookie = options.getDraftModeCookieHeader();
   const dynamicUsedDuringRender = options.consumeDynamicUsage();
-  const requestCacheLife = options.getRequestCacheLife();
-  if (requestCacheLife?.revalidate !== undefined && revalidateSeconds === null) {
-    revalidateSeconds = requestCacheLife.revalidate;
-  }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
   // HTTP layer. The RSC/SSR pipeline is lazy — Server Components execute while
@@ -389,6 +445,7 @@ export async function renderAppPageLifecycle(
     isForceDynamic: options.isForceDynamic,
     isForceStatic: options.isForceStatic,
     isProduction: options.isProduction,
+    expireSeconds,
     revalidateSeconds,
   });
   const htmlResponseTiming = buildResponseTiming({
@@ -399,7 +456,16 @@ export async function renderAppPageLifecycle(
     responseKind: "html",
   });
 
-  if (htmlResponsePolicy.shouldWriteToCache) {
+  const shouldSpeculativelyWriteCache =
+    options.isProduction &&
+    shouldCaptureRscForCacheMetadata &&
+    revalidateSeconds === null &&
+    !options.isDynamicError &&
+    !options.isForceStatic &&
+    !options.scriptNonce &&
+    !dynamicUsedDuringRender;
+
+  if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       fontLinkHeader,
@@ -407,6 +473,11 @@ export async function renderAppPageLifecycle(
       policy: htmlResponsePolicy,
       timing: htmlResponseTiming,
     });
+
+    if (options.isPrerender === true) {
+      return isrResponse;
+    }
+
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
@@ -414,11 +485,16 @@ export async function renderAppPageLifecycle(
       getPageTags() {
         return options.getPageTags();
       },
+      getRequestCacheLife() {
+        return options.getRequestCacheLife();
+      },
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
-      revalidateSeconds: revalidateSeconds ?? 0,
+      preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
+      expireSeconds,
+      revalidateSeconds,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
@@ -432,4 +508,20 @@ export async function renderAppPageLifecycle(
     policy: htmlResponsePolicy,
     timing: htmlResponseTiming,
   });
+}
+
+async function settleCapturedRscRenderForCacheMetadata(
+  capturedRscDataPromise: Promise<ArrayBuffer> | null,
+): Promise<void> {
+  if (!capturedRscDataPromise) {
+    return;
+  }
+
+  try {
+    await capturedRscDataPromise;
+  } catch {
+    // The response stream and cache-write path own render error propagation.
+    // This pre-read only makes "use cache" metadata available before headers
+    // and ISR seed metadata are finalized.
+  }
 }

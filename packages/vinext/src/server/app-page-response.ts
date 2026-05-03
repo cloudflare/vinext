@@ -1,3 +1,8 @@
+import {
+  buildRevalidateCacheControl,
+  NO_STORE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type AppPageMiddlewareContext = {
@@ -22,6 +27,7 @@ type ResolveAppPageResponsePolicyBaseOptions = {
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProduction: boolean;
+  expireSeconds?: number;
   revalidateSeconds: number | null;
 };
 
@@ -53,13 +59,6 @@ type BuildAppPageHtmlResponseOptions = {
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
 };
-
-const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
-const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
-
-function buildRevalidateCacheControl(revalidateSeconds: number): string {
-  return `s-maxage=${revalidateSeconds}, stale-while-revalidate`;
-}
 
 function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): void {
   if (!timing) {
@@ -106,7 +105,7 @@ export function resolveAppPageRscResponsePolicy(
 
   if (options.revalidateSeconds) {
     return {
-      cacheControl: buildRevalidateCacheControl(options.revalidateSeconds),
+      cacheControl: buildRevalidateCacheControl(options.revalidateSeconds, options.expireSeconds),
       // Emit MISS as part of the initial RSC response shape rather than bolting
       // it on later in the cache-write block so response construction stays
       // centralized in this helper. This matches the eventual write path: the
@@ -167,7 +166,7 @@ export function resolveAppPageHtmlResponsePolicy(
     options.revalidateSeconds !== Infinity
   ) {
     return {
-      cacheControl: buildRevalidateCacheControl(options.revalidateSeconds),
+      cacheControl: buildRevalidateCacheControl(options.revalidateSeconds, options.expireSeconds),
       cacheState: options.isProduction ? "MISS" : undefined,
       shouldWriteToCache: options.isProduction,
     };

@@ -96,17 +96,25 @@ describe("vinext:image-imports — transform", () => {
   // Fake file ID in the images directory so path.resolve works
   const fakeId = path.join(IMAGES_DIR, "page.tsx");
 
+  /**
+   * The transform's contract is that an `import X from './pic.png'` becomes a
+   * `const X = { src, width, height, ... }` StaticImageData object, with
+   * dimensions resolved through a sibling `?vinext-meta` import. We verify the
+   * shape, not the synthesized intermediate variable names.
+   */
+  function expectImageBinding(code: string, name: string, fileBasename: string) {
+    expect(code).not.toMatch(new RegExp(`import\\s+${name}\\s+from`));
+    expect(code).toMatch(new RegExp(`const\\s+${name}\\s*=\\s*\\{[^}]*src\\s*:`));
+    expect(code).toContain(path.join(IMAGES_DIR, fileBasename) + "?vinext-meta");
+  }
+
   it("transforms a PNG import into StaticImageData", async () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import hero from './test-4x3.png';\nconsole.log(hero);`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_hero");
-    expect(result.code).toContain("__vinext_img_meta_hero");
-    expect(result.code).toContain("const hero = { src: __vinext_img_url_hero");
-    expect(result.code).toContain("?vinext-meta");
-    expect(result.code).not.toContain("import hero from");
+    expectImageBinding(result.code, "hero", "test-4x3.png");
     expect(result.map).toBeDefined();
   });
 
@@ -116,8 +124,7 @@ describe("vinext:image-imports — transform", () => {
     const code = `import photo from './test-8x6.jpg';`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_photo");
-    expect(result.code).toContain("const photo = { src: __vinext_img_url_photo");
+    expectImageBinding(result.code, "photo", "test-8x6.jpg");
   });
 
   it("transforms multiple image imports in one file", async () => {
@@ -130,21 +137,8 @@ describe("vinext:image-imports — transform", () => {
     ].join("\n");
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_hero");
-    expect(result.code).toContain("__vinext_img_url_photo");
-    expect(result.code).toContain("const hero =");
-    expect(result.code).toContain("const photo =");
-  });
-
-  it("handles various image extensions", async () => {
-    const plugin = getImagePlugin();
-    const transform = unwrapHook(plugin.transform);
-    // These files don't exist so transform should skip them (fs.existsSync check),
-    // but the regex should still match — we verify by testing with a real file
-    const code = `import icon from './test-4x3.png';`;
-    const result = await transform.call(plugin, code, fakeId);
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_icon");
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    expectImageBinding(result.code, "photo", "test-8x6.jpg");
   });
 
   it("returns null for files with no image imports", async () => {
@@ -201,35 +195,15 @@ describe("vinext:image-imports — transform", () => {
     // React imports should still be there
     expect(result.code).toContain(`import React from 'react'`);
     expect(result.code).toContain(`import { useState } from 'react'`);
-    // Image import should be transformed
-    expect(result.code).toContain("__vinext_img_url_hero");
+    // Image import should be rewritten as a StaticImageData binding
+    expectImageBinding(result.code, "hero", "test-4x3.png");
   });
 
-  it("handles single-quoted imports", async () => {
+  it.each([`'./test-4x3.png'`, `"./test-4x3.png"`])("handles import quoted as %s", async (q) => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
-    const code = `import hero from './test-4x3.png';`;
-    const result = await transform.call(plugin, code, fakeId);
+    const result = await transform.call(plugin, `import hero from ${q};`, fakeId);
     expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_hero");
-  });
-
-  it("handles double-quoted imports", async () => {
-    const plugin = getImagePlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = `import hero from "./test-4x3.png";`;
-    const result = await transform.call(plugin, code, fakeId);
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("__vinext_img_url_hero");
-  });
-
-  it("uses absolute path in meta import", async () => {
-    const plugin = getImagePlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = `import hero from './test-4x3.png';`;
-    const result = await transform.call(plugin, code, fakeId);
-    expect(result).not.toBeNull();
-    // Meta import should reference the absolute path
-    expect(result.code).toContain(PNG_PATH + "?vinext-meta");
+    expectImageBinding(result.code, "hero", "test-4x3.png");
   });
 });

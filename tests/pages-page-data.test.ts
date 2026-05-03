@@ -39,6 +39,7 @@ function createOptions(
     },
     isrGet: vi.fn().mockResolvedValue(null),
     isrSet: vi.fn(async () => {}),
+    expireSeconds: 300,
     pageModule: {},
     params: { slug: "post" },
     query: { slug: "post" },
@@ -231,6 +232,47 @@ describe("pages page data", () => {
         pageData: { title: "fresh" },
       }),
       15,
+      undefined,
+      300,
+    );
+  });
+
+  it("uses stored cache-control metadata for Pages Router cached HIT responses", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        expireSeconds: 31_536_000,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            cacheControl: { revalidate: 15, expire: 300 },
+            lastModified: 1,
+            value: {
+              kind: "PAGES",
+              html: "<html><body>cached</body></html>",
+              pageData: { cached: true },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps() {
+            return {
+              props: { title: "fresh" },
+              revalidate: 15,
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(result.response.headers.get("cache-control")).toBe(
+      "s-maxage=15, stale-while-revalidate=285",
     );
   });
 

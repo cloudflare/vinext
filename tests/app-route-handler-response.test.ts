@@ -96,6 +96,7 @@ describe("app route handler response helpers", () => {
 
     const hit = buildRouteHandlerCachedResponse(cachedValue, {
       cacheState: "HIT",
+      expireSeconds: 300,
       isHead: false,
       revalidateSeconds: 60,
     });
@@ -105,12 +106,27 @@ describe("app route handler response helpers", () => {
 
     const staleHead = buildRouteHandlerCachedResponse(cachedValue, {
       cacheState: "STALE",
+      expireSeconds: 300,
       isHead: true,
       revalidateSeconds: 60,
     });
     expect(staleHead.headers.get("x-vinext-cache")).toBe("STALE");
     expect(staleHead.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     await expect(staleHead.text()).resolves.toBe("");
+  });
+
+  it("prefers stored cache-control metadata over caller defaults", () => {
+    const cachedValue = buildCachedRouteValue("from-cache");
+
+    const response = buildRouteHandlerCachedResponse(cachedValue, {
+      cacheControl: { revalidate: 15, expire: 300 },
+      cacheState: "HIT",
+      expireSeconds: 31_536_000,
+      isHead: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=15, stale-while-revalidate=285");
   });
 
   it("serializes APP_ROUTE cache values without cache bookkeeping headers", async () => {

@@ -1,4 +1,4 @@
-import { pickRootParams, setRootParams, type RootParams } from "../shims/root-params.js";
+import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 

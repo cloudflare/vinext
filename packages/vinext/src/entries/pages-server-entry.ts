@@ -100,6 +100,7 @@ export async function generateServerEntry(
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
+    expireTime: nextConfig?.expireTime,
     i18n: nextConfig?.i18n ?? null,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
@@ -217,8 +218,8 @@ export const vinextConfig = ${vinextConfigJson};
 function isrGet(key) {
   return __sharedIsrGet(key);
 }
-function isrSet(key, data, revalidateSeconds, tags) {
-  return __sharedIsrSet(key, data, revalidateSeconds, tags);
+function isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
+  return __sharedIsrSet(key, data, revalidateSeconds, tags, expireSeconds);
 }
 function triggerBackgroundRegeneration(key, renderFn, errorContext) {
   return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);
@@ -577,6 +578,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         isrCacheKey,
         isrGet,
         isrSet,
+        expireSeconds: vinextConfig.expireTime,
         pageModule,
         params,
         query,
@@ -649,6 +651,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         gsspRes,
         isrCacheKey,
+        expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,
         i18n: {

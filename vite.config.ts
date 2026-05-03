@@ -1,5 +1,8 @@
+import path from "node:path";
 import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
+
+const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
 
 export default defineConfig({
   staged: {
@@ -27,6 +30,7 @@ export default defineConfig({
       denyWarnings: true,
     },
     plugins: ["typescript", "unicorn", "import", "react"],
+    jsPlugins: ["./oxlint-plugins/prefer-import-alias.js"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
       "typescript/consistent-type-definitions": ["error", "type"],
@@ -57,6 +61,17 @@ export default defineConfig({
           "@typescript-eslint/no-unsafe-function-type": "off",
         },
       },
+      {
+        // Forces relative imports of own-package files inside vinext to use
+        // the tsconfig path alias (e.g. ../shims/X.js → vinext/shims/X).
+        // Originally added for #1001 — bare specifiers keep
+        // @vitejs/plugin-rsc's `packageSources` map populated, which avoids
+        // the broken absolute-fs-path proxy fallback.
+        files: ["packages/vinext/**"],
+        rules: {
+          "vinext-local/prefer-import-alias": "error",
+        },
+      },
     ],
   },
   test: {
@@ -71,8 +86,30 @@ export default defineConfig({
       __VINEXT_DRAFT_SECRET: randomUUID(),
     },
 
+    // Coverage activated only via --coverage flag (or CLI/config override).
+    // Istanbul provider is required because vinext source loads through Vite's
+    // module runner (helpers.ts:15 imports from packages/vinext/src directly,
+    // and integration tests start in-process Vite servers via createServer()).
+    // V8 coverage misses code under that runner.
+    coverage: {
+      provider: "istanbul",
+      include: ["packages/vinext/src/**/*.{ts,tsx}"],
+      exclude: ["**/*.d.ts", "**/*.test.ts", "**/*.spec.ts"],
+      reporter: ["text", "html", "json-summary", "lcov"],
+      reportsDirectory: "coverage",
+      clean: true,
+      skipFull: true,
+      // Always emit the report, even if some test files failed. A failing
+      // integration test (e.g. timing-sensitive teardown) shouldn't suppress
+      // coverage data we already collected.
+      reportOnFailure: true,
+    },
+
     projects: [
       {
+        resolve: {
+          alias: { "vinext/shims": SHIMS_SRC },
+        },
         test: {
           name: "unit",
           include: ["tests/**/*.test.ts"],
@@ -105,6 +142,9 @@ export default defineConfig({
         },
       },
       {
+        resolve: {
+          alias: { "vinext/shims": SHIMS_SRC },
+        },
         test: {
           name: "integration",
           include: [

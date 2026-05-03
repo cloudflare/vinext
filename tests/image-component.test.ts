@@ -649,3 +649,132 @@ describe("priority prop — no DOM leak on remote URL paths", () => {
     expect(html).not.toContain("priority=");
   });
 });
+
+// ─── onLoad / onError single-fire dedup ──────────────────────────────────
+// Ported from Next.js: test/e2e/app-dir/next-image-events/next-image-events.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-image-events/next-image-events.test.ts
+//
+// onLoad and onError must fire at most once per src per mount to prevent
+// double-counting failures or infinite re-render loops when user code
+// calls setState inside the event handler. React re-renders that result
+// from state updates inside onError/onLoad must not re-trigger the handler.
+//
+// The dedup is client-side (refs inside useRef). SSR tests verify that
+// onLoad/onError handlers are properly attached to the img element on
+// all render paths without leaking as DOM attributes. Runtime dedup
+// behavior is verified via E2E (Playwright) tests mirroring the Next.js
+// e2e suite — those tests assert that console.log fires exactly once
+// per src across hydration, client render, and re-render.
+
+describe("onLoad / onError handler attachment (SSR)", () => {
+  it("does not leak onLoad as DOM attribute (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onLoad=");
+    expect(html).toContain('alt="test"');
+  });
+
+  it("does not leak onError as DOM attribute (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("onError=");
+    expect(html).toContain('alt="test"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (custom loader)", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn",
+        src: "/photo.jpg",
+        width: 200,
+        height: 150,
+        loader,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="cdn"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (remote URL + width/height)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote",
+        src: "https://images.unsplash.com/photo-7",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="remote"');
+  });
+
+  it("does not leak onLoad or onError as DOM attributes (remote URL + fill)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote fill",
+        src: "https://images.unsplash.com/photo-8",
+        fill: true,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain('alt="remote fill"');
+  });
+
+  it("renders valid SSR output with both onLoad and onError (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "events",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain('alt="events"');
+    expect(html).toContain('data-nimg="1"');
+  });
+
+  it("renders valid SSR output with both onLoad and onError (remote URL via UnpicImage)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote events",
+        src: "https://images.unsplash.com/photo-9",
+        width: 400,
+        height: 300,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain('alt="remote events"');
+  });
+});

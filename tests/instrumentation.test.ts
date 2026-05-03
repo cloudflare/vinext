@@ -169,6 +169,90 @@ describe("runInstrumentation", () => {
   });
 });
 
+describe("ensureInstrumentationRegistered", () => {
+  let ensureInstrumentationRegistered: typeof import("../packages/vinext/src/server/instrumentation-runtime.js").ensureInstrumentationRegistered;
+  let reportRequestError: typeof import("../packages/vinext/src/server/instrumentation.js").reportRequestError;
+
+  const sampleRequest = { path: "/test", method: "GET", headers: {} };
+  const sampleContext = {
+    routerKind: "App Router" as const,
+    routePath: "/test",
+    routeType: "render" as const,
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+    delete process.env.VINEXT_PRERENDER;
+    const mod = await import("../packages/vinext/src/server/instrumentation-runtime.js");
+    ensureInstrumentationRegistered = mod.ensureInstrumentationRegistered;
+    const instMod = await import("../packages/vinext/src/server/instrumentation.js");
+    reportRequestError = instMod.reportRequestError;
+  });
+
+  afterEach(() => {
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+    delete process.env.VINEXT_PRERENDER;
+  });
+
+  it("calls register() when exported", async () => {
+    const register = vi.fn();
+
+    await ensureInstrumentationRegistered({ register });
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("wires onRequestError so reportRequestError invokes it", async () => {
+    const onRequestError = vi.fn();
+    const error = new Error("boom");
+
+    await ensureInstrumentationRegistered({ onRequestError });
+    await reportRequestError(error, sampleRequest, sampleContext);
+
+    expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
+  });
+
+  it("is idempotent — register() called only once across concurrent awaits", async () => {
+    const register = vi.fn();
+    const mod = { register };
+
+    await Promise.all([
+      ensureInstrumentationRegistered(mod),
+      ensureInstrumentationRegistered(mod),
+      ensureInstrumentationRegistered(mod),
+    ]);
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("is idempotent — sequential awaits do not re-call register()", async () => {
+    const register = vi.fn();
+    const mod = { register };
+
+    await ensureInstrumentationRegistered(mod);
+    await ensureInstrumentationRegistered(mod);
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("no-ops when VINEXT_PRERENDER is set", async () => {
+    process.env.VINEXT_PRERENDER = "1";
+    const register = vi.fn();
+
+    await ensureInstrumentationRegistered({ register });
+
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when module has no register or onRequestError", async () => {
+    await ensureInstrumentationRegistered({});
+
+    // Should not throw
+    await reportRequestError(new Error("boom"), sampleRequest, sampleContext);
+  });
+});
+
 describe("reportRequestError", () => {
   let runInstrumentation: typeof import("../packages/vinext/src/server/instrumentation.js").runInstrumentation;
   let reportRequestError: typeof import("../packages/vinext/src/server/instrumentation.js").reportRequestError;

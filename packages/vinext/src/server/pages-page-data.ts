@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Route } from "../routing/pages-router.js";
-import type { CachedPagesValue } from "../shims/cache.js";
+import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
+import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
@@ -90,7 +91,9 @@ export type ResolvePagesPageDataOptions = {
     data: CachedPagesValue,
     revalidateSeconds: number,
     tags?: string[],
+    expireSeconds?: number,
   ) => Promise<void>;
+  expireSeconds?: number;
   pageModule: PagesPageModule;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
@@ -158,14 +161,23 @@ function buildPagesCacheResponse(
   cacheState: "HIT" | "STALE",
   fontLinkHeader: string,
   revalidateSeconds?: number,
+  expireSeconds?: number,
+  cacheControl?: CacheControlMetadata,
 ): Response {
+  // Legacy cache entries written before cacheControl metadata existed can still
+  // hit this path without a persisted revalidate value; keep the historic
+  // 60-second fallback for that migration window.
+  const effectiveRevalidateSeconds = cacheControl?.revalidate ?? revalidateSeconds ?? 60;
+  const effectiveExpireSeconds =
+    cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
     "X-Vinext-Cache": cacheState,
-    "Cache-Control":
-      cacheState === "HIT"
-        ? `s-maxage=${revalidateSeconds ?? 60}, stale-while-revalidate`
-        : "s-maxage=0, stale-while-revalidate",
+    "Cache-Control": buildCachedRevalidateCacheControl(
+      cacheState,
+      effectiveRevalidateSeconds,
+      effectiveExpireSeconds,
+    ),
   };
 
   if (fontLinkHeader) {
@@ -314,7 +326,9 @@ export async function resolvePagesPageData(
           cachedValue.html,
           "HIT",
           options.fontLinkHeader,
-          (cachedValue as CachedPagesValue & { revalidate?: number }).revalidate,
+          undefined,
+          options.expireSeconds,
+          cached.value.cacheControl,
         ),
       };
     }
@@ -353,6 +367,8 @@ export async function resolvePagesPageData(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshResult.props),
                 freshResult.revalidate,
+                undefined,
+                options.expireSeconds,
               );
             }
           });
@@ -366,7 +382,14 @@ export async function resolvePagesPageData(
 
       return {
         kind: "response",
-        response: buildPagesCacheResponse(cachedValue.html, "STALE", options.fontLinkHeader),
+        response: buildPagesCacheResponse(
+          cachedValue.html,
+          "STALE",
+          options.fontLinkHeader,
+          undefined,
+          options.expireSeconds,
+          cached.value.cacheControl,
+        ),
       };
     }
 

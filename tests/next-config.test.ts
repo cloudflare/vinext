@@ -447,6 +447,18 @@ describe("resolveNextConfig hashSalt", () => {
   });
 });
 
+describe("resolveNextConfig expireTime", () => {
+  it("defaults to the Next.js route expire fallback", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.expireTime).toBe(31_536_000);
+  });
+
+  it("uses configured expireTime", async () => {
+    const resolved = await resolveNextConfig({ expireTime: 2 });
+    expect(resolved.expireTime).toBe(2);
+  });
+});
+
 describe("detectNextIntlConfig", () => {
   let tmpDir: string;
 
@@ -480,6 +492,7 @@ describe("detectNextIntlConfig", () => {
       cacheMaxMemorySize: undefined,
       hashSalt: "",
       enablePrerenderSourceMaps: true,
+      expireTime: 31_536_000,
       buildId: "test-build-id",
       ...overrides,
     };

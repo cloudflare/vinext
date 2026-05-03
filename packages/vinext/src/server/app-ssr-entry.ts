@@ -5,17 +5,17 @@ import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import * as clientReferences from "virtual:vite-rsc/client-references";
-import type { NavigationContext } from "../shims/navigation.js";
+import type { NavigationContext } from "vinext/shims/navigation";
 import {
   ServerInsertedHTMLContext,
   clearServerInsertedHTML,
   renderServerInsertedHTML,
   setNavigationContext,
   useServerInsertedHTML,
-} from "../shims/navigation.js";
-import { runWithNavigationContext } from "../shims/navigation-state.js";
+} from "vinext/shims/navigation";
+import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { isOpenRedirectShaped } from "./request-pipeline.js";
-import { withScriptNonce } from "../shims/script-nonce-context.js";
+import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
   createInlineScriptTag,
   createNonceAttribute,
@@ -29,7 +29,7 @@ import {
   readAppElementsMetadata,
   type AppWireElements,
 } from "./app-elements.js";
-import { ElementsContext, Slot } from "../shims/slot.js";
+import { ElementsContext, Slot } from "vinext/shims/slot";
 
 export type FontPreload = {
   href: string;

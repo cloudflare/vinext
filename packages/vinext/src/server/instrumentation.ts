@@ -38,7 +38,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**
  * Minimal duck-typed interface for the module runner passed to

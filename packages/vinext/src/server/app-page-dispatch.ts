@@ -1,20 +1,24 @@
 import type { ReactNode } from "react";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _consumeRequestScopedCacheLife, type CachedAppPageValue } from "../shims/cache.js";
+import {
+  _consumeRequestScopedCacheLife,
+  _peekRequestScopedCacheLife,
+  type CachedAppPageValue,
+} from "vinext/shims/cache";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersContext,
-} from "../shims/headers.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+} from "vinext/shims/headers";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import {
   ensureFetchPatch,
   getCollectedFetchTags,
   setCurrentFetchSoftTags,
-} from "../shims/fetch-cache.js";
+} from "vinext/shims/fetch-cache";
 import type { AppOutgoingElements } from "./app-elements.js";
 import { readAppPageCacheResponse } from "./app-page-cache.js";
 import { resolveAppPageParentHttpAccessBoundaryModule } from "./app-page-boundary.js";
@@ -58,6 +62,7 @@ type AppPageCacheSetter = (
   data: CachedAppPageValue,
   revalidateSeconds: number,
   tags: string[],
+  expireSeconds?: number,
 ) => Promise<void>;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type AppPageBackgroundRegenerationErrorContext = {
@@ -146,6 +151,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   params: AppPageParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
+  expireSeconds?: number;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -188,9 +194,8 @@ function shouldReadAppPageCache(options: {
     options.isProduction &&
     !options.isForceDynamic &&
     (options.isRscRequest || !options.scriptNonce) &&
-    options.revalidateSeconds !== null &&
-    options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity
+    (options.revalidateSeconds === null ||
+      (options.revalidateSeconds > 0 && options.revalidateSeconds !== Infinity))
   );
 }
 
@@ -333,6 +338,9 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      expireSeconds: options.expireSeconds,
+      // cacheLife-only routes discover their actual revalidate during the
+      // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () =>
         runAppPageRevalidationContext(
@@ -378,15 +386,24 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
                   }
                 : undefined,
             );
-            options.clearRequestContext();
             const html = await readAppPageTextStream(revalidatedHtmlStream);
             const rscData = await getCapturedRscDataPromise(revalidatedCapturedRscRef.value);
+            const cacheLife = _consumeRequestScopedCacheLife();
+            options.clearRequestContext();
             const tags = buildAppPageTags(
               options.cleanPathname,
               getCollectedFetchTags(),
               route.routeSegments,
             );
-            return { html, rscData, tags };
+            return {
+              html,
+              rscData,
+              tags,
+              cacheControl:
+                typeof cacheLife?.revalidate === "number"
+                  ? { revalidate: cacheLife.revalidate, expire: cacheLife.expire }
+                  : undefined,
+            };
           },
         ),
       scheduleBackgroundRegeneration(key, renderFn) {
@@ -511,17 +528,22 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     getRequestCacheLife() {
       return _consumeRequestScopedCacheLife();
     },
+    peekRequestCacheLife() {
+      return _peekRequestScopedCacheLife();
+    },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: Boolean(route.loading?.default),
     isDynamicError,
     isForceDynamic,
     isForceStatic,
+    isPrerender: process.env.VINEXT_PRERENDER === "1",
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     isrDebug: options.isrDebug,
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
+    expireSeconds: options.expireSeconds,
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,

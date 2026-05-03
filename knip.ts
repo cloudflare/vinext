@@ -64,6 +64,7 @@ export default {
         // Imported via template string in app-rsc-entry.ts (generated code),
         // so knip cannot trace the import statically.
         "src/server/prerender-work-unit-setup.ts",
+        "src/server/app-page-element-builder.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

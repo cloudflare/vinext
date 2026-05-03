@@ -338,6 +338,40 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(r).toMatchObject({ route: "/revalidate-test", status: "rendered", revalidate: 60 });
   });
 
+  it("uses the rendered cacheLife expire value for App Router ISR prerender entries", () => {
+    const r = findRoute(results, "/prerender-cache-life");
+    expect(r).toMatchObject({
+      route: "/prerender-cache-life",
+      status: "rendered",
+      revalidate: 1,
+      expire: 3,
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/prerender-cache-life",
+    );
+    expect(manifestRoute).toMatchObject({ revalidate: 1, expire: 3 });
+  });
+
+  it("infers App Router ISR prerender metadata from cacheLife without route revalidate", () => {
+    const r = findRoute(results, "/prerender-cache-life-only");
+    expect(r).toMatchObject({
+      route: "/prerender-cache-life-only",
+      status: "rendered",
+      revalidate: 1,
+      expire: 3,
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/prerender-cache-life-only",
+    );
+    expect(manifestRoute).toMatchObject({ revalidate: 1, expire: 3 });
+  });
+
   // ── Dynamic routes — skipped ───────────────────────────────────────────────
 
   it("skips force-dynamic page", () => {

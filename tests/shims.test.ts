@@ -2174,6 +2174,29 @@ describe("next/cache shim", () => {
     consoleWarn.mockRestore();
   });
 
+  it("cacheLife inline configs inherit default profile values for omitted fields", async () => {
+    const {
+      cacheLife,
+      _consumeRequestScopedCacheLife,
+      _peekRequestScopedCacheLife,
+      _runWithCacheState,
+    } = await import("../packages/vinext/src/shims/cache.js");
+
+    await _runWithCacheState(async () => {
+      cacheLife({ expire: 60 });
+
+      expect(_peekRequestScopedCacheLife()).toEqual({
+        revalidate: 900,
+        expire: 60,
+      });
+      expect(_consumeRequestScopedCacheLife()).toEqual({
+        revalidate: 900,
+        expire: 60,
+      });
+      expect(_peekRequestScopedCacheLife()).toBeNull();
+    });
+  });
+
   it("exports cacheTag as a no-op function", async () => {
     const { cacheTag } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheTag).toBe("function");
@@ -10114,6 +10137,92 @@ describe("next/image component rendering", () => {
       React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
     );
     expect(html).toContain('decoding="async"');
+  });
+
+  // ── SSR-only smoke tests: verify SSR output does not crash when onLoad / onError /
+  // ref are provided. The hydration replay logic (useLayoutEffect, img.src = img.src,
+  // mergedRef DOM node capture) requires a client-side mount; the handler wiring is
+  // tested in the Playwright E2E test suite.
+
+  it("renders with onError callback attached (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/broken.jpg",
+        alt: "Broken",
+        width: 400,
+        height: 300,
+        onError: () => {},
+      }),
+    );
+    // SSR should render without errors — the onError replay is client-side only
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("renders with both onLoad and onError callbacks (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Photo",
+        width: 800,
+        height: 600,
+        onLoad: () => {},
+        onError: () => {},
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+  });
+
+  it("forwards ref to img element via mergedRef (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+
+    const ref = React.createRef<HTMLImageElement>();
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToString(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Ref test",
+        width: 800,
+        height: 600,
+        ref,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain("/_vinext/image");
+    // ref.current is null after SSR — that's expected since refs don't hydrate in SSR
+    expect(ref.current).toBeNull();
+  });
+
+  it("renders with onError in loader path (SSR smoke test)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Loader",
+        width: 800,
+        height: 600,
+        onError: () => {},
+        loader: ({ src, width, quality }) =>
+          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      }),
+    );
+    expect(html).toContain("<img");
+    expect(html).not.toContain("/_vinext/image");
+    expect(html).toContain("cdn.example.com");
   });
 });
 

@@ -24,9 +24,14 @@ import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { classifyPagesRoute, classifyAppRoute } from "./report.js";
+import {
+  NoOpCacheHandler,
+  setCacheHandler,
+  getCacheHandler,
+  _consumeRequestScopedCacheLife,
+} from "vinext/shims/cache";
+import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
-import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
-import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 export { readPrerenderSecret } from "./server-manifest.js";
@@ -53,6 +58,7 @@ export type PrerenderRouteResult =
       status: "rendered";
       outputFiles: string[];
       revalidate: number | false;
+      expire?: number;
       /**
        * The concrete prerendered URL path, e.g. `/blog/hello-world`.
        * Only present when the route is dynamic and `path` differs from `route`.
@@ -599,6 +605,9 @@ export async function prerenderPages({
             status: "rendered",
             outputFiles,
             revalidate,
+            // Pages Router cache metadata comes only from getStaticProps.revalidate;
+            // Next.js applies expireTime as the fallback when no route expire exists.
+            ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
@@ -1012,17 +1021,41 @@ export async function prerenderApp({
         // reaches the worker isolate. The wrapping is a no-op for the CF path but
         // harmless — and it keeps renderUrl() shape-compatible across both modes.
         const htmlRequest = new Request(`http://localhost${urlPath}`);
-        const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
-          rscHandler(htmlRequest),
+        const htmlRender = await runWithHeadersContext(
+          headersContextFromRequest(htmlRequest),
+          async () => {
+            const response = await rscHandler(htmlRequest);
+            const cacheControl = response.headers.get("cache-control") ?? "";
+            if (!response.ok || (isSpeculative && cacheControl.includes("no-store"))) {
+              await response.body?.cancel();
+              return {
+                cacheControl,
+                html: null,
+                ok: response.ok,
+                requestCacheLife: null,
+                status: response.status,
+              };
+            }
+
+            const html = await response.text();
+            return {
+              cacheControl,
+              html,
+              ok: true,
+              requestCacheLife: _consumeRequestScopedCacheLife(),
+              status: response.status,
+            };
+          },
         );
-        if (!htmlRes.ok) {
+        const htmlCacheControl = htmlRender.cacheControl;
+        if (!htmlRender.ok) {
           if (isSpeculative) {
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
           return {
             route: routePattern,
             status: "error",
-            error: `RSC handler returned ${htmlRes.status}`,
+            error: `RSC handler returned ${htmlRender.status}`,
           };
         }
 
@@ -1031,14 +1064,19 @@ export async function prerenderApp({
         // render, the server sets Cache-Control: no-store. We treat this as a
         // signal that the route is dynamic and should be skipped.
         if (isSpeculative) {
-          const cacheControl = htmlRes.headers.get("cache-control") ?? "";
-          if (cacheControl.includes("no-store")) {
-            await htmlRes.body?.cancel();
+          if (htmlCacheControl.includes("no-store")) {
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
         }
 
-        const html = await htmlRes.text();
+        if (htmlRender.html === null) {
+          return {
+            route: routePattern,
+            status: "error",
+            error: "RSC handler returned no prerender HTML",
+          };
+        }
+        const html = htmlRender.html;
 
         // Fetch RSC payload via a second invocation with RSC headers
         // TODO: Extract RSC payload from the first response instead of invoking the handler twice.
@@ -1068,11 +1106,26 @@ export async function prerenderApp({
           outputFiles.push(rscOutputPath);
         }
 
+        const renderedCacheControl = resolveRenderedCacheControl(
+          htmlRender.requestCacheLife ?? {},
+          htmlCacheControl,
+          config.expireTime,
+        );
+        const renderedRevalidate =
+          typeof revalidate === "number"
+            ? renderedCacheControl.revalidate === undefined
+              ? revalidate
+              : Math.min(revalidate, renderedCacheControl.revalidate)
+            : (renderedCacheControl.revalidate ?? revalidate);
+
         return {
           route: routePattern,
           status: "rendered",
           outputFiles,
-          revalidate,
+          revalidate: renderedRevalidate,
+          ...(typeof renderedRevalidate === "number"
+            ? { expire: renderedCacheControl.expire }
+            : {}),
           router: "app",
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
         };
@@ -1155,6 +1208,55 @@ export function getRscOutputPath(urlPath: string): string {
   return urlPath.replace(/^\//, "") + ".rsc";
 }
 
+function resolveRenderedCacheControl(
+  requestCacheLife: { expire?: number; revalidate?: number },
+  cacheControl: string,
+  fallbackExpireSeconds: number,
+): { expire: number; revalidate?: number } {
+  const sMaxage = parseCacheControlSeconds(cacheControl, "s-maxage");
+  const staleWhileRevalidate = parseCacheControlSeconds(cacheControl, "stale-while-revalidate");
+  const revalidate =
+    requestCacheLife.revalidate ?? (staleWhileRevalidate === undefined ? undefined : sMaxage);
+  return {
+    expire:
+      requestCacheLife.expire ??
+      resolveRenderedExpireSeconds({
+        fallbackExpireSeconds,
+        sMaxage,
+        staleWhileRevalidate,
+      }),
+    ...(revalidate === undefined ? {} : { revalidate }),
+  };
+}
+
+function resolveRenderedExpireSeconds(options: {
+  fallbackExpireSeconds: number;
+  sMaxage?: number;
+  staleWhileRevalidate?: number;
+}): number {
+  const { fallbackExpireSeconds, sMaxage, staleWhileRevalidate } = options;
+  if (sMaxage === undefined || staleWhileRevalidate === undefined) {
+    return fallbackExpireSeconds;
+  }
+
+  return sMaxage + staleWhileRevalidate;
+}
+
+function parseCacheControlSeconds(cacheControl: string, directive: string): number | undefined {
+  for (const part of cacheControl.split(",")) {
+    const [rawName, rawValue] = part.trim().split("=", 2);
+    if (rawName.trim().toLowerCase() !== directive) continue;
+    if (rawValue === undefined) return undefined;
+
+    const value = Number(rawValue.trim());
+    if (!Number.isFinite(value) || value < 0) return undefined;
+
+    return value;
+  }
+
+  return undefined;
+}
+
 // ─── Build index ──────────────────────────────────────────────────────────────
 
 /**
@@ -1177,6 +1279,7 @@ export function writePrerenderIndex(
         route: r.route,
         status: r.status,
         revalidate: r.revalidate,
+        ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
         ...(r.path ? { path: r.path } : {}),
       };

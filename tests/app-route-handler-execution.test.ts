@@ -109,6 +109,7 @@ describe("app route handler execution helpers", () => {
     const waitUntilPromises: Promise<unknown>[] = [];
     const isrSetCalls: Array<{
       key: string;
+      expireSeconds: number | undefined;
       revalidateSeconds: number;
       tags: string[];
     }> = [];
@@ -154,9 +155,9 @@ describe("app route handler execution helpers", () => {
       isrRouteKey(pathname) {
         return "route:" + pathname;
       },
-      async isrSet(key, value, revalidateSeconds, tags) {
+      async isrSet(key, value, revalidateSeconds, tags, expireSeconds) {
         expect(value.kind).toBe("APP_ROUTE");
-        isrSetCalls.push({ key, revalidateSeconds, tags });
+        isrSetCalls.push({ key, expireSeconds, revalidateSeconds, tags });
       },
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       method: "GET",
@@ -169,6 +170,7 @@ describe("app route handler execution helpers", () => {
         reportCalls.push(error);
       },
       request: new Request("https://example.com/api/static-data"),
+      expireSeconds: 300,
       revalidateSeconds: 60,
       routePattern: "/api/static-data",
       setHeadersAccessPhase(phase) {
@@ -180,7 +182,7 @@ describe("app route handler execution helpers", () => {
     await Promise.all(waitUntilPromises);
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-middleware")).toBe("present");
     expect(response.headers.getSetCookie?.()).toEqual(["session=1; Path=/", "draft=1; Path=/"]);
@@ -188,6 +190,7 @@ describe("app route handler execution helpers", () => {
     expect(isrSetCalls).toEqual([
       {
         key: "route:/api/static-data",
+        expireSeconds: 300,
         revalidateSeconds: 60,
         tags: ["/api/static-data", "tag:demo"],
       },

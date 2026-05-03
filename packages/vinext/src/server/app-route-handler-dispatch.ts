@@ -3,17 +3,17 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchSoftTags,
-} from "../shims/fetch-cache.js";
+} from "vinext/shims/fetch-cache";
 import {
   consumeDynamicUsage,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersAccessPhase,
-} from "../shims/headers.js";
-import { setNavigationContext } from "../shims/navigation.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
-import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
+} from "vinext/shims/headers";
+import { setNavigationContext } from "vinext/shims/navigation";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
@@ -61,6 +61,7 @@ type DispatchAppRouteHandlerOptions = {
   basePath?: string;
   cleanPathname: string;
   clearRequestContext: () => void;
+  expireSeconds?: number;
   i18n?: NextI18nConfig | null;
   isDevelopment?: boolean;
   isProduction?: boolean;
@@ -192,6 +193,7 @@ export async function dispatchAppRouteHandler(
       params: options.params,
       requestUrl: options.request.url,
       revalidateSearchParams: options.searchParams,
+      expireSeconds: options.expireSeconds,
       revalidateSeconds,
       routePattern: route.pattern,
       runInRevalidationContext(renderFn) {
@@ -248,6 +250,7 @@ export async function dispatchAppRouteHandler(
       params: makeThenableParams(options.params),
       reportRequestError,
       request: options.request,
+      expireSeconds: options.expireSeconds,
       revalidateSeconds,
       routePattern: route.pattern,
       setHeadersAccessPhase,

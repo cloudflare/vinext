@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * next/image shim
  *
@@ -10,9 +12,10 @@
  * `images.domains` from next.config.js. Unmatched URLs are blocked
  * in production and warn in development, matching Next.js behavior.
  */
-import React, { forwardRef } from "react";
+import React, { forwardRef, useEffect, useLayoutEffect, useRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
+import { useMergedRef } from "./use-merged-ref.js";
 
 export type StaticImageData = {
   src: string;
@@ -89,6 +92,52 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   return {
     allowed: false,
     reason: `Image URL "${src}" is not configured in images.remotePatterns or images.domains in next.config.js. See: https://nextjs.org/docs/messages/next-image-unconfigured-host`,
+  };
+}
+
+/**
+ * A version of useLayoutEffect that doesn't warn during SSR.
+ * Do not rename this to "isomorphic layout effect". There is no such thing as
+ * an isomorphic Layout Effect since there is no Layout on the server.
+ * Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+ */
+const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+/**
+ * Create a synthetic React load event for replaying onLoad/onLoadingComplete
+ * during hydration when the image already completed loading.
+ *
+ * This function creates a native Event("load") via the DOM Event constructor
+ * and must only be called in a browser context (client-side layout effect).
+ * It mirrors the pattern used in Next.js `handleLoading`.
+ */
+function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<HTMLImageElement> {
+  const nativeEvent = new Event("load");
+  Object.defineProperty(nativeEvent, "target", { writable: false, value: img });
+  let prevented = false;
+  let stopped = false;
+  return {
+    bubbles: nativeEvent.bubbles,
+    cancelable: nativeEvent.cancelable,
+    currentTarget: img,
+    defaultPrevented: false,
+    eventPhase: nativeEvent.eventPhase,
+    isTrusted: false,
+    nativeEvent,
+    target: img,
+    timeStamp: nativeEvent.timeStamp,
+    type: "load",
+    isDefaultPrevented: () => prevented,
+    isPropagationStopped: () => stopped,
+    persist: () => {},
+    preventDefault: () => {
+      prevented = true;
+      nativeEvent.preventDefault();
+    },
+    stopPropagation: () => {
+      stopped = true;
+      nativeEvent.stopPropagation();
+    },
   };
 }
 
@@ -219,6 +268,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     style,
     onLoad,
     onLoadingComplete,
+    onError,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
@@ -226,14 +276,46 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   },
   ref,
 ) {
-  // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
-  // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
-  const handleLoad = onLoadingComplete
-    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
-        onLoad?.(e);
-        onLoadingComplete(e.currentTarget);
-      }
-    : onLoad;
+  // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
+  // Matches Next.js behavior — prevents double-firing from React re-renders,
+  // strict-mode double-invocation, or state updates inside the handler itself.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const lastLoadedSrcRef = useRef<string | undefined>(undefined);
+  const lastErrorSrcRef = useRef<string | undefined>(undefined);
+
+  // Hydration-level onError replay: when an image fails to load during SSR
+  // streaming or initial HTML parse (before React hydrates), the native browser
+  // error event is lost. Re-trigger it via `img.src = img.src` in a layout
+  // effect once hydration completes, mirroring the upstream Next.js fix.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const didInsertRef = useRef(false);
+  const imgElementRef = useRef<HTMLImageElement | null>(null);
+
+  // Merge forwarded ref with internal img ref for layout effect access.
+  const mergedRef = useMergedRef(ref, imgElementRef);
+
+  // Stable refs for onLoad / onError / onLoadingComplete so the layout effect
+  // does not re-run (and re-assign img.src) when handler identity changes.
+  // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  //
+  // IMPORTANT: The useRef+useEffect sync pattern has a subtle timing gap:
+  // during the first render, onLoadRef.current holds the initial value from
+  // useRef(onLoad), and the useEffect to sync it runs AFTER the layout effect.
+  // This means on first mount the layout effect reads the correct initial
+  // value (passed to useRef). If someone changes useRef(onLoad) to
+  // useRef(undefined), the layout effect would read undefined on first mount.
+  const onLoadRef = useRef(onLoad);
+  useEffect(() => {
+    onLoadRef.current = onLoad;
+  }, [onLoad]);
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+  const onLoadingCompleteRef = useRef(onLoadingComplete);
+  useEffect(() => {
+    onLoadingCompleteRef.current = onLoadingComplete;
+  }, [onLoadingComplete]);
 
   const {
     src,
@@ -242,12 +324,73 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
 
+  useNonWarningLayoutEffect(() => {
+    if (!didInsertRef.current && imgElementRef.current !== null) {
+      const img = imgElementRef.current;
+      // Replay error events lost during SSR/hydration.
+      if (onErrorRef.current) {
+        // eslint-disable-next-line no-self-assign
+        img.src = img.src;
+      }
+      // Replay onLoad for images that completed loading before React hydrated
+      // (e.g. SSR streaming where the image arrives and renders before hydration
+      // finishes). Without this, onLoad never fires for those images.
+      //
+      // img.complete is true for both successfully-loaded and errored images
+      // (the HTML spec defines complete as true when the browser finished
+      // fetching, regardless of outcome). We must check naturalWidth > 0 to
+      // distinguish success from error — a failed image has naturalWidth === 0.
+      // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+      if (img.complete && img.naturalWidth > 0) {
+        const currentOnLoad = onLoadRef.current;
+        const currentOnLoadingComplete = onLoadingCompleteRef.current;
+        if (currentOnLoad || currentOnLoadingComplete) {
+          // Dedup — fire at most once per src per mount, matching onLoad dedup
+          if (lastLoadedSrcRef.current !== src) {
+            lastLoadedSrcRef.current = src;
+            // Create a synthetic React event with the expected shape.
+            // next/image uses a similar pattern in `handleLoading`.
+            const syntheticEvent = createSyntheticLoadEvent(img);
+            currentOnLoad?.(syntheticEvent);
+            currentOnLoadingComplete?.(img);
+          }
+        }
+      }
+      didInsertRef.current = true;
+    }
+  }, [placeholder, sizes, _unoptimized]);
+
+  // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
+  // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
+  const handleLoad = onLoadingComplete
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        if (lastLoadedSrcRef.current === src) return;
+        lastLoadedSrcRef.current = src;
+        onLoad?.(e);
+        onLoadingComplete(e.currentTarget);
+      }
+    : onLoad
+      ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+          if (lastLoadedSrcRef.current === src) return;
+          lastLoadedSrcRef.current = src;
+          onLoad(e);
+        }
+      : undefined;
+
+  const handleError = onError
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        if (lastErrorSrcRef.current === src) return;
+        lastErrorSrcRef.current = src;
+        onError(e);
+      }
+    : undefined;
+
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
     const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: quality ?? 75 });
     return (
       <img
-        ref={ref}
+        ref={mergedRef}
         src={resolvedSrc}
         alt={alt}
         width={fill ? undefined : imgWidth}
@@ -257,6 +400,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         sizes={sizes}
         className={className}
         onLoad={handleLoad}
+        onError={handleError}
         style={
           fill
             ? {
@@ -307,6 +451,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           className={className}
           background={bg}
           onLoad={handleLoad}
+          onError={handleError}
+          ref={mergedRef}
         />
       );
     }
@@ -326,6 +472,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           className={className}
           background={bg}
           onLoad={handleLoad}
+          onError={handleError}
+          ref={mergedRef}
         />
       );
     }
@@ -379,7 +527,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // The src and srcSet point to the /_vinext/image optimization endpoint.
   return (
     <img
-      ref={ref}
+      ref={mergedRef}
       src={optimizedSrc}
       alt={alt}
       width={fill ? undefined : imgWidth}
@@ -392,6 +540,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       className={className}
       data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
+      onError={handleError}
       style={
         fill
           ? {

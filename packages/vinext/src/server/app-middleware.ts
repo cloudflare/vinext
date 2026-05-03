@@ -1,7 +1,7 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
-import { applyMiddlewareRequestHeaders, setHeadersContext } from "../shims/headers.js";
-import { setNavigationContext } from "../shims/navigation.js";
+import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
+import { setNavigationContext } from "vinext/shims/navigation";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
