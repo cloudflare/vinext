@@ -1,13 +1,6 @@
-type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
+import type { FetchCacheMode } from "vinext/shims/fetch-cache";
 
-type AppRouteSegmentFetchCache =
-  | "auto"
-  | "default-cache"
-  | "default-no-store"
-  | "force-cache"
-  | "force-no-store"
-  | "only-cache"
-  | "only-no-store";
+type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
 
 type AppRouteSegmentConfigModule = {
   dynamic?: unknown;
@@ -19,7 +12,7 @@ type AppRouteSegmentConfigModule = {
 type EffectiveAppPageSegmentConfig = {
   dynamicConfig?: AppRouteSegmentDynamic;
   dynamicParamsConfig?: boolean;
-  fetchCache?: AppRouteSegmentFetchCache;
+  fetchCache?: FetchCacheMode;
   revalidateSeconds: number | null;
 };
 
@@ -43,7 +36,7 @@ function isRouteSegmentDynamic(value: unknown): value is AppRouteSegmentDynamic 
   return DYNAMIC_VALUES.has(value);
 }
 
-function isRouteSegmentFetchCache(value: unknown): value is AppRouteSegmentFetchCache {
+function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
   return FETCH_CACHE_VALUES.has(value);
 }
 
@@ -62,11 +55,11 @@ function resolveRevalidateSeconds(current: number | null, value: unknown): numbe
   return value < current ? value : current;
 }
 
-function isCacheFetchCacheMode(value: AppRouteSegmentFetchCache): boolean {
+function isCacheFetchCacheMode(value: FetchCacheMode): boolean {
   return value === "default-cache" || value === "force-cache" || value === "only-cache";
 }
 
-function describeFetchCacheConflict(value: AppRouteSegmentFetchCache): string {
+function describeFetchCacheConflict(value: FetchCacheMode): string {
   return `Route segment config has incompatible fetchCache values including "${value}".`;
 }
 
@@ -176,6 +169,6 @@ export function resolveAppPageSegmentConfig(
 
 export function resolveAppPageFetchCacheMode(
   options: ResolveAppPageSegmentConfigOptions,
-): AppRouteSegmentFetchCache | null {
+): FetchCacheMode | null {
   return resolveAppPageSegmentConfig(options).fetchCache ?? null;
 }

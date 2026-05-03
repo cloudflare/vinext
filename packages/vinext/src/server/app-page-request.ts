@@ -1,4 +1,5 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
+import { getAppPageSegmentParamName } from "./app-page-params.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
@@ -12,7 +13,7 @@ type GenerateStaticParamsSource = {
   parentParamNames: readonly string[];
 };
 
-type ValidateAppPageDynamicParamsOptions = {
+export type ValidateAppPageDynamicParamsOptions = {
   clearRequestContext: () => void;
   enforceStaticParamsOnly: boolean;
   generateStaticParams?:
@@ -135,17 +136,6 @@ function pickRouteParams(
   return params;
 }
 
-function dynamicParamNameFromRouteSegment(segment: string): string | null {
-  if (segment.startsWith("[[...") && segment.endsWith("]]")) return segment.slice(5, -2);
-  if (segment.startsWith("[...") && segment.endsWith("]")) return segment.slice(4, -1);
-  if (segment.startsWith("[") && segment.endsWith("]")) return segment.slice(1, -1);
-
-  if (!segment.startsWith(":")) return null;
-
-  const name = segment.slice(1).replace(/[+*?]$/, "");
-  return name || null;
-}
-
 function collectParentParamNames(
   routeSegments: readonly string[],
   boundaryPosition: number,
@@ -154,7 +144,7 @@ function collectParentParamNames(
   const names: string[] = [];
 
   for (const segment of routeSegments.slice(0, limit)) {
-    const name = dynamicParamNameFromRouteSegment(segment);
+    const name = getAppPageSegmentParamName(segment);
     if (name && !names.includes(name)) {
       names.push(name);
     }

@@ -38,6 +38,7 @@ import {
   buildAppPageElement,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
+  type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { renderAppPageLifecycle } from "./app-page-render.js";
 import {
@@ -130,7 +131,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
-  generateStaticParams?: ((args: { params: AppPageParams }) => unknown) | null;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];

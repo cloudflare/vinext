@@ -1,6 +1,6 @@
 import type { AppPageParams } from "./app-page-boundary.js";
 
-function getSegmentParamName(segment: string): string | null {
+export function getAppPageSegmentParamName(segment: string): string | null {
   if (segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7) {
     return segment.slice(5, -2);
   }
@@ -36,7 +36,7 @@ export function resolveAppPageSegmentParams(
 
   for (let index = 0; index < end; index++) {
     const segment = segments[index];
-    const paramName = getSegmentParamName(segment);
+    const paramName = getAppPageSegmentParamName(segment);
     if (!paramName) {
       continue;
     }
