@@ -3583,8 +3583,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       "matchRewrite(cleanPathname, __configRewrites.beforeFiles",
     );
     expect(beforeFilesCallIdx).toBeGreaterThan(-1);
-    // The cleanPathname assignment (stripping .rsc) must appear before the beforeFiles call
-    const cleanPathnameIdx = code.indexOf("cleanPathname = pathname.replace");
+    // cleanPathname (from destructuring __norm, which strips .rsc) must appear before the beforeFiles call
+    const cleanPathnameIdx = code.indexOf("cleanPathname } = __norm");
     expect(cleanPathnameIdx).toBeGreaterThan(-1);
     expect(cleanPathnameIdx).toBeLessThan(beforeFilesCallIdx);
   });
