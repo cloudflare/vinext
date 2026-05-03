@@ -1,4 +1,5 @@
 import { isValidElement, type ReactNode } from "react";
+import { normalizeMountedSlotsHeader } from "./app-rsc-request-normalization.js";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 
@@ -41,16 +42,6 @@ type AppElementsMetadata = {
   routeId: string;
   rootLayoutTreePath: string | null;
 };
-
-function normalizeMountedSlotsHeader(header: string | null | undefined): string | null {
-  if (!header) {
-    return null;
-  }
-
-  const slotIds = Array.from(new Set(header.split(/\s+/).filter(Boolean))).sort();
-
-  return slotIds.length > 0 ? slotIds.join(" ") : null;
-}
 
 export function getMountedSlotIds(elements: AppElements): string[] {
   return Object.keys(elements)

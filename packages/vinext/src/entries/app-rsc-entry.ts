@@ -25,6 +25,10 @@ const DEFAULT_EXPIRE_TIME = 31_536_000;
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
+const appRscRequestNormalizationPath = resolveEntryPath(
+  "../server/app-rsc-request-normalization.js",
+  import.meta.url,
+);
 const configMatchersPath = resolveEntryPath("../config/config-matchers.js", import.meta.url);
 const requestPipelinePath = resolveEntryPath("../server/request-pipeline.js", import.meta.url);
 const appMiddlewarePath = resolveEntryPath("../server/app-middleware.js", import.meta.url);
@@ -208,10 +212,11 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
 }
 import { handleMetadataRouteRequest as __handleMetadataRouteRequest } from ${JSON.stringify(metadataRouteResponsePath)};
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
+import { normalizeRscRequest as __normalizeRscRequest } from ${JSON.stringify(appRscRequestNormalizationPath)};
 import { decodePathParams as __decodePathParams, normalizePath as __normalizePath } from ${JSON.stringify(normalizePathModulePath)};
-import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch, normalizePathnameForRouteMatchStrict as __normalizePathnameForRouteMatchStrict } from ${JSON.stringify(routingUtilsPath)};
+import { normalizePathnameForRouteMatch as __normalizePathnameForRouteMatch } from ${JSON.stringify(routingUtilsPath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
-import { applyConfigHeadersToResponse, resolvePublicFileRoute, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
+import { applyConfigHeadersToResponse, resolvePublicFileRoute, validateImageUrl, hasBasePath, normalizeTrailingSlash } from ${JSON.stringify(requestPipelinePath)};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
@@ -271,7 +276,6 @@ import {
   appIsrRouteKey as __isrRouteKey,
   isrGet as __isrGet,
   isrSet as __isrSet,
-  normalizeMountedSlotsHeader as __normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -607,30 +611,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (__originBlock) return __originBlock;
   }
 
-  // Guard against protocol-relative URL open redirects (see request-pipeline.ts).
-  const __protoGuard = guardProtocolRelativeUrl(url.pathname);
-  if (__protoGuard) return __protoGuard;
-
-  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
-  // This preserves encoded path delimiters like %2F within a single segment.
-  // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
-  let decodedUrlPathname;
-  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
-    return new Response("Bad Request", { status: 400 });
-  }
-  let pathname = __normalizePath(decodedUrlPathname);
-
-  ${
-    bp
-      ? `
-  if (!hasBasePath(pathname, __basePath) && !pathname.startsWith("/__vinext/")) {
-    return new Response("Not Found", { status: 404 });
-  }
-  // Strip basePath prefix
-  pathname = stripBasePath(pathname, __basePath);
-  `
-      : ""
-  }
+  // Normalize the request: protocol-relative guard, strict percent-decode,
+  // path normalization, basePath check/strip, RSC detection, and header sanitization.
+  const __norm = __normalizeRscRequest(request, __basePath);
+  if (__norm instanceof Response) return __norm;
+  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader: __mountedSlotsHeader } = __norm;
+  let { pathname, cleanPathname } = __norm;
 
   const __prerenderEndpointResponse = await __handleAppPrerenderEndpoint(request, {
     isPrerenderEnabled() {
@@ -668,17 +654,6 @@ ${prerenderPagesLoaderOption}
       });
     }
   }
-
-  const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  // Read mounted-slots header once at the handler scope and thread it through
-  // every buildPageElements call site. Previously both the handler and
-  // buildPageElements read and normalized it independently, which invited
-  // silent drift if a future refactor changed only one path.
-  const __mountedSlotsHeader = __normalizeMountedSlotsHeader(
-    request.headers.get("x-vinext-mounted-slots"),
-  );
-  const interceptionContextHeader = request.headers.get("X-Vinext-Interception-Context")?.replaceAll("\0", "") || null;
-  let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
   // _mwCtx (per-request container) so handler() can merge them into

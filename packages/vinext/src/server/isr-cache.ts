@@ -23,6 +23,8 @@ import {
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
+import { normalizeMountedSlotsHeader } from "./app-rsc-request-normalization.js";
+export { normalizeMountedSlotsHeader };
 
 export type ISRCacheEntry = {
   value: CacheHandlerValue;
@@ -197,20 +199,6 @@ function buildCacheKey(prefix: string, pathname: string, suffix?: string): strin
 export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
   const prefix = buildId ? `${router}:${buildId}` : router;
   return buildCacheKey(prefix, pathname);
-}
-
-/**
- * Normalize the App Router mounted-slot header before it participates in cache
- * keys. The client can send mounted slot ids in different orders as navigation
- * state changes, but equivalent slot sets must map to the same RSC cache entry.
- */
-export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-
-  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
-    .sort()
-    .join(" ");
-  return normalized || null;
 }
 
 /**
