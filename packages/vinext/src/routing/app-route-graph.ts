@@ -371,6 +371,13 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
     // the synthetic sub-route has a fallback for the children slot. Layout-only
     // parent routes (no page.tsx) do not need a default — the children slot was
     // never occupied at the parent level, so the sub-route simply renders null.
+    //
+    // TODO: layout-only synthetic routes have pagePath: null, which means they
+    // are skipped by the prerender phase (build/prerender.ts line 849). These
+    // routes work correctly in dev/SSR but won't be statically exported. This
+    // is pre-existing behaviour for all layout-only routes; fixing it requires
+    // teaching prerender to classify routes by their parallel slot pages, not
+    // just the children pagePath.
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
 
@@ -398,8 +405,10 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
       // Skip synthetic routes that would structurally conflict with an existing
       // route (same shape, different param names). The slot content is handled
       // by findMirroredSlotPage for the existing route instead.
+      // Scan routesByPattern (not just the original routes array) so synthetic
+      // routes created earlier in this loop are also visible.
       const syntheticParts = [...parentRoute.patternParts, ...urlParts];
-      const hasStructuralConflict = routes.some((r) =>
+      const hasStructuralConflict = Array.from(routesByPattern.values()).some((r) =>
         patternsStructurallyEquivalent(r.patternParts, syntheticParts),
       );
       if (hasStructuralConflict) continue;
