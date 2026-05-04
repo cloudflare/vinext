@@ -817,6 +817,27 @@ describe("App Router integration", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("forbidden() from async page with loading.tsx returns 403 (digest status preserved)", async () => {
+    // Same regression path as the redirect()-with-loading.tsx tests, but
+    // for forbidden() — verifies the post-shell digest swap reads the
+    // status code from NEXT_HTTP_ERROR_FALLBACK;403 rather than coercing
+    // to 404, and renders the root forbidden.tsx boundary.
+    const res = await fetch(`${baseUrl}/forbidden-loading`);
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain("403 - Forbidden");
+  });
+
+  it("unauthorized() from async page with loading.tsx returns 401 (digest status preserved)", async () => {
+    // Same regression path as forbidden-loading but for unauthorized() —
+    // verifies the post-shell digest swap honors NEXT_HTTP_ERROR_FALLBACK;401
+    // and renders the root unauthorized.tsx boundary.
+    const res = await fetch(`${baseUrl}/unauthorized-loading`);
+    expect(res.status).toBe(401);
+    const html = await res.text();
+    expect(html).toContain("401 - Unauthorized");
+  });
+
   it("forbidden() thrown from a layout uses the forbidden boundary", async () => {
     // Ported from Next.js: test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
