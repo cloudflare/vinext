@@ -2337,6 +2337,17 @@ describe("metadata deep merge", () => {
       description: "Page desc",
     });
   });
+
+  it("child can clear a parent openGraph subkey by setting it to undefined", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "Root", images: ["/og.png"] } },
+      { openGraph: { images: undefined } },
+    ]);
+    expect(result.openGraph?.title).toBe("Root");
+    expect(result.openGraph?.images).toBeUndefined();
+    // Post-process: cleared og.images means twitter doesn't inherit images
+    expect(result.twitter?.images).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

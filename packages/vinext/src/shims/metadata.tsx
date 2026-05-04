@@ -321,8 +321,14 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
 /**
  * Keys whose values are nested objects that should be shallow-merged
  * rather than replaced outright when both parent and child define them.
- * Matches Next.js per-subkey resolution for openGraph, twitter, icons,
- * alternates, robots, and other.
+ *
+ * These match the fields where Next.js does per-subkey resolution via
+ * dedicated resolvers (resolveOpenGraph, resolveTwitter, resolveIcons,
+ * resolveAlternates, resolveRobots) rather than a full replacement.
+ *
+ * Fields like verification, appleWebApp, appLinks, and formatDetection
+ * are intentionally excluded — Next.js replaces these wholesale via their
+ * own resolvers, so we match that behavior.
  */
 const DEEP_MERGE_KEYS = new Set<string>([
   "openGraph",
@@ -345,7 +351,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function resolveStringTitle(title: Metadata["title"]): string | undefined {
   if (typeof title === "string") return title;
   if (title && typeof title === "object") {
-    return title.absolute || title.default || undefined;
+    return title.absolute ?? title.default ?? undefined;
   }
   return undefined;
 }
@@ -362,18 +368,23 @@ function resolveStringTitle(title: Metadata["title"]): string | undefined {
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
  */
 export function postProcessMetadata(merged: Metadata): Metadata {
-  const resolvedTitle = resolveStringTitle(merged.title);
+  // Shallow-clone to avoid mutating the caller's object.
+  // Both current call sites (mergeMetadata, resolveAppPageHead) pass
+  // freshly-constructed objects, but this guards against future misuse.
+  const result = { ...merged };
+
+  const resolvedTitle = resolveStringTitle(result.title);
 
   // openGraph inherits title/description from root metadata when absent
-  if (merged.openGraph) {
-    const og = { ...merged.openGraph };
+  if (result.openGraph) {
+    const og = { ...result.openGraph };
     if (!og.title && resolvedTitle) {
       og.title = resolvedTitle;
     }
-    if (!og.description && merged.description) {
-      og.description = merged.description;
+    if (!og.description && result.description) {
+      og.description = result.description;
     }
-    merged.openGraph = og;
+    result.openGraph = og;
   }
 
   // twitter inherits title/description/images from openGraph (or root metadata)
@@ -383,7 +394,7 @@ export function postProcessMetadata(merged: Metadata): Metadata {
     images?: NonNullable<Metadata["twitter"]>["images"];
   } = {};
 
-  const existingTwitter = merged.twitter;
+  const existingTwitter = result.twitter;
   const hasTwTitle = existingTwitter ? Boolean(existingTwitter.title) : false;
   const hasTwDescription = existingTwitter ? Boolean(existingTwitter.description) : false;
   // Next.js checks hasOwnProperty('images') to distinguish "not set" from "explicitly empty"
@@ -392,46 +403,46 @@ export function postProcessMetadata(merged: Metadata): Metadata {
     : false;
 
   if (!hasTwTitle) {
-    if (merged.openGraph?.title) {
-      autoFill.title = merged.openGraph.title;
+    if (result.openGraph?.title) {
+      autoFill.title = result.openGraph.title;
     } else if (resolvedTitle) {
       autoFill.title = resolvedTitle;
     }
   }
   if (!hasTwDescription) {
-    if (merged.openGraph?.description) {
-      autoFill.description = merged.openGraph.description;
-    } else if (merged.description) {
-      autoFill.description = merged.description;
+    if (result.openGraph?.description) {
+      autoFill.description = result.openGraph.description;
+    } else if (result.description) {
+      autoFill.description = result.description;
     }
   }
   if (!hasTwImages) {
-    if (merged.openGraph?.images) {
-      autoFill.images = merged.openGraph.images;
+    if (result.openGraph?.images) {
+      autoFill.images = result.openGraph.images;
     }
   }
 
   if (Object.keys(autoFill).length > 0) {
     if (existingTwitter) {
-      merged.twitter = { ...existingTwitter, ...autoFill };
+      result.twitter = { ...existingTwitter, ...autoFill };
     } else {
-      merged.twitter = autoFill;
+      result.twitter = autoFill;
     }
   }
 
   // If twitter exists (either originally or via auto-fill), ensure card type is set.
   // Next.js resolveTwitter defaults: summary_large_image when images present, else summary.
-  if (merged.twitter) {
-    const tw = { ...merged.twitter };
+  if (result.twitter) {
+    const tw = { ...result.twitter };
     if (!tw.card) {
       const images = tw.images;
       const hasImages = Array.isArray(images) ? images.length > 0 : Boolean(images);
       tw.card = hasImages ? "summary_large_image" : "summary";
     }
-    merged.twitter = tw;
+    result.twitter = tw;
   }
 
-  return merged;
+  return result;
 }
 
 /**
