@@ -544,3 +544,43 @@ export function processMiddlewareHeaders(headers: Headers): void {
     headers.delete(key);
   }
 }
+
+/**
+ * Headers that are only used internally by Next.js and must not be honored
+ * from external requests. An attacker could forge these to influence routing
+ * or impersonate internal data fetches.
+ *
+ * Ported from Next.js `INTERNAL_HEADERS`:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/server-ipc/utils.ts
+ *
+ * Next.js strips these via `filterInternalHeaders()` at the router-server
+ * entry point before any handler sees the request:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+ */
+export const INTERNAL_HEADERS = [
+  "x-middleware-rewrite",
+  "x-middleware-redirect",
+  "x-middleware-set-cookie",
+  "x-middleware-skip",
+  "x-middleware-override-headers",
+  "x-middleware-next",
+  "x-now-route-matches",
+  "x-matched-path",
+  "x-nextjs-data",
+  "x-next-resume-state-length",
+];
+
+/**
+ * Strip internal headers from an inbound request so they cannot be forged by
+ * an external attacker to influence routing or impersonate internal state.
+ *
+ * Must be called at every request entry point BEFORE middleware, routing,
+ * or any handler logic accesses the request headers.
+ *
+ * @param headers - The request Headers object to modify in place
+ */
+export function filterInternalHeaders(headers: Headers): void {
+  for (const header of INTERNAL_HEADERS) {
+    headers.delete(header);
+  }
+}

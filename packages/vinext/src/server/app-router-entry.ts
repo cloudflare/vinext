@@ -16,7 +16,7 @@
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -49,6 +49,10 @@ export default {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
       return new Response("Bad Request", { status: 400 });
     }
+
+    // Strip internal headers from inbound requests before any handler or
+    // middleware sees them. Must happen before the RSC handler runs.
+    filterInternalHeaders(request.headers);
 
     // Do NOT decode/normalize the pathname here. The RSC handler
     // (virtual:vinext-rsc-entry) is the single point of decoding — it calls

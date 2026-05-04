@@ -3,7 +3,9 @@ import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
   createStaticFileSignal,
+  filterInternalHeaders,
   guardProtocolRelativeUrl,
+  INTERNAL_HEADERS,
   isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
@@ -636,5 +638,110 @@ describe("processMiddlewareHeaders", () => {
     processMiddlewareHeaders(headers);
     expect(headers.get("content-type")).toBe("text/html");
     expect(headers.get("x-custom")).toBe("keep");
+  });
+});
+
+// ── INTERNAL_HEADERS / filterInternalHeaders ─────────────────────────────
+//
+// Ported from Next.js INTERNAL_HEADERS:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/server-ipc/utils.ts
+//
+// Next.js strips these via filterInternalHeaders() at the router-server
+// entry point before any handler sees the request:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+
+describe("INTERNAL_HEADERS", () => {
+  it("matches Next.js's exact header list", () => {
+    // Keep in sync with Next.js:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/server-ipc/utils.ts
+    const expected = [
+      "x-middleware-rewrite",
+      "x-middleware-redirect",
+      "x-middleware-set-cookie",
+      "x-middleware-skip",
+      "x-middleware-override-headers",
+      "x-middleware-next",
+      "x-now-route-matches",
+      "x-matched-path",
+      "x-nextjs-data",
+      "x-next-resume-state-length",
+    ];
+    expect(INTERNAL_HEADERS).toEqual(expected);
+  });
+});
+
+describe("filterInternalHeaders", () => {
+  it("strips all INTERNAL_HEADERS from the Headers object", () => {
+    const headers = new Headers();
+    for (const name of INTERNAL_HEADERS) {
+      headers.set(name, "forged");
+    }
+    headers.set("user-agent", "test");
+    headers.set("cookie", "session=abc");
+
+    filterInternalHeaders(headers);
+
+    for (const name of INTERNAL_HEADERS) {
+      expect(headers.has(name)).toBe(false);
+    }
+    expect(headers.get("user-agent")).toBe("test");
+    expect(headers.get("cookie")).toBe("session=abc");
+  });
+
+  it("strips headers case-insensitively", () => {
+    // HTTP headers are case-insensitive; Headers.delete is spec-compliant.
+    const headers = new Headers();
+    headers.set("X-Nextjs-Data", "1");
+    headers.set("X-Matched-Path", "/admin");
+    filterInternalHeaders(headers);
+    expect(headers.has("X-Nextjs-Data")).toBe(false);
+    expect(headers.has("x-nextjs-data")).toBe(false);
+    expect(headers.has("X-Matched-Path")).toBe(false);
+    expect(headers.has("x-matched-path")).toBe(false);
+  });
+
+  it("is a no-op when no internal headers are present", () => {
+    const headers = new Headers();
+    headers.set("user-agent", "test");
+    headers.set("accept", "text/html");
+    filterInternalHeaders(headers);
+    expect(headers.get("user-agent")).toBe("test");
+    expect(headers.get("accept")).toBe("text/html");
+    expect(headers.has("x-nextjs-data")).toBe(false);
+    expect(headers.has("x-matched-path")).toBe(false);
+  });
+
+  it("strips a subset of internal headers while preserving others", () => {
+    const headers = new Headers({
+      "x-nextjs-data": "1",
+      "x-matched-path": "/admin",
+      "x-custom": "keep-me",
+      "x-forwarded-for": "10.0.0.1",
+    });
+    filterInternalHeaders(headers);
+    expect(headers.has("x-nextjs-data")).toBe(false);
+    expect(headers.has("x-matched-path")).toBe(false);
+    expect(headers.get("x-custom")).toBe("keep-me");
+    expect(headers.get("x-forwarded-for")).toBe("10.0.0.1");
+  });
+
+  it("strips x-middleware-rewrite forged as a request header", () => {
+    // An attacker could forge x-middleware-rewrite to try to influence
+    // routing. This test ensures it is stripped at the entry point.
+    const headers = new Headers({
+      "x-middleware-rewrite": "/evil/admin",
+      "x-middleware-next": "1",
+      cookie: "auth=valid",
+    });
+    filterInternalHeaders(headers);
+    expect(headers.has("x-middleware-rewrite")).toBe(false);
+    expect(headers.has("x-middleware-next")).toBe(false);
+    expect(headers.get("cookie")).toBe("auth=valid");
+  });
+
+  it("works on an empty Headers object", () => {
+    const headers = new Headers();
+    filterInternalHeaders(headers);
+    expect([...headers.keys()]).toEqual([]);
   });
 });

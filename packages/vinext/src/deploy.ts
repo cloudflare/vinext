@@ -521,7 +521,7 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "vinext/config/config-matchers";
-import { applyConfigHeadersToHeaderRecord } from "vinext/server/request-pipeline";
+import { applyConfigHeadersToHeaderRecord, filterInternalHeaders } from "vinext/server/request-pipeline";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
@@ -594,6 +594,10 @@ export default {
       if (isOpenRedirectShaped(pathname)) {
         return new Response("404 Not Found", { status: 404 });
       }
+
+      // Strip internal headers from inbound requests so they cannot be
+      // forged to influence routing or impersonate internal state.
+      filterInternalHeaders(request.headers);
 
       // ── 1. Strip basePath ─────────────────────────────────────────
       {

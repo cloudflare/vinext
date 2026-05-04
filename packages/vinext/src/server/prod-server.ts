@@ -45,7 +45,11 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { applyConfigHeadersToHeaderRecord, isOpenRedirectShaped } from "./request-pipeline.js";
+import {
+  applyConfigHeadersToHeaderRecord,
+  filterInternalHeaders,
+  isOpenRedirectShaped,
+} from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
@@ -696,6 +700,8 @@ function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
       headers.set(key, value);
     }
   }
+  // Strip internal headers that should not be honored from external requests.
+  filterInternalHeaders(headers);
 
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -1387,6 +1393,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
+      // Strip internal headers from inbound requests before any handler or
+      // middleware sees them.
+      filterInternalHeaders(reqHeaders);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
       let webRequest = new Request(`${protocol}://${hostHeader}${url}`, {

@@ -34,6 +34,7 @@ import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import {
+  filterInternalHeaders,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
   validateImageUrl,
@@ -218,6 +219,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const originBlock = options.validateDevRequestOrigin?.(request);
     if (originBlock) return originBlock;
   }
+
+  // Strip internal headers from inbound requests before any handler or
+  // middleware sees them. Must happen before normalizeRscRequest() so the
+  // normalization layer never reads forged internal headers.
+  filterInternalHeaders(request.headers);
 
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
