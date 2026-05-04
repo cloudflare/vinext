@@ -1642,11 +1642,12 @@ describe("App Router integration", () => {
   });
 
   it("blocks RSC stream requests with cross-origin Origin header", async () => {
-    const res = await fetch(`${baseUrl}/about`, {
+    const res = await fetch(`${baseUrl}/about.rsc`, {
       headers: {
         Origin: "https://evil.com",
         Host: new URL(baseUrl).host,
         Accept: "text/x-component",
+        RSC: "1",
       },
     });
     expect(res.status).toBe(403);
@@ -1981,12 +1982,12 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("content-type")).toContain("text/x-component");
   });
 
-  it("returns RSC stream for Accept: text/x-component", async () => {
+  it("returns HTML for header-only RSC requests at canonical page URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
-      headers: { Accept: "text/x-component" },
+      headers: { Accept: "text/x-component", RSC: "1" },
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(res.headers.get("content-type")).toContain("text/html");
   });
 
   it("serves route handlers (GET /api/hello)", async () => {
@@ -2202,8 +2203,8 @@ describe("App Router Production server (startProdServer)", () => {
   });
 
   it("page ISR + searchParams: RSC requests stay dynamic instead of serving cached query data", async () => {
-    const res1 = await fetch(`${baseUrl}/isr-dynamic-search?filter=crimson`, {
-      headers: { Accept: "text/x-component" },
+    const res1 = await fetch(`${baseUrl}/isr-dynamic-search.rsc?filter=crimson`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
     });
     expect(res1.status).toBe(200);
     expect(res1.headers.get("content-type")).toContain("text/x-component");
@@ -2211,8 +2212,8 @@ describe("App Router Production server (startProdServer)", () => {
     const rsc1 = await res1.text();
     expect(rsc1).toContain("crimson");
 
-    const res2 = await fetch(`${baseUrl}/isr-dynamic-search?filter=indigo`, {
-      headers: { Accept: "text/x-component" },
+    const res2 = await fetch(`${baseUrl}/isr-dynamic-search.rsc?filter=indigo`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
     });
     expect(res2.status).toBe(200);
     expect(res2.headers.get("x-vinext-cache")).toBeNull();

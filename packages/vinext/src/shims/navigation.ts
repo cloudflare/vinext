@@ -299,6 +299,9 @@ export type PrefetchCacheEntry = {
  * Convert a pathname (with optional query/hash) to its .rsc URL.
  * Strips trailing slashes before appending `.rsc` so that cache keys
  * are consistent regardless of the `trailingSlash` config setting.
+ *
+ * @deprecated Use `createRscRequestUrl` so RSC requests include cache-busting
+ * params for variant headers.
  */
 export function toRscUrl(href: string): string {
   const [beforeHash] = href.split("#");
@@ -1291,10 +1294,20 @@ const _appRouter = {
     assertSafeNavigationUrl(href);
     if (isServer) return;
     void (async () => {
+      // Normalize same-origin absolute URLs to local paths; no-op for external
+      // origins so we don't pollute the prefetch cache with a same-path .rsc on
+      // the current origin. Mirrors Link's prefetchUrl and navigateClientSide.
+      let prefetchHref = href;
+      if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+        const localPath = toSameOriginAppPath(href, __basePath);
+        if (localPath == null) return;
+        prefetchHref = localPath;
+      }
+
       // Prefetch the RSC payload for the target route and store in cache.
       // We must add to prefetchedUrls manually for deduplication.
       // prefetchRscResponse only manages the cache Map, not the URL set.
-      const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
+      const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
       const interceptionContext = getCurrentInterceptionContext();
       const mountedSlotsHeader = getMountedSlotsHeader();
       const headers = createRscRequestHeaders({ interceptionContext });

@@ -432,4 +432,34 @@ describe("mergeMiddlewareResponseHeaders", () => {
 
     expect(target.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, X-Auth-State`);
   });
+
+  it("preserves wildcard Vary semantics when appending middleware headers", () => {
+    const target = new Headers({ Vary: "RSC, Accept" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when target already has Vary wildcard", () => {
+    const target = new Headers({ Vary: "*" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when middleware is the first Vary source", () => {
+    const target = new Headers();
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
 });

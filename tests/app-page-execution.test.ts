@@ -61,8 +61,9 @@ describe("app page execution helpers", () => {
 
     const redirectResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -81,6 +82,7 @@ describe("app page execution helpers", () => {
 
     const fallbackResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
       renderFallbackPage(statusCode) {
         return Promise.resolve(
@@ -90,7 +92,7 @@ describe("app page execution helpers", () => {
           }),
         );
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 404,
@@ -115,11 +117,12 @@ describe("app page execution helpers", () => {
 
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
       renderFallbackPage() {
         return Promise.resolve(null);
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 401,
@@ -132,6 +135,30 @@ describe("app page execution helpers", () => {
     expect(response.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
     await expect(response.text()).resolves.toBe("Unauthorized");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("canonicalizes same-origin RSC redirect locations to .rsc URLs", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc", {
+        headers: {
+          Accept: "text/x-component",
+          RSC: "1",
+          "Next-Router-State-Tree": "tree",
+        },
+      }),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected?tab=1",
+        statusCode: 307,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toMatch(
+      /^https:\/\/example\.com\/redirected\.rsc\?tab=1&_rsc=/,
+    );
   });
 
   it("probes layouts from inner to outer and stops on a handled special response", async () => {

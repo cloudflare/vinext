@@ -372,13 +372,11 @@ describe("App Router entry templates", () => {
     }
   });
 
-  it("generateRscEntry delegates RSC cache-busting validation to the shared helper", () => {
+  it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("app-rsc-cache-busting.js");
-    expect(code).toContain(
-      "const __rscCacheBustingRedirect = await __resolveInvalidRscCacheBustingRequest({",
-    );
+    expect(code).toContain("app-rsc-handler.js");
+    expect(code).toContain("export default __createAppRscHandler({");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 

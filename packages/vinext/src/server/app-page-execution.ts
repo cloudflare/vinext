@@ -1,5 +1,6 @@
 import type { LayoutFlags } from "./app-elements.js";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
+import { createRscRedirectLocation } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type { LayoutFlags };
@@ -23,9 +24,10 @@ type AppPageRscStreamCapture = {
 
 type BuildAppPageSpecialErrorResponseOptions = {
   clearRequestContext: () => void;
+  isRscRequest: boolean;
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
-  requestUrl: string;
+  request: Request;
   specialError: AppPageSpecialError;
 };
 
@@ -133,8 +135,11 @@ export async function buildAppPageSpecialErrorResponse(
 ): Promise<Response> {
   if (options.specialError.kind === "redirect") {
     options.clearRequestContext();
+    const location = options.isRscRequest
+      ? await createRscRedirectLocation(options.specialError.location, options.request)
+      : new URL(options.specialError.location, options.request.url).toString();
     const headers = new Headers({
-      Location: new URL(options.specialError.location, options.requestUrl).toString(),
+      Location: location,
     });
     // Middleware may contribute response headers here, but redirect() owns the
     // status. Do not apply middlewareContext.status on special-error responses.

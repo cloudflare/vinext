@@ -1,5 +1,11 @@
 import { fnv1a64 } from "../utils/hash.js";
 
+/**
+ * RSC cache-busting hashes cover the headers that make a `.rsc` payload vary.
+ * Client-side variant headers must survive transit through CDNs and reverse
+ * proxies; stripping them changes the server hash and turns stale URLs into
+ * repeated canonicalization redirects.
+ */
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 export const VINEXT_RSC_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
@@ -49,6 +55,8 @@ function normalizeHeaderValue(value: string | null): string {
 }
 
 function createCacheBustingInput(headers: Headers): string | null {
+  // The order of these values determines the hash. Changing it is a breaking
+  // cache-key change and requires accepting the previous hash during rollout.
   const values = [
     headers.get(NEXT_ROUTER_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
@@ -79,12 +87,20 @@ function getSearchPairsWithoutRscCacheBusting(url: URL): string[] {
   const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
   return rawQuery
     .split("&")
-    .filter(
-      (pair) =>
-        pair.length > 0 &&
-        pair !== VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM &&
-        !pair.startsWith(`${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=`),
+    .filter((pair) => pair.length > 0 && !isRscCacheBustingSearchPair(pair));
+}
+
+function isRscCacheBustingSearchPair(pair: string): boolean {
+  const separatorIndex = pair.indexOf("=");
+  const rawKey = separatorIndex === -1 ? pair : pair.slice(0, separatorIndex);
+
+  try {
+    return (
+      decodeURIComponent(rawKey.replaceAll("+", " ")) === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM
     );
+  } catch {
+    return rawKey === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM;
+  }
 }
 
 export async function computeRscCacheBustingSearchParam(headers: Headers): Promise<string> {
@@ -93,11 +109,7 @@ export async function computeRscCacheBustingSearchParam(headers: Headers): Promi
     return "";
   }
 
-  if (typeof globalThis.crypto?.subtle?.digest === "function") {
-    return sha256CacheBustingHash(input);
-  }
-
-  return fnv1a64(input);
+  return sha256CacheBustingHash(input);
 }
 
 export function setRscCacheBustingSearchParam(url: URL, hash: string): void {
@@ -151,6 +163,24 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   return `${url.pathname}${url.search}`;
 }
 
+export async function createRscRedirectLocation(
+  location: string,
+  request: Request,
+): Promise<string> {
+  const requestUrl = new URL(request.url);
+  const destinationUrl = new URL(location, requestUrl);
+
+  if (destinationUrl.origin !== requestUrl.origin) {
+    return destinationUrl.toString();
+  }
+
+  const rscPath = await createRscRequestUrl(
+    `${destinationUrl.pathname}${destinationUrl.search}`,
+    request.headers,
+  );
+  return `${destinationUrl.origin}${rscPath}`;
+}
+
 export async function resolveInvalidRscCacheBustingRequest(
   options: ResolveInvalidRscCacheBustingRequestOptions,
 ): Promise<Response | null> {
@@ -164,9 +194,17 @@ export async function resolveInvalidRscCacheBustingRequest(
   const url = new URL(options.request.url);
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
-  const legacyHash = computeLegacyRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === expectedHash || (actualHash !== null && actualHash === legacyHash)) {
+  if (actualHash === null && expectedHash === "") {
+    return null;
+  }
+
+  const legacyHash =
+    actualHash !== null && actualHash !== expectedHash
+      ? computeLegacyRscCacheBustingSearchParam(options.request.headers)
+      : null;
+
+  if (actualHash === expectedHash || (legacyHash !== null && actualHash === legacyHash)) {
     return null;
   }
 

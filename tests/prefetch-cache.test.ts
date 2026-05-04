@@ -22,13 +22,20 @@ let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
 let restoreRscResponse: Navigation["restoreRscResponse"];
+let useRouter: Navigation["useRouter"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
   (globalThis as any).window = {
     __VINEXT_RSC_PREFETCH_CACHE__: new Map(),
     __VINEXT_RSC_PREFETCHED_URLS__: new Set(),
-    location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+    location: {
+      origin: "http://localhost",
+      pathname: "/",
+      search: "",
+      hash: "",
+      href: "http://localhost/",
+    },
     addEventListener: () => {},
     history: { pushState: () => {}, replaceState: () => {}, state: null },
     dispatchEvent: () => {},
@@ -44,11 +51,13 @@ beforeEach(async () => {
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
   restoreRscResponse = nav.restoreRscResponse;
+  useRouter = nav.useRouter;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete (globalThis as any).window;
+  delete (globalThis as any).fetch;
 });
 
 /** Helper: fill cache with `count` entries at a given timestamp. */
@@ -72,7 +81,39 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
   }
 }
 
+async function waitForPrefetchSetup(): Promise<void> {
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("prefetch cache eviction", () => {
+  it("router.prefetch ignores external absolute URLs", async () => {
+    const fetch = vi.fn();
+    (globalThis as any).fetch = fetch;
+
+    useRouter().prefetch("https://external.example/dashboard");
+    await waitForPrefetchSetup();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(getPrefetchedUrls().size).toBe(0);
+  });
+
+  it("router.prefetch normalizes same-origin absolute URLs before caching", async () => {
+    let fetchedUrl: unknown;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetchedUrl = input;
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    useRouter().prefetch("http://localhost/dashboard?tab=1");
+    await waitForPrefetchSetup();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetchedUrl).toMatch(/^\/dashboard\.rsc\?tab=1&_rsc(?:=.+)?$/);
+    expect(getPrefetchedUrls().has(createAppPayloadCacheKey(String(fetchedUrl), "/"))).toBe(true);
+  });
+
   it("reuses a prefetched response only when mounted-slot context matches", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();

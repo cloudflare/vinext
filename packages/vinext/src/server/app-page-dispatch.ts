@@ -618,6 +618,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     clearRequestContext: options.clearRequestContext,
+    isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
       const parentBoundary = resolveAppPageParentHttpAccessBoundaryModule({
@@ -640,7 +641,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
         null,
       );
     },
-    requestUrl: options.request.url,
+    request: options.request,
     specialError,
   });
 }
@@ -651,6 +652,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     clearRequestContext: options.clearRequestContext,
+    isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
       return options.renderHttpAccessFallbackPage(
@@ -659,7 +661,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         null,
       );
     },
-    requestUrl: options.request.url,
+    request: options.request,
     specialError,
   });
 }

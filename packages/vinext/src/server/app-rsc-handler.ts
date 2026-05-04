@@ -26,6 +26,7 @@ import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 import {
+  createRscRedirectLocation,
   resolveInvalidRscCacheBustingRequest,
   stripRscCacheBustingSearchParam,
 } from "./app-rsc-cache-busting.js";
@@ -258,9 +259,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const destination = sanitizeDestination(
       redirectDestinationWithBasePath(redirect.destination, options.basePath),
     );
+    const location = isRscRequest
+      ? await createRscRedirectLocation(destination, request)
+      : destination;
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
-      headers: { Location: destination },
+      headers: { Location: location },
     });
   }
 

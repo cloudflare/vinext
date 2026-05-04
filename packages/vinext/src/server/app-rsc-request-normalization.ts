@@ -13,7 +13,7 @@ export type NormalizedRscRequest = {
   pathname: string;
   /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
-  /** True when the client requests the RSC payload (.rsc suffix, RSC: 1, or Accept: text/x-component). */
+  /** True when the request targets a canonical `.rsc` payload URL. */
   isRscRequest: boolean;
   /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
   interceptionContextHeader: string | null;
@@ -38,7 +38,9 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix, `RSC: 1`, or `Accept: text/x-component`
+ *   6. RSC detection: `.rsc` suffix only. RSC headers do not select payload
+ *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
+ *      store Flight responses under HTML URLs.
  *   7. cleanPathname — pathname with `.rsc` suffix stripped
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
@@ -83,10 +85,7 @@ export function normalizeRscRequest(
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest =
-    pathname.endsWith(".rsc") ||
-    request.headers.get("rsc") === "1" ||
-    (request.headers.get("accept")?.includes("text/x-component") ?? false);
+  const isRscRequest = pathname.endsWith(".rsc");
   const cleanPathname = pathname.replace(/\.rsc$/, "");
 
   // Step 8: Sanitize X-Vinext-Interception-Context.
