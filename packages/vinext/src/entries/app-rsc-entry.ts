@@ -472,6 +472,7 @@ export default __createAppRscHandler({
     });
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
+      basePath: __basePath,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,

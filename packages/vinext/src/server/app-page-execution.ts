@@ -23,6 +23,15 @@ type AppPageRscStreamCapture = {
 };
 
 type BuildAppPageSpecialErrorResponseOptions = {
+  /**
+   * Optional configured basePath (e.g. "/blog"). When set, redirect Locations
+   * pointing at app-internal paths get prefixed so callers see e.g.
+   * `Location: /blog/about` for `redirect("/about")`. Mirrors Next.js's
+   * `addPathPrefix(getURLFromRedirectError(err), basePath)` in app-render.tsx.
+   * External URLs (those that resolve to a different origin than the request)
+   * are left untouched.
+   */
+  basePath?: string;
   clearRequestContext: () => void;
   isRscRequest: boolean;
   middlewareContext?: { headers: Headers | null };
@@ -130,14 +139,51 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
   return null;
 }
 
+/**
+ * Resolves a redirect() target against the request URL and prepends the
+ * configured basePath when the target is an app-internal absolute path.
+ *
+ * Mirrors Next.js's `addPathPrefix(getURLFromRedirectError(err), basePath)`
+ * in `app-render.tsx`: a `redirect("/about")` call from a page mounted at
+ * `/blog` (basePath) produces `Location: /blog/about`.
+ *
+ * Skips prefixing when:
+ *  - basePath is unset / empty
+ *  - the target is a full URL pointing at a different origin (external redirect)
+ *  - the target already starts with the basePath (caller did the work themselves)
+ */
+function applyAppPageRedirectBasePath(
+  location: string,
+  requestUrl: string,
+  basePath: string | undefined,
+): string {
+  const resolved = new URL(location, requestUrl);
+  const requestOrigin = new URL(requestUrl).origin;
+  if (!basePath || resolved.origin !== requestOrigin) {
+    return resolved.toString();
+  }
+  if (resolved.pathname === basePath || resolved.pathname.startsWith(`${basePath}/`)) {
+    return resolved.toString();
+  }
+  resolved.pathname = resolved.pathname === "/" ? basePath : `${basePath}${resolved.pathname}`;
+  return resolved.toString();
+}
+
 export async function buildAppPageSpecialErrorResponse(
   options: BuildAppPageSpecialErrorResponseOptions,
 ): Promise<Response> {
   if (options.specialError.kind === "redirect") {
     options.clearRequestContext();
+    // Apply configured basePath first so app-internal targets land at
+    // /<basePath>/<target> before the RSC cache-busting transform sees them.
+    const prefixedLocation = applyAppPageRedirectBasePath(
+      options.specialError.location,
+      options.request.url,
+      options.basePath,
+    );
     const location = options.isRscRequest
-      ? await createRscRedirectLocation(options.specialError.location, options.request)
-      : new URL(options.specialError.location, options.request.url).toString();
+      ? await createRscRedirectLocation(prefixedLocation, options.request)
+      : prefixedLocation;
     const headers = new Headers({
       Location: location,
     });

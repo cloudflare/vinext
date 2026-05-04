@@ -112,6 +112,90 @@ describe("app page execution helpers", () => {
     expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
+  it("prefixes redirect Location with basePath for app-internal paths", async () => {
+    // Mirrors Next.js's `addPathPrefix(getURLFromRedirectError(err), basePath)`.
+    // `redirect("/about")` from a page mounted under basePath "/blog" should
+    // produce `Location: https://example.com/blog/about`, not the raw "/about".
+    const clearRequestContext = vi.fn();
+
+    const internalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(internalRedirect.headers.get("location")).toBe("https://example.com/blog/about");
+
+    // External redirects (different origin) must NOT be prefixed — they're
+    // outside the app's basePath scope.
+    const externalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://other.example/foo",
+        statusCode: 307,
+      },
+    });
+
+    expect(externalRedirect.headers.get("location")).toBe("https://other.example/foo");
+
+    // Targets that already include the basePath prefix must be left alone
+    // (caller already did the work or middleware-driven redirect).
+    const alreadyPrefixed = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/blog/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(alreadyPrefixed.headers.get("location")).toBe("https://example.com/blog/about");
+
+    // No basePath configured → behavior unchanged (resolves against the
+    // request URL as before).
+    const unconfigured = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(unconfigured.headers.get("location")).toBe("https://example.com/about");
+
+    // Redirect to root ("/") under basePath should land on the basePath itself,
+    // not "/blog/" with a trailing slash artifact.
+    const rootRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/",
+        statusCode: 307,
+      },
+    });
+
+    expect(rootRedirect.headers.get("location")).toBe("https://example.com/blog");
+  });
+
   it("falls back to a plain status response when no fallback page is available", async () => {
     const clearRequestContext = vi.fn();
 
