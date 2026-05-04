@@ -257,8 +257,8 @@ export async function validateAppPageDynamicParams(
     return new Response("Not Found", { status: 404 });
   }
 
-  try {
-    for (const source of generateStaticParamsSources) {
+  for (const source of generateStaticParamsSources) {
+    try {
       const staticParams = await source.generateStaticParams({
         params: pickRouteParams(options.params, source.parentParamNames),
       });
@@ -266,9 +266,9 @@ export async function validateAppPageDynamicParams(
         options.clearRequestContext();
         return new Response("Not Found", { status: 404 });
       }
+    } catch (error) {
+      options.logGenerateStaticParamsError?.(error);
     }
-  } catch (error) {
-    options.logGenerateStaticParamsError?.(error);
   }
 
   return null;
