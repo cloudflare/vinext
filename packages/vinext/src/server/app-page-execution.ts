@@ -33,6 +33,16 @@ type BuildAppPageSpecialErrorResponseOptions = {
    */
   basePath?: string;
   clearRequestContext: () => void;
+  /**
+   * Drains and returns Set-Cookie header values that were accumulated during
+   * this render via cookies().set() / cookies().delete(). Appended to redirect
+   * responses so an auth flow that does `cookies().set("session", "...");
+   * redirect("/")` preserves the cookie on the 307. Mirrors Next.js's
+   * `appendMutableCookies(headers, requestStore.mutableCookies)` in
+   * app-render.tsx. Only applied to redirect responses to match Next.js;
+   * the http-access-fallback path leaves cookies to the rendered boundary.
+   */
+  getAndClearPendingCookies?: () => string[];
   isRscRequest: boolean;
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
@@ -190,6 +200,13 @@ export async function buildAppPageSpecialErrorResponse(
     // Middleware may contribute response headers here, but redirect() owns the
     // status. Do not apply middlewareContext.status on special-error responses.
     mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+    // Preserve cookies set via cookies().set() / cookies().delete() during the
+    // page render — auth flows commonly set a session cookie and immediately
+    // redirect, and those Set-Cookie values must ride on the 307.
+    const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
+    for (const cookie of pendingCookies) {
+      headers.append("Set-Cookie", cookie);
+    }
 
     return new Response(null, {
       headers,

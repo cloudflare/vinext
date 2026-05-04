@@ -8,6 +8,7 @@ import {
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
+  getAndClearPendingCookies,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersContext,
@@ -621,6 +622,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     clearRequestContext: options.clearRequestContext,
+    getAndClearPendingCookies,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
@@ -656,6 +658,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     clearRequestContext: options.clearRequestContext,
+    getAndClearPendingCookies,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {

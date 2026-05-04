@@ -196,6 +196,75 @@ describe("app page execution helpers", () => {
     expect(rootRedirect.headers.get("location")).toBe("https://example.com/blog");
   });
 
+  it("appends pending cookies (cookies().set during render) to redirect responses", async () => {
+    // Mirrors Next.js's `appendMutableCookies(headers, requestStore.mutableCookies)`
+    // in app-render.tsx. An auth flow that does
+    //   cookies().set("session", "...");
+    //   redirect("/dashboard");
+    // must keep the Set-Cookie on the 307 — otherwise the redirected
+    // request lands without the just-issued session and the user bounces
+    // back to login.
+    const clearRequestContext = vi.fn();
+    const getAndClearPendingCookies = vi.fn(() => [
+      "session=fresh; Path=/; HttpOnly",
+      "csrf=abc; Path=/",
+    ]);
+
+    const redirectWithCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+      },
+    });
+
+    expect(redirectWithCookies.status).toBe(307);
+    expect(redirectWithCookies.headers.get("location")).toBe("https://example.com/dashboard");
+    const setCookies = redirectWithCookies.headers.getSetCookie();
+    expect(setCookies).toContain("session=fresh; Path=/; HttpOnly");
+    expect(setCookies).toContain("csrf=abc; Path=/");
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+
+    // No accumulated cookies → no Set-Cookie header (and the accumulator
+    // is still consulted exactly once).
+    getAndClearPendingCookies.mockReturnValue([]);
+    const redirectWithoutCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+      },
+    });
+
+    expect(redirectWithoutCookies.headers.getSetCookie()).toEqual([]);
+
+    // Pending cookies must NOT bleed onto http-access-fallback responses —
+    // those cookies belong to the rendered boundary, not the bare 401/403/404.
+    // Matches Next.js, which only calls appendMutableCookies in the redirect
+    // branch.
+    getAndClearPendingCookies.mockReturnValue(["should-not-appear=1; Path=/"]);
+    const fallbackResponse = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 401,
+      },
+    });
+
+    expect(fallbackResponse.headers.getSetCookie()).toEqual([]);
+  });
+
   it("falls back to a plain status response when no fallback page is available", async () => {
     const clearRequestContext = vi.fn();
 
