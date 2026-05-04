@@ -650,6 +650,460 @@ describe("app browser navigation controller", () => {
   });
 });
 
+// ─── BASE-02: Lock current lifecycle settlement behaviour ─────────────────────
+// Ported from Next.js navigation lifecycle semantics:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/action-queue.ts
+// Reference: issue #726 Layer 1 lifecycle authority model
+
+describe("app browser navigation lifecycle settlement (BASE-02)", () => {
+  it("most recent navigation commits when three are started and payloads resolve in reverse order", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    let resolveA!: (elements: AppElements) => void;
+    let resolveB!: (elements: AppElements) => void;
+
+    const payloadA = new Promise<AppElements>((r) => {
+      resolveA = r;
+    });
+    const payloadB = new Promise<AppElements>((r) => {
+      resolveB = r;
+    });
+    const payloadC = Promise.resolve(
+      createResolvedElements("route:/c", "/", null, {
+        "page:/c": React.createElement("main", null, "C"),
+      }),
+    );
+
+    const effectsRun: string[] = [];
+
+    try {
+      // Start three navigations. Only C is the current (winning) one.
+      const navA = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => {
+          effectsRun.push("A");
+          return () => {};
+        },
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: payloadA,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/a",
+        navId: navA,
+        useTransition: false,
+      });
+
+      const navB = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => {
+          effectsRun.push("B");
+          return () => {};
+        },
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: payloadB,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/b",
+        navId: navB,
+        useTransition: false,
+      });
+
+      const navC = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => {
+          effectsRun.push("C");
+          return () => {};
+        },
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: payloadC,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/c",
+        navId: navC,
+        useTransition: false,
+      });
+
+      // Yield so C's async payload resolves and state is committed.
+      // renderNavigationPayload returns a promise that settles only when
+      // NavigationCommitSignal fires (a React component not mounted in
+      // unit tests). The state mutation through dispatchBrowserTree is
+      // synchronous when useTransition=false, so we verify via stateRef.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/c");
+
+      // B resolves after C was committed — stale, must be skipped.
+      resolveB(
+        createResolvedElements("route:/b", "/", null, {
+          "page:/b": React.createElement("main", null, "B"),
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.routeId).toBe("route:/c");
+
+      // A resolves last — most stale, must be skipped.
+      resolveA(
+        createResolvedElements("route:/a", "/", null, {
+          "page:/a": React.createElement("main", null, "A"),
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.routeId).toBe("route:/c");
+
+      // Only C's commit effect was queued. A and B were classified as
+      // "skip" before createNavigationCommitEffect ever ran.
+      expect(effectsRun).toEqual(["C"]);
+    } finally {
+      detach();
+    }
+  });
+
+  it("rapid sequential navigations where the first payload resolves last leaves only the last route visible", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    let resolveSlow!: (elements: AppElements) => void;
+    const slowPayload = new Promise<AppElements>((r) => {
+      resolveSlow = r;
+    });
+
+    try {
+      // Start slow navigation A (deferred payload — won't commit yet).
+      const navA = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: slowPayload,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/slow",
+        navId: navA,
+        useTransition: false,
+      });
+
+      // Start fast navigation B (immediate payload). B's beginNavigation
+      // advances activeNavigationId past A, so B wins.
+      const navB = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/fast", "/", null, {
+            "page:/fast": React.createElement("main", null, "fast"),
+          }),
+        ),
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/fast",
+        navId: navB,
+        useTransition: false,
+      });
+
+      // Yield so B's async payload resolves and state commits.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/fast");
+
+      // Now resolve the stale payload. It must not overwrite the committed route.
+      resolveSlow(
+        createResolvedElements("route:/slow", "/", null, {
+          "page:/slow": React.createElement("main", null, "slow"),
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/fast");
+    } finally {
+      detach();
+    }
+  });
+
+  it("stale cross-root navigation is skipped instead of hard-navigating", async () => {
+    // A navigation that crosses a root-layout boundary requires a hard
+    // navigation. But a stale navigation (superseded by a newer one) must NOT
+    // hard-navigate, even if the payload says the roots differ. A "skip" for
+    // the stale operation must take priority over a "hard-navigate" for a
+    // navigation that is no longer current.
+    const { controller, detach, stateRef } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+    );
+    const { assign } = stubWindow("https://example.com/marketing");
+    let resolveCrossRoot!: (elements: AppElements) => void;
+    const crossRootPayload = new Promise<AppElements>((r) => {
+      resolveCrossRoot = r;
+    });
+
+    try {
+      // Start cross-root navigation A (deferred, /(marketing) → /(dashboard)).
+      const navA = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: crossRootPayload,
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId: navA,
+        useTransition: false,
+      });
+
+      // Start new navigation B (same root). B advances activeNavigationId past A.
+      const navB = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/marketing/settings", "/(marketing)", null, {
+            "page:/marketing/settings": React.createElement("main", null, "settings"),
+          }),
+        ),
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/marketing/settings",
+        navId: navB,
+        useTransition: false,
+      });
+
+      // Yield so B's async payload resolves and state commits.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/marketing/settings");
+
+      // Now resolve the stale cross-root payload. It has a different root
+      // layout, but the navigation it belongs to is no longer current.
+      resolveCrossRoot(
+        createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Must NOT have hard-navigated. The stale operation is simply skipped.
+      expect(assign).not.toHaveBeenCalled();
+      // The visible route must be B's, not A's stale payload.
+      expect(stateRef.current.routeId).toBe("route:/marketing/settings");
+    } finally {
+      detach();
+    }
+  });
+
+  it("resolvePendingNavigationCommitDisposition returns skip when activeNavigationId has advanced", () => {
+    expect(
+      resolvePendingNavigationCommitDisposition({
+        activeNavigationId: 9,
+        currentRootLayoutTreePath: "/",
+        nextRootLayoutTreePath: "/",
+        startedNavigationId: 5,
+      }),
+    ).toBe("skip");
+  });
+
+  it("resolvePendingNavigationCommitDisposition returns dispatch when navigation is current and roots match", () => {
+    expect(
+      resolvePendingNavigationCommitDisposition({
+        activeNavigationId: 7,
+        currentRootLayoutTreePath: "/",
+        nextRootLayoutTreePath: "/",
+        startedNavigationId: 7,
+      }),
+    ).toBe("dispatch");
+  });
+
+  it("resolvePendingNavigationCommitDisposition returns hard-navigate when navigation is current and roots differ", () => {
+    expect(
+      resolvePendingNavigationCommitDisposition({
+        activeNavigationId: 7,
+        currentRootLayoutTreePath: "/(marketing)",
+        nextRootLayoutTreePath: "/(dashboard)",
+        startedNavigationId: 7,
+      }),
+    ).toBe("hard-navigate");
+  });
+
+  it("resolveAndClassifyNavigationCommit classifies skip when IDs have diverged", async () => {
+    const result = await resolveAndClassifyNavigationCommit({
+      activeNavigationId: 9,
+      currentState: createState(),
+      navigationSnapshot: createState().navigationSnapshot,
+      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+      renderId: 3,
+      startedNavigationId: 5,
+      type: "navigate",
+    });
+
+    expect(result.disposition).toBe("skip");
+    expect(result.pending.routeId).toBe("route:/dashboard");
+  });
+
+  it("failed payload cleanly settles the pending router state without leaving it hanging", async () => {
+    const { controller, detach } = createControllerHarness();
+    const clearSpy = vi.spyOn(navigationShim, "clearPendingPathname").mockImplementation(() => {});
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+        nextElements: Promise.reject(new Error("RSC fetch failed")),
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+        useTransition: false,
+      });
+
+      await expect(renderPromise).rejects.toThrow("RSC fetch failed");
+
+      // The pending router promise must be settled so callers don't hang.
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
+      expect(pendingRouterState.settled).toBe(true);
+    } finally {
+      clearSpy.mockRestore();
+      detach();
+    }
+  });
+});
+
+// ─── BASE-03: Lock root-layout hard navigation behaviour ──────────────────────
+// Ported from Next.js root-layout boundary semantics:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/compare-states.ts
+// Reference: issue #726 Layer 5 root-layout promotion
+
+describe("app browser root-layout hard navigation (BASE-03)", () => {
+  it("renderNavigationPayload calls window.location.assign when root layout changes", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+    );
+    const { assign } = stubWindow("https://example.com/marketing");
+    const createNavigationCommitEffect = vi.fn();
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/marketing",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+        useTransition: false,
+      });
+
+      await expect(renderPromise).resolves.toBeUndefined();
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(assign).toHaveBeenCalledWith("https://example.com/dashboard");
+      expect(createNavigationCommitEffect).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("hard-navigate settles the pending router state before navigating away", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+    );
+    const { assign } = stubWindow("https://example.com/marketing");
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+
+    try {
+      const navId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/marketing",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+        useTransition: false,
+      });
+
+      // Yield so the async function runs the settle+hard-navigate path.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(pendingRouterState.settled).toBe(true);
+    } finally {
+      detach();
+    }
+  });
+
+  it("shouldHardNavigate returns false when either root-layout identity is null", () => {
+    // Null means the payload could not identify an enclosing root-layout
+    // boundary. This is a compatibility safety valve: fallback payloads and
+    // legacy hydration states must not force a hard reload just because
+    // metadata is absent.
+    expect(shouldHardNavigate(null, null)).toBe(false);
+    expect(shouldHardNavigate(null, "/")).toBe(false);
+    expect(shouldHardNavigate("/", null)).toBe(false);
+  });
+
+  it("shouldHardNavigate returns false when root layouts are identical", () => {
+    expect(shouldHardNavigate("/", "/")).toBe(false);
+    expect(shouldHardNavigate("/(marketing)", "/(marketing)")).toBe(false);
+  });
+
+  it("shouldHardNavigate returns true when both root layouts are non-null and different", () => {
+    expect(shouldHardNavigate("/(marketing)", "/(dashboard)")).toBe(true);
+    expect(shouldHardNavigate("/app", "/blog")).toBe(true);
+  });
+});
+
 describe("app browser entry previousNextUrl helpers", () => {
   it("stores previousNextUrl alongside existing history state", () => {
     expect(
