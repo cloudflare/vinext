@@ -130,6 +130,7 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
@@ -160,6 +161,7 @@ export function shouldWriteAppRouteHandlerCache(
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     shouldApplyAppRouteHandlerRevalidateHeader(options)
   );
