@@ -447,4 +447,43 @@ describe("buildRouteTrie + trieMatch", () => {
       expect(result!.route).toBe(route1);
     });
   });
+
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
+  // Also: test/production/pages-dir/production/test/index.test.ts "should handle failed param decoding"
+  // https://github.com/vercel/next.js/blob/canary/test/production/pages-dir/production/test/index.test.ts#L1082
+  describe("param decoding", () => {
+    it("decodes %2F, %23, %3F in dynamic segment params without splitting segments", () => {
+      // /files/[name] matching /files/a%2Fb → param "a/b" (not "a", "b")
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%2Fb"])!.params).toEqual({ name: "a/b" });
+      expect(trieMatch(trie, ["files", "a%23b"])!.params).toEqual({ name: "a#b" });
+      expect(trieMatch(trie, ["files", "a%3Fb"])!.params).toEqual({ name: "a?b" });
+    });
+
+    it("decodes each element of catch-all and optional catch-all arrays individually", () => {
+      const catchAllTrie = buildRouteTrie([r("/docs/:rest+")]);
+      expect(trieMatch(catchAllTrie, ["docs", "a%2Fb", "c%23d"])!.params).toEqual({
+        rest: ["a/b", "c#d"],
+      });
+
+      const optionalTrie = buildRouteTrie([r("/docs/:rest*")]);
+      expect(trieMatch(optionalTrie, ["docs", "a%2Fb", "c%23d"])!.params).toEqual({
+        rest: ["a/b", "c#d"],
+      });
+    });
+
+    it("preserves malformed percent escapes without throwing", () => {
+      // Next.js throws DecodeError (400) on malformed, but vinext's
+      // normalization layer already validates percent-encoding. The matcher
+      // layer preserves un-decodable values rather than crashing.
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%GGb"])!.params).toEqual({ name: "a%GGb" });
+    });
+
+    it("applies exactly one decodeURIComponent pass (double-encoded stays single-encoded)", () => {
+      const trie = buildRouteTrie([r("/files/:name")]);
+      expect(trieMatch(trie, ["files", "a%252Fb"])!.params).toEqual({ name: "a%2Fb" });
+    });
+  });
 });

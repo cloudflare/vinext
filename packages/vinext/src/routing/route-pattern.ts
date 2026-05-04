@@ -86,6 +86,25 @@ export function fillRoutePatternSegments(
   return resolvedSegments.length > 0 ? `/${resolvedSegments.join("/")}` : "/";
 }
 
+function decodePatternParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodePatternParams(params: RoutePatternParams): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    if (Array.isArray(value)) {
+      params[key] = value.map(decodePatternParam);
+    } else {
+      params[key] = decodePatternParam(value);
+    }
+  }
+}
+
 export function matchRoutePattern(
   urlParts: readonly string[],
   patternParts: readonly string[],
@@ -135,5 +154,7 @@ export function matchRoutePattern(
     return matchFrom(urlIndex + 1, patternIndex + 1);
   }
 
-  return matchFrom(0, 0) ? params : null;
+  if (!matchFrom(0, 0)) return null;
+  decodePatternParams(params);
+  return params;
 }
