@@ -221,15 +221,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (originBlock) return originBlock;
   }
 
-  // Strip internal headers from inbound requests before any handler or
-  // middleware sees them. Must happen before normalizeRscRequest() so the
-  // normalization layer never reads forged internal headers.
-  // Builds a new Headers — Request.headers is immutable in Workers.
-  {
-    const filteredHeaders = filterInternalHeaders(request.headers);
-    request = cloneRequestWithHeaders(request, filteredHeaders);
-  }
-
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
@@ -463,8 +454,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
-  return async function appRscHandler(request, ctx) {
+  return async function appRscHandler(rawRequest, ctx) {
     await options.ensureInstrumentation?.();
+
+    // Strip forged internal headers at the App Router request boundary.
+    // Must happen BEFORE headersContextFromRequest() and
+    // requestContextFromRequest() so the captured context never contains
+    // attacker-controlled internal headers. This is the correct boundary
+    // for pure App Router requests; in hybrid app+pages mode the connect
+    // handler already filtered headers upstream and x-vinext-mw-ctx
+    // (not in INTERNAL_HEADERS) carries the forwarded middleware context.
+    const request = cloneRequestWithHeaders(rawRequest, filterInternalHeaders(rawRequest.headers));
 
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
