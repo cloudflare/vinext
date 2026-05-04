@@ -30,7 +30,7 @@ import {
   type AppRouteParams,
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
-import { isKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
 import {
   applyRouteHandlerMiddlewareContext,
   type RouteHandlerMiddlewareContext,
@@ -139,6 +139,17 @@ export async function dispatchAppRouteHandler(
       "[vinext] Detected default export in route handler " +
         route.pattern +
         ". Export a named export for each HTTP method instead.",
+    );
+  }
+
+  // Reject non-standard HTTP methods before any auto-OPTIONS/405 logic.
+  // Next.js returns 400 for invalid methods; vinext mirrors that behavior.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
+  if (!isValidHTTPMethod(method)) {
+    options.clearRequestContext();
+    return applyRouteHandlerMiddlewareContext(
+      new Response(null, { status: 400 }),
+      options.middlewareContext,
     );
   }
 

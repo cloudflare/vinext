@@ -25,6 +25,57 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it("rejects invalid HTTP methods with 400 before auto-OPTIONS/405 logic", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L531-L538
+    const route = {
+      pattern: "/api/status",
+      routeHandler: {
+        GET() {
+          throw new Error("GET should not run for invalid methods");
+        },
+      },
+      routeSegments: ["api", "status"],
+    };
+    let clearCount = 0;
+
+    const invalidMethodResponse = await dispatchAppRouteHandler({
+      cleanPathname: "/api/status",
+      clearRequestContext() {
+        clearCount += 1;
+      },
+      i18n: null,
+      isDevelopment: false,
+      isProduction: false,
+      async isrGet() {
+        throw new Error("invalid method should not read route cache");
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {
+        throw new Error("invalid method should not write route cache");
+      },
+      middlewareContext: {
+        headers: new Headers([["x-middleware", "present"]]),
+        status: null,
+      },
+      middlewareRequestHeaders: null,
+      params: {},
+      request: new Request("https://example.com/api/status", { method: "HEADER" }),
+      route,
+      scheduleBackgroundRegeneration() {
+        throw new Error("invalid method should not schedule regeneration");
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(invalidMethodResponse.status).toBe(400);
+    expect(invalidMethodResponse.headers.get("x-middleware")).toBe("present");
+    await expect(invalidMethodResponse.text()).resolves.toBe("");
+    expect(clearCount).toBe(1);
+  });
+
   it("handles framework-generated OPTIONS responses and unsupported methods at the dispatch boundary", async () => {
     const route = {
       pattern: "/api/demo",
