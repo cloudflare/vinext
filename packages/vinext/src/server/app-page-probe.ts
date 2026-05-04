@@ -61,8 +61,14 @@ export async function probeAppPageBeforeRender(
 
   // Server Components are functions, so we can probe the page ahead of stream
   // creation and only turn special throws into immediate responses.
+  //
+  // We always await the page promise — even when a route-level loading.tsx
+  // is present. Skipping the await leaks `redirect()` / `notFound()` rejections
+  // into the RSC stream under the route Suspense boundary, where React turns
+  // them into a "Switched to client rendering" error in the body instead of
+  // the expected 307/404 response.
   const pageResponse = await probeAppPageComponent({
-    awaitAsyncResult: !options.hasLoadingBoundary,
+    awaitAsyncResult: true,
     async onError(pageError) {
       const specialError = options.resolveSpecialError(pageError);
       if (specialError) {

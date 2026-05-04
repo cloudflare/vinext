@@ -919,6 +919,18 @@ describe("App Router integration", () => {
     expect(html).toContain("probe-async-search-page");
   });
 
+  it("redirect() from async page with loading.tsx returns 307 (not a streamed error)", async () => {
+    // Regression: when a page has a loading.tsx sibling and the page
+    // function is async (so its return value is a pending promise during
+    // the probe phase), the probe used to skip awaiting the page result
+    // and the route-level Suspense boundary would swallow the redirect
+    // throw — producing a 200 with a serialized "Switched to client
+    // rendering" error in the body instead of a clean 307.
+    const res = await fetch(`${baseUrl}/protected-loading`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toMatch(/\/$/);
+  });
+
   it("permanentRedirect() returns 308 status code", async () => {
     const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
     expect(res.status).toBe(308);
