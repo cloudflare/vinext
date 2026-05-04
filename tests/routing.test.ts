@@ -1490,6 +1490,47 @@ describe("matchAppRoute - URL matching", () => {
     });
   });
 
+  it("discovers nested parallel slot sub-routes from layout-only parent", async () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts (line 510)
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // Next.js fixture: app/parallel-nested/home/layout.tsx + @parallelB/default.tsx + @parallelB/nested/page.tsx (no home/page.tsx)
+    await withTempDir("vinext-app-nested-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "parallel-nested", "home", "@parallelB", "nested"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "home", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "default.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Parent layout-only route should exist
+      expect(patterns).toContain("/parallel-nested/home");
+      const parentRoute = routes.find((r) => r.pattern === "/parallel-nested/home")!;
+      expect(parentRoute.pagePath).toBeNull();
+      expect(parentRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+
+      // Nested slot sub-route should be discovered even though parent has no page.tsx
+      expect(patterns).toContain("/parallel-nested/home/nested");
+      const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
+      expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+      const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
+      expect(parallelBSlot.pagePath).toContain(path.join("@parallelB", "nested", "page.tsx"));
+    });
+  });
+
   // --- Hyphenated param names (issue #71) ---
 
   it("discovers optional catch-all with hyphenated param name [[...sign-in]]", async () => {

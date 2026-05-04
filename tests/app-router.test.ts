@@ -395,6 +395,21 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="team-members-page"');
   });
 
+  it("renders nested parallel route from layout-only parent", async () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts (line 510)
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // Fixture: home/layout.tsx + @parallelB/default.tsx + @parallelB/nested/page.tsx (no home/page.tsx)
+    const res = await fetch(`${baseUrl}/parallel-nested/home/nested`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Parent layout should be present
+    expect(html).toContain('data-testid="home-layout"');
+    // @parallelB slot should show the nested sub-page
+    expect(html).toContain('data-testid="parallelB-nested-page"');
+    expect(html).toContain("Hello from nested parallel page!");
+  });
+
   // --- useSelectedLayoutSegment(s) ---
 
   it("useSelectedLayoutSegments returns segments relative to dashboard layout", async () => {
