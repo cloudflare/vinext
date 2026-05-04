@@ -1,6 +1,7 @@
 import {
   mergeMetadataEntries,
   mergeViewport,
+  postProcessMetadata,
   resolveModuleMetadata,
   resolveModuleViewport,
   type Metadata,
@@ -397,6 +398,10 @@ export async function resolveAppPageHead<TModule extends AppPageHeadModule>(
       `[vinext] File-based metadata resolution failed while rendering error boundary for ${options.routePath}:`,
       error,
     );
+  }
+
+  if (metadata) {
+    metadata = postProcessMetadata(metadata);
   }
 
   return {

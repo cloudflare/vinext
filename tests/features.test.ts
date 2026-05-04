@@ -2212,17 +2212,13 @@ describe("metadata title templates", () => {
       },
     ]);
 
-    // Next.js postProcessMetadata fills openGraph.description from metadata.description
-    // and auto-fills twitter from openGraph when twitter is not explicitly configured.
+    // mergeMetadataEntries does raw deep-merge only; post-processing is applied
+    // separately by postProcessMetadata (called by mergeMetadata and by
+    // resolveAppPageHead after file-based metadata is applied).
     expect(result).toEqual({
       description: "Page",
-      openGraph: { title: "Slot OG title", description: "Page" },
+      openGraph: { title: "Slot OG title" },
       title: "Page",
-      twitter: {
-        card: "summary",
-        description: "Page",
-        title: "Slot OG title",
-      },
     });
   });
 });
@@ -2385,6 +2381,13 @@ describe("metadata OG/Twitter inheritance", () => {
   it("auto-fills twitter:description from metadata.description when openGraph.description is absent", () => {
     const result = mergeMetadata([{ description: "Page Desc", openGraph: {} }]);
     expect(result.twitter?.description).toBe("Page Desc");
+  });
+
+  it("auto-fills twitter fields from metadata when openGraph is absent entirely", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc" }]);
+    expect(result.twitter?.title).toBe("Page Title");
+    expect(result.twitter?.description).toBe("Page Desc");
+    expect(result.twitter?.card).toBe("summary");
   });
 
   it("does not overwrite explicitly set twitter fields", () => {
