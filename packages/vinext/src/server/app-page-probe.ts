@@ -59,19 +59,14 @@ export async function probeAppPageBeforeRender(
     }
   }
 
-  // When a route-level loading.tsx is present, the page renders inside a
-  // Suspense boundary so a thrown redirect()/notFound() during the page
-  // render becomes an error inside the boundary. We can't catch that here
-  // without serializing the page promise (which would defeat the streaming
-  // benefit of loading.tsx). Instead the recovery happens later, in
-  // renderAppPageLifecycle, by inspecting the rscErrorTracker for a
-  // captured special-error digest after the HTML stream is drained.
-  if (options.hasLoadingBoundary) {
-    return { response: null, layoutFlags };
-  }
-
   // Server Components are functions, so we can probe the page ahead of stream
   // creation and only turn special throws into immediate responses.
+  //
+  // We always await the page promise — even when a route-level loading.tsx
+  // is present. Skipping the await leaks `redirect()` / `notFound()` rejections
+  // into the RSC stream under the route Suspense boundary, where React turns
+  // them into a "Switched to client rendering" error in the body instead of
+  // the expected 307/404 response.
   const pageResponse = await probeAppPageComponent({
     awaitAsyncResult: true,
     async onError(pageError) {

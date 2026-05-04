@@ -397,38 +397,9 @@ export async function renderAppPageLifecycle(
   if (htmlRender.response) {
     return htmlRender.response;
   }
-  let htmlStream = htmlRender.htmlStream;
+  const htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
-  }
-
-  // For routes with a route-level Suspense boundary (loading.tsx), the page
-  // renders inside that boundary so a thrown redirect()/notFound() during the
-  // page render becomes a serialized "Switched to client rendering" error in
-  // the body — never a clean 307/404. The probe can't catch it without
-  // serializing on the page promise (which would defeat the streaming benefit
-  // of loading.tsx for non-redirecting routes).
-  //
-  // Drain the HTML stream so React's onError fires for any captured digest,
-  // then swap the response to a 307/404 if one was captured. This matches
-  // Next.js's behavior: loading.tsx visibility is sacrificed for the
-  // redirecting case in exchange for a correct HTTP response. Non-redirecting
-  // pages still produce the same final HTML (just buffered, not streamed).
-  if (options.hasLoadingBoundary) {
-    const buffered = await readAppPageBinaryStream(htmlStream);
-    const capturedSpecialError = rscErrorTracker.getCapturedSpecialError();
-    if (capturedSpecialError) {
-      const specialError = resolveAppPageSpecialError(capturedSpecialError);
-      if (specialError) {
-        return options.renderPageSpecialError(specialError);
-      }
-    }
-    htmlStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(buffered));
-        controller.close();
-      },
-    });
   }
 
   if (

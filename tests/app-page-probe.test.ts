@@ -354,14 +354,16 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it("skips the page probe when a loading boundary is present (special errors handled post-render)", async () => {
-    // With a route-level loading.tsx Suspense boundary, the probe can't
-    // catch a redirect()/notFound() thrown by the page without serializing
-    // on the page promise — which would defeat loading.tsx's whole purpose.
-    // Recovery instead happens later in renderAppPageLifecycle, by inspecting
-    // the rscErrorTracker for a captured digest after the HTML stream drains.
-    const probePage = vi.fn(() => new Promise<void>(() => {}));
-    const renderPageSpecialError = vi.fn();
+  it("awaits async page probes even when a loading boundary is present so special errors surface", async () => {
+    // Regression: previously the probe set `awaitAsyncResult: !hasLoadingBoundary`
+    // and fire-and-forgot the page promise when loading.tsx was present. That
+    // leaked redirect()/notFound() rejections into the RSC stream under the
+    // route Suspense boundary, where React turned them into a "Switched to
+    // client rendering" error in the body instead of a 307/404.
+    const renderPageSpecialError = vi.fn(
+      async () => new Response(null, { status: 307, headers: { location: "/" } }),
+    );
+    const REDIRECT_ERROR = new Error("NEXT_REDIRECT");
 
     const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: true,
@@ -369,21 +371,27 @@ describe("app page probe helpers", () => {
       probeLayoutAt() {
         throw new Error("should not probe layouts");
       },
-      probePage,
+      probePage() {
+        // Mirrors an async page that does some work then redirect()s.
+        return new Promise((_resolve, reject) => {
+          setTimeout(() => reject(REDIRECT_ERROR), 10);
+        });
+      },
       renderLayoutSpecialError() {
         throw new Error("should not render a layout special error");
       },
       renderPageSpecialError,
-      resolveSpecialError() {
-        throw new Error("should not be reached when the page probe is skipped");
+      resolveSpecialError(error) {
+        return error === REDIRECT_ERROR
+          ? { kind: "redirect", location: "/", statusCode: 307 }
+          : null;
       },
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
     });
 
-    expect(probePage).not.toHaveBeenCalled();
-    expect(renderPageSpecialError).not.toHaveBeenCalled();
-    expect(result.response).toBeNull();
+    expect(renderPageSpecialError).toHaveBeenCalledOnce();
+    expect(result.response?.status).toBe(307);
   });
 });
