@@ -402,6 +402,34 @@ export async function renderAppPageLifecycle(
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
 
+  // Routes with a route-level Suspense boundary (loading.tsx) skip the page
+  // probe — the page render happens once, inside the RSC stream. If the page
+  // throws redirect()/notFound() it does so under the Suspense boundary,
+  // where React would otherwise serialize a "Switched to client rendering"
+  // body into the stream. Race the captured digest against a small window:
+  // a digest captured before the window closes is converted to a 307/404
+  // (sync throws and short-async like ~10–50ms auth checks). A digest
+  // captured after the window falls through to the streamed body — same
+  // trade-off Next.js makes (they emit a <meta http-equiv="refresh"> in
+  // that case; vinext currently leaves the streamed body as-is, since
+  // post-flush stream rewriting is out of scope here).
+  if (options.hasLoadingBoundary) {
+    const swapWindowMs = 50;
+    const captured = await Promise.race([
+      rscErrorTracker.awaitCapturedSpecialError(),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), swapWindowMs);
+      }),
+    ]);
+    if (captured) {
+      const specialError = resolveAppPageSpecialError(captured);
+      if (specialError) {
+        void htmlStream.cancel().catch(() => {});
+        return options.renderPageSpecialError(specialError);
+      }
+    }
+  }
+
   if (
     shouldRerenderAppPageWithGlobalError({
       capturedError: rscErrorTracker.getCapturedError(),
