@@ -317,6 +317,48 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
   );
 }
 
+/**
+ * Keys whose values are nested objects that should be shallow-merged
+ * rather than replaced outright when both parent and child define them.
+ * Matches Next.js per-subkey resolution for openGraph, twitter, icons,
+ * alternates, robots, and other.
+ */
+const DEEP_MERGE_KEYS = new Set<string>([
+  "openGraph",
+  "twitter",
+  "icons",
+  "alternates",
+  "robots",
+  "other",
+]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof URL)
+  );
+}
+
+/**
+ * Merge metadata from multiple sources (layouts + page).
+ *
+ * The list is ordered [rootLayout, nestedLayout, ..., page].
+ * Title template from layouts applies to the page title but NOT to
+ * the segment that defines the template itself. `title.absolute`
+ * skips all templates. `title.default` is the fallback when no
+ * child provides a title.
+ *
+ * For top-level keys, later entries override earlier ones.
+ * For nested object keys (openGraph, twitter, icons, alternates,
+ * robots, other), sub-properties are shallow-merged so that a
+ * child layout can override individual fields without discarding
+ * sibling fields set by an ancestor.
+ *
+ * After merging, openGraph and twitter fields are cross-filled:
+ * twitter inherits title/description/images from openGraph (or
+ * from root metadata as fallback), and openGraph inherits
+ * title/description from root metadata when absent.
+ * This matches Next.js `postProcessMetadata` / `inheritFromMetadata`.
+ */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   if (entries.length === 0) return {};
 
@@ -341,10 +383,20 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
       parentTemplate = meta.title.template;
     }
 
-    // Shallow merge — later entries override earlier for top-level keys
+    // Merge non-title keys
     for (const key of Object.keys(meta)) {
       if (key === "title") continue; // Handle title separately below
-      (merged as Record<string, unknown>)[key] = (meta as Record<string, unknown>)[key];
+
+      const incoming = (meta as Record<string, unknown>)[key];
+      const existing = (merged as Record<string, unknown>)[key];
+
+      if (DEEP_MERGE_KEYS.has(key) && isPlainObject(existing) && isPlainObject(incoming)) {
+        // Shallow merge nested objects (e.g. openGraph, twitter, icons, alternates, robots, other)
+        (merged as Record<string, unknown>)[key] = { ...existing, ...incoming };
+      } else {
+        // Plain replacement for everything else
+        (merged as Record<string, unknown>)[key] = incoming;
+      }
     }
 
     // Title resolution
@@ -373,6 +425,87 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
         // Template only with no default — no title to render
         merged.title = undefined;
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // OG / Twitter inheritance (post-process)
+  // Ported from Next.js:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+  // -------------------------------------------------------------------------
+
+  // Helper to extract a usable string title from metadata
+  function resolveStringTitle(title: Metadata["title"]): string | undefined {
+    if (typeof title === "string") return title;
+    if (title && typeof title === "object") {
+      return title.absolute || title.default || undefined;
+    }
+    return undefined;
+  }
+
+  const resolvedTitle = resolveStringTitle(merged.title);
+
+  // openGraph inherits title/description from root metadata when absent
+  if (merged.openGraph && isPlainObject(merged.openGraph)) {
+    const og = merged.openGraph as Record<string, unknown>;
+    if (!og.title && resolvedTitle) {
+      og.title = resolvedTitle;
+    }
+    if (!og.description && merged.description) {
+      og.description = merged.description;
+    }
+  }
+
+  // twitter inherits title/description/images from openGraph (or root metadata)
+  if (merged.openGraph && isPlainObject(merged.openGraph)) {
+    const og = merged.openGraph as Record<string, unknown>;
+
+    // Build auto-fill props only for fields that are missing on twitter
+    const autoFill: Record<string, unknown> = {};
+
+    const tw =
+      merged.twitter && isPlainObject(merged.twitter)
+        ? (merged.twitter as Record<string, unknown>)
+        : null;
+
+    const hasTwTitle = tw ? Boolean(tw.title) : false;
+    const hasTwDescription = tw ? Boolean(tw.description) : false;
+    // Next.js checks hasOwnProperty('images') to distinguish "not set" from "explicitly empty"
+    const hasTwImages = tw ? Object.prototype.hasOwnProperty.call(tw, "images") : false;
+
+    if (!hasTwTitle) {
+      if (og.title) {
+        autoFill.title = og.title;
+      } else if (resolvedTitle) {
+        autoFill.title = resolvedTitle;
+      }
+    }
+    if (!hasTwDescription) {
+      autoFill.description = og.description || merged.description || undefined;
+    }
+    if (!hasTwImages) {
+      if (og.images) {
+        autoFill.images = og.images;
+      }
+    }
+
+    if (Object.keys(autoFill).length > 0) {
+      if (tw) {
+        merged.twitter = { ...tw, ...autoFill };
+      } else {
+        merged.twitter = autoFill as Metadata["twitter"];
+      }
+    }
+  }
+
+  // If twitter exists (either originally or via auto-fill), ensure card type is set.
+  // Next.js resolveTwitter defaults: summary_large_image when images present, else summary.
+  if (merged.twitter && isPlainObject(merged.twitter)) {
+    const tw = merged.twitter as Record<string, unknown>;
+    if (!tw.card) {
+      const images = tw.images;
+      const hasImages = Array.isArray(images) ? images.length > 0 : Boolean(images);
+      tw.card = hasImages ? "summary_large_image" : "summary";
     }
   }
 
