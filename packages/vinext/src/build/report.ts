@@ -93,7 +93,7 @@ export function extractExportConstString(code: string, name: string): string | n
  */
 export function extractExportConstNumber(code: string, name: string): number | null {
   const re = new RegExp(
-    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity|false)`,
+    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity|false)(?![\\w$])`,
     "m",
   );
   const m = re.exec(code);
