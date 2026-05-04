@@ -600,11 +600,8 @@ export default {
       // Request.headers is immutable in Workers, so build a clean copy.
       {
         const filteredHeaders = filterInternalHeaders(request.headers);
-        request = new Request(request.url, {
-          method: request.method,
+        request = new Request(request, {
           headers: filteredHeaders,
-          body: request.body,
-          duplex: request.body ? "half" : undefined,
         });
       }
 

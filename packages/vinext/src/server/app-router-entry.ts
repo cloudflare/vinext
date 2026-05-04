@@ -55,12 +55,8 @@ export default {
     // Builds a new Headers — Request.headers is immutable in Workers.
     {
       const filteredHeaders = filterInternalHeaders(request.headers);
-      request = new Request(request.url, {
-        method: request.method,
+      request = new Request(request, {
         headers: filteredHeaders,
-        body: request.body,
-        // @ts-expect-error — duplex needed for streaming request bodies
-        duplex: request.body ? "half" : undefined,
       });
     }
 
