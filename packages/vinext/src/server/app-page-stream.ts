@@ -64,18 +64,11 @@ type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   /**
    * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
-   * the RSC render. Used by the post-shell race in renderAppPageLifecycle
-   * for routes with a route-level Suspense boundary (loading.tsx), where
-   * the page promise rejects inside the boundary while the shell is queued
-   * and the runtime is about to flush.
+   * the RSC render. Read after the SSR shell promise resolves to swap a
+   * 307/404 in place of the streamed body when redirect()/notFound() throws
+   * synchronously inside a route-level Suspense boundary (loading.tsx).
    */
   getCapturedSpecialError: () => unknown;
-  /**
-   * Resolves when the first NEXT_REDIRECT / NEXT_HTTP_ERROR_FALLBACK error
-   * is captured during the RSC render. Lets the lifecycle race the digest
-   * against a small swap-window deadline before committing the response.
-   */
-  awaitCapturedSpecialError: () => Promise<unknown>;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
 
@@ -230,10 +223,6 @@ export function createAppPageRscErrorTracker(
 ): AppPageRscErrorTracker {
   let capturedError: unknown = null;
   let capturedSpecialError: unknown = null;
-  let resolveSpecialError: ((error: unknown) => void) | null = null;
-  const specialErrorPromise = new Promise<unknown>((resolve) => {
-    resolveSpecialError = resolve;
-  });
 
   return {
     getCapturedError() {
@@ -241,9 +230,6 @@ export function createAppPageRscErrorTracker(
     },
     getCapturedSpecialError() {
       return capturedSpecialError;
-    },
-    awaitCapturedSpecialError() {
-      return specialErrorPromise;
     },
     onRenderError(error, requestInfo, errorContext) {
       if (error && typeof error === "object" && "digest" in error) {
@@ -254,7 +240,6 @@ export function createAppPageRscErrorTracker(
         // body for routes with a route-level Suspense boundary.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
-          resolveSpecialError?.(error);
         }
       } else {
         capturedError = error;

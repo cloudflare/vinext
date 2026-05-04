@@ -919,13 +919,18 @@ describe("App Router integration", () => {
     expect(html).toContain("probe-async-search-page");
   });
 
-  it("redirect() from async page with loading.tsx returns 307 (not a streamed error)", async () => {
+  it("redirect() from async page with loading.tsx returns 307 (digest captured during shell render)", async () => {
     // Regression: when a page has a loading.tsx sibling and the page
-    // function is async (so its return value is a pending promise during
-    // the probe phase), the probe used to skip awaiting the page result
-    // and the route-level Suspense boundary would swallow the redirect
-    // throw — producing a 200 with a serialized "Switched to client
-    // rendering" error in the body instead of a clean 307.
+    // function is async, the probe used to fire-and-forget the page
+    // promise (to preserve loading.tsx streaming for non-redirecting
+    // pages). The route-level Suspense boundary would absorb the
+    // redirect throw, and React would serialize a "Switched to client
+    // rendering" error into a 200 body instead of returning a clean 307.
+    //
+    // Fix: the probe is skipped entirely for hasLoadingBoundary routes;
+    // the rscErrorTracker captures the NEXT_REDIRECT digest from React's
+    // onError during shell render; the lifecycle inspects the tracker
+    // after the shell promise resolves and swaps the response to a 307.
     const res = await fetch(`${baseUrl}/protected-loading`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toMatch(/\/$/);

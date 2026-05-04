@@ -1,13 +1,14 @@
 import { redirect } from "next/navigation";
 
-// Async work before the redirect ensures the page promise is still pending
-// when the probe phase runs. Without the fix, the probe's
-// `awaitAsyncResult: !hasLoadingBoundary` short-circuit swallows the
-// rejection (loading.tsx is present), the RSC stream re-runs the page,
-// the redirect throws under the route-level Suspense boundary, and the
-// response becomes 200 with a serialized "Switched to client rendering"
-// error instead of a clean 307.
+// Async page that throws redirect() at the top of the body. The page
+// returns a rejected promise which propagates through React's onError
+// during shell render. Without the fix, the route-level Suspense
+// boundary (loading.tsx) absorbs the throw and React serializes a
+// "Switched to client rendering" error in the body instead of a 307.
+//
+// With the fix (skip probe + post-shell digest swap), the rscErrorTracker
+// captures the digest from React's onError before the SSR shell promise
+// resolves, and the lifecycle swaps the response to a clean 307.
 export default async function ProtectedLoadingPage() {
-  await new Promise((r) => setTimeout(r, 10));
   redirect("/");
 }

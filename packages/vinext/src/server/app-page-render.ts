@@ -403,24 +403,19 @@ export async function renderAppPageLifecycle(
   }
 
   // Routes with a route-level Suspense boundary (loading.tsx) skip the page
-  // probe — the page render happens once, inside the RSC stream. If the page
-  // throws redirect()/notFound() it does so under the Suspense boundary,
-  // where React would otherwise serialize a "Switched to client rendering"
-  // body into the stream. Race the captured digest against a small window:
-  // a digest captured before the window closes is converted to a 307/404
-  // (sync throws and short-async like ~10–50ms auth checks). A digest
-  // captured after the window falls through to the streamed body — same
-  // trade-off Next.js makes (they emit a <meta http-equiv="refresh"> in
-  // that case; vinext currently leaves the streamed body as-is, since
-  // post-flush stream rewriting is out of scope here).
+  // probe — the page render happens once, inside the RSC stream. Mirror
+  // Next.js's `app-render.tsx:4293` catch shape: by the time the SSR shell
+  // promise has resolved, any redirect()/notFound() throw whose async work
+  // settles in microtasks during shell rendering has already fired through
+  // React's onError and been captured by the tracker. Convert that to a
+  // 307/404 before any bytes are flushed.
+  //
+  // Late rejections — ones that settle after macrotask boundaries (real
+  // I/O, setTimeout, etc.) — fall through to the streamed body, exactly
+  // as Next.js does. The digest survives in the Flight payload for the
+  // client router to consume.
   if (options.hasLoadingBoundary) {
-    const swapWindowMs = 50;
-    const captured = await Promise.race([
-      rscErrorTracker.awaitCapturedSpecialError(),
-      new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), swapWindowMs);
-      }),
-    ]);
+    const captured = rscErrorTracker.getCapturedSpecialError();
     if (captured) {
       const specialError = resolveAppPageSpecialError(captured);
       if (specialError) {
