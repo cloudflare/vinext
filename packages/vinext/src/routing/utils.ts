@@ -15,11 +15,14 @@
  * The static-prefix reduction uses a small value (-50 per segment) so that:
  *   - It beats the per-dynamic-segment penalty (100), placing prefix routes
  *     above their no-prefix equivalents.
- *   - It never goes negative, so purely-static routes (score 0) always win.
  *   - It is small enough that infix-static bonuses (-500) and catch-all
  *     penalties (1000+) are not swamped, preserving their relative ordering.
  *     E.g. /:locale/blog/:path+ (with infix "blog") correctly beats /:locale/:path+
  *     even when both share the same "locale-test" static prefix.
+ *   - Note: dynamic routes CAN score negative (e.g. /a/:b/c/:d = -346), but
+ *     this is harmless because the trie matcher (route-trie.ts) checks static
+ *     children before dynamic children at each node, so purely-static routes
+ *     still win at request time regardless of sort-order score.
  */
 function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);

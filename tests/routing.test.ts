@@ -6,6 +6,7 @@ import {
   pagesRouter,
   matchRoute,
   apiRouter,
+  invalidateRouteCache,
   type Route,
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
@@ -1676,5 +1677,73 @@ describe("pagesRouter - hyphenated param names", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
     expect(result!.params["sign-up"]).toEqual(["step", "2"]);
+  });
+});
+
+describe("pagesRouter - dotted/colon param names (Next.js parity)", () => {
+  it("discovers dynamic segments with dots and colons", async () => {
+    await withTempDir("vinext-pages-dotted-param-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "products"), { recursive: true });
+      await mkdir(path.join(pagesDir, "repos"), { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "products", "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "repos", "[repo:name].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/products/:variant.id");
+      expect(patterns).toContain("/repos/:repo:name");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("extracts params correctly for dotted dynamic segments", async () => {
+    await withTempDir("vinext-pages-dotted-match-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const result = matchRoute("/abc", routes);
+
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/:variant.id");
+      expect(result!.params["variant.id"]).toBe("abc");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
+    await withTempDir("vinext-pages-skip-plus-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[id+].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "[id*].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+
+      // Skipped entirely to avoid ambiguity with internal :name+ / :name* modifiers
+      expect(routes).toHaveLength(0);
+      invalidateRouteCache(pagesDir);
+    });
   });
 });

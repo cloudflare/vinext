@@ -291,10 +291,13 @@ function parseQuery(url) {
 }
 
 function patternToNextFormat(pattern) {
+  // Match any non-/ param name. Non-greedy with lookahead prevents
+  // the +/* suffix being consumed into the param name when the name
+  // itself contains + or * internally (e.g. :c++lang → [c++lang]).
   return pattern
-    .replace(/:([\\w]+)\\*/g, "[[...$1]]")
-    .replace(/:([\\w]+)\\+/g, "[...$1]")
-    .replace(/:([\\w]+)/g, "[$1]");
+    .replace(/:([^\\/]+?)\\+(?=\\/|$)/g, "[...$1]")
+    .replace(/:([^\\/]+?)\\*(?=\\/|$)/g, "[[...$1]]")
+    .replace(/:([^\\/]+?)(?=\\/|$)/g, "[$1]");
 }
 
 function collectAssetTags(manifest, moduleIds, scriptNonce) {

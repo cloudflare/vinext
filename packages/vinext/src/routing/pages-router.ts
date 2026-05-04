@@ -113,29 +113,35 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
 
-    // Catch-all: [...slug] -> :slug+ (param names may contain hyphens)
-    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
+    // Catch-all: [...slug] -> :slug+ (param names may contain any non-] chars)
+    // Matches Next.js PARAMETER_PATTERN.
+    const catchAllMatch = segment.match(/^\[\.\.\.([^\]]+)\]$/);
     if (catchAllMatch) {
       if (i !== segments.length - 1) return null;
+      // Guard: names ending in + or * would collide with internal pattern modifiers.
+      if (catchAllMatch[1].endsWith("+") || catchAllMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(catchAllMatch[1]);
       urlSegments.push(`:${catchAllMatch[1]}+`);
       continue;
     }
 
-    // Optional catch-all: [[...slug]] -> :slug* (param names may contain hyphens)
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
+    // Optional catch-all: [[...slug]] -> :slug* (param names may contain any non-] chars)
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([^\]]+)\]\]$/);
     if (optionalCatchAllMatch) {
       if (i !== segments.length - 1) return null;
+      if (optionalCatchAllMatch[1].endsWith("+") || optionalCatchAllMatch[1].endsWith("*"))
+        return null;
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
       urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
       continue;
     }
 
-    // Dynamic segment: [id] -> :id (param names may contain hyphens)
-    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
+    // Dynamic segment: [id] -> :id (param names may contain any non-] chars)
+    const dynamicMatch = segment.match(/^\[([^\]]+)\]$/);
     if (dynamicMatch) {
+      if (dynamicMatch[1].endsWith("+") || dynamicMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(dynamicMatch[1]);
       urlSegments.push(`:${dynamicMatch[1]}`);

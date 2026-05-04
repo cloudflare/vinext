@@ -1345,26 +1345,34 @@ function convertSegmentsToRouteParts(
     if (isInvisibleSegment(segment)) continue;
 
     // Catch-all segments are only valid in terminal URL position.
-    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
+    // Matches Next.js PARAMETER_PATTERN: any non-] chars inside brackets.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-dynamic-param.ts
+    const catchAllMatch = segment.match(/^\[\.\.\.([^\]]+)\]$/);
     if (catchAllMatch) {
       if (hasRemainingVisibleSegments(segments, i + 1)) return null;
+      // Guard: names ending in + or * would collide with internal pattern
+      // modifiers (:name+ catch-all, :name* optional-catch-all).
+      if (catchAllMatch[1].endsWith("+") || catchAllMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(catchAllMatch[1]);
       urlSegments.push(`:${catchAllMatch[1]}+`);
       continue;
     }
 
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([^\]]+)\]\]$/);
     if (optionalCatchAllMatch) {
       if (hasRemainingVisibleSegments(segments, i + 1)) return null;
+      if (optionalCatchAllMatch[1].endsWith("+") || optionalCatchAllMatch[1].endsWith("*"))
+        return null;
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
       urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
       continue;
     }
 
-    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
+    const dynamicMatch = segment.match(/^\[([^\]]+)\]$/);
     if (dynamicMatch) {
+      if (dynamicMatch[1].endsWith("+") || dynamicMatch[1].endsWith("*")) return null;
       isDynamic = true;
       params.push(dynamicMatch[1]);
       urlSegments.push(`:${dynamicMatch[1]}`);

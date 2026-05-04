@@ -157,6 +157,22 @@ describe("patternToNextFormat", () => {
   it("converts hyphenated optional catch-all :sign-up* to [[...sign-up]]", () => {
     expect(patternToNextFormat("/register/:sign-up*")).toBe("/register/[[...sign-up]]");
   });
+
+  it("converts dotted, at-sign, and colon param names (Next.js PARAMETER_PATTERN parity)", () => {
+    expect(patternToNextFormat("/:variant.id")).toBe("/[variant.id]");
+    expect(patternToNextFormat("/:user@domain")).toBe("/[user@domain]");
+    // Colon-only: tested here because : is not a valid NTFS filename character on Windows.
+    expect(patternToNextFormat("/:repo:name")).toBe("/[repo:name]");
+  });
+
+  it("handles param names with internal + or * correctly (no backtracking corruption)", () => {
+    // Regression: greedy [^/]+ in the +/* suffix patterns would backtrack
+    // and split on the internal +/*, mangling the param name. Non-greedy
+    // with lookahead prevents this. E.g. :c++lang → [c++lang], not [...c+]lang.
+    expect(patternToNextFormat("/:c++lang")).toBe("/[c++lang]");
+    expect(patternToNextFormat("/:a*b")).toBe("/[a*b]");
+    expect(patternToNextFormat("/utils/:a+b/c")).toBe("/utils/[a+b]/c");
+  });
 });
 
 describe("validateRoutePatterns", () => {

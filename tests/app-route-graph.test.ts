@@ -277,4 +277,54 @@ describe("App Router route graph builder", () => {
       );
     });
   });
+
+  it("accepts dynamic segment names with dots and at-signs (Next.js parity)", async () => {
+    // Next.js PARAMETER_PATTERN accepts any non-] characters inside brackets.
+    // See: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-dynamic-param.ts
+    // Note: colon (:) is tested via patternToNextFormat in route-sorting.test.ts
+    // to avoid NTFS filename issues on Windows.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "products/[variant.id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "users/[user@domain]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/products/:variant.id");
+      expect(patterns).toContain("/users/:user@domain");
+    });
+  });
+
+  it("accepts catch-all and optional-catch-all segments with broadened param names", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[...variant.id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "blog/[[...user@domain]]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/:variant.id+");
+      expect(patterns).toContain("/blog/:user@domain*");
+    });
+  });
+
+  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
+    // Param names ending in + or * would map to :id+ / :id*, which the trie
+    // matcher interprets as catch-all / optional-catch-all. Skip these routes
+    // entirely to avoid ambiguity.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[id+]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).not.toContain("/:id+");
+      expect(patterns).not.toContain("/:id*");
+      expect(patterns).toHaveLength(0);
+    });
+  });
 });
