@@ -37,6 +37,7 @@ import {
 } from "./app-route-handler-response.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 
 type AppRouteHandlerDispatchRoute = {
@@ -80,11 +81,6 @@ type DispatchAppRouteHandlerOptions = {
 
 function isAppRouteHandlerFunction(value: unknown): value is AppRouteHandlerFunction {
   return typeof value === "function";
-}
-
-function makeThenableParams<T extends AppRouteParams>(params: T): Promise<T> & T {
-  const plain = { ...params };
-  return Object.assign(Promise.resolve(plain), plain);
 }
 
 function buildRouteHandlerPageCacheTags(

@@ -112,6 +112,20 @@ describe("App Router integration", () => {
     expect(html).toContain("hello-world");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.params.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
+  it("renders pages with params named then, catch, finally, and status", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/params-shadow/foo/bar/baz/qux");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Params Shadow Test");
+    expect(textContentByTestId(html, "then")).toBe("foo");
+    expect(textContentByTestId(html, "catch")).toBe("bar");
+    expect(textContentByTestId(html, "finally")).toBe("baz");
+    expect(textContentByTestId(html, "status")).toBe("qux");
+    // The params object must remain thenable (Promise methods are not shadowed)
+    expect(textContentByTestId(html, "is-thenable")).toBe("yes");
+  });
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
     expect(encodedRes.status).toBe(404);
@@ -690,6 +704,20 @@ describe("App Router integration", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual({ id: "99", name: "Widget" });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.params.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
+  it("passes params named then, catch, finally, and status to route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/params-shadow/foo/bar/baz/qux`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.then).toBe("foo");
+    expect(data.catch).toBe("bar");
+    expect(data.finally).toBe("baz");
+    expect(data.status).toBe("qux");
+    // The params object must remain thenable (Promise methods are not shadowed)
+    expect(data.isThenable).toBe(true);
   });
 
   it("ignores default export route handlers and returns 405", async () => {

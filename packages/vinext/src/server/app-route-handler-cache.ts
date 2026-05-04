@@ -9,6 +9,7 @@ import {
   buildRouteHandlerCachedResponse,
 } from "./app-route-handler-response.js";
 import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
   runAppRouteHandler,
   type AppRouteDebugLogger,
@@ -105,7 +106,7 @@ export async function readAppRouteHandlerCacheResponse(
             handlerFn: options.handlerFn,
             i18n: options.i18n,
             markDynamicUsage: options.markDynamicUsage,
-            params: options.params,
+            params: makeThenableParams(options.params),
             request: new Request(options.requestUrl, { method: "GET" }),
             routePattern: options.routePattern,
             setHeadersAccessPhase: options.setHeadersAccessPhase,
