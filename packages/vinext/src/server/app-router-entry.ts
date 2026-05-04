@@ -16,7 +16,11 @@
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
-import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
+import {
+  cloneRequestWithHeaders,
+  filterInternalHeaders,
+  isOpenRedirectShaped,
+} from "./request-pipeline.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -55,9 +59,7 @@ export default {
     // Builds a new Headers — Request.headers is immutable in Workers.
     {
       const filteredHeaders = filterInternalHeaders(request.headers);
-      request = new Request(request, {
-        headers: filteredHeaders,
-      });
+      request = cloneRequestWithHeaders(request, filteredHeaders);
     }
 
     // Do NOT decode/normalize the pathname here. The RSC handler

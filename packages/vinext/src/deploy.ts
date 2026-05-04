@@ -521,7 +521,11 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "vinext/config/config-matchers";
-import { applyConfigHeadersToHeaderRecord, filterInternalHeaders } from "vinext/server/request-pipeline";
+import {
+  applyConfigHeadersToHeaderRecord,
+  cloneRequestWithHeaders,
+  filterInternalHeaders,
+} from "vinext/server/request-pipeline";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
@@ -600,9 +604,7 @@ export default {
       // Request.headers is immutable in Workers, so build a clean copy.
       {
         const filteredHeaders = filterInternalHeaders(request.headers);
-        request = new Request(request, {
-          headers: filteredHeaders,
-        });
+        request = cloneRequestWithHeaders(request, filteredHeaders);
       }
 
       // ── 1. Strip basePath ─────────────────────────────────────────

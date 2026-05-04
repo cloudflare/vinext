@@ -570,6 +570,8 @@ export const INTERNAL_HEADERS = [
   "x-next-resume-state-length",
 ];
 
+type RequestInitWithCf = RequestInit & { cf?: unknown };
+
 /**
  * Strip internal headers from an inbound request so they cannot be forged by
  * an external attacker to influence routing or impersonate internal state.
@@ -593,4 +595,48 @@ export function filterInternalHeaders(headers: Headers): Headers {
     }
   }
   return filtered;
+}
+
+function getRequestCf(request: Request): unknown | undefined {
+  if ("cf" in request) {
+    return (request as { cf?: unknown }).cf;
+  }
+  return undefined;
+}
+
+/**
+ * Clone a Request while overriding headers, preserving metadata when possible.
+ *
+ * Some runtimes (Workers) allow `new Request(request, { headers })` which
+ * retains redirect/signal/cf data. Others (Node/undici across realms) can throw
+ * when cloning a foreign Request instance. In that case, fall back to building
+ * a RequestInit with best-effort metadata.
+ */
+export function cloneRequestWithHeaders(request: Request, headers: Headers): Request {
+  try {
+    return new Request(request, { headers });
+  } catch {
+    const init: RequestInitWithCf = {
+      method: request.method,
+      headers,
+      body: request.body ?? undefined,
+      redirect: request.redirect,
+      signal: request.signal,
+      integrity: request.integrity,
+      cache: request.cache,
+      mode: request.mode,
+      credentials: request.credentials,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy,
+    };
+    if (request.body) {
+      // @ts-expect-error — duplex needed for streaming request bodies
+      init.duplex = "half";
+    }
+    const cf = getRequestCf(request);
+    if (cf !== undefined) {
+      init.cf = cf;
+    }
+    return new Request(request.url, init);
+  }
 }

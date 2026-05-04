@@ -34,6 +34,7 @@ import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import {
+  cloneRequestWithHeaders,
   filterInternalHeaders,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
@@ -226,9 +227,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Builds a new Headers — Request.headers is immutable in Workers.
   {
     const filteredHeaders = filterInternalHeaders(request.headers);
-    request = new Request(request, {
-      headers: filteredHeaders,
-    });
+    request = cloneRequestWithHeaders(request, filteredHeaders);
   }
 
   const normalized = normalizeRscRequest(request, options.basePath);
