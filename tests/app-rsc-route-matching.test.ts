@@ -49,11 +49,13 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("does not decode path segments during route matching", () => {
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
+  it("decodes matched params via decodeURIComponent (mirrors Next.js)", () => {
     const matcher = createAppRscRouteMatcher([route("/files/:name", ["files", ":name"])]);
 
     expect(matcher.matchRoute("/files/a%2Fb")).toMatchObject({
-      params: { name: "a%2Fb" },
+      params: { name: "a/b" },
     });
   });
 
