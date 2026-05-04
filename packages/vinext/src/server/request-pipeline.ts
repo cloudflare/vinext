@@ -577,10 +577,20 @@ export const INTERNAL_HEADERS = [
  * Must be called at every request entry point BEFORE middleware, routing,
  * or any handler logic accesses the request headers.
  *
- * @param headers - The request Headers object to modify in place
+ * Returns a new Headers object with internal headers removed. The input
+ * is never mutated — Request.headers is immutable in Workers/miniflare
+ * environments (see applyMiddlewareRequestHeaders in config-matchers.ts
+ * for the same cloning pattern).
+ *
+ * @param headers - The source Headers (never modified)
+ * @returns A new Headers with INTERNAL_HEADERS removed
  */
-export function filterInternalHeaders(headers: Headers): void {
-  for (const header of INTERNAL_HEADERS) {
-    headers.delete(header);
+export function filterInternalHeaders(headers: Headers): Headers {
+  const filtered = new Headers();
+  for (const [key, value] of headers) {
+    if (!INTERNAL_HEADERS.includes(key.toLowerCase())) {
+      filtered.append(key, value);
+    }
   }
+  return filtered;
 }

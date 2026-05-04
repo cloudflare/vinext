@@ -52,7 +52,17 @@ export default {
 
     // Strip internal headers from inbound requests before any handler or
     // middleware sees them. Must happen before the RSC handler runs.
-    filterInternalHeaders(request.headers);
+    // Builds a new Headers — Request.headers is immutable in Workers.
+    {
+      const filteredHeaders = filterInternalHeaders(request.headers);
+      request = new Request(request.url, {
+        method: request.method,
+        headers: filteredHeaders,
+        body: request.body,
+        // @ts-expect-error — duplex needed for streaming request bodies
+        duplex: request.body ? "half" : undefined,
+      });
+    }
 
     // Do NOT decode/normalize the pathname here. The RSC handler
     // (virtual:vinext-rsc-entry) is the single point of decoding — it calls

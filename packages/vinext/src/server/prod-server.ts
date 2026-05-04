@@ -691,17 +691,17 @@ function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const headers = new Headers();
+  const rawHeaders = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
     if (Array.isArray(value)) {
-      for (const v of value) headers.append(key, v);
+      for (const v of value) rawHeaders.append(key, v);
     } else {
-      headers.set(key, value);
+      rawHeaders.set(key, value);
     }
   }
   // Strip internal headers that should not be honored from external requests.
-  filterInternalHeaders(headers);
+  const headers = filterInternalHeaders(rawHeaders);
 
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -1389,13 +1389,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         : undefined;
       const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
       const hostHeader = resolveHost(req, `${host}:${port}`);
-      const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
+      const rawReqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
-      filterInternalHeaders(reqHeaders);
+      const reqHeaders = filterInternalHeaders(rawReqHeaders);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
       let webRequest = new Request(`${protocol}://${hostHeader}${url}`, {

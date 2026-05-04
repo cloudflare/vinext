@@ -597,7 +597,16 @@ export default {
 
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
-      filterInternalHeaders(request.headers);
+      // Request.headers is immutable in Workers, so build a clean copy.
+      {
+        const filteredHeaders = filterInternalHeaders(request.headers);
+        request = new Request(request.url, {
+          method: request.method,
+          headers: filteredHeaders,
+          body: request.body,
+          duplex: request.body ? "half" : undefined,
+        });
+      }
 
       // ── 1. Strip basePath ─────────────────────────────────────────
       {

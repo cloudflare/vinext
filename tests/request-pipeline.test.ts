@@ -679,36 +679,43 @@ describe("filterInternalHeaders", () => {
     headers.set("user-agent", "test");
     headers.set("cookie", "session=abc");
 
-    filterInternalHeaders(headers);
+    const result = filterInternalHeaders(headers);
 
+    // Original is unchanged (function returns a new copy, never mutates)
     for (const name of INTERNAL_HEADERS) {
-      expect(headers.has(name)).toBe(false);
+      expect(headers.has(name)).toBe(true);
     }
-    expect(headers.get("user-agent")).toBe("test");
-    expect(headers.get("cookie")).toBe("session=abc");
+    // Result has internal headers stripped
+    for (const name of INTERNAL_HEADERS) {
+      expect(result.has(name)).toBe(false);
+    }
+    expect(result.get("user-agent")).toBe("test");
+    expect(result.get("cookie")).toBe("session=abc");
   });
 
   it("strips headers case-insensitively", () => {
-    // HTTP headers are case-insensitive; Headers.delete is spec-compliant.
     const headers = new Headers();
     headers.set("X-Nextjs-Data", "1");
     headers.set("X-Matched-Path", "/admin");
-    filterInternalHeaders(headers);
-    expect(headers.has("X-Nextjs-Data")).toBe(false);
-    expect(headers.has("x-nextjs-data")).toBe(false);
-    expect(headers.has("X-Matched-Path")).toBe(false);
-    expect(headers.has("x-matched-path")).toBe(false);
+    const result = filterInternalHeaders(headers);
+    expect(result.has("X-Nextjs-Data")).toBe(false);
+    expect(result.has("x-nextjs-data")).toBe(false);
+    expect(result.has("X-Matched-Path")).toBe(false);
+    expect(result.has("x-matched-path")).toBe(false);
   });
 
   it("is a no-op when no internal headers are present", () => {
     const headers = new Headers();
     headers.set("user-agent", "test");
     headers.set("accept", "text/html");
-    filterInternalHeaders(headers);
+    const result = filterInternalHeaders(headers);
+    expect(result.get("user-agent")).toBe("test");
+    expect(result.get("accept")).toBe("text/html");
+    expect(result.has("x-nextjs-data")).toBe(false);
+    expect(result.has("x-matched-path")).toBe(false);
+    // Original headers are preserved
     expect(headers.get("user-agent")).toBe("test");
     expect(headers.get("accept")).toBe("text/html");
-    expect(headers.has("x-nextjs-data")).toBe(false);
-    expect(headers.has("x-matched-path")).toBe(false);
   });
 
   it("strips a subset of internal headers while preserving others", () => {
@@ -718,30 +725,28 @@ describe("filterInternalHeaders", () => {
       "x-custom": "keep-me",
       "x-forwarded-for": "10.0.0.1",
     });
-    filterInternalHeaders(headers);
-    expect(headers.has("x-nextjs-data")).toBe(false);
-    expect(headers.has("x-matched-path")).toBe(false);
-    expect(headers.get("x-custom")).toBe("keep-me");
-    expect(headers.get("x-forwarded-for")).toBe("10.0.0.1");
+    const result = filterInternalHeaders(headers);
+    expect(result.has("x-nextjs-data")).toBe(false);
+    expect(result.has("x-matched-path")).toBe(false);
+    expect(result.get("x-custom")).toBe("keep-me");
+    expect(result.get("x-forwarded-for")).toBe("10.0.0.1");
   });
 
   it("strips x-middleware-rewrite forged as a request header", () => {
-    // An attacker could forge x-middleware-rewrite to try to influence
-    // routing. This test ensures it is stripped at the entry point.
     const headers = new Headers({
       "x-middleware-rewrite": "/evil/admin",
       "x-middleware-next": "1",
       cookie: "auth=valid",
     });
-    filterInternalHeaders(headers);
-    expect(headers.has("x-middleware-rewrite")).toBe(false);
-    expect(headers.has("x-middleware-next")).toBe(false);
-    expect(headers.get("cookie")).toBe("auth=valid");
+    const result = filterInternalHeaders(headers);
+    expect(result.has("x-middleware-rewrite")).toBe(false);
+    expect(result.has("x-middleware-next")).toBe(false);
+    expect(result.get("cookie")).toBe("auth=valid");
   });
 
   it("works on an empty Headers object", () => {
     const headers = new Headers();
-    filterInternalHeaders(headers);
-    expect([...headers.keys()]).toEqual([]);
+    const result = filterInternalHeaders(headers);
+    expect([...result.keys()]).toEqual([]);
   });
 });

@@ -223,7 +223,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before normalizeRscRequest() so the
   // normalization layer never reads forged internal headers.
-  filterInternalHeaders(request.headers);
+  // Builds a new Headers — Request.headers is immutable in Workers.
+  {
+    const filteredHeaders = filterInternalHeaders(request.headers);
+    request = new Request(request.url, {
+      method: request.method,
+      headers: filteredHeaders,
+      body: request.body,
+      // @ts-expect-error — duplex needed for streaming request bodies
+      duplex: request.body ? "half" : undefined,
+    });
+  }
 
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;

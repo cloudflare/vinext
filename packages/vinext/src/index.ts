@@ -2365,7 +2365,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
               // captured once here — applyRequestHeadersToNodeRequest() mutates
               // req.headers later, but by then this Headers object is no longer read.
-              const nodeRequestHeaders = new Headers(
+              const rawHeaders = new Headers(
                 Object.fromEntries(
                   Object.entries(req.headers)
                     .filter(([, v]) => v !== undefined)
@@ -2376,7 +2376,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler
               // (which reads req.headers directly) must see clean headers.
-              filterInternalHeaders(nodeRequestHeaders);
+              const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               for (const header of INTERNAL_HEADERS) {
                 delete req.headers[header];
               }
