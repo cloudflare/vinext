@@ -149,6 +149,29 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("does not create synthetic routes under route-handler-only parents", async () => {
+    // Route handlers have pagePath: null but are NOT layout-only UI routes.
+    // They must not enter discoverSlotSubRoutes, or an ancestor slot like
+    // @feed/foo/page.tsx could materialise a nonsense synthetic route under
+    // /api/foo.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "@feed/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@feed/foo/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "api/route.ts", EMPTY_ROUTE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // /api from the route handler must exist
+      expect(patterns).toContain("/api");
+      // /api/foo must NOT be materialised from the route handler entry
+      expect(patterns).not.toContain("/api/foo");
+      // /foo from the ancestor slot must still be discovered normally
+      expect(patterns).toContain("/foo");
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
