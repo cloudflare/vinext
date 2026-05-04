@@ -172,6 +172,33 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("skips structural conflicts against synthetic routes created earlier in the same pass", async () => {
+    // Two slot sub-pages with different param names under the same parent
+    // should not both be materialised. The first synthetic route (/shop/:id)
+    // must block the second (/shop/:name), or validateRoutePatterns will
+    // reject the build with "different slug names".
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@a/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@a/[id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@b/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@b/[name]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // Only one of /shop/:id or /shop/:name should be materialised
+      const conflictingSyntheticPatterns = patterns.filter(
+        (pattern) => pattern === "/shop/:id" || pattern === "/shop/:name",
+      );
+      expect(conflictingSyntheticPatterns).toHaveLength(1);
+      expect(patterns).toContain("/shop");
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
