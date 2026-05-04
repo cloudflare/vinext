@@ -62,6 +62,14 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
 
 type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
+  /**
+   * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
+   * the RSC render. Used by the post-render fallback path for routes with a
+   * route-level Suspense boundary (loading.tsx), where the fire-and-forget
+   * probe can't see a redirect()/notFound() throw because it happens inside
+   * the boundary while the shell is already streaming.
+   */
+  getCapturedSpecialError: () => unknown;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
 
@@ -215,13 +223,26 @@ export function createAppPageRscErrorTracker(
   baseOnError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown,
 ): AppPageRscErrorTracker {
   let capturedError: unknown = null;
+  let capturedSpecialError: unknown = null;
 
   return {
     getCapturedError() {
       return capturedError;
     },
+    getCapturedSpecialError() {
+      return capturedSpecialError;
+    },
     onRenderError(error, requestInfo, errorContext) {
-      if (!(error && typeof error === "object" && "digest" in error)) {
+      if (error && typeof error === "object" && "digest" in error) {
+        // Errors with a digest are signal throws (NEXT_REDIRECT,
+        // NEXT_NOT_FOUND, NEXT_HTTP_ERROR_FALLBACK). They're not real
+        // failures — we keep the first one so the lifecycle can swap a
+        // 307/404 in place of a streamed "Switched to client rendering"
+        // body for routes with a route-level Suspense boundary.
+        if (capturedSpecialError === null) {
+          capturedSpecialError = error;
+        }
+      } else {
         capturedError = error;
       }
       return baseOnError(error, requestInfo, errorContext);
