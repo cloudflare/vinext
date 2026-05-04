@@ -130,3 +130,28 @@ export function normalizePathnameForRouteMatchStrict(pathname: string): string {
     .map((segment) => decodeRouteSegmentStrict(segment))
     .join("/");
 }
+
+function decodeMatchedParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Decode captured route params with `decodeURIComponent`, mirroring Next.js
+ * route-matcher.ts:25-27. Mutates the params object in place. Catch-all
+ * arrays are decoded element-wise. Malformed escapes are preserved (the
+ * strict normalization layer rejects them at the request boundary).
+ */
+export function decodeMatchedParams(params: Record<string, string | string[]>): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    if (Array.isArray(value)) {
+      params[key] = value.map(decodeMatchedParam);
+    } else {
+      params[key] = decodeMatchedParam(value);
+    }
+  }
+}

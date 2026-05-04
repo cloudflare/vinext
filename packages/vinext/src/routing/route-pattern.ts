@@ -1,3 +1,5 @@
+import { decodeMatchedParams } from "./utils";
+
 export type RoutePatternParams = Record<string, string | string[]>;
 
 function routePatternPart(segment: string): string {
@@ -86,25 +88,6 @@ export function fillRoutePatternSegments(
   return resolvedSegments.length > 0 ? `/${resolvedSegments.join("/")}` : "/";
 }
 
-function decodePatternParam(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function decodePatternParams(params: RoutePatternParams): void {
-  for (const key of Object.keys(params)) {
-    const value = params[key];
-    if (Array.isArray(value)) {
-      params[key] = value.map(decodePatternParam);
-    } else {
-      params[key] = decodePatternParam(value);
-    }
-  }
-}
-
 export function matchRoutePattern(
   urlParts: readonly string[],
   patternParts: readonly string[],
@@ -155,6 +138,6 @@ export function matchRoutePattern(
   }
 
   if (!matchFrom(0, 0)) return null;
-  decodePatternParams(params);
+  decodeMatchedParams(params);
   return params;
 }

@@ -1,3 +1,5 @@
+import { decodeMatchedParams } from "./utils";
+
 /**
  * Trie (prefix tree) for O(depth) route matching.
  *
@@ -119,25 +121,6 @@ export function buildRouteTrie<R extends { patternParts: string[] }>(routes: R[]
   return root;
 }
 
-function decodeParam(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function decodeParams(params: Record<string, string | string[]>): void {
-  for (const key of Object.keys(params)) {
-    const value = params[key];
-    if (Array.isArray(value)) {
-      params[key] = value.map(decodeParam);
-    } else {
-      params[key] = decodeParam(value);
-    }
-  }
-}
-
 /**
  * Match a URL against the trie.
  *
@@ -159,7 +142,7 @@ export function trieMatch<R>(
 ): { route: R; params: Record<string, string | string[]> } | null {
   const result = match(root, urlParts, 0);
   if (result) {
-    decodeParams(result.params);
+    decodeMatchedParams(result.params);
   }
   return result;
 }
