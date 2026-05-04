@@ -21,7 +21,7 @@ describe("app route handler policy helpers", () => {
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: 0 })).toBe(0);
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Infinity })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Number.NaN })).toBeNull();
-    expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBe(Infinity);
   });
 
   it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {
@@ -110,6 +110,8 @@ describe("app route handler policy helpers", () => {
     expect(shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: false })).toBe(
       false,
     );
+    // Infinity (from revalidate = false) enables cache reads: infinite TTL.
+    expect(shouldReadAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
   });
 
   it("determines when route handler cache headers and writes are allowed", () => {
@@ -135,6 +137,12 @@ describe("app route handler policy helpers", () => {
     expect(shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(
       false,
     );
+    // Infinity (from revalidate = false) enables cache write: indefinite TTL.
+    expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
+    // Infinity still emits a revalidate header for the static Cache-Control.
+    expect(
+      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, revalidateSeconds: Infinity }),
+    ).toBe(true);
   });
 
   it("maps special route handler digests to typed redirect and status results", () => {

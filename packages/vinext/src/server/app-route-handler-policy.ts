@@ -75,10 +75,11 @@ export function getAppRouteHandlerRevalidateSeconds(
   handler: Pick<AppRouteHandlerModule, "revalidate">,
 ): number | null {
   // 0 is a meaningful value ("never cache") and must be preserved so the
-  // header path can emit a no-store Cache-Control. Non-finite values
-  // (Infinity, NaN) are not valid revalidate durations and fall back to
-  // the null ("no revalidate configured") branch along with negatives.
+  // header path can emit a no-store Cache-Control.
+  // revalidate = false means "cache indefinitely" (Next.js segment config
+  // parity) — return Infinity to signal the cache-later path.
   const { revalidate } = handler;
+  if (revalidate === false) return Infinity;
   if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
     return null;
   }

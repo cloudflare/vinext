@@ -126,6 +126,12 @@ describe("extractExportConstNumber", () => {
     );
   });
 
+  it("extracts false as Infinity (revalidate = false means cache indefinitely)", () => {
+    expect(extractExportConstNumber("export const revalidate = false;", "revalidate")).toBe(
+      Infinity,
+    );
+  });
+
   it("extracts negative value", () => {
     expect(extractExportConstNumber("export const revalidate = -1;", "revalidate")).toBe(-1);
   });
@@ -410,6 +416,12 @@ describe("classifyAppRoute", () => {
 
   it("classifies revalidate=Infinity page as static", () => {
     const pagePath = path.join(FIXTURES_APP, "revalidate-infinity-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
+  });
+
+  it("classifies revalidate=false page as static", () => {
+    // revalidate = false means "cache indefinitely" — same as Infinity.
+    const pagePath = path.join(FIXTURES_APP, "revalidate-false-test", "page.tsx");
     expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
   });
 });
@@ -774,6 +786,14 @@ describe("classifyLayoutSegmentConfig", () => {
 
   it("returns kind=static with revalidate reason for revalidate = Infinity", () => {
     expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toEqual({
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    });
+  });
+
+  it("returns kind=static with revalidate reason for revalidate = false", () => {
+    // revalidate = false means "cache indefinitely" — same as Infinity.
+    expect(classifyLayoutSegmentConfig("export const revalidate = false;")).toEqual({
       kind: "static",
       reason: { layer: "segment-config", key: "revalidate", value: Infinity },
     });

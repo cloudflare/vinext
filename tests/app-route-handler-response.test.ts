@@ -129,6 +129,23 @@ describe("app route handler response helpers", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=15, stale-while-revalidate=285");
   });
 
+  it("emits static cache-control for revalidateSeconds = Infinity (revalidate = false)", () => {
+    const cachedValue = buildCachedRouteValue("from-cache");
+    const response = buildRouteHandlerCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isHead: false,
+      revalidateSeconds: Infinity,
+    });
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+  });
+
+  it("applies revalidate header for Infinity as static cache-control", () => {
+    const response = new Response("fresh");
+    applyRouteHandlerRevalidateHeader(response, Infinity);
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+  });
+
   it("serializes APP_ROUTE cache values without cache bookkeeping headers", async () => {
     const response = new Response("cache me", {
       status: 201,
