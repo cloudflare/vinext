@@ -123,6 +123,32 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("skips synthetic routes that structurally conflict with existing page routes", async () => {
+    // A slot sub-page like @feed/[name]/page.tsx under /shop would create /shop/:name,
+    // but if /shop/[id]/page.tsx already exists (route /shop/:id), the synthetic route
+    // must be skipped — validateRoutePatterns rejects different slug names at the same
+    // dynamic path. The slot content is resolved at render time by findMirroredSlotPage.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@feed/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@feed/[name]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // /shop/:id from shop/[id]/page.tsx must exist
+      expect(patterns).toContain("/shop/:id");
+      // /shop/:name from the slot sub-page must NOT be materialized
+      expect(patterns).not.toContain("/shop/:name");
+      // The non-conflicting parent route /shop should still exist
+      expect(patterns).toContain("/shop");
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
