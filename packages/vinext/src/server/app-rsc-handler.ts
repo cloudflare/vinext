@@ -259,9 +259,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const destination = sanitizeDestination(
       redirectDestinationWithBasePath(redirect.destination, options.basePath),
     );
-    const location = isRscRequest
-      ? await createRscRedirectLocation(destination, request)
-      : destination;
+    const location =
+      isRscRequest && request.headers.get("RSC") === "1"
+        ? await createRscRedirectLocation(destination, request)
+        : destination;
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
