@@ -598,10 +598,8 @@ export function filterInternalHeaders(headers: Headers): Headers {
 }
 
 function getRequestCf(request: Request): unknown | undefined {
-  if ("cf" in request) {
-    return (request as { cf?: unknown }).cf;
-  }
-  return undefined;
+  const cf = Reflect.get(request, "cf");
+  return cf === undefined ? undefined : cf;
 }
 
 /**
