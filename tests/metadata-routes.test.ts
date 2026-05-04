@@ -526,6 +526,87 @@ describe("robotsToText", () => {
     expect(txt).toContain("Crawl-delay: 10");
   });
 
+  // Ported from Next.js: test/unit/webpack/loaders/metadata/resolve-route-data.test.ts
+  // https://github.com/vercel/next.js/pull/93206
+  it("emits non-standard other directives after crawl delay and before blank line", () => {
+    const config: RobotsConfig = {
+      rules: [
+        { userAgent: "*", allow: "/" },
+        {
+          userAgent: "SeznamBot",
+          allow: "/",
+          other: { "Request-Rate": "10/1m" },
+        },
+        {
+          userAgent: "Googlebot",
+          disallow: "/admin",
+          crawlDelay: 30,
+          other: { "Some-Directive": "value" },
+        },
+      ],
+    };
+    const txt = robotsToText(config);
+
+    // "other" directives appear after Crawl-delay and before the blank line ending the block
+    expect(txt).toBe(
+      "User-Agent: *\nAllow: /\n\n" +
+        "User-Agent: SeznamBot\nAllow: /\nRequest-Rate: 10/1m\n\n" +
+        "User-Agent: Googlebot\nDisallow: /admin\nCrawl-delay: 30\nSome-Directive: value\n",
+    );
+  });
+
+  it("expands array-valued other directives into repeated lines", () => {
+    const config: RobotsConfig = {
+      rules: {
+        userAgent: "Yandex",
+        allow: "/catalog",
+        other: { "Clean-param": ["utm_source", "utm_medium"] },
+      },
+    };
+    const txt = robotsToText(config);
+    expect(txt).toBe(
+      "User-Agent: Yandex\nAllow: /catalog\nClean-param: utm_source\nClean-param: utm_medium\n",
+    );
+  });
+
+  it("skips null and undefined entries in other map", () => {
+    const config: RobotsConfig = {
+      rules: {
+        userAgent: "*",
+        allow: "/",
+        other: {
+          Valid: "yes",
+          SkipNull: null,
+          SkipUndefined: undefined,
+        } as unknown as Record<string, string | number | Array<string | number>>,
+      },
+    };
+    const txt = robotsToText(config);
+    expect(txt).toBe("User-Agent: *\nAllow: /\nValid: yes\n");
+  });
+
+  it("handles multiple other directives per rule", () => {
+    const config: RobotsConfig = {
+      rules: {
+        userAgent: "SpecialBot",
+        other: { "Request-Rate": "5/1s", "Visit-Time": "0600-0845" },
+      },
+    };
+    const txt = robotsToText(config);
+    expect(txt).toBe("User-Agent: SpecialBot\nRequest-Rate: 5/1s\nVisit-Time: 0600-0845\n");
+  });
+
+  it("handles numeric other directive values", () => {
+    const config: RobotsConfig = {
+      rules: {
+        userAgent: "*",
+        other: { "Some-Number": 42 },
+      },
+    };
+    const txt = robotsToText(config);
+    expect(txt).toBe("User-Agent: *\nSome-Number: 42\n");
+  });
+
   it("includes sitemap directive", () => {
     const config: RobotsConfig = {
       rules: { allow: "/" },
