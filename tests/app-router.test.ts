@@ -936,6 +936,18 @@ describe("App Router integration", () => {
     expect(res.headers.get("location")).toMatch(/\/$/);
   });
 
+  it("permanentRedirect() from async page with loading.tsx returns 308 (digest status preserved)", async () => {
+    // Same regression path as the redirect()-with-loading.tsx test above,
+    // but verifies the post-shell digest swap honors the status code from
+    // the NEXT_REDIRECT digest (308) rather than coercing to the 307
+    // default.
+    const res = await fetch(`${baseUrl}/permanent-protected-loading`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toMatch(/\/$/);
+  });
+
   it("permanentRedirect() returns 308 status code", async () => {
     const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
     expect(res.status).toBe(308);
