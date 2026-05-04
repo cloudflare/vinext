@@ -302,6 +302,9 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
   for (const parentRoute of routes) {
     if (parentRoute.parallelSlots.length === 0) continue;
 
+    // For page-bearing routes, the route directory is the page's directory.
+    // For layout-only routes (no page.tsx), proxy the route directory through
+    // the innermost layout — it lives at the same filesystem level as the route.
     const parentPageDir = parentRoute.pagePath
       ? path.dirname(parentRoute.pagePath)
       : path.dirname(parentRoute.layouts[parentRoute.layouts.length - 1]);
@@ -995,20 +998,21 @@ function scoreSlotPattern(urlSegments: readonly string[]): number {
 }
 
 /**
- * Whether two route patterns have the same structural shape (same number of
- * segments and identical literal segments) regardless of dynamic param names.
- * Used to detect when a synthetic parallel-slot sub-route would conflict with
- * an existing route that differs only by param naming (e.g. /shop/:id vs
- * /shop/:name), which validateRoutePatterns rejects.
+ * Map a pattern segment to the tree-node type used by Next.js' route
+ * validator. Two segments are structurally equivalent iff they share the
+ * same tree-node type.
  */
+function segmentTreeNodeType(seg: string): string {
+  if (!seg.startsWith(":")) return `literal:${seg}`;
+  if (seg.endsWith("*")) return "optionalCatchAll";
+  if (seg.endsWith("+")) return "catchAll";
+  return "dynamic";
+}
+
 function patternsStructurallyEquivalent(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    const ai = a[i];
-    const bi = b[i];
-    const aDynamic = ai.startsWith(":");
-    const bDynamic = bi.startsWith(":");
-    if (!aDynamic && !bDynamic && ai !== bi) return false;
+    if (segmentTreeNodeType(a[i]) !== segmentTreeNodeType(b[i])) return false;
   }
   return true;
 }
