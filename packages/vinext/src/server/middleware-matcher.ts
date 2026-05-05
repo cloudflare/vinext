@@ -5,6 +5,7 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HasCondition, NextI18nConfig } from "../config/next-config.js";
+import { removeTrailingSlash } from "../utils/base-path.js";
 
 export type MiddlewareMatcherObject = {
   source: string;
@@ -120,7 +121,7 @@ function stripLocalePrefix(pathname: string, i18nConfig: NextI18nConfig): string
   }
 
   const stripped = "/" + segments.slice(2).join("/");
-  return stripped === "/" ? "/" : stripped.replace(/\/+$/, "") || "/";
+  return removeTrailingSlash(stripped);
 }
 
 export function matchPattern(pathname: string, pattern: string): boolean {

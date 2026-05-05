@@ -50,7 +50,7 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
@@ -1377,7 +1377,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           return;
         } else if (!trailingSlash && hasTrailing) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          res.writeHead(308, { Location: basePath + pathname.replace(/\/+$/, "") + qs });
+          res.writeHead(308, { Location: basePath + removeTrailingSlash(pathname) + qs });
           res.end();
           return;
         }

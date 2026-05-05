@@ -3,6 +3,7 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import { createRscRedirectLocation } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+import { hasBasePath } from "../utils/base-path.js";
 
 export type { LayoutFlags };
 export type { ClassificationReason };
@@ -174,7 +175,7 @@ function applyAppPageRedirectBasePath(
   if (!basePath || resolved.origin !== requestOrigin) {
     return resolved.toString();
   }
-  if (resolved.pathname === basePath || resolved.pathname.startsWith(`${basePath}/`)) {
+  if (hasBasePath(resolved.pathname, basePath)) {
     return resolved.toString();
   }
   resolved.pathname = resolved.pathname === "/" ? basePath : `${basePath}${resolved.pathname}`;

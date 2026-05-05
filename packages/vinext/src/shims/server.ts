@@ -14,6 +14,7 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { stripBasePath } from "../utils/base-path.js";
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -311,10 +312,7 @@ export class NextURL {
   /** Strip basePath prefix from the internal pathname. */
   private _stripBasePath(): void {
     if (!this._basePath) return;
-    const { pathname } = this._url;
-    if (pathname === this._basePath || pathname.startsWith(this._basePath + "/")) {
-      this._url.pathname = pathname.slice(this._basePath.length) || "/";
-    }
+    this._url.pathname = stripBasePath(this._url.pathname, this._basePath);
   }
 
   /** Extract locale from pathname, stripping it from the internal URL. */

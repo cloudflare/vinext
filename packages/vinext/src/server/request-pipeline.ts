@@ -1,4 +1,4 @@
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { matchHeaders } from "../config/config-matchers.js";
@@ -285,7 +285,7 @@ export function normalizeTrailingSlash(
   if (!trailingSlash && hasTrailing) {
     return new Response(null, {
       status: 308,
-      headers: { Location: basePath + pathname.replace(/\/+$/, "") + search },
+      headers: { Location: basePath + removeTrailingSlash(pathname) + search },
     });
   }
   return null;

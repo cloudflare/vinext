@@ -4,6 +4,8 @@
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/sorted-routes.ts
  */
 
+import { removeTrailingSlash } from "../utils/base-path.js";
+
 class UrlNode {
   placeholder = true;
   children = new Map<string, UrlNode>();
@@ -158,9 +160,7 @@ export function patternToNextFormat(pattern: string): string {
 }
 
 function normalizeRoutePattern(pattern: string): string {
-  if (pattern === "/") return "/";
-  const normalized = pattern.replace(/\/+$/, "");
-  return normalized === "" ? "/" : normalized;
+  return removeTrailingSlash(pattern);
 }
 
 export function validateRoutePatterns(patterns: readonly string[]): void {

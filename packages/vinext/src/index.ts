@@ -71,7 +71,7 @@ import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
-import { hasBasePath } from "./utils/base-path.js";
+import { hasBasePath, removeTrailingSlash } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
@@ -2347,7 +2347,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 } else if (!nextConfig.trailingSlash && hasTrailing) {
                   // trailingSlash: false (default) — redirect /about/ → /about
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                  const dest = bp + pathname.replace(/\/+$/, "") + qs;
+                  const dest = bp + removeTrailingSlash(pathname) + qs;
                   res.writeHead(308, { Location: dest });
                   res.end();
                   return;
