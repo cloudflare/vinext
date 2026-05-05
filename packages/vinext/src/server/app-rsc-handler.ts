@@ -33,6 +33,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
+import { notFoundResponse } from "./http-error-responses.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { handleMetadataRouteRequest } from "./metadata-route-response.js";
@@ -419,19 +420,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return pagesFallbackResponse;
     }
 
-    const notFoundResponse = await options.renderNotFound({
+    const renderedNotFoundResponse = await options.renderNotFound({
       isRscRequest,
       middlewareContext,
       request,
       route: null,
       scriptNonce,
     });
-    if (notFoundResponse) return notFoundResponse;
+    if (renderedNotFoundResponse) return renderedNotFoundResponse;
 
     options.clearRequestContext();
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-    return new Response("Not Found", { status: 404, headers });
+    return notFoundResponse({ headers });
   }
 
   const { route, params } = match;

@@ -1,5 +1,6 @@
 import { isPossibleAppRouteActionRequest } from "./app-route-handler-policy.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { methodNotAllowedResponse } from "./http-error-responses.js";
 
 type AppPageMethodPolicyOptions = {
   dynamicConfig?: string;
@@ -55,10 +56,6 @@ export function resolveAppPageMethodResponse(
 
   const headers = new Headers();
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
-  headers.set("Allow", "GET, HEAD");
 
-  return new Response("Method Not Allowed", {
-    headers,
-    status: 405,
-  });
+  return methodNotAllowedResponse("GET, HEAD", { headers });
 }

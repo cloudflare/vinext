@@ -1,4 +1,5 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
+import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParams = (args: { params: RootParams }) => unknown;
@@ -46,7 +47,7 @@ async function handleStaticParamsEndpoint(
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
-    return new Response("Not Found", { status: 404 });
+    return notFoundResponse();
   }
 
   const url = new URL(request.url);
@@ -77,7 +78,7 @@ async function handlePagesStaticPathsEndpoint(
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
-    return new Response("Not Found", { status: 404 });
+    return notFoundResponse();
   }
 
   const url = new URL(request.url);

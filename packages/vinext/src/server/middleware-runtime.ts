@@ -10,6 +10,7 @@ import { normalizePath } from "./normalize-path.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -122,7 +123,7 @@ function resolveMiddlewarePathname(request: Request): string | Response {
   try {
     return normalizePath(normalizePathnameForRouteMatchStrict(url.pathname));
   } catch {
-    return new Response("Bad Request", { status: 400 });
+    return badRequestResponse();
   }
 }
 
@@ -193,7 +194,7 @@ export async function executeMiddleware(
       : "Internal Server Error";
     return {
       continue: false,
-      response: new Response(message, { status: 500 }),
+      response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
   }

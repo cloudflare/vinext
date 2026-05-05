@@ -6,6 +6,7 @@ import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { internalServerErrorResponse } from "./http-error-responses.js";
 
 export type AppMiddlewareContext = {
   headers: Headers | null;
@@ -202,7 +203,7 @@ export async function applyAppMiddleware(
       if (result.response) {
         return { kind: "response", response: result.response };
       }
-      return { kind: "response", response: new Response("Internal Server Error", { status: 500 }) };
+      return { kind: "response", response: internalServerErrorResponse() };
     }
 
     if (result.responseHeaders) {

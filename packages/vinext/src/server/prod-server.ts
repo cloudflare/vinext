@@ -50,6 +50,7 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
+import { notFoundResponse } from "./http-error-responses.js";
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
@@ -1104,10 +1105,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           return;
         }
         await sendWebResponse(
-          new Response("Not Found", {
-            status: 404,
-            headers: toWebHeaders(staticResponseHeaders),
-          }),
+          notFoundResponse({ headers: toWebHeaders(staticResponseHeaders) }),
           req,
           res,
           compress,

@@ -15,6 +15,7 @@ import {
   getServerActionNotFoundMessage,
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
+import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -278,10 +279,6 @@ function isActionHttpFallback(error: unknown): boolean {
   return digest !== null && parseNextHttpErrorDigest(digest) !== null;
 }
 
-function payloadTooLargeResponse(): Response {
-  return new Response("Payload Too Large", { status: 413 });
-}
-
 function createServerActionErrorResponse(
   error: unknown,
   options: {
@@ -304,11 +301,10 @@ function createServerActionErrorResponse(
     { routerKind: "App Router", routePath: options.cleanPathname, routeType: "action" },
   );
   options.clearRequestContext();
-  return new Response(
+  return internalServerErrorResponse(
     process.env.NODE_ENV === "production"
-      ? "Internal Server Error"
+      ? undefined
       : "Server action failed: " + getServerActionFailureMessage(error),
-    { status: 500 },
   );
 }
 
@@ -447,11 +443,10 @@ export async function handleProgressiveServerActionRequest(
       { routerKind: "App Router", routePath: options.cleanPathname, routeType: "action" },
     );
     options.clearRequestContext();
-    return new Response(
+    return internalServerErrorResponse(
       process.env.NODE_ENV === "production"
-        ? "Internal Server Error"
+        ? undefined
         : "Server action failed: " + getServerActionFailureMessage(error),
-      { status: 500 },
     );
   }
 }

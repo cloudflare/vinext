@@ -1,5 +1,6 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
+import { notFoundResponse } from "./http-error-responses.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
@@ -254,7 +255,7 @@ export async function validateAppPageDynamicParams(
   const generateStaticParamsSources = normalizeGenerateStaticParams(options.generateStaticParams);
   if (generateStaticParamsSources.length === 0) {
     options.clearRequestContext();
-    return new Response("Not Found", { status: 404 });
+    return notFoundResponse();
   }
 
   for (const source of generateStaticParamsSources) {
@@ -264,7 +265,7 @@ export async function validateAppPageDynamicParams(
       });
       if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
         options.clearRequestContext();
-        return new Response("Not Found", { status: 404 });
+        return notFoundResponse();
       }
     } catch (error) {
       options.logGenerateStaticParamsError?.(error);

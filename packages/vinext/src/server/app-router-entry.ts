@@ -21,6 +21,7 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
+import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -41,7 +42,7 @@ export default {
     // percent-encoded variants are caught — encoded forms survive segment-wise
     // decoding and would otherwise reach trailing-slash redirect emitters.
     if (isOpenRedirectShaped(url.pathname)) {
-      return new Response("404 Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     // Validate that percent-encoding is well-formed. The RSC handler performs
@@ -51,7 +52,7 @@ export default {
       decodeURIComponent(url.pathname);
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
-      return new Response("Bad Request", { status: 400 });
+      return badRequestResponse();
     }
 
     // Strip internal headers from inbound requests before any handler or
@@ -86,7 +87,7 @@ export default {
     }
 
     if (result === null || result === undefined) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     return new Response(String(result), { status: 200 });

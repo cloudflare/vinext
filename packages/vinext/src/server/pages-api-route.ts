@@ -8,6 +8,7 @@ import {
   type PagesReqResResponse,
   PagesApiBodyParseError,
 } from "./pages-node-compat.js";
+import { internalServerErrorResponse } from "./http-error-responses.js";
 
 type PagesApiRouteModule = {
   default?: (req: PagesReqResRequest, res: PagesReqResResponse) => void | Promise<void>;
@@ -77,6 +78,6 @@ export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): 
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,
     );
-    return new Response("Internal Server Error", { status: 500 });
+    return internalServerErrorResponse();
   }
 }

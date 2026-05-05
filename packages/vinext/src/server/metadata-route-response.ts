@@ -9,6 +9,7 @@ import {
   type RobotsConfig,
   type SitemapEntry,
 } from "./metadata-routes.js";
+import { notFoundResponse } from "./http-error-responses.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -186,7 +187,7 @@ async function handleGeneratedSitemap(
 
   const matchedId = findGeneratedSitemapId(await functions.generateSitemaps({}), rawId);
   if (!matchedId) {
-    return new Response("Not Found", { status: 404 });
+    return notFoundResponse();
   }
 
   const result = await functions.defaultExport({
@@ -243,18 +244,18 @@ async function callDynamicMetadataRoute(
 ): Promise<Response> {
   if (!functions.defaultExport) {
     console.warn(`[vinext] Dynamic metadata route ${route.servedUrl} has no default export.`);
-    return new Response("Not Found", { status: 404 });
+    return notFoundResponse();
   }
 
   const paramsThenable = makeThenableParams(match.params ?? {});
   let result: unknown;
   if (functions.hasGeneratedImageMetadata) {
     if (match.imageId === null || !isValidMetadataImageId(match.imageId)) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     if (!functions.generateImageMetadata) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     const matchedImageId = findGeneratedImageId(
@@ -263,7 +264,7 @@ async function callDynamicMetadataRoute(
       route.servedUrl,
     );
     if (!matchedImageId) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     result = await functions.defaultExport({

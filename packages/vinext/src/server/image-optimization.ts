@@ -17,6 +17,8 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { badRequestResponse } from "./http-error-responses.js";
+
 /** The pathname that triggers image optimization. */
 export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 
@@ -216,7 +218,7 @@ export async function handleImageOptimization(
   const params = parseImageParams(url, allowedWidths);
 
   if (!params) {
-    return new Response("Bad Request", { status: 400 });
+    return badRequestResponse();
   }
 
   const { imageUrl, width, quality } = params;

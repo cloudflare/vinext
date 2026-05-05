@@ -4,6 +4,7 @@ import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
@@ -68,7 +69,7 @@ export function normalizeRscRequest(
   try {
     decoded = normalizePathnameForRouteMatchStrict(url.pathname);
   } catch {
-    return new Response("Bad Request", { status: 400 });
+    return badRequestResponse();
   }
 
   // Step 4: Collapse double-slashes and resolve . / .. segments.
@@ -80,7 +81,7 @@ export function normalizeRscRequest(
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
     if (!hasBasePath(pathname, basePath) && !pathname.startsWith("/__vinext/")) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
     pathname = stripBasePath(pathname, basePath);
   }

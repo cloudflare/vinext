@@ -2,6 +2,7 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { matchHeaders } from "../config/config-matchers.js";
+import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
 
 /**
  * Shared request pipeline utilities.
@@ -14,17 +15,10 @@ import { matchHeaders } from "../config/config-matchers.js";
  * These utilities handle the common request lifecycle steps: protocol-
  * relative URL guards, basePath stripping, trailing slash normalization,
  * and CSRF origin validation.
- */
-
-/**
- * Build a 403 Forbidden plain-text response.
  *
- * Centralizes the `new Response("Forbidden", { status: 403, ... })` pattern
- * shared by CSRF origin validation and dev-server origin checks.
+ * Plain-text error response builders (forbidden / not-found / etc.) live in
+ * `./http-error-responses.ts`.
  */
-export function forbiddenResponse(): Response {
-  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
-}
 
 /**
  * Guard against protocol-relative URL open redirects.
@@ -50,7 +44,7 @@ export function forbiddenResponse(): Response {
  */
 export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
   if (isOpenRedirectShaped(rawPathname)) {
-    return new Response("404 Not Found", { status: 404 });
+    return notFoundResponse();
   }
   return null;
 }
@@ -271,7 +265,7 @@ export function normalizeTrailingSlash(
   // browser would resolve as protocol-relative, even if a caller somehow
   // bypassed the upstream guard.
   if (isOpenRedirectShaped(pathname)) {
-    return new Response("404 Not Found", { status: 404 });
+    return notFoundResponse();
   }
   const hasTrailing = pathname.endsWith("/");
   // RSC (client-side navigation) requests arrive as /path.rsc — don't

@@ -15,6 +15,7 @@ import {
 } from "vinext/shims/navigation";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
   createInlineScriptTag,
@@ -268,7 +269,7 @@ export default {
     // Block protocol-relative URL open redirects (including percent-encoded
     // variants like /%5Cevil.com/). See request-pipeline.ts for details.
     if (isOpenRedirectShaped(url.pathname)) {
-      return new Response("404 Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     const rscModule = await import.meta.viteRsc.loadModule<{
@@ -281,7 +282,7 @@ export default {
     }
 
     if (result == null) {
-      return new Response("Not Found", { status: 404 });
+      return notFoundResponse();
     }
 
     return new Response(String(result), { status: 200 });
