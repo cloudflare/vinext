@@ -10,6 +10,11 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import {
+  serializeSetCookie,
+  validateCookieAttributeValue,
+  validateCookieName,
+} from "./internal/cookie-serialize.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 import {
   isInsideUnifiedScope,
@@ -813,36 +818,6 @@ export async function draftMode(): Promise<DraftModeResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Cookie name/value validation (RFC 6265)
-// ---------------------------------------------------------------------------
-
-/**
- * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
- * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
- */
-const VALID_COOKIE_NAME_RE =
-  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
-
-function validateCookieName(name: string): void {
-  if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
-    throw new Error(`Invalid cookie name: ${JSON.stringify(name)}`);
-  }
-}
-
-/**
- * Validate cookie attribute values (path, domain) to prevent injection
- * via semicolons, newlines, or other control characters.
- */
-function validateCookieAttributeValue(value: string, attributeName: string): void {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
-      throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // RequestCookies implementation
 // ---------------------------------------------------------------------------
 
@@ -922,22 +897,7 @@ class RequestCookies {
     // Update the local cookie map
     this._cookies.set(cookieName, cookieValue);
 
-    // Build Set-Cookie header string
-    const parts = [`${cookieName}=${encodeURIComponent(cookieValue)}`];
-    const path = opts?.path ?? "/";
-    validateCookieAttributeValue(path, "Path");
-    parts.push(`Path=${path}`);
-    if (opts?.domain) {
-      validateCookieAttributeValue(opts.domain, "Domain");
-      parts.push(`Domain=${opts.domain}`);
-    }
-    if (opts?.maxAge !== undefined) parts.push(`Max-Age=${opts.maxAge}`);
-    if (opts?.expires) parts.push(`Expires=${opts.expires.toUTCString()}`);
-    if (opts?.httpOnly) parts.push("HttpOnly");
-    if (opts?.secure) parts.push("Secure");
-    if (opts?.sameSite) parts.push(`SameSite=${opts.sameSite}`);
-
-    _getState().pendingSetCookies.push(parts.join("; "));
+    _getState().pendingSetCookies.push(serializeSetCookie(cookieName, cookieValue, opts));
     return this;
   }
 
