@@ -2,21 +2,20 @@ export const NAVIGATION_TRACE_SCHEMA_VERSION = 0;
 
 export type NavigationTraceSchemaVersion = 0;
 
-export type NavigationTraceReasonCode = "NC_COMMIT" | "NC_ROOT" | "NC_ROOT_UNKNOWN" | "NC_STALE";
-
-type NavigationTraceReasonCodeMap = {
-  commitCurrent: NavigationTraceReasonCode;
-  rootBoundaryChanged: NavigationTraceReasonCode;
-  rootBoundaryUnknown: NavigationTraceReasonCode;
-  staleOperation: NavigationTraceReasonCode;
-};
-
 export const NavigationTraceReasonCodes = {
   commitCurrent: "NC_COMMIT",
   rootBoundaryChanged: "NC_ROOT",
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN",
   staleOperation: "NC_STALE",
-} satisfies NavigationTraceReasonCodeMap;
+} satisfies Readonly<{
+  commitCurrent: "NC_COMMIT";
+  rootBoundaryChanged: "NC_ROOT";
+  rootBoundaryUnknown: "NC_ROOT_UNKNOWN";
+  staleOperation: "NC_STALE";
+}>;
+
+export type NavigationTraceReasonCode =
+  (typeof NavigationTraceReasonCodes)[keyof typeof NavigationTraceReasonCodes];
 
 export type NavigationTraceFieldName =
   | "activeNavigationId"
@@ -57,16 +56,5 @@ export function createNavigationTrace(
   return {
     schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
     entries: [createNavigationTraceEntry(code, fields)],
-  };
-}
-
-export function appendNavigationTrace(
-  trace: NavigationTrace,
-  code: NavigationTraceReasonCode,
-  fields: NavigationTraceFields = {},
-): NavigationTrace {
-  return {
-    schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
-    entries: [...trace.entries, createNavigationTraceEntry(code, fields)],
   };
 }

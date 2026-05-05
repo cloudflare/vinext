@@ -31,7 +31,6 @@ import {
 import {
   NAVIGATION_TRACE_SCHEMA_VERSION,
   NavigationTraceReasonCodes,
-  appendNavigationTrace,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
 
@@ -353,6 +352,28 @@ describe("app browser entry state helpers", () => {
 
     expect(decision.disposition).toBe("dispatch");
     expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
+  });
+
+  it("traces matching root-layout dispatches as current commits", () => {
+    const decision = resolvePendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+    expect(decision.trace.entries).toEqual([
+      {
+        code: NavigationTraceReasonCodes.commitCurrent,
+        fields: {
+          activeNavigationId: 2,
+          currentRootLayoutTreePath: "/",
+          nextRootLayoutTreePath: "/",
+          startedNavigationId: 2,
+        },
+      },
+    ]);
   });
 
   it("builds a merge commit for refresh and server-action payloads", async () => {
@@ -783,29 +804,17 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(result.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
   });
 
-  it("appends navigation trace entries without mutating existing records", () => {
+  it("creates navigation trace entries without retaining field ownership", () => {
     const fields = { activeNavigationId: 1 };
-    const initialTrace = createNavigationTrace(NavigationTraceReasonCodes.commitCurrent, fields);
+    const trace = createNavigationTrace(NavigationTraceReasonCodes.commitCurrent, fields);
 
     fields.activeNavigationId = 2;
 
-    const nextTrace = appendNavigationTrace(
-      initialTrace,
-      NavigationTraceReasonCodes.staleOperation,
-      {
-        activeNavigationId: 3,
-      },
-    );
-
-    expect(initialTrace.entries).toEqual([
+    expect(trace.entries).toEqual([
       {
         code: NavigationTraceReasonCodes.commitCurrent,
         fields: { activeNavigationId: 1 },
       },
-    ]);
-    expect(nextTrace.entries.map((entry) => entry.code)).toEqual([
-      NavigationTraceReasonCodes.commitCurrent,
-      NavigationTraceReasonCodes.staleOperation,
     ]);
   });
 

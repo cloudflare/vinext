@@ -510,7 +510,15 @@ export function createAppBrowserNavigationController(
     // can still dispatch its older payload afterward. The old pre-2c code had
     // the same race, and Next.js has similar behavior. Tightening this would
     // need a stronger commit-version gate than activeNavigationId alone.
-    const { disposition, pending } = await resolveAndClassifyNavigationCommit({
+    const {
+      disposition,
+      pending,
+      // Intentionally retained as #726-OPS-01 trace-shell scaffolding. The
+      // current same-URL action path still commits through legacy control flow;
+      // later lifecycle gates can consume this trace without changing the
+      // classifier contract again.
+      trace: _navigationTrace,
+    } = await resolveAndClassifyNavigationCommit({
       activeNavigationId,
       currentState,
       navigationSnapshot,
