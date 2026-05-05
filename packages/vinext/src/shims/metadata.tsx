@@ -318,31 +318,18 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
   return postProcessMetadata(merged);
 }
 
-/**
- * Keys whose values are nested objects that should be shallow-merged
- * rather than replaced outright when both parent and child define them.
- *
- * These match the fields where Next.js does per-subkey resolution via
- * dedicated resolvers (resolveOpenGraph, resolveTwitter, resolveIcons,
- * resolveAlternates, resolveRobots) rather than a full replacement.
- *
- * Fields like verification, appleWebApp, appLinks, and formatDetection
- * are intentionally excluded — Next.js replaces these wholesale via their
- * own resolvers, so we match that behavior.
- */
-const DEEP_MERGE_KEYS = new Set<string>([
-  "openGraph",
-  "twitter",
-  "icons",
-  "alternates",
-  "robots",
-  "other",
-]);
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof URL)
   );
+}
+
+function isOtherMetadata(value: unknown): value is NonNullable<Metadata["other"]> {
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every((item) => {
+    if (typeof item === "string") return true;
+    return Array.isArray(item) && item.every((nestedItem) => typeof nestedItem === "string");
+  });
 }
 
 /**
@@ -360,9 +347,10 @@ function resolveStringTitle(title: Metadata["title"]): string | undefined {
  * Post-process merged metadata to cross-fill openGraph and Twitter fields.
  *
  * Next.js runs this once after all layouts/pages and file-based metadata
- * have been resolved. It auto-fills missing twitter:title/description/images
- * from openGraph (or from root metadata as fallback) and missing
- * openGraph:title/description from root metadata.
+ * have been resolved. When openGraph exists, it auto-fills missing
+ * twitter:title/description/images from openGraph (falling back to root
+ * metadata title/description). Existing openGraph/twitter objects also inherit
+ * missing title/description from root metadata.
  *
  * Ported from Next.js:
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
@@ -387,47 +375,53 @@ export function postProcessMetadata(merged: Metadata): Metadata {
     result.openGraph = og;
   }
 
-  // twitter inherits title/description/images from openGraph (or root metadata)
-  const autoFill: {
-    title?: string;
-    description?: string;
-    images?: NonNullable<Metadata["twitter"]>["images"];
-  } = {};
+  if (result.openGraph) {
+    const autoFill: {
+      title?: string;
+      description?: string;
+      images?: NonNullable<Metadata["twitter"]>["images"];
+    } = {};
 
-  const existingTwitter = result.twitter;
-  const hasTwTitle = existingTwitter ? Boolean(existingTwitter.title) : false;
-  const hasTwDescription = existingTwitter ? Boolean(existingTwitter.description) : false;
-  // Next.js checks hasOwnProperty('images') to distinguish "not set" from "explicitly empty"
-  const hasTwImages = existingTwitter
-    ? Object.prototype.hasOwnProperty.call(existingTwitter, "images")
-    : false;
+    const existingTwitter = result.twitter;
+    const hasTwTitle = existingTwitter ? Boolean(existingTwitter.title) : false;
+    const hasTwDescription = existingTwitter ? Boolean(existingTwitter.description) : false;
+    const hasTwImages = existingTwitter
+      ? Object.prototype.hasOwnProperty.call(existingTwitter, "images") &&
+        Boolean(existingTwitter.images)
+      : false;
 
-  if (!hasTwTitle) {
-    if (result.openGraph?.title) {
-      autoFill.title = result.openGraph.title;
-    } else if (resolvedTitle) {
-      autoFill.title = resolvedTitle;
+    if (!hasTwTitle) {
+      if (result.openGraph.title) {
+        autoFill.title = result.openGraph.title;
+      } else if (resolvedTitle) {
+        autoFill.title = resolvedTitle;
+      }
     }
-  }
-  if (!hasTwDescription) {
-    if (result.openGraph?.description) {
-      autoFill.description = result.openGraph.description;
-    } else if (result.description) {
-      autoFill.description = result.description;
+    if (!hasTwDescription) {
+      autoFill.description = result.openGraph.description || result.description || undefined;
     }
-  }
-  if (!hasTwImages) {
-    if (result.openGraph?.images) {
+    if (!hasTwImages) {
       autoFill.images = result.openGraph.images;
     }
+
+    if (Object.keys(autoFill).length > 0) {
+      if (existingTwitter) {
+        result.twitter = { ...existingTwitter, ...autoFill };
+      } else {
+        result.twitter = autoFill;
+      }
+    }
   }
 
-  if (Object.keys(autoFill).length > 0) {
-    if (existingTwitter) {
-      result.twitter = { ...existingTwitter, ...autoFill };
-    } else {
-      result.twitter = autoFill;
+  if (result.twitter) {
+    const tw = { ...result.twitter };
+    if (!tw.title && resolvedTitle) {
+      tw.title = resolvedTitle;
     }
+    if (!tw.description && result.description) {
+      tw.description = result.description;
+    }
+    result.twitter = tw;
   }
 
   // If twitter exists (either originally or via auto-fill), ensure card type is set.
@@ -454,11 +448,8 @@ export function postProcessMetadata(merged: Metadata): Metadata {
  * skips all templates. `title.default` is the fallback when no
  * child provides a title.
  *
- * For top-level keys, later entries override earlier ones.
- * For nested object keys (openGraph, twitter, icons, alternates,
- * robots, other), sub-properties are shallow-merged so that a
- * child layout can override individual fields without discarding
- * sibling fields set by an ancestor.
+ * For top-level keys, later entries override earlier ones. `other` custom meta
+ * tags are the exception: Next.js merges those across segments.
  */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   if (entries.length === 0) return {};
@@ -491,9 +482,8 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
       const incoming = meta[key];
       const existing = merged[key];
 
-      if (DEEP_MERGE_KEYS.has(key) && isPlainObject(existing) && isPlainObject(incoming)) {
-        // Shallow merge nested objects (e.g. openGraph, twitter, icons, alternates, robots, other)
-        merged[key] = { ...existing, ...incoming };
+      if (key === "other" && isOtherMetadata(existing) && isOtherMetadata(incoming)) {
+        merged.other = { ...existing, ...incoming };
       } else {
         // Plain replacement for everything else
         merged[key] = incoming;

@@ -2212,8 +2212,8 @@ describe("metadata title templates", () => {
       },
     ]);
 
-    // mergeMetadataEntries does raw deep-merge only; post-processing is applied
-    // separately by postProcessMetadata (called by mergeMetadata and by
+    // mergeMetadataEntries does raw segment merging only; post-processing is
+    // applied separately by postProcessMetadata (called by mergeMetadata and by
     // resolveAppPageHead after file-based metadata is applied).
     expect(result).toEqual({
       description: "Page",
@@ -2224,11 +2224,13 @@ describe("metadata title templates", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Metadata deep merge tests
-// Ported from Next.js behavior: test/e2e/app-dir/metadata/metadata.test.ts
-// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
+// Metadata segment merge tests
+// Ported from Next.js behavior:
+// - docs: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#merging
+// - source: packages/next/src/lib/metadata/resolve-metadata.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
 
-describe("metadata deep merge", () => {
+describe("metadata segment merge", () => {
   let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
 
   beforeAll(async () => {
@@ -2236,52 +2238,45 @@ describe("metadata deep merge", () => {
     mergeMetadata = mod.mergeMetadata;
   });
 
-  it("deep-merges openGraph subkeys instead of replacing the whole object", () => {
+  it("replaces openGraph instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { openGraph: { siteName: "My Site", images: ["/og-root.png"], locale: "en-US" } },
       { openGraph: { title: "Child Page" } },
     ]);
     expect(result.openGraph).toEqual({
-      siteName: "My Site",
-      images: ["/og-root.png"],
-      locale: "en-US",
       title: "Child Page",
     });
+    expect(result.twitter?.images).toBeUndefined();
   });
 
-  it("deep-merges twitter subkeys instead of replacing the whole object", () => {
+  it("replaces twitter instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { twitter: { card: "summary", site: "@site" } },
       { twitter: { title: "Tweet Title" } },
     ]);
     expect(result.twitter).toEqual({
-      card: "summary",
-      site: "@site",
       title: "Tweet Title",
+      card: "summary",
     });
   });
 
-  it("deep-merges alternates subkeys", () => {
+  it("replaces alternates instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { alternates: { canonical: "https://example.com", languages: { "en-US": "/en" } } },
       { alternates: { media: { print: "/print" } } },
     ]);
     expect(result.alternates).toEqual({
-      canonical: "https://example.com",
-      languages: { "en-US": "/en" },
       media: { print: "/print" },
     });
   });
 
-  it("deep-merges robots subkeys when both are objects", () => {
+  it("replaces robots instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { robots: { index: true, follow: true, googleBot: { index: true } } },
       { robots: { follow: false } },
     ]);
     expect(result.robots).toEqual({
-      index: true,
       follow: false,
-      googleBot: { index: true },
     });
   });
 
@@ -2290,14 +2285,12 @@ describe("metadata deep merge", () => {
     expect(result.robots).toEqual({ index: false });
   });
 
-  it("deep-merges icons when both are map objects", () => {
+  it("replaces icons instead of deep-merging map objects", () => {
     const result = mergeMetadata([
       { icons: { icon: "/favicon.ico", apple: "/apple.png" } },
       { icons: { shortcut: "/shortcut.png" } },
     ]);
     expect(result.icons).toEqual({
-      icon: "/favicon.ico",
-      apple: "/apple.png",
       shortcut: "/shortcut.png",
     });
   });
@@ -2307,7 +2300,7 @@ describe("metadata deep merge", () => {
     expect(result.icons).toEqual({ apple: "/apple.png" });
   });
 
-  it("deep-merges other custom meta tags", () => {
+  it("merges other custom meta tags", () => {
     const result = mergeMetadata([
       { other: { foo: "bar", baz: "qux" } },
       { other: { baz: "override", new: "value" } },
@@ -2338,14 +2331,13 @@ describe("metadata deep merge", () => {
     });
   });
 
-  it("child can clear a parent openGraph subkey by setting it to undefined", () => {
+  it("child openGraph replaces the whole parent openGraph object", () => {
     const result = mergeMetadata([
       { openGraph: { title: "Root", images: ["/og.png"] } },
       { openGraph: { images: undefined } },
     ]);
-    expect(result.openGraph?.title).toBe("Root");
+    expect(result.openGraph?.title).toBeUndefined();
     expect(result.openGraph?.images).toBeUndefined();
-    // Post-process: cleared og.images means twitter doesn't inherit images
     expect(result.twitter?.images).toBeUndefined();
   });
 });
@@ -2394,8 +2386,13 @@ describe("metadata OG/Twitter inheritance", () => {
     expect(result.twitter?.description).toBe("Page Desc");
   });
 
-  it("auto-fills twitter fields from metadata when openGraph is absent entirely", () => {
+  it("does not create twitter fields from metadata when openGraph is absent entirely", () => {
     const result = mergeMetadata([{ title: "Page Title", description: "Page Desc" }]);
+    expect(result.twitter).toBeUndefined();
+  });
+
+  it("fills existing twitter title and description from metadata when openGraph is absent", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc", twitter: {} }]);
     expect(result.twitter?.title).toBe("Page Title");
     expect(result.twitter?.description).toBe("Page Desc");
     expect(result.twitter?.card).toBe("summary");

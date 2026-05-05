@@ -180,11 +180,6 @@ describe("app page head resolution", () => {
     expect(result.metadata).toEqual({
       description: "Nested",
       title: "Root",
-      twitter: {
-        card: "summary",
-        description: "Nested",
-        title: "Root",
-      },
     });
     expect(nestedLayoutParamsSeen).toEqual([{}]);
   });
