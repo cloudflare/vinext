@@ -13,9 +13,8 @@
  * - Error: app/error.tsx -> ErrorBoundary
  * - Not Found: app/not-found.tsx
  */
-import { normalizePathnameForRouteMatch } from "./utils.js";
 import { createValidFileMatcher, type ValidFileMatcher } from "./file-matcher.js";
-import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
+import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
 import { buildAppRouteGraph, type AppRoute, type AppRouteGraphRoute } from "./app-route-graph.js";
 export type { AppRoute } from "./app-route-graph.js";
 export { computeRootParamNames } from "./app-route-graph.js";
@@ -53,16 +52,7 @@ export async function appRouter(
 }
 
 // Trie cache — keyed by route array identity (same array = same trie)
-const appTrieCache = new WeakMap<AppRoute[], TrieNode<AppRoute>>();
-
-function getOrBuildAppTrie(routes: AppRoute[]): TrieNode<AppRoute> {
-  let trie = appTrieCache.get(routes);
-  if (!trie) {
-    trie = buildRouteTrie(routes);
-    appTrieCache.set(routes, trie);
-  }
-  return trie;
-}
+const appTrieCache = createRouteTrieCache<AppRoute>();
 
 /**
  * Match a URL against App Router routes.
@@ -71,12 +61,5 @@ export function matchAppRoute(
   url: string,
   routes: AppRoute[],
 ): { route: AppRoute; params: Record<string, string | string[]> } | null {
-  const pathname = url.split("?")[0];
-  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
-
-  // Split URL once, look up via trie
-  const urlParts = normalizedUrl.split("/").filter(Boolean);
-  const trie = getOrBuildAppTrie(routes);
-  return trieMatch(trie, urlParts);
+  return matchRouteWithTrie(url, routes, appTrieCache);
 }

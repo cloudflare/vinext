@@ -1,12 +1,12 @@
 import path from "node:path";
-import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
+import { compareRoutes, decodeRouteSegment } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
 import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
-import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
+import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
 
 export type Route = {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -163,16 +163,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 }
 
 // Trie cache — keyed by route array identity (same array = same trie)
-const trieCache = new WeakMap<Route[], TrieNode<Route>>();
-
-function getOrBuildTrie(routes: Route[]): TrieNode<Route> {
-  let trie = trieCache.get(routes);
-  if (!trie) {
-    trie = buildRouteTrie(routes);
-    trieCache.set(routes, trie);
-  }
-  return trie;
-}
+const trieCache = createRouteTrieCache<Route>();
 
 /**
  * Match a URL path against a route pattern.
@@ -182,15 +173,7 @@ export function matchRoute(
   url: string,
   routes: Route[],
 ): { route: Route; params: Record<string, string | string[]> } | null {
-  // Normalize: strip query string and trailing slash
-  const pathname = url.split("?")[0];
-  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
-
-  // Split URL once, look up via trie
-  const urlParts = normalizedUrl.split("/").filter(Boolean);
-  const trie = getOrBuildTrie(routes);
-  return trieMatch(trie, urlParts);
+  return matchRouteWithTrie(url, routes, trieCache);
 }
 
 /**
