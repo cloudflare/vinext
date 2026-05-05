@@ -13,7 +13,7 @@
  * code.
  */
 
-export type SerializeSetCookieOptions = {
+type SerializeSetCookieOptions = {
   path?: string;
   domain?: string;
   maxAge?: number;
