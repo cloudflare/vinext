@@ -213,21 +213,25 @@ async function recordStreamToString(stream: ReadableStream<Uint8Array>): Promise
   }
 }
 
-function reportPagesIsrCacheWriteError(
+async function reportPagesIsrCacheWriteError(
   error: unknown,
   cacheKey: string,
   routePattern: string,
 ): Promise<void> {
   console.error(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
-  return reportRequestError(
-    error instanceof Error ? error : new Error(String(error)),
-    { path: cacheKey, method: "GET", headers: {} },
-    {
-      routerKind: "Pages Router",
-      routePath: routePattern,
-      routeType: "render",
-    },
-  );
+  try {
+    await reportRequestError(
+      error instanceof Error ? error : new Error(String(error)),
+      { path: cacheKey, method: "GET", headers: {} },
+      {
+        routerKind: "Pages Router",
+        routePath: routePattern,
+        routeType: "render",
+      },
+    );
+  } catch {
+    // Cache-write failure reporting must never make the background task reject.
+  }
 }
 
 function schedulePagesIsrCacheWrite(options: {
