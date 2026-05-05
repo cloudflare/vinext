@@ -17,6 +17,7 @@ import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shi
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithPreviousNextUrl,
+  createOperationRecord,
   createPendingNavigationCommit,
   readHistoryStatePreviousNextUrl,
   resolveAndClassifyNavigationCommit,
@@ -48,12 +49,25 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
+    activeOperation: null,
     interceptionContext: null,
     previousNextUrl: null,
     rootLayoutTreePath: "/",
     routeId: "route:/initial",
+    visibleCommitVersion: 0,
     ...overrides,
   };
+}
+
+function createTestOperation(
+  state: AppRouterState,
+  id = 1,
+): ReturnType<typeof createOperationRecord> {
+  return createOperationRecord({
+    id,
+    lane: "navigation",
+    startedVisibleCommitVersion: state.visibleCommitVersion,
+  });
 }
 
 function createControllerHarness(initialState: AppRouterState = createState()) {
@@ -101,6 +115,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: createState().navigationSnapshot,
+      operationLane: "navigation",
       type: "navigate",
     });
   });
@@ -112,28 +127,35 @@ describe("app browser entry state helpers", () => {
     const nextElements = createResolvedElements("route:/next", "/", null, {
       "page:/next": React.createElement("main", null, "next"),
     });
+    const state = createState({
+      elements: previousElements,
+    });
 
-    const nextState = routerReducer(
-      createState({
-        elements: previousElements,
-      }),
-      {
-        elements: nextElements,
-        interceptionContext: null,
-        layoutFlags: {},
-        navigationSnapshot: createState().navigationSnapshot,
-        previousNextUrl: null,
-        renderId: 1,
-        rootLayoutTreePath: "/",
-        routeId: "route:/next",
-        type: "navigate",
-      },
-    );
+    const nextState = routerReducer(state, {
+      elements: nextElements,
+      interceptionContext: null,
+      layoutFlags: {},
+      navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
+      previousNextUrl: null,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/next",
+      type: "navigate",
+    });
 
     expect(nextState.routeId).toBe("route:/next");
     expect(nextState.interceptionContext).toBeNull();
     expect(nextState.previousNextUrl).toBeNull();
     expect(nextState.rootLayoutTreePath).toBe("/");
+    expect(nextState.visibleCommitVersion).toBe(1);
+    expect(nextState.activeOperation).toMatchObject({
+      id: 1,
+      lane: "navigation",
+      startedVisibleCommitVersion: 0,
+      state: "committed",
+      visibleCommitVersion: 1,
+    });
     expect(nextState.elements).toMatchObject({
       "layout:/": expect.anything(),
       "page:/next": expect.anything(),
@@ -145,11 +167,13 @@ describe("app browser entry state helpers", () => {
       "page:/next": React.createElement("main", null, "next"),
     });
 
-    const nextState = routerReducer(createState(), {
+    const state = createState();
+    const nextState = routerReducer(state, {
       elements: nextElements,
       interceptionContext: null,
       layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
       previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",
@@ -165,6 +189,43 @@ describe("app browser entry state helpers", () => {
     });
   });
 
+  it("increments the visible commit version once per visible reducer commit", () => {
+    const initialState = createState();
+    const firstState = routerReducer(initialState, {
+      elements: createResolvedElements("route:/one", "/"),
+      interceptionContext: null,
+      layoutFlags: {},
+      navigationSnapshot: initialState.navigationSnapshot,
+      operation: createTestOperation(initialState, 101),
+      previousNextUrl: null,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/one",
+      type: "navigate",
+    });
+    const secondState = routerReducer(firstState, {
+      elements: createResolvedElements("route:/two", "/"),
+      interceptionContext: null,
+      layoutFlags: {},
+      navigationSnapshot: firstState.navigationSnapshot,
+      operation: createTestOperation(firstState, 102),
+      previousNextUrl: null,
+      renderId: 2,
+      rootLayoutTreePath: "/",
+      routeId: "route:/two",
+      type: "navigate",
+    });
+
+    expect(firstState.visibleCommitVersion).toBe(1);
+    expect(secondState.visibleCommitVersion).toBe(2);
+    expect(secondState.activeOperation).toMatchObject({
+      id: 102,
+      startedVisibleCommitVersion: 1,
+      state: "committed",
+      visibleCommitVersion: 2,
+    });
+  });
+
   it("carries interception context through pending navigation commits", async () => {
     const pending = await createPendingNavigationCommit({
       currentState: createState(),
@@ -174,6 +235,7 @@ describe("app browser entry state helpers", () => {
         }),
       ),
       navigationSnapshot: createState().navigationSnapshot,
+      operationLane: "navigation",
       previousNextUrl: "/feed",
       renderId: 1,
       type: "navigate",
@@ -201,6 +263,7 @@ describe("app browser entry state helpers", () => {
       currentState: interceptedState,
       nextElements: Promise.resolve(createResolvedElements("route:/feed", "/")),
       navigationSnapshot: createState().navigationSnapshot,
+      operationLane: "traverse",
       previousNextUrl: null,
       renderId: 2,
       type: "traverse",
@@ -218,6 +281,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
       navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "navigation",
       renderId: 1,
       type: "navigate",
     });
@@ -242,6 +306,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements,
       navigationSnapshot: createState().navigationSnapshot,
+      operationLane: "navigation",
       renderId: 1,
       type: "navigate",
     }).then((result) => {
@@ -269,12 +334,45 @@ describe("app browser entry state helpers", () => {
     expect(result.routeId).toBe("route:/dashboard");
   });
 
+  it("creates pending operation records from the current visible commit version", async () => {
+    const currentState = createState({
+      visibleCommitVersion: 4,
+    });
+
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
+      navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "refresh",
+      renderId: 9,
+      type: "navigate",
+    });
+
+    expect(pending.action.operation).toEqual({
+      id: 9,
+      lane: "refresh",
+      startedVisibleCommitVersion: 4,
+      state: "pending",
+    });
+
+    const committedState = routerReducer(currentState, pending.action);
+    expect(committedState.visibleCommitVersion).toBe(5);
+    expect(committedState.activeOperation).toEqual({
+      id: 9,
+      lane: "refresh",
+      startedVisibleCommitVersion: 4,
+      state: "committed",
+      visibleCommitVersion: 5,
+    });
+  });
+
   it("skips a pending commit when a newer navigation has become active", async () => {
     const currentState = createState();
     const pending = await createPendingNavigationCommit({
       currentState,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "navigation",
       renderId: 1,
       type: "navigate",
     });
@@ -294,6 +392,7 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
       navigationSnapshot: createState().navigationSnapshot,
+      operationLane: "refresh",
       previousNextUrl: "/feed",
       renderId: 1,
       type: "navigate",
@@ -306,20 +405,19 @@ describe("app browser entry state helpers", () => {
   });
 
   it("merges layoutFlags on navigate", () => {
-    const nextState = routerReducer(
-      createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } }),
-      {
-        elements: createResolvedElements("route:/next", "/"),
-        interceptionContext: null,
-        layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
-        navigationSnapshot: createState().navigationSnapshot,
-        previousNextUrl: null,
-        renderId: 1,
-        rootLayoutTreePath: "/",
-        routeId: "route:/next",
-        type: "navigate",
-      },
-    );
+    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
+    const nextState = routerReducer(state, {
+      elements: createResolvedElements("route:/next", "/"),
+      interceptionContext: null,
+      layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
+      navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
+      previousNextUrl: null,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/next",
+      type: "navigate",
+    });
 
     // Navigate merges: old flags preserved, new flags override
     expect(nextState.layoutFlags).toEqual({
@@ -330,31 +428,32 @@ describe("app browser entry state helpers", () => {
   });
 
   it("replaces layoutFlags on replace", () => {
-    const nextState = routerReducer(
-      createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } }),
-      {
-        elements: createResolvedElements("route:/next", "/"),
-        interceptionContext: null,
-        layoutFlags: { "layout:/": "d" },
-        navigationSnapshot: createState().navigationSnapshot,
-        previousNextUrl: null,
-        renderId: 1,
-        rootLayoutTreePath: "/",
-        routeId: "route:/next",
-        type: "replace",
-      },
-    );
+    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
+    const nextState = routerReducer(state, {
+      elements: createResolvedElements("route:/next", "/"),
+      interceptionContext: null,
+      layoutFlags: { "layout:/": "d" },
+      navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
+      previousNextUrl: null,
+      renderId: 1,
+      rootLayoutTreePath: "/",
+      routeId: "route:/next",
+      type: "replace",
+    });
 
     // Replace: only new flags
     expect(nextState.layoutFlags).toEqual({ "layout:/": "d" });
   });
 
   it("stores previousNextUrl on navigate actions", () => {
-    const nextState = routerReducer(createState(), {
+    const state = createState();
+    const nextState = routerReducer(state, {
       elements: createResolvedElements("route:/photos/42\0/feed", "/", "/feed"),
       interceptionContext: "/feed",
       layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
       previousNextUrl: "/feed",
       renderId: 1,
       rootLayoutTreePath: "/",
@@ -412,6 +511,7 @@ describe("app browser navigation controller", () => {
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements,
+        operationLane: "navigation",
         params: {},
         pendingRouterState: null,
         previousNextUrl: null,
@@ -474,6 +574,7 @@ describe("app browser navigation controller", () => {
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements,
+        operationLane: "navigation",
         params: {},
         pendingRouterState,
         previousNextUrl: null,
@@ -511,6 +612,7 @@ describe("app browser navigation controller", () => {
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
         nextElements,
+        operationLane: "navigation",
         params: {},
         pendingRouterState: null,
         previousNextUrl: null,
@@ -555,6 +657,7 @@ describe("app browser navigation controller", () => {
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements,
+        operationLane: "navigation",
         params: {},
         pendingRouterState: null,
         previousNextUrl: null,
@@ -615,6 +718,13 @@ describe("app browser navigation controller", () => {
       expect(assign).not.toHaveBeenCalled();
       expect(stateRef.current.routeId).toBe("route:/settings/account");
       expect(stateRef.current.previousNextUrl).toBeNull();
+      expect(stateRef.current.visibleCommitVersion).toBe(1);
+      expect(stateRef.current.activeOperation).toMatchObject({
+        lane: "server-action",
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      });
     } finally {
       detach();
     }
@@ -706,6 +816,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       currentState,
       navigationSnapshot: currentState.navigationSnapshot,
       nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/(dashboard)")),
+      operationLane: "server-action",
       renderId: 3,
       startedNavigationId: 7,
       type: "navigate",
@@ -735,6 +846,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       interceptionContext: null,
       layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
       previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",
@@ -758,6 +870,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       interceptionContext: null,
       layoutFlags: {},
       navigationSnapshot: createState().navigationSnapshot,
+      operation: createTestOperation(state),
       previousNextUrl: null,
       renderId: 1,
       rootLayoutTreePath: "/",

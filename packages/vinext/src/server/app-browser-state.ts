@@ -15,7 +15,27 @@ type HistoryStateRecord = {
   [key: string]: unknown;
 };
 
+export type OperationLane = "navigation" | "refresh" | "traverse" | "server-action" | "hmr";
+
+type OperationRecordBase = {
+  id: number;
+  lane: OperationLane;
+  startedVisibleCommitVersion: number;
+};
+
+export type PendingOperationRecord = OperationRecordBase & {
+  state: "pending";
+};
+
+export type CommittedOperationRecord = OperationRecordBase & {
+  state: "committed";
+  visibleCommitVersion: number;
+};
+
+export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
+
 export type AppRouterState = {
+  activeOperation: OperationRecord | null;
   elements: AppElements;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
@@ -24,6 +44,7 @@ export type AppRouterState = {
   navigationSnapshot: ClientNavigationRenderSnapshot;
   rootLayoutTreePath: string | null;
   routeId: string;
+  visibleCommitVersion: number;
 };
 
 export type AppRouterAction = {
@@ -31,6 +52,7 @@ export type AppRouterAction = {
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  operation: PendingOperationRecord;
   previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
@@ -82,6 +104,32 @@ export function createHistoryStateWithPreviousNextUrl(
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
   const value = cloneHistoryState(state)[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
   return typeof value === "string" ? value : null;
+}
+
+export function createOperationRecord(options: {
+  id: number;
+  lane: OperationLane;
+  startedVisibleCommitVersion: number;
+}): PendingOperationRecord {
+  return {
+    id: options.id,
+    lane: options.lane,
+    startedVisibleCommitVersion: options.startedVisibleCommitVersion,
+    state: "pending",
+  };
+}
+
+function commitOperationRecord(
+  operation: PendingOperationRecord,
+  visibleCommitVersion: number,
+): CommittedOperationRecord {
+  return {
+    id: operation.id,
+    lane: operation.lane,
+    startedVisibleCommitVersion: operation.startedVisibleCommitVersion,
+    state: "committed",
+    visibleCommitVersion,
+  };
 }
 
 export function resolveInterceptionContextFromPreviousNextUrl(
@@ -140,31 +188,66 @@ export function resolveServerActionRequestState(
   return { headers };
 }
 
+type AppRouterStateWithoutCommitMetadata = {
+  elements: AppElements;
+  interceptionContext: string | null;
+  layoutFlags: LayoutFlags;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+  previousNextUrl: string | null;
+  renderId: number;
+  rootLayoutTreePath: string | null;
+  routeId: string;
+};
+
+function commitVisibleRouterState(
+  state: AppRouterState,
+  nextState: AppRouterStateWithoutCommitMetadata,
+  operation: PendingOperationRecord,
+): AppRouterState {
+  // Advances when the browser router accepts a new visible router-state commit.
+  // This is the lifecycle baseline used to reject stale async results; it is
+  // not a React DOM paint signal.
+  const visibleCommitVersion = state.visibleCommitVersion + 1;
+  return {
+    ...nextState,
+    activeOperation: commitOperationRecord(operation, visibleCommitVersion),
+    visibleCommitVersion,
+  };
+}
+
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
     case "traverse":
     case "navigate":
-      return {
-        elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
-        interceptionContext: action.interceptionContext,
-        layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
-        navigationSnapshot: action.navigationSnapshot,
-        previousNextUrl: action.previousNextUrl,
-        renderId: action.renderId,
-        rootLayoutTreePath: action.rootLayoutTreePath,
-        routeId: action.routeId,
-      };
+      return commitVisibleRouterState(
+        state,
+        {
+          elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
+          interceptionContext: action.interceptionContext,
+          layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
+          navigationSnapshot: action.navigationSnapshot,
+          previousNextUrl: action.previousNextUrl,
+          renderId: action.renderId,
+          rootLayoutTreePath: action.rootLayoutTreePath,
+          routeId: action.routeId,
+        },
+        action.operation,
+      );
     case "replace":
-      return {
-        elements: action.elements,
-        interceptionContext: action.interceptionContext,
-        layoutFlags: action.layoutFlags,
-        navigationSnapshot: action.navigationSnapshot,
-        previousNextUrl: action.previousNextUrl,
-        renderId: action.renderId,
-        rootLayoutTreePath: action.rootLayoutTreePath,
-        routeId: action.routeId,
-      };
+      return commitVisibleRouterState(
+        state,
+        {
+          elements: action.elements,
+          interceptionContext: action.interceptionContext,
+          layoutFlags: action.layoutFlags,
+          navigationSnapshot: action.navigationSnapshot,
+          previousNextUrl: action.previousNextUrl,
+          renderId: action.renderId,
+          rootLayoutTreePath: action.rootLayoutTreePath,
+          routeId: action.routeId,
+        },
+        action.operation,
+      );
     default: {
       const _exhaustive: never = action.type;
       throw new Error("[vinext] Unknown router action: " + String(_exhaustive));
@@ -207,6 +290,7 @@ export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  operationLane: OperationLane;
   previousNextUrl?: string | null;
   renderId: number;
   type: "navigate" | "replace" | "traverse";
@@ -224,6 +308,11 @@ export async function createPendingNavigationCommit(options: {
       interceptionContext: metadata.interceptionContext,
       layoutFlags: metadata.layoutFlags,
       navigationSnapshot: options.navigationSnapshot,
+      operation: createOperationRecord({
+        id: options.renderId,
+        lane: options.operationLane,
+        startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
+      }),
       previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
@@ -243,6 +332,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   currentState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   nextElements: Promise<AppElements>;
+  operationLane: OperationLane;
   previousNextUrl?: string | null;
   renderId: number;
   startedNavigationId: number;
@@ -252,6 +342,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
     currentState: options.currentState,
     nextElements: options.nextElements,
     navigationSnapshot: options.navigationSnapshot,
+    operationLane: options.operationLane,
     previousNextUrl: options.previousNextUrl,
     renderId: options.renderId,
     type: options.type,

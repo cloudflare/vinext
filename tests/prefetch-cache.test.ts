@@ -81,9 +81,14 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
   }
 }
 
-async function waitForPrefetchSetup(): Promise<void> {
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+async function waitForPrefetchSetup(isReady: () => boolean = () => true): Promise<void> {
+  const deadline = Date.now() + 1_000;
+
+  do {
+    await Promise.resolve();
+    if (isReady()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } while (Date.now() < deadline);
 }
 
 describe("prefetch cache eviction", () => {
@@ -107,7 +112,7 @@ describe("prefetch cache eviction", () => {
     (globalThis as any).fetch = fetch;
 
     useRouter().prefetch("http://localhost/dashboard?tab=1");
-    await waitForPrefetchSetup();
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetchedUrl).toMatch(/^\/dashboard\.rsc\?tab=1&_rsc(?:=.+)?$/);

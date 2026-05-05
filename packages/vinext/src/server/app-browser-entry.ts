@@ -60,6 +60,7 @@ import {
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
   type AppRouterState,
+  type OperationLane,
 } from "./app-browser-state.js";
 import { DevRecoveryBoundary } from "vinext/shims/error-boundary";
 import { ElementsContext, Slot } from "vinext/shims/slot";
@@ -100,6 +101,21 @@ type NavigationKind = "navigate" | "traverse" | "refresh";
 // Both call sites must stay in sync — update here if NavigationKind gains new values.
 function toActionType(kind: NavigationKind): "navigate" | "traverse" {
   return kind === "traverse" ? "traverse" : "navigate";
+}
+
+function toOperationLane(kind: NavigationKind): OperationLane {
+  switch (kind) {
+    case "navigate":
+      return "navigation";
+    case "refresh":
+      return "refresh";
+    case "traverse":
+      return "traverse";
+    default: {
+      const _exhaustive: never = kind;
+      throw new Error("[vinext] Unknown navigation kind: " + String(_exhaustive));
+    }
+  }
 }
 
 type VisitedResponseCacheEntry = {
@@ -234,6 +250,7 @@ async function renderNavigationPayload(
   pendingRouterState: PendingBrowserRouterState | null,
   useTransition = true,
   actionType: "navigate" | "replace" | "traverse" = "navigate",
+  operationLane: OperationLane = "navigation",
 ): Promise<void> {
   try {
     return await browserNavigationController.renderNavigationPayload({
@@ -245,6 +262,7 @@ async function renderNavigationPayload(
       historyUpdateMode,
       navigationSnapshot,
       nextElements: payload,
+      operationLane,
       params,
       pendingRouterState,
       previousNextUrl,
@@ -426,6 +444,7 @@ function BrowserRoot({
   const resolvedElements = use(initialElements);
   const initialMetadata = readAppElementsMetadata(resolvedElements);
   const [treeStateValue, setTreeStateValue] = useState<AppRouterState | Promise<AppRouterState>>({
+    activeOperation: null,
     elements: resolvedElements,
     interceptionContext: initialMetadata.interceptionContext,
     layoutFlags: initialMetadata.layoutFlags,
@@ -434,6 +453,7 @@ function BrowserRoot({
     renderId: 0,
     rootLayoutTreePath: initialMetadata.rootLayoutTreePath,
     routeId: initialMetadata.routeId,
+    visibleCommitVersion: 0,
   });
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
 
@@ -984,6 +1004,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             pendingRouterState,
             isSameRoute,
             toActionType(navigationKind),
+            toOperationLane(navigationKind),
           );
           return;
         }
@@ -1123,6 +1144,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           pendingRouterState,
           isSameRoute,
           toActionType(navigationKind),
+          toOperationLane(navigationKind),
         );
         // Don't cache the response if this navigation was superseded during
         // renderNavigationPayload's await — the elements were never dispatched.
