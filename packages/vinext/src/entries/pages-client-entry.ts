@@ -17,6 +17,7 @@ import {
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { normalizePathSeparators } from "./runtime-entry-module.js";
 
 export async function generateClientEntry(
   pagesDir: string,
@@ -32,7 +33,7 @@ export async function generateClientEntry(
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
   // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
   const loaderEntries = pageRoutes.map((r: Route) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
+    const absPath = normalizePathSeparators(r.filePath);
     const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
     // JSON.stringify safely escapes quotes, backslashes, and special chars in
     // both the route pattern and the absolute file path.
@@ -40,7 +41,7 @@ export async function generateClientEntry(
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
 
-  const appFileBase = appFilePath?.replace(/\\/g, "/");
+  const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
 
   return `
 import "vinext/instrumentation-client";

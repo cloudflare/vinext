@@ -7,7 +7,7 @@
  *
  * Extracted from index.ts.
  */
-import { resolveEntryPath } from "./runtime-entry-module.js";
+import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -45,18 +45,18 @@ export async function generateServerEntry(
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
   const pageImports = pageRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
+    const absPath = normalizePathSeparators(r.filePath);
     return `import * as page_${i} from ${JSON.stringify(absPath)};`;
   });
 
   const apiImports = apiRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
+    const absPath = normalizePathSeparators(r.filePath);
     return `import * as api_${i} from ${JSON.stringify(absPath)};`;
   });
 
   // Build the route table — include filePath for SSR manifest lookup
   const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-    const absPath = r.filePath.replace(/\\/g, "/");
+    const absPath = normalizePathSeparators(r.filePath);
     return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
   });
 
@@ -70,12 +70,12 @@ export async function generateServerEntry(
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
   const appImportCode =
     appFilePath !== null
-      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
+      ? `import { default as AppComponent } from ${JSON.stringify(normalizePathSeparators(appFilePath))};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
+      ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
       : `const DocumentComponent = null;`;
 
   // Serialize i18n config for embedding in the server entry
@@ -121,7 +121,7 @@ export async function generateServerEntry(
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};`
+    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};`
     : "";
 
   const instrumentationInitCode = instrumentationPath
@@ -140,7 +140,7 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};`
+    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};`
     : "";
 
   // The matcher config is read from the middleware module at request time.
@@ -407,43 +407,6 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
     }
   }
   return tags.join("\\n  ");
-}
-
-// i18n helpers
-function extractLocale(url) {
-  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
-  const pathname = url.split("?")[0];
-  const parts = pathname.split("/").filter(Boolean);
-  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
-    const locale = parts[0];
-    const rest = "/" + parts.slice(1).join("/");
-    return { locale, url: (rest || "/") + query, hadPrefix: true };
-  }
-  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
-}
-
-function detectLocaleFromHeaders(headers) {
-  if (!i18nConfig) return null;
-  const acceptLang = headers.get("accept-language");
-  if (!acceptLang) return null;
-  const langs = acceptLang.split(",").map(function(part) {
-    const pieces = part.trim().split(";");
-    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
-    return { lang: pieces[0].trim().toLowerCase(), q: q };
-  }).sort(function(a, b) { return b.q - a.q; });
-  for (let k = 0; k < langs.length; k++) {
-    const lang = langs[k].lang;
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
-    }
-    const prefix = lang.split("-")[0];
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      const loc = i18nConfig.locales[j].toLowerCase();
-      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
-    }
-  }
-  return null;
 }
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders) {

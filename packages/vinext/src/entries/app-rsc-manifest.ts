@@ -1,6 +1,7 @@
 import type { AppRoute } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import { normalizePathSeparators } from "./runtime-entry-module.js";
 
 type AppRscManifestCode = {
   imports: string[];
@@ -39,7 +40,7 @@ function createImportAllocator(): ImportAllocator {
       if (existing) return existing;
 
       const varName = `mod_${importIdx++}`;
-      const absPath = filePath.replace(/\\/g, "/");
+      const absPath = normalizePathSeparators(filePath);
       imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
       importMap.set(filePath, varName);
       return varName;

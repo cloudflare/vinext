@@ -8,7 +8,7 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import { resolveEntryPath } from "./runtime-entry-module.js";
+import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -180,10 +180,10 @@ import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
-${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
+${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}
 ${
   instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};
+    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
