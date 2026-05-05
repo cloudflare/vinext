@@ -31,11 +31,7 @@ import {
   _consumeRequestScopedCacheLife,
 } from "vinext/shims/cache";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
-import {
-  createValidFileMatcher,
-  findFileWithExtensions,
-  type ValidFileMatcher,
-} from "../routing/file-matcher.js";
+import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 export { readPrerenderSecret } from "./server-manifest.js";
