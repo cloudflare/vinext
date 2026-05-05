@@ -114,6 +114,19 @@ const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 const browserNavigationController = createAppBrowserNavigationController();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 
+// Parses a URI-encoded JSON value carried in a response header (e.g.
+// `X-Vinext-Params`). Returns `null` on missing or malformed input so callers
+// can fall back to their own defaults. Silent by design — these headers are
+// best-effort hydration data and a parse failure should not break navigation.
+function parseEncodedJsonHeader<T>(value: string | null): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(decodeURIComponent(value)) as T;
+  } catch {
+    return null;
+  }
+}
+
 function isRouterStatePromise(
   value: AppRouterState | Promise<AppRouterState>,
 ): value is Promise<AppRouterState> {
@@ -723,14 +736,17 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
   // same path after a transient failure still gets one recovery attempt.
   clearReloadFlag();
 
-  let params: Record<string, string | string[]> = {};
-  const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
-  if (paramsHeader) {
+  // Ignore malformed param headers and continue with hydration. The original
+  // try/catch also swallowed errors from applyClientParams; preserve that.
+  const parsedParams = parseEncodedJsonHeader<Record<string, string | string[]>>(
+    rscResponse.headers.get("X-Vinext-Params"),
+  );
+  const params: Record<string, string | string[]> = parsedParams ?? {};
+  if (parsedParams) {
     try {
-      params = JSON.parse(decodeURIComponent(paramsHeader)) as Record<string, string | string[]>;
-      applyClientParams(params);
+      applyClientParams(parsedParams);
     } catch {
-      // Ignore malformed param headers and continue with hydration.
+      // Ignore — matches the previous combined try/catch behavior.
     }
   }
 
@@ -1087,18 +1103,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           continue;
         }
 
-        let navParams: Record<string, string | string[]> = {};
-        const paramsHeader = navResponse.headers.get("X-Vinext-Params");
-        if (paramsHeader) {
-          try {
-            navParams = JSON.parse(decodeURIComponent(paramsHeader)) as Record<
-              string,
-              string | string[]
-            >;
-          } catch {
-            // navParams stays as {}
-          }
-        }
+        // navParams falls back to {} on a missing or malformed header.
+        const navParams: Record<string, string | string[]> =
+          parseEncodedJsonHeader<Record<string, string | string[]>>(
+            navResponse.headers.get("X-Vinext-Params"),
+          ) ?? {};
         // Build snapshot from local params, not latestClientParams
         const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
 
