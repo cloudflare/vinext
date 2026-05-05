@@ -7,7 +7,12 @@
  *
  * Extracted from index.ts.
  */
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import {
+  generateIsrWrapperCode,
+  normalizePathSeparators,
+  resolveEntryPath,
+  serializePagesConfig,
+} from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -78,38 +83,14 @@ export async function generateServerEntry(
       ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
       : `const DocumentComponent = null;`;
 
-  // Serialize i18n config for embedding in the server entry
-  const i18nConfigJson = nextConfig?.i18n
-    ? JSON.stringify({
-        locales: nextConfig.i18n.locales,
-        defaultLocale: nextConfig.i18n.defaultLocale,
-        localeDetection: nextConfig.i18n.localeDetection,
-        domains: nextConfig.i18n.domains,
-      })
-    : "null";
+  // Serialize i18n + full resolved config for embedding in the server entry.
+  // The full config (redirects, rewrites, headers, basePath, trailingSlash, …)
+  // is embedded so prod-server.ts can apply them without loading
+  // next.config.js at runtime.
+  const { i18nConfigJson, vinextConfigJson } = serializePagesConfig(nextConfig);
 
   // Embed the resolved build ID at build time
   const buildIdJson = JSON.stringify(nextConfig?.buildId ?? null);
-
-  // Serialize the full resolved config for the production server.
-  // This embeds redirects, rewrites, headers, basePath, trailingSlash
-  // so prod-server.ts can apply them without loading next.config.js at runtime.
-  const vinextConfigJson = JSON.stringify({
-    basePath: nextConfig?.basePath ?? "",
-    trailingSlash: nextConfig?.trailingSlash ?? false,
-    redirects: nextConfig?.redirects ?? [],
-    rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
-    headers: nextConfig?.headers ?? [],
-    expireTime: nextConfig?.expireTime,
-    i18n: nextConfig?.i18n ?? null,
-    images: {
-      deviceSizes: nextConfig?.images?.deviceSizes,
-      imageSizes: nextConfig?.images?.imageSizes,
-      dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
-      contentDispositionType: nextConfig?.images?.contentDispositionType,
-      contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
-    },
-  });
 
   // Generate instrumentation code if instrumentation.ts exists.
   // For production (Cloudflare Workers), instrumentation.ts is bundled into the
@@ -215,18 +196,7 @@ const buildId = ${buildIdJson};
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
-function isrGet(key) {
-  return __sharedIsrGet(key);
-}
-function isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
-  return __sharedIsrSet(key, data, revalidateSeconds, tags, expireSeconds);
-}
-function triggerBackgroundRegeneration(key, renderFn, errorContext) {
-  return __sharedTriggerBackgroundRegeneration(key, renderFn, errorContext);
-}
-function isrCacheKey(router, pathname) {
-  return __sharedIsrCacheKey(router, pathname, buildId || undefined);
-}
+${generateIsrWrapperCode()}
 
 async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);

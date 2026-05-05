@@ -8,7 +8,11 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import {
+  normalizePathSeparators,
+  resolveEntryPath,
+  serializeAppConfig,
+} from "./runtime-entry-module.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -133,17 +137,32 @@ export function generateRscEntry(
   config?: AppRouterConfig,
   instrumentationPath?: string | null,
 ): string {
-  const bp = basePath ?? "";
-  const ts = trailingSlash ?? false;
-  const redirects = config?.redirects ?? [];
-  const rewrites = config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
-  const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
-  const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
-  const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
+  // Routing/i18n/cache config that's also embedded by the Pages entry.
+  // Keep the JSON.stringify chain in one place so both generators stay in sync.
+  const {
+    basePathJson,
+    trailingSlashJson,
+    i18nJson,
+    redirectsJson,
+    rewritesJson,
+    headersJson,
+    expireTimeJson,
+  } = serializeAppConfig(
+    {
+      basePath: basePath ?? "",
+      trailingSlash: trailingSlash ?? false,
+      redirects: config?.redirects,
+      rewrites: config?.rewrites,
+      headers: config?.headers,
+      expireTime: config?.expireTime,
+      i18n: config?.i18n ?? null,
+    },
+    DEFAULT_EXPIRE_TIME,
+  );
   const manifestCode = buildAppRscManifestCode({ routes, metadataRoutes, globalErrorPath });
   const {
     imports,
@@ -398,15 +417,15 @@ async function buildPageElements(route, params, routePath, pageRequest) {
   });
 }
 
-const __basePath = ${JSON.stringify(bp)};
-const __trailingSlash = ${JSON.stringify(ts)};
-const __i18nConfig = ${JSON.stringify(i18nConfig)};
-const __configRedirects = ${JSON.stringify(redirects)};
-const __configRewrites = ${JSON.stringify(rewrites)};
-const __configHeaders = ${JSON.stringify(headers)};
+const __basePath = ${basePathJson};
+const __trailingSlash = ${trailingSlashJson};
+const __i18nConfig = ${i18nJson};
+const __configRedirects = ${redirectsJson};
+const __configRewrites = ${rewritesJson};
+const __configHeaders = ${headersJson};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
-const __expireTime = ${JSON.stringify(expireTime)};
+const __expireTime = ${expireTimeJson};
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
