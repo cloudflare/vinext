@@ -29,6 +29,7 @@ import {
   createRscRedirectLocation,
   resolveInvalidRscCacheBustingRequest,
   stripRscCacheBustingSearchParam,
+  stripRscSuffix,
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
@@ -249,7 +250,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
-  const redirectPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+  const redirectPathname = stripRscSuffix(pathname);
   const redirect = matchRedirect(
     redirectPathname,
     options.configRedirects,

@@ -128,6 +128,14 @@ export function stripRscCacheBustingSearchParam(url: URL): void {
   url.search = pairs.length > 0 ? `?${pairs.join("&")}` : "";
 }
 
+/**
+ * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
+ * unchanged when the suffix is absent.
+ */
+export function stripRscSuffix(pathname: string): string {
+  return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+}
+
 export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
   const headers = new Headers({
     Accept: VINEXT_RSC_CONTENT_TYPE,

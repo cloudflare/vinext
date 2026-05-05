@@ -78,6 +78,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
+  stripRscSuffix,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_MOUNTED_SLOTS_HEADER,
 } from "./app-rsc-cache-busting.js";
@@ -1077,7 +1078,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             const parsed = new URL(responseUrl, window.location.origin);
             stripRscCacheBustingSearchParam(parsed);
             const origUrl = new URL(currentHref, window.location.origin);
-            let pathname = parsed.pathname.replace(/\.rsc$/, "");
+            let pathname = stripRscSuffix(parsed.pathname);
             // toRscUrl strips trailing slash before appending .rsc, so the
             // response URL loses it on the round-trip. Restore it when the
             // original href had one so sites with trailingSlash:true don't
@@ -1107,7 +1108,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           // Server-side redirect: update the URL in history and loop to fetch
           // the destination without settling pendingRouterState. This keeps
           // isPending true across all redirect hops instead of flashing false.
-          const destinationPath = finalUrl.pathname.replace(/\.rsc$/, "") + finalUrl.search;
+          const destinationPath = stripRscSuffix(finalUrl.pathname) + finalUrl.search;
           replaceHistoryStateWithoutNotify(
             createHistoryStateWithPreviousNextUrl(null, requestPreviousNextUrl),
             "",

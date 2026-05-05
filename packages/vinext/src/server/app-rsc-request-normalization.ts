@@ -3,6 +3,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
+import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
@@ -86,7 +87,7 @@ export function normalizeRscRequest(
 
   // Steps 6-7: RSC detection and cleanPathname.
   const isRscRequest = pathname.endsWith(".rsc");
-  const cleanPathname = pathname.replace(/\.rsc$/, "");
+  const cleanPathname = stripRscSuffix(pathname);
 
   // Step 8: Sanitize X-Vinext-Interception-Context.
   // Null bytes in header values can be used for injection in some HTTP stacks.
