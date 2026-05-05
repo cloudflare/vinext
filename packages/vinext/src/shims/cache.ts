@@ -18,7 +18,7 @@
  */
 
 import { markDynamicUsage as _markDynamic } from "./headers.js";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import { fnv1a64 } from "../utils/hash.js";
 import {
   isInsideUnifiedScope,
@@ -533,11 +533,9 @@ export type CacheState = {
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
 
-const _ALS_KEY = Symbol.for("vinext.cache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.cache.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _cacheAls = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<CacheState>()) as AsyncLocalStorage<CacheState>;
+const _cacheAls = getOrCreateAls<CacheState>("vinext.cache.als");
 
 const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   requestScopedCacheLife: null,
@@ -752,9 +750,7 @@ export function cacheTag(...tags: string[]): void {
  * Stored on globalThis via Symbol so headers.ts can detect the scope without
  * a direct import (avoiding circular dependencies).
  */
-const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
-const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
-  new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>;
+const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
 
 /**
  * Wrapper used to serialize `unstable_cache` results so that `undefined` can

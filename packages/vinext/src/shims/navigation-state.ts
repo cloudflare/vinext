@@ -11,7 +11,7 @@
  * uses a registration pattern so it works in both environments.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   _registerStateAccessors,
   type NavigationContext,
@@ -32,11 +32,9 @@ export type NavigationState = {
   serverInsertedHTMLCallbacks: Array<() => unknown>;
 };
 
-const _ALS_KEY = Symbol.for("vinext.navigation.als");
 const _FALLBACK_KEY = Symbol.for("vinext.navigation.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<NavigationState>()) as AsyncLocalStorage<NavigationState>;
+const _als = getOrCreateAls<NavigationState>("vinext.navigation.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   serverContext: null,

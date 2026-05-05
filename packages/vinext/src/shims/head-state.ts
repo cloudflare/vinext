@@ -9,8 +9,8 @@
  */
 
 import type React from "react";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerHeadStateAccessors } from "./head.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -25,10 +25,9 @@ export type HeadState = {
   ssrHeadChildren: React.ReactNode[];
 };
 
-const _ALS_KEY = Symbol.for("vinext.head.als");
 const _FALLBACK_KEY = Symbol.for("vinext.head.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<HeadState>()) as AsyncLocalStorage<HeadState>;
+const _als = getOrCreateAls<HeadState>("vinext.head.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrHeadChildren: [],

@@ -8,8 +8,9 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import type { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   serializeSetCookie,
   validateCookieAttributeValue,
@@ -55,11 +56,9 @@ export type VinextHeadersShimState = {
 //   (next/headers) always share it.
 // - We use AsyncLocalStorage so concurrent requests don't stomp each other's
 //   headers/cookies/dynamic-usage state.
-const _ALS_KEY = Symbol.for("vinext.nextHeadersShim.als");
 const _FALLBACK_KEY = Symbol.for("vinext.nextHeadersShim.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<VinextHeadersShimState>()) as AsyncLocalStorage<VinextHeadersShimState>;
+const _als = getOrCreateAls<VinextHeadersShimState>("vinext.nextHeadersShim.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,

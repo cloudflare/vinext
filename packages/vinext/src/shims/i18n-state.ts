@@ -9,8 +9,8 @@
  * be bundled for the browser.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerI18nStateAccessors, type I18nContext } from "./i18n-context.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -25,10 +25,9 @@ export type I18nState = {
   i18nContext: I18nContext | null;
 };
 
-const _ALS_KEY = Symbol.for("vinext.i18n.als");
 const _FALLBACK_KEY = Symbol.for("vinext.i18n.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<I18nState>()) as AsyncLocalStorage<I18nState>;
+const _als = getOrCreateAls<I18nState>("vinext.i18n.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   i18nContext: null,

@@ -20,8 +20,8 @@
  */
 
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -481,11 +481,9 @@ export type FetchCacheMode =
   | "only-cache"
   | "only-no-store";
 
-const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<FetchCacheState>()) as AsyncLocalStorage<FetchCacheState>;
+const _als = getOrCreateAls<FetchCacheState>("vinext.fetchCache.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],

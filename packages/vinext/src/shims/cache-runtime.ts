@@ -28,7 +28,6 @@
  * - "use cache: private"  — per-request cache (not shared across requests)
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getCacheHandler,
   cacheLifeProfiles,
@@ -37,6 +36,7 @@ import {
   type CacheControlMetadata,
   type CacheLifeConfig,
 } from "./cache.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -58,10 +58,7 @@ export type CacheContext = {
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
 // without a direct import (avoiding circular dependencies).
-const _CONTEXT_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
-const _gCacheRuntime = globalThis as unknown as Record<PropertyKey, unknown>;
-export const cacheContextStorage = (_gCacheRuntime[_CONTEXT_ALS_KEY] ??=
-  new AsyncLocalStorage<CacheContext>()) as AsyncLocalStorage<CacheContext>;
+export const cacheContextStorage = getOrCreateAls<CacheContext>("vinext.cacheRuntime.contextAls");
 
 // Register the context accessor so cacheLife()/cacheTag() in cache.ts can
 // access the context without a circular import.
@@ -252,11 +249,9 @@ export type PrivateCacheState = {
   _privateCache: Map<string, unknown> | null;
 };
 
-const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _privateAls = (_g[_PRIVATE_ALS_KEY] ??=
-  new AsyncLocalStorage<PrivateCacheState>()) as AsyncLocalStorage<PrivateCacheState>;
+const _privateAls = getOrCreateAls<PrivateCacheState>("vinext.cacheRuntime.privateAls");
 
 const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
   _privateCache: new Map<string, unknown>(),
