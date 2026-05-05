@@ -147,12 +147,16 @@ export function generateDevOriginCheckCode(allowedDevOrigins?: string[]): string
 const __allowedDevOrigins = ${origins};
 const __safeDevHosts = ["localhost", "127.0.0.1", "[::1]"];
 
+function __forbidden() {
+  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+}
+
 function __validateDevRequestOrigin(request) {
   // Check Sec-Fetch headers (catches <script> tag exfiltration)
   if (request.headers.get("sec-fetch-mode") === "no-cors" &&
       request.headers.get("sec-fetch-site") === "cross-site") {
     console.warn("[vinext] Blocked cross-site no-cors request to " + new URL(request.url).pathname);
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return __forbidden();
   }
 
   const origin = request.headers.get("origin");
@@ -162,7 +166,7 @@ function __validateDevRequestOrigin(request) {
   if (origin === "null") {
     if (!__allowedDevOrigins.includes("null")) {
       console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
-      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+      return __forbidden();
     }
     return null;
   }
@@ -171,7 +175,7 @@ function __validateDevRequestOrigin(request) {
   try {
     originHostname = new URL(origin).hostname.toLowerCase();
   } catch {
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return __forbidden();
   }
 
   // Allow localhost, 127.0.0.1, [::1], and *.localhost
@@ -195,7 +199,7 @@ function __validateDevRequestOrigin(request) {
     \`[vinext] Blocked cross-origin request from "\${origin}" to \${new URL(request.url).pathname}. \` +
     \`To allow this origin, add it to allowedDevOrigins in next.config.js.\`
   );
-  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+  return __forbidden();
 }
 `;
 }

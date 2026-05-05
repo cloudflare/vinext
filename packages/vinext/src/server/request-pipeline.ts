@@ -17,6 +17,16 @@ import { matchHeaders } from "../config/config-matchers.js";
  */
 
 /**
+ * Build a 403 Forbidden plain-text response.
+ *
+ * Centralizes the `new Response("Forbidden", { status: 403, ... })` pattern
+ * shared by CSRF origin validation and dev-server origin checks.
+ */
+export function forbiddenResponse(): Response {
+  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+}
+
+/**
  * Guard against protocol-relative URL open redirects.
  *
  * Paths like `//example.com/` would be redirected to `//example.com` by the
@@ -312,14 +322,14 @@ export function validateCsrfOrigin(
     console.warn(
       `[vinext] CSRF origin "null" blocked for server action. To allow requests from sandboxed contexts, add "null" to experimental.serverActions.allowedOrigins.`,
     );
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return forbiddenResponse();
   }
 
   let originHost: string;
   try {
     originHost = new URL(originHeader).host.toLowerCase();
   } catch {
-    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    return forbiddenResponse();
   }
 
   // Only use the Host header for origin comparison — never trust
@@ -341,7 +351,7 @@ export function validateCsrfOrigin(
   console.warn(
     `[vinext] CSRF origin mismatch: origin "${originHost}" does not match host "${hostHeader}". Blocking server action request.`,
   );
-  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+  return forbiddenResponse();
 }
 
 /**
