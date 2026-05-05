@@ -2,6 +2,7 @@ import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cach
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import { readStreamAsText } from "../utils/text-stream.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -322,17 +323,7 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const cachePromise = (async () => {
     try {
-      const reader = streamForCache.getReader();
-      const decoder = new TextDecoder();
-      const chunks: string[] = [];
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        chunks.push(decoder.decode(value, { stream: true }));
-      }
-      chunks.push(decoder.decode());
+      const cachedHtml = await readStreamAsText(streamForCache);
 
       if (options.consumeDynamicUsage()) {
         options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
@@ -353,7 +344,7 @@ export function finalizeAppPageHtmlCacheResponse(
       const writes = [
         options.isrSet(
           htmlKey,
-          buildAppPageCacheValue(chunks.join(""), undefined, 200),
+          buildAppPageCacheValue(cachedHtml, undefined, 200),
           cachePolicy.revalidateSeconds,
           pageTags,
           cachePolicy.expireSeconds,

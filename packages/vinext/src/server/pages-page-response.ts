@@ -5,6 +5,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { buildRevalidateCacheControl } from "./cache-control.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { reportRequestError } from "./instrumentation.js";
+import { readStreamAsText } from "../utils/text-stream.js";
 
 type PagesFontPreload = {
   href: string;
@@ -193,26 +194,6 @@ async function buildPagesCompositeStream(
   });
 }
 
-async function recordStreamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      chunks.push(decoder.decode(chunk.value, { stream: true }));
-    }
-    chunks.push(decoder.decode());
-    return chunks.join("");
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 async function reportPagesIsrCacheWriteError(
   error: unknown,
   cacheKey: string,
@@ -245,7 +226,7 @@ function schedulePagesIsrCacheWrite(options: {
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
 }): void {
-  const cacheWritePromise = recordStreamToString(options.stream)
+  const cacheWritePromise = readStreamAsText(options.stream)
     .then((bodyHtml) =>
       options.setCache(
         options.cacheKey,

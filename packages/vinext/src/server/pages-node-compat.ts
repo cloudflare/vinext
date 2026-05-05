@@ -1,5 +1,6 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
+import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
 const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
@@ -57,28 +58,9 @@ async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number)
     return "";
   }
 
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-  let totalSize = 0;
-
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) {
-      break;
-    }
-
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      await reader.cancel();
-      throw new PagesBodyParseError("Request body too large", 413);
-    }
-
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
+  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
+    throw new PagesBodyParseError("Request body too large", 413);
+  });
 }
 
 export async function parsePagesApiBody(

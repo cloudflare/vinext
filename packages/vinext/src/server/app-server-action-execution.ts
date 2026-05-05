@@ -9,6 +9,7 @@ import {
   parseNextRedirectDigest,
 } from "./next-error-digest.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
+import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
@@ -192,26 +193,9 @@ function getServerActionFailureMessage(error: unknown): string {
 
 export async function readActionBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) return "";
-
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-  let totalSize = 0;
-
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) break;
-
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      await reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
+  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
+    throw new Error("Request body too large");
+  });
 }
 
 export async function readActionFormDataWithLimit(
