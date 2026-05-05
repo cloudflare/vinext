@@ -650,12 +650,7 @@ describe("app browser navigation controller", () => {
   });
 });
 
-// ─── BASE-02: Lock current lifecycle settlement behaviour ─────────────────────
-// Ported from Next.js navigation lifecycle semantics:
-// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/action-queue.ts
-// Reference: issue #726 Layer 1 lifecycle authority model
-
-describe("app browser navigation lifecycle settlement (BASE-02)", () => {
+describe("app browser navigation lifecycle settlement", () => {
   it("most recent navigation commits when three are started and payloads resolve in reverse order", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
     let resolveA!: (elements: AppElements) => void;
@@ -996,12 +991,7 @@ describe("app browser navigation lifecycle settlement (BASE-02)", () => {
   });
 });
 
-// ─── BASE-03: Lock root-layout hard navigation behaviour ──────────────────────
-// Ported from Next.js root-layout boundary semantics:
-// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/compare-states.ts
-// Reference: issue #726 Layer 5 root-layout promotion
-
-describe("app browser root-layout hard navigation (BASE-03)", () => {
+describe("app browser root-layout hard navigation", () => {
   it("renderNavigationPayload calls window.location.assign when root layout changes", async () => {
     const { controller, detach } = createControllerHarness(
       createState({ rootLayoutTreePath: "/(marketing)" }),
