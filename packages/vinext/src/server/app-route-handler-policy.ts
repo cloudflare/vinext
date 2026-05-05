@@ -4,6 +4,7 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
@@ -177,20 +178,20 @@ export function resolveAppRouteHandlerSpecialError(
   }
 
   const digest = String(error.digest);
-  if (digest.startsWith("NEXT_REDIRECT;")) {
-    const parts = digest.split(";");
-    const redirectUrl = decodeURIComponent(parts[2]);
+  const redirect = parseNextRedirectDigest(digest);
+  if (redirect) {
     return {
       kind: "redirect",
-      location: new URL(redirectUrl, requestUrl).toString(),
-      statusCode: options?.isAction ? 303 : parts[3] ? parseInt(parts[3], 10) : 307,
+      location: new URL(redirect.url, requestUrl).toString(),
+      statusCode: options?.isAction ? 303 : redirect.status,
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+  const httpError = parseNextHttpErrorDigest(digest);
+  if (httpError) {
     return {
       kind: "status",
-      statusCode: digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
+      statusCode: httpError.status,
     };
   }
 

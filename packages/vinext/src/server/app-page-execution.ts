@@ -2,6 +2,7 @@ import type { LayoutFlags } from "./app-elements.js";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import { createRscRedirectLocation } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 
 export type { LayoutFlags };
 export type { ClassificationReason };
@@ -130,19 +131,20 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 
   const digest = String(error.digest);
 
-  if (digest.startsWith("NEXT_REDIRECT;")) {
-    const parts = digest.split(";");
+  const redirect = parseNextRedirectDigest(digest);
+  if (redirect) {
     return {
       kind: "redirect",
-      location: decodeURIComponent(parts[2]),
-      statusCode: parts[3] ? parseInt(parts[3], 10) : 307,
+      location: redirect.url,
+      statusCode: redirect.status,
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+  const httpError = parseNextHttpErrorDigest(digest);
+  if (httpError) {
     return {
       kind: "http-access-fallback",
-      statusCode: digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
+      statusCode: httpError.status,
     };
   }
 
