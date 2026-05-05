@@ -1184,11 +1184,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
           // This also resolves extensionless-import issues in packages like
           // `validator` (see #189) by routing them through Vite's resolver.
+          //
+          // When App Router is active (hasAppDir), do NOT externalize React
+          // at the top level. The per-environment configs (environments.rsc,
+          // environments.ssr) define their own external lists without React.
+          // Vite merges the top-level ssr config into environments.ssr, so
+          // including React here would leak it into the SSR environment's
+          // external list, causing Node.js to resolve React from vinext's
+          // package scope instead of the project root — bypassing
+          // resolve.dedupe and producing dual React instances ("Invalid
+          // hook call" errors) in split-install topologies (npm/bun link).
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : {
                 ssr: {
-                  external: ["react", "react-dom", "react-dom/server"],
+                  external: hasAppDir ? [] : ["react", "react-dom", "react-dom/server"],
                   noExternal: true,
                 },
               }),
