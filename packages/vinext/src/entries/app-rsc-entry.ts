@@ -153,13 +153,13 @@ export function generateRscEntry(
     expireTimeJson,
   } = serializeAppConfig(
     {
-      basePath: basePath ?? "",
-      trailingSlash: trailingSlash ?? false,
+      basePath,
+      trailingSlash,
       redirects: config?.redirects,
       rewrites: config?.rewrites,
       headers: config?.headers,
       expireTime: config?.expireTime,
-      i18n: config?.i18n ?? null,
+      i18n: config?.i18n,
     },
     DEFAULT_EXPIRE_TIME,
   );

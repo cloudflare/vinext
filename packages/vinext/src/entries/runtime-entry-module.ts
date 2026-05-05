@@ -70,6 +70,7 @@ type EntryConfigInput = {
   headers?: NextHeader[];
   expireTime?: number;
   i18n?: NextI18nConfig | null;
+  /** Pages-only — consumed by `serializePagesConfig` for `vinextConfigJson`; ignored by `serializeAppConfig`. */
   images?: {
     deviceSizes?: number[];
     imageSizes?: number[];
