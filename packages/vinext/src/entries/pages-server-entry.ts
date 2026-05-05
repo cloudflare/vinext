@@ -443,16 +443,6 @@ function detectLocaleFromHeaders(headers) {
   return null;
 }
 
-function parseCookieLocaleFromHeader(cookieHeader) {
-  if (!i18nConfig || !cookieHeader) return null;
-  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
-  if (!match) return null;
-  var value;
-  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
-  if (i18nConfig.locales.indexOf(value) !== -1) return value;
-  return null;
-}
-
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders) {
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders));
   return _renderPage(request, url, manifest, middlewareHeaders);
