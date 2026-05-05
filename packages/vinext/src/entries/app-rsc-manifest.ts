@@ -118,6 +118,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         }`,
       );
       return `      ${JSON.stringify(slot.key)}: {
+        id: ${JSON.stringify(slot.id ?? null)},
         name: ${JSON.stringify(slot.name)},
         page: ${slot.pagePath ? imports.getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? imports.getImportVar(slot.defaultPath) : "null"},
@@ -139,6 +140,7 @@ ${interceptEntries.join(",\n")}
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
+    ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},

@@ -24,6 +24,8 @@ export type InterceptingRoute = {
 };
 
 export type ParallelSlot = {
+  /** Graph-owned semantic slot identity. Required on AppRouteGraphParallelSlot. */
+  id?: string;
   /** Stable slot identity (name + owning directory), used for route serialization keys. */
   key: string;
   /** Slot name (e.g. "team" from @team) */
@@ -72,6 +74,8 @@ export type ParallelSlot = {
 };
 
 export type AppRoute = {
+  /** Graph-owned semantic identities. Required on AppRouteGraphRoute. */
+  ids?: AppRouteSemanticIds;
   /** URL pattern, e.g. "/" or "/about" or "/blog/:slug" */
   pattern: string;
   /** Absolute file path to the page component */
@@ -143,14 +147,60 @@ export type AppRoute = {
   patternParts: string[];
 };
 
+export type AppRouteSemanticIds = {
+  route: string;
+  page: string | null;
+  routeHandler: string | null;
+  layouts: readonly string[];
+  templates: readonly string[];
+  /**
+   * Bridge map for the current route metadata shape: keyed by `slot.key`
+   * (`name@relative/path` infrastructure id), value is the graph-owned semantic slot id.
+   */
+  slots: Readonly<Record<string, string>>;
+};
+
+export type AppRouteGraphParallelSlot = ParallelSlot & {
+  id: string;
+};
+
+export type AppRouteGraphRoute = Omit<AppRoute, "ids" | "parallelSlots"> & {
+  ids: AppRouteSemanticIds;
+  parallelSlots: AppRouteGraphParallelSlot[];
+};
+
+function createAppRouteGraphRouteId(pattern: string): string {
+  return `route:${pattern}`;
+}
+
+function createAppRouteGraphPageId(pattern: string): string {
+  return `page:${pattern}`;
+}
+
+function createAppRouteGraphRouteHandlerId(pattern: string): string {
+  return `route-handler:${pattern}`;
+}
+
+function createAppRouteGraphLayoutId(treePath: string): string {
+  return `layout:${treePath}`;
+}
+
+function createAppRouteGraphTemplateId(treePath: string): string {
+  return `template:${treePath}`;
+}
+
+function createAppRouteGraphSlotId(slotName: string, ownerTreePath: string): string {
+  return `slot:${slotName}:${ownerTreePath}`;
+}
+
 export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
-): Promise<{ routes: AppRoute[] }> {
+): Promise<{ routes: AppRouteGraphRoute[] }> {
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
   // and _private folders (Next.js convention for colocated non-route files).
-  const routes: AppRoute[] = [];
+  const routes: AppRouteGraphRoute[] = [];
 
   const excludeDir = (name: string) => name.startsWith("@") || name.startsWith("_");
 
@@ -225,7 +275,7 @@ function hasParallelSlotDirectory(dir: string): boolean {
   }
 }
 
-function validatePageRouteConflicts(routes: AppRoute[], appDir: string): void {
+function validatePageRouteConflicts(routes: readonly AppRoute[], appDir: string): void {
   const byPattern = new Map<string, { pagePath: string | null; routePath: string | null }>();
 
   // validateRoutePatterns() would also reject page/route pairs because they
@@ -278,8 +328,11 @@ function formatAppFilePath(filePath: string, appDir: string): string {
  * - @audience slot → @audience/demographics/page.tsx (matched)
  * - other slots → their default.tsx (fallback)
  */
-function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): AppRoute[] {
-  const syntheticRoutes: AppRoute[] = [];
+function discoverSlotSubRoutes(
+  routes: AppRouteGraphRoute[],
+  matcher: ValidFileMatcher,
+): AppRouteGraphRoute[] {
+  const syntheticRoutes: AppRouteGraphRoute[] = [];
 
   // O(1) lookup for existing routes by pattern — avoids O(n) routes.find() per sub-path per parent.
   // Updated as new synthetic routes are pushed so that later parents can see earlier synthetic entries.
@@ -389,7 +442,7 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
 
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
-      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
+      const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
         const subPage = slotPages.get(slot.key);
         return {
           ...slot,
@@ -398,7 +451,16 @@ function discoverSlotSubRoutes(routes: AppRoute[], matcher: ValidFileMatcher): A
         };
       });
 
-      const newRoute: AppRoute = {
+      const newRoute: AppRouteGraphRoute = {
+        ids: createAppRouteSemanticIds({
+          pattern,
+          pagePath: childrenDefault,
+          routePath: null,
+          routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+          layoutTreePositions: parentRoute.layoutTreePositions,
+          templateTreePositions: parentRoute.templateTreePositions,
+          slots: subSlots,
+        }),
         pattern,
         pagePath: childrenDefault, // children slot uses parent's default.tsx as page
         routePath: null,
@@ -493,7 +555,7 @@ function fileToAppRoute(
   appDir: string,
   type: "page" | "route",
   matcher: ValidFileMatcher,
-): AppRoute | null {
+): AppRouteGraphRoute | null {
   // Remove the filename (page.tsx or route.ts)
   const dir = path.dirname(file);
   return directoryToAppRoute(
@@ -511,7 +573,7 @@ function directoryToAppRoute(
   matcher: ValidFileMatcher,
   pagePath: string | null,
   routePath: string | null,
-): AppRoute | null {
+): AppRouteGraphRoute | null {
   const segments = dir === "." ? [] : dir.split(path.sep);
 
   const params: string[] = [];
@@ -562,6 +624,15 @@ function directoryToAppRoute(
   const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir, matcher);
 
   return {
+    ids: createAppRouteSemanticIds({
+      pattern: pattern === "/" ? "/" : pattern,
+      pagePath,
+      routePath,
+      routeSegments: segments,
+      layoutTreePositions,
+      templateTreePositions,
+      slots: parallelSlots,
+    }),
     pattern: pattern === "/" ? "/" : pattern,
     pagePath,
     routePath,
@@ -607,6 +678,45 @@ export function computeRootParamNames(
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
+}
+
+function createAppRouteSemanticIds(input: {
+  pattern: string;
+  pagePath: string | null;
+  routePath: string | null;
+  routeSegments: readonly string[];
+  layoutTreePositions: readonly number[];
+  templateTreePositions?: readonly number[];
+  slots: readonly AppRouteGraphParallelSlot[];
+}): AppRouteSemanticIds {
+  const slots: Record<string, string> = {};
+  for (const slot of input.slots) {
+    slots[slot.key] = slot.id;
+  }
+
+  return {
+    route: createAppRouteGraphRouteId(input.pattern),
+    page: input.pagePath ? createAppRouteGraphPageId(input.pattern) : null,
+    routeHandler: input.routePath ? createAppRouteGraphRouteHandlerId(input.pattern) : null,
+    layouts: input.layoutTreePositions.map((treePosition) =>
+      createAppRouteGraphLayoutId(createAppRouteGraphTreePath(input.routeSegments, treePosition)),
+    ),
+    templates: (input.templateTreePositions ?? []).map((treePosition) =>
+      createAppRouteGraphTemplateId(createAppRouteGraphTreePath(input.routeSegments, treePosition)),
+    ),
+    slots,
+  };
+}
+
+function createAppRouteGraphTreePath(
+  routeSegments: readonly string[],
+  treePosition: number,
+): string {
+  const treePathSegments = routeSegments.slice(0, treePosition);
+  if (treePathSegments.length === 0) {
+    return "/";
+  }
+  return `/${treePathSegments.join("/")}`;
 }
 
 /**
@@ -774,8 +884,8 @@ function discoverInheritedParallelSlots(
   appDir: string,
   routeDir: string,
   matcher: ValidFileMatcher,
-): ParallelSlot[] {
-  const slotMap = new Map<string, ParallelSlot>();
+): AppRouteGraphParallelSlot[] {
+  const slotMap = new Map<string, AppRouteGraphParallelSlot>();
 
   // Walk from appDir through each segment, tracking layout indices.
   // layoutIndex tracks which position in the route's layouts[] array corresponds
@@ -830,7 +940,7 @@ function discoverInheritedParallelSlots(
           slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
           slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
         }
-        const inheritedSlot: ParallelSlot = {
+        const inheritedSlot: AppRouteGraphParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
           layoutIndex: slotLayoutIdx,
@@ -988,11 +1098,11 @@ function discoverParallelSlots(
   dir: string,
   appDir: string,
   matcher: ValidFileMatcher,
-): ParallelSlot[] {
+): AppRouteGraphParallelSlot[] {
   if (!fs.existsSync(dir)) return [];
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
-  const slots: ParallelSlot[] = [];
+  const slots: AppRouteGraphParallelSlot[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
@@ -1007,7 +1117,14 @@ function discoverParallelSlots(
     // Only include slots that have at least a page, default, or intercepting route
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
+    const ownerSegments = path
+      .relative(appDir, dir)
+      .split(path.sep)
+      .filter((segment) => segment.length > 0);
+    const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
+
     slots.push({
+      id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
       name: slotName,
       ownerDir: slotDir,

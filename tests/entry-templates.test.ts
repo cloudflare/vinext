@@ -10,6 +10,8 @@ import os from "node:os";
 import { describe, it, expect } from "vite-plus/test";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 
@@ -139,6 +141,16 @@ describe("App Router generated manifest construction", () => {
         params: [],
       },
       {
+        ids: {
+          route: "route:/dashboard/:id",
+          page: "page:/dashboard/:id",
+          routeHandler: "route-handler:/dashboard/:id",
+          layouts: ["layout:/", "layout:/dashboard"],
+          templates: ["template:/dashboard"],
+          slots: {
+            "modal:/tmp/test/app/dashboard/@modal": "slot:modal:/dashboard",
+          },
+        },
         pattern: "/dashboard/:id",
         patternParts: ["dashboard", ":id"],
         pagePath: "/tmp/test/app/dashboard/[id]/page.tsx",
@@ -147,6 +159,7 @@ describe("App Router generated manifest construction", () => {
         templates: ["/tmp/test/app/dashboard/template.tsx"],
         parallelSlots: [
           {
+            id: "slot:modal:/dashboard",
             key: "modal:/tmp/test/app/dashboard/@modal",
             name: "modal",
             ownerDir: "/tmp/test/app/dashboard/@modal",
@@ -207,6 +220,11 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.globalErrorVar).toBe("mod_19");
 
     const dynamicRouteEntry = manifest.routeEntries[1];
+    expect(dynamicRouteEntry).toContain('"route":"route:/dashboard/:id"');
+    expect(dynamicRouteEntry).toContain(
+      '"modal:/tmp/test/app/dashboard/@modal":"slot:modal:/dashboard"',
+    );
+    expect(dynamicRouteEntry).toContain('id: "slot:modal:/dashboard"');
     expect(dynamicRouteEntry).toContain('pattern: "/dashboard/:id"');
     expect(dynamicRouteEntry).toContain("routeHandler: mod_6");
     expect(dynamicRouteEntry).toContain("layouts: [mod_1, mod_7]");
@@ -217,6 +235,61 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/dashboard/:id": mod_5?.generateStaticParams ?? null,',
     ]);
+  });
+
+  it("serializes graph-minted ids without leaking the filesystem root", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
+    const appDir = path.join(tmpDir, "app");
+    try {
+      fs.mkdirSync(path.join(appDir, "(marketing)", "blog", "[slug]", "@modal"), {
+        recursive: true,
+      });
+      fs.writeFileSync(path.join(appDir, "layout.tsx"), "export default function Layout() {}\n");
+      fs.writeFileSync(
+        path.join(appDir, "(marketing)", "layout.tsx"),
+        "export default function Layout() {}\n",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "(marketing)", "blog", "[slug]", "layout.tsx"),
+        "export default function Layout() {}\n",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "(marketing)", "blog", "[slug]", "template.tsx"),
+        "export default function Template() {}\n",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "(marketing)", "blog", "[slug]", "page.tsx"),
+        "export default function Page() {}\n",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "(marketing)", "blog", "[slug]", "@modal", "default.tsx"),
+        "export default function Default() {}\n",
+      );
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const manifest = buildAppRscManifestCode({
+        routes: graph.routes,
+        metadataRoutes: [],
+        globalErrorPath: null,
+      });
+
+      const routeEntry = manifest.routeEntries.find((entry) =>
+        entry.includes('pattern: "/blog/:slug"'),
+      );
+
+      expect(routeEntry).toBeDefined();
+      expect(routeEntry).not.toContain(appDir);
+      expect(routeEntry).toContain('"route":"route:/blog/:slug"');
+      expect(routeEntry).toContain('"page":"page:/blog/:slug"');
+      expect(routeEntry).toContain('"layout:/(marketing)/blog/[slug]"');
+      expect(routeEntry).toContain('"template:/(marketing)/blog/[slug]"');
+      expect(routeEntry).toContain(
+        '"modal@(marketing)/blog/[slug]/@modal":"slot:modal:/(marketing)/blog/[slug]"',
+      );
+      expect(routeEntry).toContain('id: "slot:modal:/(marketing)/blog/[slug]"');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("embeds static metadata files and imports dynamic metadata modules", () => {

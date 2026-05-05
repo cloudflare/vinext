@@ -6,6 +6,7 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import {
   buildAppRouteGraph,
   type AppRoute,
+  type AppRouteGraphRoute,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -36,6 +37,15 @@ function findRoute(routes: AppRoute[], pattern: string): AppRoute {
     throw new Error(`Expected route ${pattern} to be materialized`);
   }
   return route;
+}
+
+async function createSemanticIdsFixture(appDir: string): Promise<void> {
+  await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/template.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/page.tsx", EMPTY_PAGE);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/@modal/default.tsx", EMPTY_PAGE);
 }
 
 describe("App Router route graph builder", () => {
@@ -139,6 +149,49 @@ describe("App Router route graph builder", () => {
         patternParts: ["about"],
       });
     });
+  });
+
+  it("mints semantic ids for routes, entries, layouts, templates, and slots", async () => {
+    await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const graphRoutes: readonly AppRouteGraphRoute[] = graph.routes;
+      const route = findRoute(graph.routes, "/blog/:slug");
+
+      expect(graphRoutes).toHaveLength(1);
+      expect(route.ids).toEqual({
+        route: "route:/blog/:slug",
+        page: "page:/blog/:slug",
+        routeHandler: null,
+        layouts: ["layout:/", "layout:/(marketing)", "layout:/(marketing)/blog/[slug]"],
+        templates: ["template:/(marketing)/blog/[slug]"],
+        slots: {
+          "modal@(marketing)/blog/[slug]/@modal": "slot:modal:/(marketing)/blog/[slug]",
+        },
+      });
+      expect(route.parallelSlots[0]).toMatchObject({
+        id: "slot:modal:/(marketing)/blog/[slug]",
+        key: "modal@(marketing)/blog/[slug]/@modal",
+      });
+    });
+  });
+
+  it("keeps semantic ids stable across different filesystem roots", async () => {
+    const firstIds = await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      return findRoute(graph.routes, "/blog/:slug").ids;
+    });
+
+    const secondIds = await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      return findRoute(graph.routes, "/blog/:slug").ids;
+    });
+
+    expect(firstIds).toBeDefined();
+    expect(secondIds).toEqual(firstIds);
   });
 
   it("links inherited parallel slot to a mirrored sub-page (literal segments)", async () => {
