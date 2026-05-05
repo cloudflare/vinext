@@ -340,23 +340,6 @@ export async function probeAppPageComponent(
   });
 }
 
-export async function readAppPageTextStream(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(decoder.decode(value, { stream: true }));
-  }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
 export async function readAppPageBinaryStream(
   stream: ReadableStream<Uint8Array>,
 ): Promise<ArrayBuffer> {

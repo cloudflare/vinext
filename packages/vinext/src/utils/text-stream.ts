@@ -52,21 +52,25 @@ export async function readStreamAsTextWithLimit(
   const chunks: string[] = [];
   let totalSize = 0;
 
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) {
-      break;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) {
+        break;
+      }
+
+      totalSize += result.value.byteLength;
+      if (totalSize > maxBytes) {
+        await reader.cancel();
+        onLimitExceeded();
+      }
+
+      chunks.push(decoder.decode(result.value, { stream: true }));
     }
 
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      await reader.cancel();
-      onLimitExceeded();
-    }
-
-    chunks.push(decoder.decode(result.value, { stream: true }));
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } finally {
+    reader.releaseLock();
   }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
 }

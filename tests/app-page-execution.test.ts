@@ -4,10 +4,10 @@ import {
   buildAppPageSpecialErrorResponse,
   probeAppPageComponent,
   probeAppPageLayouts,
-  readAppPageTextStream,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
+import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -367,8 +367,8 @@ describe("app page execution helpers", () => {
     expect(capture.sideStream).toBeInstanceOf(ReadableStream);
 
     // Both streams should contain identical data (teed from same source)
-    const ssrText = await readAppPageTextStream(capture.ssrStream);
-    const sideText = await readAppPageTextStream(capture.sideStream!);
+    const ssrText = await readStreamAsText(capture.ssrStream);
+    const sideText = await readStreamAsText(capture.sideStream!);
     expect(ssrText).toBe("flight-chunk");
     expect(sideText).toBe("flight-chunk");
   });
