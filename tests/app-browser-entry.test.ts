@@ -24,9 +24,16 @@ import {
   resolveServerActionRequestState,
   routerReducer,
   resolvePendingNavigationCommitDisposition,
+  resolvePendingNavigationCommitDispositionDecision,
   shouldHardNavigate,
   type AppRouterState,
 } from "../packages/vinext/src/server/app-browser-state.js";
+import {
+  NAVIGATION_TRACE_SCHEMA_VERSION,
+  NavigationTraceReasonCodes,
+  appendNavigationTrace,
+  createNavigationTrace,
+} from "../packages/vinext/src/server/navigation-trace.js";
 
 function createResolvedElements(
   routeId: string,
@@ -287,6 +294,65 @@ describe("app browser entry state helpers", () => {
         startedNavigationId: 4,
       }),
     ).toBe("skip");
+  });
+
+  it("traces stale pending commits with compact reason codes and structured fields", () => {
+    const decision = resolvePendingNavigationCommitDispositionDecision({
+      activeNavigationId: 5,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/(dashboard)",
+      startedNavigationId: 4,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace).toEqual({
+      schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
+      entries: [
+        {
+          code: NavigationTraceReasonCodes.staleOperation,
+          fields: {
+            activeNavigationId: 5,
+            currentRootLayoutTreePath: "/",
+            nextRootLayoutTreePath: "/(dashboard)",
+            startedNavigationId: 4,
+          },
+        },
+      ],
+    });
+  });
+
+  it("traces root-boundary hard navigation decisions", () => {
+    const decision = resolvePendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentRootLayoutTreePath: "/(marketing)",
+      nextRootLayoutTreePath: "/(dashboard)",
+      startedNavigationId: 2,
+    });
+
+    expect(decision.disposition).toBe("hard-navigate");
+    expect(decision.trace.entries).toEqual([
+      {
+        code: NavigationTraceReasonCodes.rootBoundaryChanged,
+        fields: {
+          activeNavigationId: 2,
+          currentRootLayoutTreePath: "/(marketing)",
+          nextRootLayoutTreePath: "/(dashboard)",
+          startedNavigationId: 2,
+        },
+      },
+    ]);
+  });
+
+  it("traces unknown root-layout identity as a legacy soft-commit fallback", () => {
+    const decision = resolvePendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: null,
+      startedNavigationId: 2,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
   });
 
   it("builds a merge commit for refresh and server-action payloads", async () => {
@@ -714,6 +780,33 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(result.disposition).toBe("hard-navigate");
     expect(result.pending.routeId).toBe("route:/dashboard");
     expect(result.pending.action.renderId).toBe(3);
+    expect(result.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
+  });
+
+  it("appends navigation trace entries without mutating existing records", () => {
+    const fields = { activeNavigationId: 1 };
+    const initialTrace = createNavigationTrace(NavigationTraceReasonCodes.commitCurrent, fields);
+
+    fields.activeNavigationId = 2;
+
+    const nextTrace = appendNavigationTrace(
+      initialTrace,
+      NavigationTraceReasonCodes.staleOperation,
+      {
+        activeNavigationId: 3,
+      },
+    );
+
+    expect(initialTrace.entries).toEqual([
+      {
+        code: NavigationTraceReasonCodes.commitCurrent,
+        fields: { activeNavigationId: 1 },
+      },
+    ]);
+    expect(nextTrace.entries.map((entry) => entry.code)).toEqual([
+      NavigationTraceReasonCodes.commitCurrent,
+      NavigationTraceReasonCodes.staleOperation,
+    ]);
   });
 
   it("treats null root-layout identities as soft-navigation compatible", () => {

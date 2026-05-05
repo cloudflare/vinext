@@ -7,6 +7,12 @@ import {
   type LayoutFlags,
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
+import {
+  NavigationTraceReasonCodes,
+  createNavigationTrace,
+  type NavigationTrace,
+  type NavigationTraceReasonCode,
+} from "./navigation-trace.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -47,9 +53,14 @@ type PendingNavigationCommit = {
 };
 
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
+type PendingNavigationCommitDispositionDecision = {
+  disposition: PendingNavigationCommitDisposition;
+  trace: NavigationTrace;
+};
 type ClassifiedPendingNavigationCommit = {
   disposition: PendingNavigationCommitDisposition;
   pending: PendingNavigationCommit;
+  trace: NavigationTrace;
 };
 
 function cloneHistoryState(state: unknown): HistoryStateRecord {
@@ -203,6 +214,54 @@ export function resolvePendingNavigationCommitDisposition(options: {
   return "dispatch";
 }
 
+export function resolvePendingNavigationCommitDispositionDecision(options: {
+  activeNavigationId: number;
+  currentRootLayoutTreePath: string | null;
+  nextRootLayoutTreePath: string | null;
+  startedNavigationId: number;
+}): PendingNavigationCommitDispositionDecision {
+  const disposition = resolvePendingNavigationCommitDisposition(options);
+  const traceFields = {
+    activeNavigationId: options.activeNavigationId,
+    currentRootLayoutTreePath: options.currentRootLayoutTreePath,
+    nextRootLayoutTreePath: options.nextRootLayoutTreePath,
+    startedNavigationId: options.startedNavigationId,
+  };
+
+  return {
+    disposition,
+    trace: createNavigationTrace(
+      getPendingNavigationCommitDispositionTraceCode({
+        currentRootLayoutTreePath: options.currentRootLayoutTreePath,
+        disposition,
+        nextRootLayoutTreePath: options.nextRootLayoutTreePath,
+      }),
+      traceFields,
+    ),
+  };
+}
+
+function getPendingNavigationCommitDispositionTraceCode(options: {
+  currentRootLayoutTreePath: string | null;
+  disposition: PendingNavigationCommitDisposition;
+  nextRootLayoutTreePath: string | null;
+}): NavigationTraceReasonCode {
+  switch (options.disposition) {
+    case "skip":
+      return NavigationTraceReasonCodes.staleOperation;
+    case "hard-navigate":
+      return NavigationTraceReasonCodes.rootBoundaryChanged;
+    case "dispatch":
+      return options.currentRootLayoutTreePath === null || options.nextRootLayoutTreePath === null
+        ? NavigationTraceReasonCodes.rootBoundaryUnknown
+        : NavigationTraceReasonCodes.commitCurrent;
+    default: {
+      const _exhaustive: never = options.disposition;
+      throw new Error("[vinext] Unknown navigation commit disposition: " + String(_exhaustive));
+    }
+  }
+}
+
 export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
@@ -257,13 +316,16 @@ export async function resolveAndClassifyNavigationCommit(options: {
     type: options.type,
   });
 
+  const decision = resolvePendingNavigationCommitDispositionDecision({
+    activeNavigationId: options.activeNavigationId,
+    currentRootLayoutTreePath: options.currentState.rootLayoutTreePath,
+    nextRootLayoutTreePath: pending.rootLayoutTreePath,
+    startedNavigationId: options.startedNavigationId,
+  });
+
   return {
-    disposition: resolvePendingNavigationCommitDisposition({
-      activeNavigationId: options.activeNavigationId,
-      currentRootLayoutTreePath: options.currentState.rootLayoutTreePath,
-      nextRootLayoutTreePath: pending.rootLayoutTreePath,
-      startedNavigationId: options.startedNavigationId,
-    }),
+    disposition: decision.disposition,
     pending,
+    trace: decision.trace,
   };
 }
