@@ -401,7 +401,7 @@ describe("Pages Router integration", () => {
     expect(headSection).toContain("Hello vinext");
   });
 
-  it("keeps ISR cache-fill rerenders isolated from the streamed render state", async () => {
+  it("caches the streamed ISR render without carrying prior render state", async () => {
     const firstRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(firstRes.status).toBe(200);
     expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");

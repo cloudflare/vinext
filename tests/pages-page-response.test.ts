@@ -14,6 +14,31 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
+}
+
+function createFailingStream(error: Error): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("<div>partial"));
+      controller.error(error);
+    },
+  });
+}
+
+async function settleMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function createCommonOptions() {
   const clearSsrContext = vi.fn();
   const createPageElement = vi.fn((pageProps: Record<string, unknown>) =>
@@ -65,7 +90,6 @@ function createCommonOptions() {
       pageProps: { title: "hello" },
       params: { slug: "post" },
       renderDocumentToString,
-      renderIsrPassToStringAsync,
       renderToReadableStream,
       resetSSRHead: vi.fn(),
       routePattern: "/posts/[slug]",
@@ -138,7 +162,7 @@ describe("pages page response", () => {
     expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
   });
 
-  it("writes the ISR HTML cache entry for cacheable page responses", async () => {
+  it("records the streamed body into the ISR HTML cache without a second page render", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -154,21 +178,78 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("<div>live-body</div>");
+    await settleMicrotasks();
 
-    expect(common.createPageElement).toHaveBeenCalledTimes(2);
-    expect(common.renderIsrPassToStringAsync).toHaveBeenCalledTimes(1);
+    expect(common.createPageElement).toHaveBeenCalledTimes(1);
+    expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
     expect(common.isrSet).toHaveBeenCalledTimes(1);
     expect(common.isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
       expect.objectContaining({
         kind: "PAGES",
-        html: expect.stringContaining("<div>cached-body</div>"),
+        html: expect.stringContaining("<div>live-body</div>"),
         pageData: { title: "hello" },
       }),
       60,
       undefined,
       300,
     );
+  });
+
+  it("records split UTF-8 chunks without corrupting cached ISR HTML", async () => {
+    const common = createCommonOptions();
+    common.renderToReadableStream.mockResolvedValue(
+      createByteStream([
+        new Uint8Array([0xe2]),
+        new Uint8Array([0x82, 0xac]),
+        new TextEncoder().encode("<div>live-body</div>"),
+      ]),
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isrRevalidateSeconds: 60,
+    });
+
+    await expect(response.text()).resolves.toContain("\u20ac<div>live-body</div>");
+    await settleMicrotasks();
+
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        html: expect.stringContaining("\u20ac<div>live-body</div>"),
+      }),
+      60,
+      undefined,
+      undefined,
+    );
+  });
+
+  it("does not write a Pages ISR cache entry when the streamed render fails", async () => {
+    const common = createCommonOptions();
+    common.renderToReadableStream.mockResolvedValue(
+      createFailingStream(new Error("stream failed")),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        isrRevalidateSeconds: 60,
+      });
+
+      await expect(response.text()).rejects.toThrow("stream failed");
+      await settleMicrotasks();
+
+      expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
+      expect(common.isrSet).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] Pages ISR cache write failed for pages:/posts/post:",
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("adds nonce attributes to inline scripts and font tags when provided", async () => {
