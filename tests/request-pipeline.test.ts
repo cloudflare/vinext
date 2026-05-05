@@ -2,6 +2,7 @@ import { describe, it, expect } from "vite-plus/test";
 import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
+  cloneRequestWithHeaders,
   createStaticFileSignal,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
@@ -748,5 +749,99 @@ describe("filterInternalHeaders", () => {
     const headers = new Headers();
     const result = filterInternalHeaders(headers);
     expect([...result.keys()]).toEqual([]);
+  });
+});
+
+// ── cloneRequestWithHeaders ──────────────────────────────────────────────
+//
+// The Request-constructor pattern `new Request(request, { headers })` preserves
+// metadata in Workers (redirect, signal, cf) but can throw in Node/undici when
+// the input is a foreign Request instance (cross-realm or subclass). The helper
+// falls back to a manual RequestInit that copies every known metadata field.
+//
+// These tests lock down the helper so it can't be "simplified" back into the
+// broken URL-constructor pattern that drops body/redirect/signal semantics.
+
+describe("cloneRequestWithHeaders", () => {
+  it("preserves method", () => {
+    const original = new Request("http://localhost/test", { method: "POST" });
+    const cloned = cloneRequestWithHeaders(original, new Headers({ "x-foo": "bar" }));
+    expect(cloned.method).toBe("POST");
+  });
+
+  it("preserves URL", () => {
+    const original = new Request("http://localhost/some/path?q=1");
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+    expect(cloned.url).toBe("http://localhost/some/path?q=1");
+  });
+
+  it("preserves redirect mode", () => {
+    const original = new Request("http://localhost", { redirect: "manual" });
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+    expect(cloned.redirect).toBe("manual");
+  });
+
+  it("preserves signal", () => {
+    const controller = new AbortController();
+    const original = new Request("http://localhost", { signal: controller.signal });
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+    // Signal identity is not guaranteed (new Request may create a following signal).
+    // But both signals share the same aborted state at construction time.
+    expect(cloned.signal.aborted).toBe(false);
+    controller.abort();
+    expect(cloned.signal.aborted).toBe(true);
+  });
+
+  it("preserves body readability for streaming requests", async () => {
+    const bodyText = "hello world";
+    const original = new Request("http://localhost", {
+      method: "POST",
+      body: bodyText,
+    });
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+    expect(cloned.method).toBe("POST");
+    const text = await cloned.text();
+    expect(text).toBe(bodyText);
+  });
+
+  it("preserves cf property when defined via Object.defineProperty", () => {
+    const original = new Request("http://localhost");
+    Object.defineProperty(original, "cf", {
+      value: { country: "US" },
+      enumerable: true,
+      configurable: true,
+    });
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("replaces headers while preserving all other metadata", () => {
+    const controller = new AbortController();
+    const original = new Request("http://localhost/path?x=1", {
+      method: "PUT",
+      headers: new Headers({ "x-old": "remove-me", "keep-me": "val" }),
+      redirect: "error",
+      signal: controller.signal,
+    });
+    const newHeaders = new Headers({ "x-new": "added", "keep-me": "still-here" });
+    const cloned = cloneRequestWithHeaders(original, newHeaders);
+
+    // Headers replaced
+    expect(cloned.headers.get("x-old")).toBeNull();
+    expect(cloned.headers.get("keep-me")).toBe("still-here");
+    expect(cloned.headers.get("x-new")).toBe("added");
+    // Metadata preserved
+    expect(cloned.method).toBe("PUT");
+    expect(cloned.url).toBe("http://localhost/path?x=1");
+    expect(cloned.redirect).toBe("error");
+    expect(cloned.signal.aborted).toBe(false);
+  });
+
+  it("handles GET request (no body) correctly", () => {
+    const original = new Request("http://localhost", { method: "GET" });
+    const cloned = cloneRequestWithHeaders(original, new Headers({ accept: "text/html" }));
+    expect(cloned.method).toBe("GET");
+    expect(cloned.body).toBeNull();
+    expect(cloned.headers.get("accept")).toBe("text/html");
   });
 });

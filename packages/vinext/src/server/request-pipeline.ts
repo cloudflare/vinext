@@ -611,8 +611,9 @@ function getRequestCf(request: Request): unknown | undefined {
  * a RequestInit with best-effort metadata.
  */
 export function cloneRequestWithHeaders(request: Request, headers: Headers): Request {
+  let cloned: Request;
   try {
-    return new Request(request, { headers });
+    cloned = new Request(request, { headers });
   } catch {
     const init: RequestInitWithCf = {
       method: request.method,
@@ -631,10 +632,16 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
       // @ts-expect-error — duplex needed for streaming request bodies
       init.duplex = "half";
     }
-    const cf = getRequestCf(request);
-    if (cf !== undefined) {
-      init.cf = cf;
-    }
-    return new Request(request.url, init);
+    cloned = new Request(request.url, init);
   }
+  const cf = getRequestCf(request);
+  if (cf !== undefined) {
+    // new Request() does not copy Workers-specific cf, so re-attach it.
+    Object.defineProperty(cloned, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return cloned;
 }
