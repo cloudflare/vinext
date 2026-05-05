@@ -118,11 +118,6 @@ declare module "next/navigation" {
   };
   export const MAX_PREFETCH_CACHE_SIZE: number;
   export const PREFETCH_CACHE_TTL: number;
-  /**
-   * @deprecated Use `createRscRequestUrl` so RSC requests include cache-busting
-   * params for variant headers.
-   */
-  export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
   export function storePrefetchResponse(

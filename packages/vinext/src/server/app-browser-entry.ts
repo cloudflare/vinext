@@ -1079,9 +1079,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             stripRscCacheBustingSearchParam(parsed);
             const origUrl = new URL(currentHref, window.location.origin);
             let pathname = stripRscSuffix(parsed.pathname);
-            // toRscUrl strips trailing slash before appending .rsc, so the
-            // response URL loses it on the round-trip. Restore it when the
-            // original href had one so sites with trailingSlash:true don't
+            // createRscRequestUrl strips trailing slash before appending .rsc,
+            // so the response URL loses it on the round-trip. Restore it when
+            // the original href had one so sites with trailingSlash:true don't
             // incur an extra 308 to the canonical form on the error path.
             if (
               origUrl.pathname.length > 1 &&

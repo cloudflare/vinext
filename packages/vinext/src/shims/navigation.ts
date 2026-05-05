@@ -295,25 +295,6 @@ export type PrefetchCacheEntry = {
   timestamp: number;
 };
 
-/**
- * Convert a pathname (with optional query/hash) to its .rsc URL.
- * Strips trailing slashes before appending `.rsc` so that cache keys
- * are consistent regardless of the `trailingSlash` config setting.
- *
- * @deprecated Use `createRscRequestUrl` so RSC requests include cache-busting
- * params for variant headers.
- */
-export function toRscUrl(href: string): string {
-  const [beforeHash] = href.split("#");
-  const qIdx = beforeHash.indexOf("?");
-  const pathname = qIdx === -1 ? beforeHash : beforeHash.slice(0, qIdx);
-  const query = qIdx === -1 ? "" : beforeHash.slice(qIdx);
-  // Strip trailing slash (but preserve "/" root) for consistent cache keys
-  const normalizedPath =
-    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  return normalizedPath + ".rsc" + query;
-}
-
 export function getCurrentInterceptionContext(): string | null {
   if (isServer) {
     return null;
