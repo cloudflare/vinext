@@ -23,6 +23,8 @@ export {
   type LayoutFlags,
 } from "./app-elements-wire.js";
 
+// createAppPayloadPageId stays private because callers use AppElementsWire.encodePageId.
+
 export function getMountedSlotIds(elements: AppElements): string[] {
   return Object.keys(elements)
     .filter((key) => {

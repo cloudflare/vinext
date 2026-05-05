@@ -330,7 +330,6 @@ export function buildAppPageElements<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
 >(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
-  const elements: Record<string, ReactNode | string | null> = {};
   const interceptionContext = options.interceptionContext ?? null;
   const routeId = AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
   const pageId = AppElementsWire.encodePageId(options.routePath, interceptionContext);
@@ -355,6 +354,13 @@ export function buildAppPageElements<
   const templateDependenciesBeforeById = new Map<string, AppRenderDependency[]>();
   const pageDependencies: AppRenderDependency[] = [];
   const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
+  const elements: Record<string, ReactNode | string | null> = {
+    ...AppElementsWire.createMetadataEntries({
+      interceptionContext,
+      rootLayoutTreePath,
+      routeId,
+    }),
+  };
   const slotNameCounts = new Map<string, number>();
   for (const slot of Object.values(options.route.slots ?? {})) {
     const slotName = slot.name;
@@ -407,14 +413,6 @@ export function buildAppPageElements<
     pageDependencies.push(templateDependency);
   }
 
-  Object.assign(
-    elements,
-    AppElementsWire.createMetadataEntries({
-      interceptionContext,
-      rootLayoutTreePath,
-      routeId,
-    }),
-  );
   elements[pageId] = renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {

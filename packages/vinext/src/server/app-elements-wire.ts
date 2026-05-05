@@ -145,7 +145,7 @@ export function normalizeAppElements(elements: AppWireElements): AppElements {
 }
 
 function isLayoutFlagsRecord(value: unknown): value is LayoutFlags {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   for (const v of Object.values(value)) {
     if (v !== "s" && v !== "d") return false;
   }
@@ -226,6 +226,8 @@ export function readAppElementsMetadata(
 }
 
 export const AppElementsWire: AppElementsWireCodec = {
+  // WIRE follow-ups use these stable key names when moving payload readers and writers
+  // behind the codec boundary.
   keys: {
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutFlags: APP_LAYOUT_FLAGS_KEY,
