@@ -8,6 +8,7 @@ import {
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
+  getAndClearPendingCookies,
   getDraftModeCookieHeader,
   markDynamicUsage,
   setHeadersContext,
@@ -45,6 +46,7 @@ import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
@@ -117,6 +119,8 @@ type AppPageDispatchRoute = {
 };
 
 type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
+  /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
+  basePath?: string;
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -479,7 +483,7 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
       });
       const interceptHeaders = new Headers({
         "Content-Type": "text/x-component; charset=utf-8",
-        Vary: "RSC, Accept",
+        Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       return new Response(interceptStream, {
@@ -616,7 +620,10 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   layoutIndex: number,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
+    basePath: options.basePath,
     clearRequestContext: options.clearRequestContext,
+    getAndClearPendingCookies,
+    isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
       const parentBoundary = resolveAppPageParentHttpAccessBoundaryModule({
@@ -639,7 +646,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
         null,
       );
     },
-    requestUrl: options.request.url,
+    request: options.request,
     specialError,
   });
 }
@@ -649,7 +656,10 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   specialError: AppPageSpecialError,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
+    basePath: options.basePath,
     clearRequestContext: options.clearRequestContext,
+    getAndClearPendingCookies,
+    isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
       return options.renderHttpAccessFallbackPage(
@@ -658,7 +668,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         null,
       );
     },
-    requestUrl: options.request.url,
+    request: options.request,
     specialError,
   });
 }

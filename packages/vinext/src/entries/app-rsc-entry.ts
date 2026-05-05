@@ -8,7 +8,7 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import { resolveEntryPath } from "./runtime-entry-module.js";
+import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -180,10 +180,10 @@ import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
-${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
+${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}
 ${
   instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};
+    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
@@ -211,8 +211,7 @@ import {
   createAppFallbackRenderer as __createAppFallbackRenderer,
 } from ${JSON.stringify(appFallbackRendererPath)};
 import {
-  APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
-  createAppPayloadRouteId as __createAppPayloadRouteId,
+  AppElementsWire as __AppElementsWire,
 } from ${JSON.stringify(appElementsPath)};
 import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
@@ -472,6 +471,7 @@ export default __createAppRscHandler({
     });
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
+      basePath: __basePath,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
@@ -672,14 +672,16 @@ export default __createAppRscHandler({
       contentType,
       createNotFoundElement(actionRouteId) {
         return {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: actionRouteId,
-          __rootLayout: null,
+          ...__AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            rootLayoutTreePath: null,
+            routeId: actionRouteId,
+          }),
           [actionRouteId]: createElement("div", null, "Page not found"),
         };
       },
       createPayloadRouteId(pathnameToRender, currentInterceptionContext) {
-        return __createAppPayloadRouteId(pathnameToRender, currentInterceptionContext);
+        return __AppElementsWire.encodeRouteId(pathnameToRender, currentInterceptionContext);
       },
       createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
         return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);

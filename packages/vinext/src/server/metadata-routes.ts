@@ -61,6 +61,7 @@ export type RobotsRule = {
   allow?: string | string[];
   disallow?: string | string[];
   crawlDelay?: number;
+  other?: Record<string, string | number | Array<string | number>>;
 };
 
 export type RobotsConfig = {
@@ -310,6 +311,17 @@ export function robotsToText(config: RobotsConfig): string {
 
     if (rule.crawlDelay !== undefined) {
       lines.push(`Crawl-delay: ${rule.crawlDelay}`);
+    }
+
+    if (rule.other) {
+      for (const key of Object.keys(rule.other)) {
+        const value = rule.other[key];
+        if (value == null) continue;
+        const values = Array.isArray(value) ? value : [value];
+        for (const v of values) {
+          lines.push(`${key}: ${v}`);
+        }
+      }
     }
 
     lines.push("");

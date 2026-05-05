@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  computeRscCacheBustingSearchParam,
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
@@ -97,6 +102,95 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe("/docs/about");
     expect(response.headers.get("x-test-header")).toBeNull();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes config redirect locations for RSC requests", async () => {
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const expectedHash = await computeRscCacheBustingSearchParam(headers);
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about?from=old", permanent: false }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about.rsc", { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      `https://example.test/docs/about.rsc?from=old&_rsc=${expectedHash}`,
+    );
+  });
+
+  it("redirects invalid RSC cache-busting requests before middleware", async () => {
+    const middleware = vi.fn(() => new Response("middleware"));
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const expectedHash = await computeRscCacheBustingSearchParam(headers);
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about.rsc?tab=latest", { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      `/docs/about.rsc?tab=latest&_rsc=${expectedHash}`,
+    );
+    expect(middleware).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        headers: createRscRequestHeaders(),
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanPathname: "/about",
+        isRscRequest: false,
+      }),
+    );
+  });
+
+  it("strips internal RSC cache-busting params before setting navigation context", async () => {
+    const setNavigationContext = vi.fn();
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/about?tab=latest", headers);
+    const handler = createHandler({
+      configHeaders: [],
+      setNavigationContext,
+    });
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(setNavigationContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pathname: "/about",
+        params: {},
+      }),
+    );
+    const context = setNavigationContext.mock.lastCall?.[0];
+    expect(context?.searchParams.get("tab")).toBe("latest");
+    expect(context?.searchParams.has("_rsc")).toBe(false);
   });
 
   it("runs beforeFiles rewrites before route matching", async () => {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { readJsonFile } from "../utils/safe-json-file.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
 type PackageJson = {
@@ -61,14 +62,15 @@ function readServerExternalsManifest(serverDir: string): string[] {
   if (!fs.existsSync(manifestPath)) {
     return [];
   }
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as string[];
-  } catch (err) {
-    console.warn(
-      `[vinext] Warning: failed to parse ${manifestPath}, proceeding without externals manifest: ${String(err)}`,
-    );
-    return [];
-  }
+  return (
+    readJsonFile<string[]>(manifestPath, {
+      onError: (err) => {
+        console.warn(
+          `[vinext] Warning: failed to parse ${manifestPath}, proceeding without externals manifest: ${String(err)}`,
+        );
+      },
+    }) ?? []
+  );
 }
 
 function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): string | null {

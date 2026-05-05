@@ -8,8 +8,8 @@
  * be bundled for the browser.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerRouterStateAccessors } from "./router.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -33,11 +33,9 @@ export type RouterState = {
   ssrContext: SSRContext | null;
 };
 
-const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
+const _als = getOrCreateAls<RouterState>("vinext.router.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,

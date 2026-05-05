@@ -27,11 +27,9 @@
  *   page.tsx      — calls notFound(), triggering renderHTTPAccessFallbackPage()
  *   not-found.tsx — rendered by renderHTTPAccessFallbackPage() inside the layout
  *
- * The test sends Accept: text/x-component (the real RSC request header —
- * isRscRequest is determined by accept.includes("text/x-component"), NOT by
- * an "RSC" header) with x-rsc-context-test: <sentinel> and asserts the sentinel
- * value appears in the RSC flight response, proving the layout's headers() call
- * ran successfully during lazy stream consumption.
+ * The test sends a canonical .rsc request with x-rsc-context-test: <sentinel>
+ * and asserts the sentinel value appears in the RSC flight response, proving
+ * the layout's headers() call ran successfully during lazy stream consumption.
  *
  * ── Bug 2: __VINEXT_RSC_NAV__ missing from HTML (hydration mismatch) ────────
  *
@@ -90,9 +88,10 @@ beforeAll(async () => {
   // Warm up both fixtures so the first real test in each suite doesn't pay
   // the cold-start compilation cost.
   await Promise.all([
-    fetch(`${_baseUrl}/nextjs-compat/rsc-context-lazy-stream`, {
+    fetch(`${_baseUrl}/nextjs-compat/rsc-context-lazy-stream.rsc`, {
       headers: {
         Accept: "text/x-component",
+        RSC: "1",
         "x-rsc-context-test": "warmup",
       },
     }),
@@ -144,9 +143,10 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   // correct context and SENTINEL appears in the RSC flight response.
 
   it("RSC request: layout headers() context survives lazy stream consumption (regression)", async () => {
-    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}`, {
+    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}.rsc`, {
       headers: {
         Accept: "text/x-component",
+        RSC: "1",
         "x-rsc-context-test": SENTINEL,
       },
     });
@@ -167,9 +167,10 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   });
 
   it("RSC request: data-request-id is not 'missing' (context was not null)", async () => {
-    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}`, {
+    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}.rsc`, {
       headers: {
         Accept: "text/x-component",
+        RSC: "1",
         "x-rsc-context-test": SENTINEL,
       },
     });

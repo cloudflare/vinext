@@ -84,19 +84,22 @@ export function extractExportConstString(code: string, name: string): string | n
 }
 
 /**
- * Extracts the numeric value of `export const <name> = <number>`.
- * Supports integers, decimals, negative values, and `Infinity`.
+ * Extracts the numeric value of `export const <name> = <number|false>`.
+ * Supports integers, decimals, negative values, `Infinity`, and `false`.
+ * `false` is returned as `Infinity` because `export const revalidate = false`
+ * means "cache indefinitely" in Next.js segment config.
  * Handles optional TypeScript type annotations.
- * Returns null if the export is absent or not a number.
+ * Returns null if the export is absent or not a number/`false`.
  */
 export function extractExportConstNumber(code: string, name: string): number | null {
   const re = new RegExp(
-    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity)`,
+    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity|false)(?![\\w$])`,
     "m",
   );
   const m = re.exec(code);
   if (!m) return null;
-  return m[1] === "Infinity" ? Infinity : parseFloat(m[1]);
+  if (m[1] === "Infinity" || m[1] === "false") return Infinity;
+  return parseFloat(m[1]);
 }
 
 /**

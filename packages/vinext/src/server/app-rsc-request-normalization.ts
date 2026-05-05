@@ -3,6 +3,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
+import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
@@ -13,7 +14,7 @@ export type NormalizedRscRequest = {
   pathname: string;
   /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
-  /** True when the client requests the RSC payload (.rsc suffix or Accept: text/x-component). */
+  /** True when the request targets a canonical `.rsc` payload URL. */
   isRscRequest: boolean;
   /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
   interceptionContextHeader: string | null;
@@ -38,7 +39,9 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix or `Accept: text/x-component`
+ *   6. RSC detection: `.rsc` suffix only. RSC headers do not select payload
+ *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
+ *      store Flight responses under HTML URLs.
  *   7. cleanPathname — pathname with `.rsc` suffix stripped
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
@@ -83,10 +86,8 @@ export function normalizeRscRequest(
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest =
-    pathname.endsWith(".rsc") ||
-    (request.headers.get("accept")?.includes("text/x-component") ?? false);
-  const cleanPathname = pathname.replace(/\.rsc$/, "");
+  const isRscRequest = pathname.endsWith(".rsc");
+  const cleanPathname = stripRscSuffix(pathname);
 
   // Step 8: Sanitize X-Vinext-Interception-Context.
   // Null bytes in header values can be used for injection in some HTTP stacks.

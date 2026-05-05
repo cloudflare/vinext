@@ -1,4 +1,5 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type AppPageFontData = {
@@ -61,6 +62,13 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
 
 type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
+  /**
+   * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
+   * the RSC render. Read after the SSR shell promise resolves to swap a
+   * 307/404 in place of the streamed body when redirect()/notFound() throws
+   * synchronously inside a route-level Suspense boundary (loading.tsx).
+   */
+  getCapturedSpecialError: () => unknown;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
 
@@ -164,7 +172,7 @@ export async function renderAppPageHtmlResponse(
 
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
-    Vary: "RSC, Accept",
+    Vary: VINEXT_RSC_VARY_HEADER,
   });
 
   if (options.fontLinkHeader) {
@@ -214,13 +222,26 @@ export function createAppPageRscErrorTracker(
   baseOnError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown,
 ): AppPageRscErrorTracker {
   let capturedError: unknown = null;
+  let capturedSpecialError: unknown = null;
 
   return {
     getCapturedError() {
       return capturedError;
     },
+    getCapturedSpecialError() {
+      return capturedSpecialError;
+    },
     onRenderError(error, requestInfo, errorContext) {
-      if (!(error && typeof error === "object" && "digest" in error)) {
+      if (error && typeof error === "object" && "digest" in error) {
+        // Errors with a digest are signal throws (NEXT_REDIRECT,
+        // NEXT_NOT_FOUND, NEXT_HTTP_ERROR_FALLBACK). They're not real
+        // failures — keep the first one so the lifecycle can swap a
+        // 307/404 in place of a streamed "Switched to client rendering"
+        // body for routes with a route-level Suspense boundary.
+        if (capturedSpecialError === null) {
+          capturedSpecialError = error;
+        }
+      } else {
         capturedError = error;
       }
       return baseOnError(error, requestInfo, errorContext);

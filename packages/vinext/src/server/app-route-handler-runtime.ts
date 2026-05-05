@@ -22,6 +22,17 @@ export type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number]
 
 export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
 
+/**
+ * Checks whether a string is a recognized HTTP method for App Router route
+ * handlers. Invalid methods must be rejected with 400 before any auto-OPTIONS
+ * or 405 logic runs.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/http.ts
+ */
+export function isValidHTTPMethod(maybeMethod: string): maybeMethod is RouteHandlerHttpMethod {
+  return (ROUTE_HANDLER_HTTP_METHODS as readonly string[]).includes(maybeMethod);
+}
+
 export function collectRouteHandlerMethods(handler: RouteHandlerModule): RouteHandlerHttpMethod[] {
   const methods = ROUTE_HANDLER_HTTP_METHODS.filter(
     (method) => typeof handler[method] === "function",

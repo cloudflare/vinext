@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
@@ -82,6 +83,11 @@ export function createValidFileMatcher(
       return filePath.replace(extensionRegex, "");
     },
   };
+}
+
+/** Check if a file exists with any configured page extension. */
+export function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
+  return matcher.dottedExtensions.some((ext) => existsSync(basePath + ext));
 }
 
 /**

@@ -1,3 +1,5 @@
+import { decodeMatchedParams } from "./utils";
+
 /**
  * Trie (prefix tree) for O(depth) route matching.
  *
@@ -122,6 +124,14 @@ export function buildRouteTrie<R extends { patternParts: string[] }>(routes: R[]
 /**
  * Match a URL against the trie.
  *
+ * Returns decoded param values — `decodeURIComponent` is applied to
+ * individual param entries so that `%2F` → `/`, `%23` → `#`, etc.
+ * Segment boundaries (the original `/` splits) are preserved by the
+ * upstream normalization layer; this step only decodes the captured
+ * param strings the caller sees.
+ *
+ * Mirrors Next.js route-matcher.ts:25-27.
+ *
  * @param root - Trie root built by `buildRouteTrie`
  * @param urlParts - Pre-split URL segments (no empty strings)
  * @returns Match result with route and extracted params, or null
@@ -130,7 +140,11 @@ export function trieMatch<R>(
   root: TrieNode<R>,
   urlParts: string[],
 ): { route: R; params: Record<string, string | string[]> } | null {
-  return match(root, urlParts, 0);
+  const result = match(root, urlParts, 0);
+  if (result) {
+    decodeMatchedParams(result.params);
+  }
+  return result;
 }
 
 function createParams(): Record<string, string | string[]> {

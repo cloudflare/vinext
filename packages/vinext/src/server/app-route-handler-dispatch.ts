@@ -30,13 +30,14 @@ import {
   type AppRouteParams,
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
-import { isKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
 import {
   applyRouteHandlerMiddlewareContext,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 
 type AppRouteHandlerDispatchRoute = {
@@ -80,11 +81,6 @@ type DispatchAppRouteHandlerOptions = {
 
 function isAppRouteHandlerFunction(value: unknown): value is AppRouteHandlerFunction {
   return typeof value === "function";
-}
-
-function makeThenableParams<T extends AppRouteParams>(params: T): Promise<T> & T {
-  const plain = { ...params };
-  return Object.assign(Promise.resolve(plain), plain);
 }
 
 function buildRouteHandlerPageCacheTags(
@@ -139,6 +135,17 @@ export async function dispatchAppRouteHandler(
       "[vinext] Detected default export in route handler " +
         route.pattern +
         ". Export a named export for each HTTP method instead.",
+    );
+  }
+
+  // Reject non-standard HTTP methods before any auto-OPTIONS/405 logic.
+  // Next.js returns 400 for invalid methods; vinext mirrors that behavior.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
+  if (!isValidHTTPMethod(method)) {
+    options.clearRequestContext();
+    return applyRouteHandlerMiddlewareContext(
+      new Response(null, { status: 400 }),
+      options.middlewareContext,
     );
   }
 

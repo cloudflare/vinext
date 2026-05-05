@@ -15,11 +15,14 @@
  * The static-prefix reduction uses a small value (-50 per segment) so that:
  *   - It beats the per-dynamic-segment penalty (100), placing prefix routes
  *     above their no-prefix equivalents.
- *   - It never goes negative, so purely-static routes (score 0) always win.
  *   - It is small enough that infix-static bonuses (-500) and catch-all
  *     penalties (1000+) are not swamped, preserving their relative ordering.
  *     E.g. /:locale/blog/:path+ (with infix "blog") correctly beats /:locale/:path+
  *     even when both share the same "locale-test" static prefix.
+ *   - Note: dynamic routes CAN score negative (e.g. /a/:b/c/:d = -346), but
+ *     this is harmless because the trie matcher (route-trie.ts) checks static
+ *     children before dynamic children at each node, so purely-static routes
+ *     still win at request time regardless of sort-order score.
  */
 function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);
@@ -129,4 +132,29 @@ export function normalizePathnameForRouteMatchStrict(pathname: string): string {
     .split("/")
     .map((segment) => decodeRouteSegmentStrict(segment))
     .join("/");
+}
+
+function decodeMatchedParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Decode captured route params with `decodeURIComponent`, mirroring Next.js
+ * route-matcher.ts:25-27. Mutates the params object in place. Catch-all
+ * arrays are decoded element-wise. Malformed escapes are preserved (the
+ * strict normalization layer rejects them at the request boundary).
+ */
+export function decodeMatchedParams(params: Record<string, string | string[]>): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    if (Array.isArray(value)) {
+      params[key] = value.map(decodeMatchedParam);
+    } else {
+      params[key] = decodeMatchedParam(value);
+    }
+  }
 }

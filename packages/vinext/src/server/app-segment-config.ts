@@ -41,9 +41,15 @@ function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
 }
 
 function resolveRevalidateSeconds(current: number | null, value: unknown): number | null {
-  // TODO: Next.js also accepts `revalidate = false` for indefinite caching.
-  // Existing vinext code ignores non-numeric values; keep that behavior until
-  // the cache layer can represent "cache forever" distinctly from "unset".
+  // revalidate = false means "cache indefinitely" in Next.js segment config.
+  // Represent it as Infinity so downstream code can distinguish "never
+  // revalidate" (Infinity) from "no config / unset" (null).
+  if (value === false) {
+    if (current === null) return Infinity;
+    // Shortest-wins: any finite interval is shorter than Infinity.
+    return current === Infinity ? Infinity : current;
+  }
+
   if (typeof value !== "number") {
     return current;
   }

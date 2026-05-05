@@ -6,6 +6,7 @@ import {
   pagesRouter,
   matchRoute,
   apiRouter,
+  invalidateRouteCache,
   type Route,
 } from "../packages/vinext/src/routing/pages-router.js";
 import {
@@ -1490,6 +1491,47 @@ describe("matchAppRoute - URL matching", () => {
     });
   });
 
+  it("discovers nested parallel slot sub-routes from layout-only parent", async () => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts (line 510)
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
+    // Next.js fixture: app/parallel-nested/home/layout.tsx + @parallelB/default.tsx + @parallelB/nested/page.tsx (no home/page.tsx)
+    await withTempDir("vinext-app-nested-parallel-slot-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "parallel-nested", "home", "@parallelB", "nested"), {
+        recursive: true,
+      });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "home", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "default.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "page.tsx"),
+        EMPTY_PAGE,
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Parent layout-only route should exist
+      expect(patterns).toContain("/parallel-nested/home");
+      const parentRoute = routes.find((r) => r.pattern === "/parallel-nested/home")!;
+      expect(parentRoute.pagePath).toBeNull();
+      expect(parentRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+
+      // Nested slot sub-route should be discovered even though parent has no page.tsx
+      expect(patterns).toContain("/parallel-nested/home/nested");
+      const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
+      expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
+      const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
+      expect(parallelBSlot.pagePath).toContain(path.join("@parallelB", "nested", "page.tsx"));
+    });
+  });
+
   // --- Hyphenated param names (issue #71) ---
 
   it("discovers optional catch-all with hyphenated param name [[...sign-in]]", async () => {
@@ -1676,5 +1718,73 @@ describe("pagesRouter - hyphenated param names", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
     expect(result!.params["sign-up"]).toEqual(["step", "2"]);
+  });
+});
+
+describe("pagesRouter - dotted/colon param names (Next.js parity)", () => {
+  it("discovers dynamic segments with dots and colons", async () => {
+    await withTempDir("vinext-pages-dotted-param-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "products"), { recursive: true });
+      await mkdir(path.join(pagesDir, "repos"), { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "products", "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "repos", "[repo:name].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/products/:variant.id");
+      expect(patterns).toContain("/repos/:repo:name");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("extracts params correctly for dotted dynamic segments", async () => {
+    await withTempDir("vinext-pages-dotted-match-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[variant.id].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const result = matchRoute("/abc", routes);
+
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/:variant.id");
+      expect(result!.params["variant.id"]).toBe("abc");
+      invalidateRouteCache(pagesDir);
+    });
+  });
+
+  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
+    await withTempDir("vinext-pages-skip-plus-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(
+        path.join(pagesDir, "[id+].tsx"),
+        "export default function Page() { return null; }",
+      );
+      await writeFile(
+        path.join(pagesDir, "[id*].tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+
+      // Skipped entirely to avoid ambiguity with internal :name+ / :name* modifiers
+      expect(routes).toHaveLength(0);
+      invalidateRouteCache(pagesDir);
+    });
   });
 });

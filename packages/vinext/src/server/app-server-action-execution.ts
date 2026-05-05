@@ -1,7 +1,13 @@
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  getNextErrorDigest,
+  parseNextHttpErrorDigest,
+  parseNextRedirectDigest,
+} from "./next-error-digest.js";
 import { validateCsrfOrigin, validateServerActionPayload } from "./request-pipeline.js";
 import {
   createServerActionNotFoundResponse,
@@ -242,40 +248,27 @@ export async function readActionFormDataWithLimit(
   }).formData();
 }
 
-function getErrorDigest(error: unknown): string | null {
-  if (!error || typeof error !== "object" || !("digest" in error)) {
-    return null;
-  }
-
-  return String(error.digest);
-}
-
 function getActionControlResponse(error: unknown): ActionControlResponse | null {
-  const digest = getErrorDigest(error);
+  const digest = getNextErrorDigest(error);
   if (!digest) return null;
 
-  if (digest.startsWith("NEXT_REDIRECT;")) {
-    const parts = digest.split(";");
-    const encodedUrl = parts[2];
-    if (!encodedUrl) {
-      return null;
-    }
-
+  const redirect = parseNextRedirectDigest(digest);
+  if (redirect) {
     return {
       kind: "redirect",
-      url: decodeURIComponent(encodedUrl),
+      url: redirect.url,
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-    const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-    if (!Number.isInteger(statusCode)) {
+  const httpError = parseNextHttpErrorDigest(digest);
+  if (httpError) {
+    if (!Number.isInteger(httpError.status)) {
       return null;
     }
 
     return {
       kind: "status",
-      statusCode,
+      statusCode: httpError.status,
     };
   }
 
@@ -283,27 +276,26 @@ function getActionControlResponse(error: unknown): ActionControlResponse | null 
 }
 
 function getActionRedirect(error: unknown): AppServerActionRedirect | null {
-  const digest = getErrorDigest(error);
-  if (!digest?.startsWith("NEXT_REDIRECT;")) {
-    return null;
-  }
+  const digest = getNextErrorDigest(error);
+  if (!digest) return null;
 
-  const parts = digest.split(";");
-  const encodedUrl = parts[2];
-  if (!encodedUrl) {
-    return null;
-  }
+  const redirect = parseNextRedirectDigest(digest);
+  if (!redirect) return null;
 
   return {
-    status: parts[3] ? parseInt(parts[3], 10) : 307,
-    type: parts[1] || "push",
-    url: decodeURIComponent(encodedUrl),
+    status: redirect.status,
+    type: redirect.type,
+    url: redirect.url,
   };
 }
 
 function isActionHttpFallback(error: unknown): boolean {
-  const digest = getErrorDigest(error);
-  return digest === "NEXT_NOT_FOUND" || digest?.startsWith("NEXT_HTTP_ERROR_FALLBACK;") === true;
+  const digest = getNextErrorDigest(error);
+  return digest !== null && parseNextHttpErrorDigest(digest) !== null;
+}
+
+function payloadTooLargeResponse(): Response {
+  return new Response("Payload Too Large", { status: 413 });
 }
 
 function createServerActionErrorResponse(
@@ -376,7 +368,7 @@ export async function handleProgressiveServerActionRequest(
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
     options.clearRequestContext();
-    return new Response("Payload Too Large", { status: 413 });
+    return payloadTooLargeResponse();
   }
 
   try {
@@ -392,7 +384,7 @@ export async function handleProgressiveServerActionRequest(
     } catch (error) {
       if (isRequestBodyTooLarge(error)) {
         options.clearRequestContext();
-        return new Response("Payload Too Large", { status: 413 });
+        return payloadTooLargeResponse();
       }
       throw error;
     }
@@ -505,7 +497,7 @@ export async function handleServerActionRscRequest<
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
     options.clearRequestContext();
-    return new Response("Payload Too Large", { status: 413 });
+    return payloadTooLargeResponse();
   }
 
   try {
@@ -517,7 +509,7 @@ export async function handleServerActionRscRequest<
     } catch (error) {
       if (isRequestBodyTooLarge(error)) {
         options.clearRequestContext();
-        return new Response("Payload Too Large", { status: 413 });
+        return payloadTooLargeResponse();
       }
       throw error;
     }
@@ -579,7 +571,7 @@ export async function handleServerActionRscRequest<
       options.clearRequestContext();
       const redirectHeaders = new Headers({
         "Content-Type": "text/x-component; charset=utf-8",
-        Vary: "RSC, Accept",
+        Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
       redirectHeaders.set("x-action-redirect", actionRedirect.url);
@@ -647,7 +639,7 @@ export async function handleServerActionRscRequest<
 
     const actionHeaders = new Headers({
       "Content-Type": "text/x-component; charset=utf-8",
-      Vary: "RSC, Accept",
+      Vary: VINEXT_RSC_VARY_HEADER,
     });
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     const actionResponse = new Response(rscStream, {

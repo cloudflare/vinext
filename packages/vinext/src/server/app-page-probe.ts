@@ -59,10 +59,25 @@ export async function probeAppPageBeforeRender(
     }
   }
 
+  // When a route-level loading.tsx is present, the page renders inside a
+  // route-level Suspense boundary, so a thrown redirect()/notFound() during
+  // page render becomes an error inside that boundary. We can't catch it
+  // here without serializing on the page promise — which would defeat the
+  // streaming benefit of loading.tsx for slow non-redirecting pages.
+  //
+  // Recovery for the redirect/notFound case happens later in
+  // renderAppPageLifecycle: rscErrorTracker captures the digest from React's
+  // onError callback, and a short race window after shell-ready lets the
+  // lifecycle swap the response to a 307/404 before bytes are flushed.
+  // This mirrors Next.js's "until-first-byte-is-flushed" swap behavior.
+  if (options.hasLoadingBoundary) {
+    return { response: null, layoutFlags };
+  }
+
   // Server Components are functions, so we can probe the page ahead of stream
   // creation and only turn special throws into immediate responses.
   const pageResponse = await probeAppPageComponent({
-    awaitAsyncResult: !options.hasLoadingBoundary,
+    awaitAsyncResult: true,
     async onError(pageError) {
       const specialError = options.resolveSpecialError(pageError);
       if (specialError) {

@@ -1,6 +1,7 @@
 import type { AppRoute } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import { normalizePathSeparators } from "./runtime-entry-module.js";
 
 type AppRscManifestCode = {
   imports: string[];
@@ -39,7 +40,7 @@ function createImportAllocator(): ImportAllocator {
       if (existing) return existing;
 
       const varName = `mod_${importIdx++}`;
-      const absPath = filePath.replace(/\\/g, "/");
+      const absPath = normalizePathSeparators(filePath);
       imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
       importMap.set(filePath, varName);
       return varName;
@@ -118,6 +119,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         }`,
       );
       return `      ${JSON.stringify(slot.key)}: {
+        id: ${JSON.stringify(slot.id ?? null)},
         name: ${JSON.stringify(slot.name)},
         page: ${slot.pagePath ? imports.getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? imports.getImportVar(slot.defaultPath) : "null"},
@@ -139,6 +141,7 @@ ${interceptEntries.join(",\n")}
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
+    ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},

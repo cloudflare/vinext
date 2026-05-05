@@ -7,7 +7,7 @@
  */
 
 import path from "node:path";
-import fs from "node:fs";
+import { readJsonFile } from "../utils/safe-json-file.js";
 
 /**
  * Read the prerender secret from `vinext-server.json` in `serverDir`.
@@ -18,10 +18,6 @@ import fs from "node:fs";
  */
 export function readPrerenderSecret(serverDir: string): string | undefined {
   const manifestPath = path.join(serverDir, "vinext-server.json");
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-    return manifest.prerenderSecret as string | undefined;
-  } catch {
-    return undefined;
-  }
+  const manifest = readJsonFile<{ prerenderSecret?: string }>(manifestPath);
+  return manifest?.prerenderSecret;
 }

@@ -31,7 +31,7 @@ import {
   _consumeRequestScopedCacheLife,
 } from "vinext/shims/cache";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
-import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
+import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 export { readPrerenderSecret } from "./server-manifest.js";
@@ -204,10 +204,6 @@ async function runWithConcurrency<T, R>(
 }
 
 // ─── Helpers (shared with static-export.ts) ───────────────────────────────────
-
-function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
-  return matcher.dottedExtensions.some((ext) => fs.existsSync(basePath + ext));
-}
 
 /**
  * Build a URL path from a route pattern and params.

@@ -1,11 +1,18 @@
 import { mergeElements } from "vinext/shims/slot";
 import { stripBasePath } from "../utils/base-path.js";
 import {
+  AppElementsWire,
   getMountedSlotIdsHeader,
-  readAppElementsMetadata,
   type AppElements,
   type LayoutFlags,
 } from "./app-elements.js";
+import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
+import {
+  NavigationTraceReasonCodes,
+  createNavigationTrace,
+  type NavigationTrace,
+  type NavigationTraceReasonCode,
+} from "./navigation-trace.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
@@ -14,7 +21,27 @@ type HistoryStateRecord = {
   [key: string]: unknown;
 };
 
+export type OperationLane = "navigation" | "refresh" | "traverse" | "server-action" | "hmr";
+
+type OperationRecordBase = {
+  id: number;
+  lane: OperationLane;
+  startedVisibleCommitVersion: number;
+};
+
+export type PendingOperationRecord = OperationRecordBase & {
+  state: "pending";
+};
+
+export type CommittedOperationRecord = OperationRecordBase & {
+  state: "committed";
+  visibleCommitVersion: number;
+};
+
+export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
+
 export type AppRouterState = {
+  activeOperation: OperationRecord | null;
   elements: AppElements;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
@@ -23,6 +50,7 @@ export type AppRouterState = {
   navigationSnapshot: ClientNavigationRenderSnapshot;
   rootLayoutTreePath: string | null;
   routeId: string;
+  visibleCommitVersion: number;
 };
 
 export type AppRouterAction = {
@@ -30,6 +58,7 @@ export type AppRouterAction = {
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  operation: PendingOperationRecord;
   previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
@@ -46,9 +75,14 @@ type PendingNavigationCommit = {
 };
 
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
+type PendingNavigationCommitDispositionDecision = {
+  disposition: PendingNavigationCommitDisposition;
+  trace: NavigationTrace;
+};
 type ClassifiedPendingNavigationCommit = {
   disposition: PendingNavigationCommitDisposition;
   pending: PendingNavigationCommit;
+  trace: NavigationTrace;
 };
 
 function cloneHistoryState(state: unknown): HistoryStateRecord {
@@ -81,6 +115,32 @@ export function createHistoryStateWithPreviousNextUrl(
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
   const value = cloneHistoryState(state)[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
   return typeof value === "string" ? value : null;
+}
+
+export function createOperationRecord(options: {
+  id: number;
+  lane: OperationLane;
+  startedVisibleCommitVersion: number;
+}): PendingOperationRecord {
+  return {
+    id: options.id,
+    lane: options.lane,
+    startedVisibleCommitVersion: options.startedVisibleCommitVersion,
+    state: "pending",
+  };
+}
+
+function commitOperationRecord(
+  operation: PendingOperationRecord,
+  visibleCommitVersion: number,
+): CommittedOperationRecord {
+  return {
+    id: operation.id,
+    lane: operation.lane,
+    startedVisibleCommitVersion: operation.startedVisibleCommitVersion,
+    state: "committed",
+    visibleCommitVersion,
+  };
 }
 
 export function resolveInterceptionContextFromPreviousNextUrl(
@@ -120,10 +180,8 @@ type ResolveServerActionRequestStateResult = {
 export function resolveServerActionRequestState(
   options: ResolveServerActionRequestStateOptions,
 ): ResolveServerActionRequestStateResult {
-  const headers = new Headers({
-    Accept: "text/x-component",
-    "x-rsc-action": options.actionId,
-  });
+  const headers = createRscRequestHeaders();
+  headers.set("x-rsc-action", options.actionId);
 
   const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
     options.previousNextUrl,
@@ -141,31 +199,66 @@ export function resolveServerActionRequestState(
   return { headers };
 }
 
+type AppRouterStateWithoutCommitMetadata = {
+  elements: AppElements;
+  interceptionContext: string | null;
+  layoutFlags: LayoutFlags;
+  navigationSnapshot: ClientNavigationRenderSnapshot;
+  previousNextUrl: string | null;
+  renderId: number;
+  rootLayoutTreePath: string | null;
+  routeId: string;
+};
+
+function commitVisibleRouterState(
+  state: AppRouterState,
+  nextState: AppRouterStateWithoutCommitMetadata,
+  operation: PendingOperationRecord,
+): AppRouterState {
+  // Advances when the browser router accepts a new visible router-state commit.
+  // This is the lifecycle baseline used to reject stale async results; it is
+  // not a React DOM paint signal.
+  const visibleCommitVersion = state.visibleCommitVersion + 1;
+  return {
+    ...nextState,
+    activeOperation: commitOperationRecord(operation, visibleCommitVersion),
+    visibleCommitVersion,
+  };
+}
+
 export function routerReducer(state: AppRouterState, action: AppRouterAction): AppRouterState {
   switch (action.type) {
     case "traverse":
     case "navigate":
-      return {
-        elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
-        interceptionContext: action.interceptionContext,
-        layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
-        navigationSnapshot: action.navigationSnapshot,
-        previousNextUrl: action.previousNextUrl,
-        renderId: action.renderId,
-        rootLayoutTreePath: action.rootLayoutTreePath,
-        routeId: action.routeId,
-      };
+      return commitVisibleRouterState(
+        state,
+        {
+          elements: mergeElements(state.elements, action.elements, action.type === "traverse"),
+          interceptionContext: action.interceptionContext,
+          layoutFlags: { ...state.layoutFlags, ...action.layoutFlags },
+          navigationSnapshot: action.navigationSnapshot,
+          previousNextUrl: action.previousNextUrl,
+          renderId: action.renderId,
+          rootLayoutTreePath: action.rootLayoutTreePath,
+          routeId: action.routeId,
+        },
+        action.operation,
+      );
     case "replace":
-      return {
-        elements: action.elements,
-        interceptionContext: action.interceptionContext,
-        layoutFlags: action.layoutFlags,
-        navigationSnapshot: action.navigationSnapshot,
-        previousNextUrl: action.previousNextUrl,
-        renderId: action.renderId,
-        rootLayoutTreePath: action.rootLayoutTreePath,
-        routeId: action.routeId,
-      };
+      return commitVisibleRouterState(
+        state,
+        {
+          elements: action.elements,
+          interceptionContext: action.interceptionContext,
+          layoutFlags: action.layoutFlags,
+          navigationSnapshot: action.navigationSnapshot,
+          previousNextUrl: action.previousNextUrl,
+          renderId: action.renderId,
+          rootLayoutTreePath: action.rootLayoutTreePath,
+          routeId: action.routeId,
+        },
+        action.operation,
+      );
     default: {
       const _exhaustive: never = action.type;
       throw new Error("[vinext] Unknown router action: " + String(_exhaustive));
@@ -204,16 +297,65 @@ export function resolvePendingNavigationCommitDisposition(options: {
   return "dispatch";
 }
 
+export function resolvePendingNavigationCommitDispositionDecision(options: {
+  activeNavigationId: number;
+  currentRootLayoutTreePath: string | null;
+  nextRootLayoutTreePath: string | null;
+  startedNavigationId: number;
+}): PendingNavigationCommitDispositionDecision {
+  const disposition = resolvePendingNavigationCommitDisposition(options);
+  const traceFields = {
+    activeNavigationId: options.activeNavigationId,
+    currentRootLayoutTreePath: options.currentRootLayoutTreePath,
+    nextRootLayoutTreePath: options.nextRootLayoutTreePath,
+    startedNavigationId: options.startedNavigationId,
+  };
+
+  return {
+    disposition,
+    trace: createNavigationTrace(
+      getPendingNavigationCommitDispositionTraceCode({
+        currentRootLayoutTreePath: options.currentRootLayoutTreePath,
+        disposition,
+        nextRootLayoutTreePath: options.nextRootLayoutTreePath,
+      }),
+      traceFields,
+    ),
+  };
+}
+
+function getPendingNavigationCommitDispositionTraceCode(options: {
+  currentRootLayoutTreePath: string | null;
+  disposition: PendingNavigationCommitDisposition;
+  nextRootLayoutTreePath: string | null;
+}): NavigationTraceReasonCode {
+  switch (options.disposition) {
+    case "skip":
+      return NavigationTraceReasonCodes.staleOperation;
+    case "hard-navigate":
+      return NavigationTraceReasonCodes.rootBoundaryChanged;
+    case "dispatch":
+      return options.currentRootLayoutTreePath === null || options.nextRootLayoutTreePath === null
+        ? NavigationTraceReasonCodes.rootBoundaryUnknown
+        : NavigationTraceReasonCodes.commitCurrent;
+    default: {
+      const _exhaustive: never = options.disposition;
+      throw new Error("[vinext] Unknown navigation commit disposition: " + String(_exhaustive));
+    }
+  }
+}
+
 export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
+  operationLane: OperationLane;
   previousNextUrl?: string | null;
   renderId: number;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
-  const metadata = readAppElementsMetadata(elements);
+  const metadata = AppElementsWire.readMetadata(elements);
   const previousNextUrl =
     options.previousNextUrl !== undefined
       ? options.previousNextUrl
@@ -225,6 +367,11 @@ export async function createPendingNavigationCommit(options: {
       interceptionContext: metadata.interceptionContext,
       layoutFlags: metadata.layoutFlags,
       navigationSnapshot: options.navigationSnapshot,
+      operation: createOperationRecord({
+        id: options.renderId,
+        lane: options.operationLane,
+        startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
+      }),
       previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
@@ -244,6 +391,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   currentState: AppRouterState;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   nextElements: Promise<AppElements>;
+  operationLane: OperationLane;
   previousNextUrl?: string | null;
   renderId: number;
   startedNavigationId: number;
@@ -253,18 +401,22 @@ export async function resolveAndClassifyNavigationCommit(options: {
     currentState: options.currentState,
     nextElements: options.nextElements,
     navigationSnapshot: options.navigationSnapshot,
+    operationLane: options.operationLane,
     previousNextUrl: options.previousNextUrl,
     renderId: options.renderId,
     type: options.type,
   });
 
+  const decision = resolvePendingNavigationCommitDispositionDecision({
+    activeNavigationId: options.activeNavigationId,
+    currentRootLayoutTreePath: options.currentState.rootLayoutTreePath,
+    nextRootLayoutTreePath: pending.rootLayoutTreePath,
+    startedNavigationId: options.startedNavigationId,
+  });
+
   return {
-    disposition: resolvePendingNavigationCommitDisposition({
-      activeNavigationId: options.activeNavigationId,
-      currentRootLayoutTreePath: options.currentState.rootLayoutTreePath,
-      nextRootLayoutTreePath: pending.rootLayoutTreePath,
-      startedNavigationId: options.startedNavigationId,
-    }),
+    disposition: decision.disposition,
     pending,
+    trace: decision.trace,
   };
 }

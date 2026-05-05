@@ -275,6 +275,15 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
+
+  /**
+   * Vite RSC's SSR-side client-reference module loader.
+   * Set by `@vitejs/plugin-rsc` and read by the App Router SSR entry before
+   * React consumes the Flight stream, so first-request client references are
+   * already resolved when Fizz renders the shell.
+   */
+  // oxlint-disable-next-line no-var
+  var __vite_rsc_client_require__: ((id: string) => Promise<unknown>) | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -309,14 +309,148 @@ export type MetadataMergeEntry = {
  * Shallow merge: later entries override earlier ones (per Next.js docs).
  */
 export function mergeMetadata(metadataList: Metadata[]): Metadata {
-  return mergeMetadataEntries(
+  const merged = mergeMetadataEntries(
     metadataList.map((metadata, index) => ({
       isPage: index === metadataList.length - 1,
       metadata,
     })),
   );
+  return postProcessMetadata(merged);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof URL)
+  );
+}
+
+function isOtherMetadata(value: unknown): value is NonNullable<Metadata["other"]> {
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every((item) => {
+    if (typeof item === "string") return true;
+    return Array.isArray(item) && item.every((nestedItem) => typeof nestedItem === "string");
+  });
+}
+
+/**
+ * Extract a plain string title from a metadata title value.
+ */
+function resolveStringTitle(title: Metadata["title"]): string | undefined {
+  if (typeof title === "string") return title;
+  if (title && typeof title === "object") {
+    return title.absolute ?? title.default ?? undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Post-process merged metadata to cross-fill openGraph and Twitter fields.
+ *
+ * Next.js runs this once after all layouts/pages and file-based metadata
+ * have been resolved. When openGraph exists, it auto-fills missing
+ * twitter:title/description/images from openGraph (falling back to root
+ * metadata title/description). Existing openGraph/twitter objects also inherit
+ * missing title/description from root metadata.
+ *
+ * Ported from Next.js:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+ */
+export function postProcessMetadata(merged: Metadata): Metadata {
+  // Shallow-clone to avoid mutating the caller's object.
+  // Both current call sites (mergeMetadata, resolveAppPageHead) pass
+  // freshly-constructed objects, but this guards against future misuse.
+  const result = { ...merged };
+
+  const resolvedTitle = resolveStringTitle(result.title);
+
+  // openGraph inherits title/description from root metadata when absent
+  if (result.openGraph) {
+    const og = { ...result.openGraph };
+    if (!og.title && resolvedTitle) {
+      og.title = resolvedTitle;
+    }
+    if (!og.description && result.description) {
+      og.description = result.description;
+    }
+    result.openGraph = og;
+  }
+
+  if (result.openGraph) {
+    const autoFill: {
+      title?: string;
+      description?: string;
+      images?: NonNullable<Metadata["twitter"]>["images"];
+    } = {};
+
+    const existingTwitter = result.twitter;
+    const hasTwTitle = existingTwitter ? Boolean(existingTwitter.title) : false;
+    const hasTwDescription = existingTwitter ? Boolean(existingTwitter.description) : false;
+    const hasTwImages = existingTwitter
+      ? Object.prototype.hasOwnProperty.call(existingTwitter, "images") &&
+        Boolean(existingTwitter.images)
+      : false;
+
+    if (!hasTwTitle) {
+      if (result.openGraph.title) {
+        autoFill.title = result.openGraph.title;
+      } else if (resolvedTitle) {
+        autoFill.title = resolvedTitle;
+      }
+    }
+    if (!hasTwDescription) {
+      autoFill.description = result.openGraph.description || result.description || undefined;
+    }
+    if (!hasTwImages) {
+      autoFill.images = result.openGraph.images;
+    }
+
+    if (Object.keys(autoFill).length > 0) {
+      if (existingTwitter) {
+        result.twitter = { ...existingTwitter, ...autoFill };
+      } else {
+        result.twitter = autoFill;
+      }
+    }
+  }
+
+  if (result.twitter) {
+    const tw = { ...result.twitter };
+    if (!tw.title && resolvedTitle) {
+      tw.title = resolvedTitle;
+    }
+    if (!tw.description && result.description) {
+      tw.description = result.description;
+    }
+    result.twitter = tw;
+  }
+
+  // If twitter exists (either originally or via auto-fill), ensure card type is set.
+  // Next.js resolveTwitter defaults: summary_large_image when images present, else summary.
+  if (result.twitter) {
+    const tw = { ...result.twitter };
+    if (!tw.card) {
+      const images = tw.images;
+      const hasImages = Array.isArray(images) ? images.length > 0 : Boolean(images);
+      tw.card = hasImages ? "summary_large_image" : "summary";
+    }
+    result.twitter = tw;
+  }
+
+  return result;
+}
+
+/**
+ * Merge metadata from multiple sources (layouts + page).
+ *
+ * The list is ordered [rootLayout, nestedLayout, ..., page].
+ * Title template from layouts applies to the page title but NOT to
+ * the segment that defines the template itself. `title.absolute`
+ * skips all templates. `title.default` is the fallback when no
+ * child provides a title.
+ *
+ * For top-level keys, later entries override earlier ones. `other` custom meta
+ * tags are the exception: Next.js merges those across segments.
+ */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   if (entries.length === 0) return {};
 
@@ -341,10 +475,19 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
       parentTemplate = meta.title.template;
     }
 
-    // Shallow merge — later entries override earlier for top-level keys
+    // Merge non-title keys
     for (const key of Object.keys(meta)) {
       if (key === "title") continue; // Handle title separately below
-      (merged as Record<string, unknown>)[key] = (meta as Record<string, unknown>)[key];
+
+      const incoming = meta[key];
+      const existing = merged[key];
+
+      if (key === "other" && isOtherMetadata(existing) && isOtherMetadata(incoming)) {
+        merged.other = { ...existing, ...incoming };
+      } else {
+        // Plain replacement for everything else
+        merged[key] = incoming;
+      }
     }
 
     // Title resolution

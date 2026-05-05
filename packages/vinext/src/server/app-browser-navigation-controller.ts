@@ -12,6 +12,8 @@ import {
   routerReducer,
   type AppRouterAction,
   type AppRouterState,
+  type OperationLane,
+  type PendingOperationRecord,
 } from "./app-browser-state.js";
 import type { AppElements, LayoutFlags } from "./app-elements.js";
 
@@ -57,6 +59,7 @@ type BrowserNavigationController = {
     historyUpdateMode: HistoryUpdateMode | undefined;
     navigationSnapshot: ClientNavigationRenderSnapshot;
     nextElements: Promise<AppElements>;
+    operationLane: OperationLane;
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
@@ -308,6 +311,7 @@ export function createAppBrowserNavigationController(
       currentState,
       nextElements,
       navigationSnapshot,
+      operationLane: "hmr",
       renderId,
       type: "replace",
     });
@@ -328,6 +332,7 @@ export function createAppBrowserNavigationController(
       pending.previousNextUrl,
       pending.routeId,
       pending.rootLayoutTreePath,
+      pending.action.operation,
       null,
       false,
     );
@@ -371,6 +376,7 @@ export function createAppBrowserNavigationController(
     previousNextUrl: string | null,
     routeId: string,
     rootLayoutTreePath: string | null,
+    operation: PendingOperationRecord,
     pendingRouterState: PendingBrowserRouterState | null,
     useTransitionMode: boolean,
   ): void {
@@ -380,6 +386,7 @@ export function createAppBrowserNavigationController(
       interceptionContext,
       layoutFlags,
       navigationSnapshot,
+      operation,
       previousNextUrl,
       renderId,
       rootLayoutTreePath,
@@ -412,6 +419,7 @@ export function createAppBrowserNavigationController(
     historyUpdateMode: HistoryUpdateMode | undefined;
     navigationSnapshot: ClientNavigationRenderSnapshot;
     nextElements: Promise<AppElements>;
+    operationLane: OperationLane;
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
@@ -433,6 +441,7 @@ export function createAppBrowserNavigationController(
         currentState,
         nextElements: options.nextElements,
         navigationSnapshot: options.navigationSnapshot,
+        operationLane: options.operationLane,
         previousNextUrl: options.previousNextUrl,
         renderId,
         type: options.actionType,
@@ -481,6 +490,7 @@ export function createAppBrowserNavigationController(
         pending.previousNextUrl,
         pending.routeId,
         pending.rootLayoutTreePath,
+        pending.action.operation,
         options.pendingRouterState,
         options.useTransition ?? true,
       );
@@ -510,12 +520,21 @@ export function createAppBrowserNavigationController(
     // can still dispatch its older payload afterward. The old pre-2c code had
     // the same race, and Next.js has similar behavior. Tightening this would
     // need a stronger commit-version gate than activeNavigationId alone.
-    const { disposition, pending } = await resolveAndClassifyNavigationCommit({
+    const {
+      disposition,
+      pending,
+      // Intentionally retained as #726-OPS-01 trace-shell scaffolding. The
+      // current same-URL action path still commits through legacy control flow;
+      // later lifecycle gates can consume this trace without changing the
+      // classifier contract again.
+      trace: _navigationTrace,
+    } = await resolveAndClassifyNavigationCommit({
       activeNavigationId,
       currentState,
       navigationSnapshot,
       nextElements,
       renderId: allocateRenderId(),
+      operationLane: "server-action",
       startedNavigationId,
       type: "navigate",
     });
@@ -536,6 +555,7 @@ export function createAppBrowserNavigationController(
         pending.previousNextUrl,
         pending.routeId,
         pending.rootLayoutTreePath,
+        pending.action.operation,
         null,
         false,
       );

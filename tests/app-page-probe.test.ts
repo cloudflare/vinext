@@ -354,7 +354,15 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it("does not await async page probes when a loading boundary is present", async () => {
+  it("skips the page probe when a loading boundary is present (special errors handled post-shell)", async () => {
+    // With a route-level loading.tsx Suspense boundary, the probe can't
+    // catch a redirect()/notFound() thrown by the page without serializing
+    // on the page promise — which would defeat loading.tsx's whole point.
+    // Recovery instead happens later in renderAppPageLifecycle: the
+    // rscErrorTracker captures the digest from React's onError, and a short
+    // race window after shell-ready swaps the response to a 307/404 before
+    // bytes are flushed.
+    const probePage = vi.fn(() => new Promise<void>(() => {}));
     const renderPageSpecialError = vi.fn();
 
     const result = await probeAppPageBeforeRender({
@@ -363,25 +371,21 @@ describe("app page probe helpers", () => {
       probeLayoutAt() {
         throw new Error("should not probe layouts");
       },
-      probePage() {
-        return Promise.reject(new Error("late page failure"));
-      },
+      probePage,
       renderLayoutSpecialError() {
         throw new Error("should not render a layout special error");
       },
       renderPageSpecialError,
       resolveSpecialError() {
-        return {
-          kind: "http-access-fallback",
-          statusCode: 404,
-        };
+        throw new Error("should not be reached when the page probe is skipped");
       },
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
     });
 
-    expect(result.response).toBeNull();
+    expect(probePage).not.toHaveBeenCalled();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
+    expect(result.response).toBeNull();
   });
 });

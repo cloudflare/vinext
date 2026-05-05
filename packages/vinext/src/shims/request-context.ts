@@ -21,7 +21,7 @@
  *   ctx?.waitUntil(somePromise);
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -47,10 +47,7 @@ export type ExecutionContextLike = {
 // share the same instance and see the same per-request context.
 // ---------------------------------------------------------------------------
 
-const _ALS_KEY = Symbol.for("vinext.requestContext.als");
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<ExecutionContextLike | null>()) as AsyncLocalStorage<ExecutionContextLike | null>;
+const _als = getOrCreateAls<ExecutionContextLike | null>("vinext.requestContext.als");
 
 // ---------------------------------------------------------------------------
 // Public API

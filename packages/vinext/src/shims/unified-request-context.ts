@@ -10,7 +10,8 @@
  * outside (SSR environment, Pages Router, tests).
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import type { AsyncLocalStorage } from "node:async_hooks";
+import { getOrCreateAls } from "./internal/als-registry.js";
 import type {
   CacheState,
   ExecutionContextLike,
@@ -59,11 +60,9 @@ export type UnifiedRequestContext = {
 // (RSC/SSR/client) share the same instance.
 // ---------------------------------------------------------------------------
 
-const _ALS_KEY = Symbol.for("vinext.unifiedRequestContext.als");
 const _REQUEST_CONTEXT_ALS_KEY = Symbol.for("vinext.requestContext.als");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??=
-  new AsyncLocalStorage<UnifiedRequestContext>()) as AsyncLocalStorage<UnifiedRequestContext>;
+const _als = getOrCreateAls<UnifiedRequestContext>("vinext.unifiedRequestContext.als");
 
 function _getInheritedExecutionContext(): ExecutionContextLike | null {
   const unifiedStore = _als.getStore();

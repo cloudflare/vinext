@@ -2178,8 +2178,10 @@ describe("metadata title templates", () => {
       { description: "From page" },
     ]);
     expect(result.description).toBe("From page");
-    // openGraph from layout should be inherited if page doesn't override it
-    expect(result.openGraph).toEqual({ title: "OG Layout" });
+    // openGraph from layout should be inherited if page doesn't override it.
+    // Next.js postProcessMetadata also fills openGraph.description from
+    // metadata.description when absent.
+    expect(result.openGraph).toEqual({ title: "OG Layout", description: "From page" });
   });
 
   it("simple string title without template passes through", () => {
@@ -2210,11 +2212,249 @@ describe("metadata title templates", () => {
       },
     ]);
 
+    // mergeMetadataEntries does raw segment merging only; post-processing is
+    // applied separately by postProcessMetadata (called by mergeMetadata and by
+    // resolveAppPageHead after file-based metadata is applied).
     expect(result).toEqual({
       description: "Page",
       openGraph: { title: "Slot OG title" },
       title: "Page",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metadata segment merge tests
+// Ported from Next.js behavior:
+// - docs: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#merging
+// - source: packages/next/src/lib/metadata/resolve-metadata.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+
+describe("metadata segment merge", () => {
+  let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
+    mergeMetadata = mod.mergeMetadata;
+  });
+
+  it("replaces openGraph instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { openGraph: { siteName: "My Site", images: ["/og-root.png"], locale: "en-US" } },
+      { openGraph: { title: "Child Page" } },
+    ]);
+    expect(result.openGraph).toEqual({
+      title: "Child Page",
+    });
+    expect(result.twitter?.images).toBeUndefined();
+  });
+
+  it("replaces twitter instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { twitter: { card: "summary", site: "@site" } },
+      { twitter: { title: "Tweet Title" } },
+    ]);
+    expect(result.twitter).toEqual({
+      title: "Tweet Title",
+      card: "summary",
+    });
+  });
+
+  it("replaces alternates instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { alternates: { canonical: "https://example.com", languages: { "en-US": "/en" } } },
+      { alternates: { media: { print: "/print" } } },
+    ]);
+    expect(result.alternates).toEqual({
+      media: { print: "/print" },
+    });
+  });
+
+  it("replaces robots instead of deep-merging subkeys", () => {
+    const result = mergeMetadata([
+      { robots: { index: true, follow: true, googleBot: { index: true } } },
+      { robots: { follow: false } },
+    ]);
+    expect(result.robots).toEqual({
+      follow: false,
+    });
+  });
+
+  it("replaces robots string with object outright", () => {
+    const result = mergeMetadata([{ robots: "index, follow" }, { robots: { index: false } }]);
+    expect(result.robots).toEqual({ index: false });
+  });
+
+  it("replaces icons instead of deep-merging map objects", () => {
+    const result = mergeMetadata([
+      { icons: { icon: "/favicon.ico", apple: "/apple.png" } },
+      { icons: { shortcut: "/shortcut.png" } },
+    ]);
+    expect(result.icons).toEqual({
+      shortcut: "/shortcut.png",
+    });
+  });
+
+  it("replaces shorthand icon string with map object", () => {
+    const result = mergeMetadata([{ icons: "/favicon.ico" }, { icons: { apple: "/apple.png" } }]);
+    expect(result.icons).toEqual({ apple: "/apple.png" });
+  });
+
+  it("merges other custom meta tags", () => {
+    const result = mergeMetadata([
+      { other: { foo: "bar", baz: "qux" } },
+      { other: { baz: "override", new: "value" } },
+    ]);
+    expect(result.other).toEqual({
+      foo: "bar",
+      baz: "override",
+      new: "value",
+    });
+  });
+
+  it("preserves root openGraph when page does not override it", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Layout", siteName: "Site" } },
+      { keywords: ["page"] },
+    ]);
+    expect(result.openGraph).toEqual({ title: "OG Layout", siteName: "Site" });
+  });
+
+  it("inherits openGraph.description from metadata.description when missing", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Layout" } },
+      { description: "Page desc" },
+    ]);
+    expect(result.openGraph).toEqual({
+      title: "OG Layout",
+      description: "Page desc",
+    });
+  });
+
+  it("child openGraph replaces the whole parent openGraph object", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "Root", images: ["/og.png"] } },
+      { openGraph: { images: undefined } },
+    ]);
+    expect(result.openGraph?.title).toBeUndefined();
+    expect(result.openGraph?.images).toBeUndefined();
+    expect(result.twitter?.images).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metadata OG/Twitter inheritance tests
+// Ported from Next.js behavior: packages/next/src/lib/metadata/resolve-metadata.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+
+describe("metadata OG/Twitter inheritance", () => {
+  let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+  let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
+  let React: typeof import("react");
+  let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
+    mergeMetadata = mod.mergeMetadata;
+    MetadataHead = mod.MetadataHead;
+    React = await import("react");
+    renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
+  });
+
+  it("auto-fills twitter:title from openGraph:title", () => {
+    const result = mergeMetadata([{ openGraph: { title: "OG Title" } }]);
+    expect(result.twitter?.title).toBe("OG Title");
+  });
+
+  it("auto-fills twitter:description from openGraph:description", () => {
+    const result = mergeMetadata([{ openGraph: { description: "OG Desc" } }]);
+    expect(result.twitter?.description).toBe("OG Desc");
+  });
+
+  it("auto-fills twitter:images from openGraph:images", () => {
+    const result = mergeMetadata([{ openGraph: { images: ["/og.png"] } }]);
+    expect(result.twitter?.images).toEqual(["/og.png"]);
+  });
+
+  it("auto-fills twitter:title from metadata.title when openGraph.title is absent", () => {
+    const result = mergeMetadata([{ title: "Page Title", openGraph: {} }]);
+    expect(result.twitter?.title).toBe("Page Title");
+  });
+
+  it("auto-fills twitter:description from metadata.description when openGraph.description is absent", () => {
+    const result = mergeMetadata([{ description: "Page Desc", openGraph: {} }]);
+    expect(result.twitter?.description).toBe("Page Desc");
+  });
+
+  it("does not create twitter fields from metadata when openGraph is absent entirely", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc" }]);
+    expect(result.twitter).toBeUndefined();
+  });
+
+  it("fills existing twitter title and description from metadata when openGraph is absent", () => {
+    const result = mergeMetadata([{ title: "Page Title", description: "Page Desc", twitter: {} }]);
+    expect(result.twitter?.title).toBe("Page Title");
+    expect(result.twitter?.description).toBe("Page Desc");
+    expect(result.twitter?.card).toBe("summary");
+  });
+
+  it("does not overwrite explicitly set twitter fields", () => {
+    const result = mergeMetadata([
+      { openGraph: { title: "OG Title", description: "OG Desc", images: ["/og.png"] } },
+      { twitter: { title: "Custom Twitter Title", description: "Custom Twitter Desc" } },
+    ]);
+    expect(result.twitter?.title).toBe("Custom Twitter Title");
+    expect(result.twitter?.description).toBe("Custom Twitter Desc");
+  });
+
+  it("does not auto-fill twitter:images when twitter.images is explicitly set to empty array", () => {
+    const result = mergeMetadata([
+      { openGraph: { images: ["/og.png"] } },
+      { twitter: { images: [] } },
+    ]);
+    expect(result.twitter?.images).toEqual([]);
+  });
+
+  it("auto-fills openGraph:title from metadata.title", () => {
+    const result = mergeMetadata([{ title: "Page Title", openGraph: {} }]);
+    expect(result.openGraph?.title).toBe("Page Title");
+  });
+
+  it("auto-fills openGraph:description from metadata.description", () => {
+    const result = mergeMetadata([{ description: "Page Desc", openGraph: {} }]);
+    expect(result.openGraph?.description).toBe("Page Desc");
+  });
+
+  it("renders twitter card tags when only openGraph is configured", () => {
+    const metadata = mergeMetadata([
+      {
+        openGraph: {
+          title: "My custom title",
+          description: "My custom description",
+          url: "https://example.com",
+          siteName: "My custom site name",
+          images: [{ url: "https://example.com/image.png", width: 800, height: 600 }],
+          locale: "en-US",
+          type: "website",
+        },
+      },
+    ]);
+    const html = renderToStaticMarkup(React.createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card"');
+    expect(html).toContain('content="summary_large_image"');
+    expect(html).toContain('name="twitter:title"');
+    expect(html).toContain('content="My custom title"');
+    expect(html).toContain('name="twitter:description"');
+    expect(html).toContain('content="My custom description"');
+    expect(html).toContain('name="twitter:image"');
+    expect(html).toContain('content="https://example.com/image.png"');
+  });
+
+  it("renders twitter:card summary when no images are present", () => {
+    const metadata = mergeMetadata([{ openGraph: { title: "No Images" } }]);
+    const html = renderToStaticMarkup(React.createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card"');
+    expect(html).toContain('content="summary"');
   });
 });
 

@@ -279,13 +279,14 @@ export function setSSRContext(ctx: SSRContext | null): void {
 function extractRouteParamNames(pattern: string): string[] {
   const names: string[] = [];
   // Match Next.js bracket format: [id], [...slug], [[...slug]]
-  const bracketMatches = pattern.matchAll(/\[{1,2}(?:\.\.\.)?([\w-]+)\]{1,2}/g);
+  // Accepts any non-] characters inside brackets (Next.js PARAMETER_PATTERN parity).
+  const bracketMatches = pattern.matchAll(/\[{1,2}(?:\.\.\.)?([^\]]+)\]{1,2}/g);
   for (const m of bracketMatches) {
     names.push(m[1]);
   }
   if (names.length > 0) return names;
-  // Fallback: match internal :param format
-  const colonMatches = pattern.matchAll(/:([\w-]+)[+*]?/g);
+  // Fallback: match internal :param format (any chars except /, +, *)
+  const colonMatches = pattern.matchAll(/:([^/+*]+)[+*]?/g);
   for (const m of colonMatches) {
     names.push(m[1]);
   }

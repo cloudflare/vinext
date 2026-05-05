@@ -1,11 +1,27 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
-async function waitForAppRouterHydration(page: import("@playwright/test").Page) {
+async function waitForAppRouterHydration(page: Page) {
   await page.waitForFunction(() => typeof window.__VINEXT_RSC_NAVIGATE__ === "function", null, {
     timeout: 10_000,
   });
+}
+
+function normalizePrefetchCacheKey(key: string): string {
+  const [url = "", context] = key.split("\0");
+  const normalizedUrl = url.replace(/[?&]_rsc(?:=[^&]*)?/, "");
+  return context === undefined ? normalizedUrl : `${normalizedUrl}\0${context}`;
+}
+
+async function readPhotoPrefetchCacheKeys(page: Page): Promise<string[]> {
+  const keys = await page.evaluate(() =>
+    Array.from(window.__VINEXT_RSC_PREFETCH_CACHE__?.keys() ?? []).filter((key) =>
+      key.includes("/photos/42.rsc"),
+    ),
+  );
+
+  return keys.map(normalizePrefetchCacheKey).sort();
 }
 
 test.describe("Parallel Routes", () => {
@@ -277,26 +293,14 @@ test.describe("Intercepting Routes", () => {
     await page.goto(`${BASE}/feed`);
     await waitForAppRouterHydration(page);
     await expect
-      .poll(async () =>
-        page.evaluate(() =>
-          Array.from(window.__VINEXT_RSC_PREFETCH_CACHE__?.keys() ?? []).filter((key) =>
-            key.includes("/photos/42.rsc"),
-          ),
-        ),
-      )
+      .poll(async () => readPhotoPrefetchCacheKeys(page))
       .toEqual(["/photos/42.rsc\u0000/feed"]);
 
     await page.click("#gallery-link");
     await page.waitForURL(`${BASE}/gallery`);
     await waitForAppRouterHydration(page);
     await expect
-      .poll(async () =>
-        page.evaluate(() =>
-          Array.from(window.__VINEXT_RSC_PREFETCH_CACHE__?.keys() ?? [])
-            .filter((key) => key.includes("/photos/42.rsc"))
-            .sort(),
-        ),
-      )
+      .poll(async () => readPhotoPrefetchCacheKeys(page))
       .toEqual(["/photos/42.rsc\u0000/feed", "/photos/42.rsc\u0000/gallery"]);
   });
 });

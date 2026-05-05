@@ -81,6 +81,22 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       let newCode = code;
       let didReplace = false;
 
+      // Read a file from disk and return its base64 encoding, using the build
+      // cache when enabled. Returns null on any read error so callers can skip
+      // the match (e.g. file not present on disk for the active environment).
+      const readAsBase64 = async (absPath: string): Promise<string | null> => {
+        const cached = useCache ? cache.get(absPath) : undefined;
+        if (cached !== undefined) return cached;
+        try {
+          const buf = await fs.promises.readFile(absPath);
+          const b64 = buf.toString("base64");
+          if (useCache) cache.set(absPath, b64);
+          return b64;
+        } catch {
+          return null;
+        }
+      };
+
       // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
       // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
       if (code.includes("fetch(")) {
@@ -92,19 +108,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
           const absPath = path.resolve(moduleDir, relPath);
 
-          let fileBase64 = useCache ? cache.get(absPath) : undefined;
-          if (fileBase64 === undefined) {
-            try {
-              const buf = await fs.promises.readFile(absPath);
-              fileBase64 = buf.toString("base64");
-              if (useCache) {
-                cache.set(absPath, fileBase64);
-              }
-            } catch {
-              // File not found on disk — skip (may be a runtime-only asset)
-              continue;
-            }
-          }
+          const fileBase64 = await readAsBase64(absPath);
+          if (fileBase64 === null) continue; // may be a runtime-only asset
 
           // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
           const inlined = [
@@ -134,19 +139,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
           const absPath = path.resolve(moduleDir, relPath);
 
-          let fileBase64 = useCache ? cache.get(absPath) : undefined;
-          if (fileBase64 === undefined) {
-            try {
-              const buf = await fs.promises.readFile(absPath);
-              fileBase64 = buf.toString("base64");
-              if (useCache) {
-                cache.set(absPath, fileBase64);
-              }
-            } catch {
-              // File not found on disk — skip
-              continue;
-            }
-          }
+          const fileBase64 = await readAsBase64(absPath);
+          if (fileBase64 === null) continue;
 
           // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
           // Buffer is always available in Node.js and in the vinext SSR/RSC environments.

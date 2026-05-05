@@ -16,12 +16,12 @@
 import { normalizePathnameForRouteMatch } from "./utils.js";
 import { createValidFileMatcher, type ValidFileMatcher } from "./file-matcher.js";
 import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
-import { buildAppRouteGraph, type AppRoute } from "./app-route-graph.js";
+import { buildAppRouteGraph, type AppRoute, type AppRouteGraphRoute } from "./app-route-graph.js";
 export type { AppRoute } from "./app-route-graph.js";
 export { computeRootParamNames } from "./app-route-graph.js";
 
 // Cache for app routes
-let cachedRoutes: AppRoute[] | null = null;
+let cachedRoutes: AppRouteGraphRoute[] | null = null;
 let cachedAppDir: string | null = null;
 let cachedPageExtensionsKey: string | null = null;
 
@@ -38,7 +38,7 @@ export async function appRouter(
   appDir: string,
   pageExtensions?: readonly string[],
   matcher?: ValidFileMatcher,
-): Promise<AppRoute[]> {
+): Promise<AppRouteGraphRoute[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const pageExtensionsKey = JSON.stringify(matcher.extensions);
   if (cachedRoutes && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {

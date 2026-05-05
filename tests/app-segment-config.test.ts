@@ -172,6 +172,34 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("resolves revalidate = false as Infinity (cache indefinitely)", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { revalidate: false },
+      }),
+    ).toEqual({
+      revalidateSeconds: Infinity,
+    });
+  });
+
+  it("resolves shortest-wins: finite revalidate beats false (Infinity)", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ revalidate: 60 }],
+        page: { revalidate: false },
+      }).revalidateSeconds,
+    ).toBe(60);
+  });
+
+  it("resolves shortest-wins: false (Infinity) loses to any finite value", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ revalidate: false }],
+        page: { revalidate: 60 },
+      }).revalidateSeconds,
+    ).toBe(60);
+  });
+
   it("resolves just the fetchCache mode for route-specific render scopes", () => {
     expect(
       resolveAppPageFetchCacheMode({

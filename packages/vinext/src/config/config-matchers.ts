@@ -60,6 +60,26 @@ const _compiledConditionCache = new Map<string, RegExp | null>();
 const _compiledDestinationParamCache = new Map<string, RegExp>();
 
 /**
+ * Generic helper for the regex compilation caches above.
+ *
+ * Each cache stores the compiled artifact (or `null` when safeRegExp rejected
+ * the pattern) the first time a key is seen, and reuses it forever. The
+ * `undefined` sentinel distinguishes "not yet seen" from "seen and rejected"
+ * so we never re-run isSafeRegex on the same input.
+ *
+ * Keep the security path intact: `compile()` is responsible for calling
+ * safeRegExp(); this helper only handles caching.
+ */
+function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V | null): V | null {
+  let value = cache.get(key);
+  if (value === undefined) {
+    value = compile();
+    cache.set(key, value);
+  }
+  return value;
+}
+
+/**
  * Redirect index for O(1) locale-static rule lookup.
  *
  * Many Next.js apps generate 50-100 redirect rules of the form:
@@ -571,15 +591,12 @@ function matchSingleCondition(
  * value is not a valid regex (fall back to exact string comparison).
  */
 function _cachedConditionRegex(value: string): RegExp | null {
-  let re = _compiledConditionCache.get(value);
-  if (re === undefined) {
+  return getCachedRegex(_compiledConditionCache, value, () =>
     // Anchor the regex to match the full value, not a substring.
     // Matches Next.js: new RegExp(`^${hasItem.value}$`)
     // Without anchoring, has:[cookie:role=admin] would match "not-admin".
-    re = safeRegExp(`^${value}$`);
-    _compiledConditionCache.set(value, re);
-  }
-  return re;
+    safeRegExp(`^${value}$`),
+  );
 }
 
 /**
@@ -674,8 +691,8 @@ export function matchConfigPattern(
       // Look up the compiled regex in the module-level cache. Patterns come
       // from next.config.js and are static, so we only need to compile each
       // one once across the lifetime of the worker/server process.
-      let compiled = _compiledPatternCache.get(pattern);
-      if (compiled === undefined) {
+      // null is stored for rejected patterns so we don't re-run isSafeRegex.
+      const compiled = getCachedRegex(_compiledPatternCache, pattern, () => {
         // Cache miss — compile the pattern now and store the result.
         // Param names may contain hyphens (e.g. :auth-method, :sign-in).
         const paramNames: string[] = [];
@@ -714,10 +731,8 @@ export function matchConfigPattern(
           }
         }
         const re = safeRegExp("^" + regexStr + "$");
-        // Store null for rejected patterns so we don't re-run isSafeRegex.
-        compiled = re ? { re, paramNames } : null;
-        _compiledPatternCache.set(pattern, compiled);
-      }
+        return re ? { re, paramNames } : null;
+      });
       if (!compiled) return null;
       const match = compiled.re.exec(pathname);
       if (!match) return null;
@@ -842,11 +857,10 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        let dest = substituteDestinationParams(redirect.destination, {
+        const dest = substituteAndSanitizeDestination(redirect.destination, {
           [entry.paramName]: "",
           ...conditionParams,
         });
-        dest = sanitizeDestination(dest);
         localeMatch = { destination: dest, permanent: redirect.permanent };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
@@ -872,11 +886,10 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          let dest = substituteDestinationParams(redirect.destination, {
+          const dest = substituteAndSanitizeDestination(redirect.destination, {
             [entry.paramName]: localePart,
             ...conditionParams,
           });
-          dest = sanitizeDestination(dest);
           localeMatch = { destination: dest, permanent: redirect.permanent };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
@@ -902,12 +915,11 @@ export function matchRedirect(
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      let dest = substituteDestinationParams(redirect.destination, {
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      const dest = substituteAndSanitizeDestination(redirect.destination, {
         ...params,
         ...conditionParams,
       });
-      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      dest = sanitizeDestination(dest);
       return { destination: dest, permanent: redirect.permanent };
     }
   }
@@ -937,13 +949,11 @@ export function matchRewrite(
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      let dest = substituteDestinationParams(rewrite.destination, {
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      return substituteAndSanitizeDestination(rewrite.destination, {
         ...params,
         ...conditionParams,
       });
-      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      dest = sanitizeDestination(dest);
-      return dest;
     }
   }
   return null;
@@ -976,6 +986,19 @@ function substituteDestinationParams(destination: string, params: Record<string,
   }
 
   return destination.replace(paramRe, (_token, key: string) => params[key]);
+}
+
+/**
+ * Substitute params into a redirect/rewrite destination and sanitize the
+ * result. Used by every redirect/rewrite branch — the substitution can
+ * introduce protocol-relative URLs (e.g. `//evil.com` from a decoded `%2F`
+ * in a catch-all param), which sanitizeDestination collapses.
+ */
+function substituteAndSanitizeDestination(
+  destination: string,
+  params: Record<string, string>,
+): string {
+  return sanitizeDestination(substituteDestinationParams(destination, params));
 }
 
 /**
@@ -1138,12 +1161,9 @@ export function matchHeaders(
   for (const rule of headers) {
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
     // pure functions of rule.source and the result never changes between requests.
-    let sourceRegex = _compiledHeaderSourceCache.get(rule.source);
-    if (sourceRegex === undefined) {
-      const escaped = escapeHeaderSource(rule.source);
-      sourceRegex = safeRegExp("^" + escaped + "$");
-      _compiledHeaderSourceCache.set(rule.source, sourceRegex);
-    }
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
+      safeRegExp("^" + escapeHeaderSource(rule.source) + "$"),
+    );
     if (sourceRegex && sourceRegex.test(pathname)) {
       if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {

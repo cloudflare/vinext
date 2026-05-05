@@ -61,8 +61,9 @@ describe("app page execution helpers", () => {
 
     const redirectResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -81,6 +82,7 @@ describe("app page execution helpers", () => {
 
     const fallbackResponse = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
       renderFallbackPage(statusCode) {
         return Promise.resolve(
@@ -90,7 +92,7 @@ describe("app page execution helpers", () => {
           }),
         );
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 404,
@@ -110,16 +112,170 @@ describe("app page execution helpers", () => {
     expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
+  it("prefixes redirect Location with basePath for app-internal paths", async () => {
+    // Mirrors Next.js's `addPathPrefix(getURLFromRedirectError(err), basePath)`.
+    // `redirect("/about")` from a page mounted under basePath "/blog" should
+    // produce `Location: https://example.com/blog/about`, not the raw "/about".
+    const clearRequestContext = vi.fn();
+
+    const internalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(internalRedirect.headers.get("location")).toBe("https://example.com/blog/about");
+
+    // External redirects (different origin) must NOT be prefixed — they're
+    // outside the app's basePath scope.
+    const externalRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://other.example/foo",
+        statusCode: 307,
+      },
+    });
+
+    expect(externalRedirect.headers.get("location")).toBe("https://other.example/foo");
+
+    // Targets that already include the basePath prefix must be left alone
+    // (caller already did the work or middleware-driven redirect).
+    const alreadyPrefixed = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/blog/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(alreadyPrefixed.headers.get("location")).toBe("https://example.com/blog/about");
+
+    // No basePath configured → behavior unchanged (resolves against the
+    // request URL as before).
+    const unconfigured = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/about",
+        statusCode: 307,
+      },
+    });
+
+    expect(unconfigured.headers.get("location")).toBe("https://example.com/about");
+
+    // Redirect to root ("/") under basePath should land on the basePath itself,
+    // not "/blog/" with a trailing slash artifact.
+    const rootRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "/",
+        statusCode: 307,
+      },
+    });
+
+    expect(rootRedirect.headers.get("location")).toBe("https://example.com/blog");
+  });
+
+  it("appends pending cookies (cookies().set during render) to redirect responses", async () => {
+    // Mirrors Next.js's `appendMutableCookies(headers, requestStore.mutableCookies)`
+    // in app-render.tsx. An auth flow that does
+    //   cookies().set("session", "...");
+    //   redirect("/dashboard");
+    // must keep the Set-Cookie on the 307 — otherwise the redirected
+    // request lands without the just-issued session and the user bounces
+    // back to login.
+    const clearRequestContext = vi.fn();
+    const getAndClearPendingCookies = vi.fn(() => [
+      "session=fresh; Path=/; HttpOnly",
+      "csrf=abc; Path=/",
+    ]);
+
+    const redirectWithCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+      },
+    });
+
+    expect(redirectWithCookies.status).toBe(307);
+    expect(redirectWithCookies.headers.get("location")).toBe("https://example.com/dashboard");
+    const setCookies = redirectWithCookies.headers.getSetCookie();
+    expect(setCookies).toContain("session=fresh; Path=/; HttpOnly");
+    expect(setCookies).toContain("csrf=abc; Path=/");
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+
+    // No accumulated cookies → no Set-Cookie header (and the accumulator
+    // is still consulted exactly once).
+    getAndClearPendingCookies.mockReturnValue([]);
+    const redirectWithoutCookies = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/login"),
+      specialError: {
+        kind: "redirect",
+        location: "/dashboard",
+        statusCode: 307,
+      },
+    });
+
+    expect(redirectWithoutCookies.headers.getSetCookie()).toEqual([]);
+
+    // Pending cookies must NOT bleed onto http-access-fallback responses —
+    // those cookies belong to the rendered boundary, not the bare 401/403/404.
+    // Matches Next.js, which only calls appendMutableCookies in the redirect
+    // branch.
+    getAndClearPendingCookies.mockReturnValue(["should-not-appear=1; Path=/"]);
+    const fallbackResponse = await buildAppPageSpecialErrorResponse({
+      clearRequestContext,
+      getAndClearPendingCookies,
+      isRscRequest: false,
+      request: new Request("https://example.com/protected"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 401,
+      },
+    });
+
+    expect(fallbackResponse.headers.getSetCookie()).toEqual([]);
+  });
+
   it("falls back to a plain status response when no fallback page is available", async () => {
     const clearRequestContext = vi.fn();
 
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext,
+      isRscRequest: false,
       middlewareContext: createMiddlewareContext(),
       renderFallbackPage() {
         return Promise.resolve(null);
       },
-      requestUrl: "https://example.com/start",
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "http-access-fallback",
         statusCode: 401,
@@ -132,6 +288,30 @@ describe("app page execution helpers", () => {
     expect(response.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
     await expect(response.text()).resolves.toBe("Unauthorized");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("canonicalizes same-origin RSC redirect locations to .rsc URLs", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc", {
+        headers: {
+          Accept: "text/x-component",
+          RSC: "1",
+          "Next-Router-State-Tree": "tree",
+        },
+      }),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected?tab=1",
+        statusCode: 307,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toMatch(
+      /^https:\/\/example\.com\/redirected\.rsc\?tab=1&_rsc=/,
+    );
   });
 
   it("probes layouts from inner to outer and stops on a handled special response", async () => {

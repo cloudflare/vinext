@@ -6,6 +6,7 @@ import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matc
 import {
   buildAppRouteGraph,
   type AppRoute,
+  type AppRouteGraphRoute,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -36,6 +37,15 @@ function findRoute(routes: AppRoute[], pattern: string): AppRoute {
     throw new Error(`Expected route ${pattern} to be materialized`);
   }
   return route;
+}
+
+async function createSemanticIdsFixture(appDir: string): Promise<void> {
+  await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/layout.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/template.tsx", EMPTY_LAYOUT);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/page.tsx", EMPTY_PAGE);
+  await writeAppFile(appDir, "(marketing)/blog/[slug]/@modal/default.tsx", EMPTY_PAGE);
 }
 
 describe("App Router route graph builder", () => {
@@ -123,6 +133,82 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("skips synthetic routes that structurally conflict with existing page routes", async () => {
+    // A slot sub-page like @feed/[name]/page.tsx under /shop would create /shop/:name,
+    // but if /shop/[id]/page.tsx already exists (route /shop/:id), the synthetic route
+    // must be skipped — validateRoutePatterns rejects different slug names at the same
+    // dynamic path. The slot content is resolved at render time by findMirroredSlotPage.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@feed/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@feed/[name]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // /shop/:id from shop/[id]/page.tsx must exist
+      expect(patterns).toContain("/shop/:id");
+      // /shop/:name from the slot sub-page must NOT be materialized
+      expect(patterns).not.toContain("/shop/:name");
+      // The non-conflicting parent route /shop should still exist
+      expect(patterns).toContain("/shop");
+    });
+  });
+
+  it("does not create synthetic routes under route-handler-only parents", async () => {
+    // Route handlers have pagePath: null but are NOT layout-only UI routes.
+    // They must not enter discoverSlotSubRoutes, or an ancestor slot like
+    // @feed/foo/page.tsx could materialise a nonsense synthetic route under
+    // /api/foo.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "@feed/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@feed/foo/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "api/route.ts", EMPTY_ROUTE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // /api from the route handler must exist
+      expect(patterns).toContain("/api");
+      // /api/foo must NOT be materialised from the route handler entry
+      expect(patterns).not.toContain("/api/foo");
+      // /foo from the ancestor slot must still be discovered normally
+      expect(patterns).toContain("/foo");
+    });
+  });
+
+  it("skips structural conflicts against synthetic routes created earlier in the same pass", async () => {
+    // Two slot sub-pages with different param names under the same parent
+    // should not both be materialised. The first synthetic route (/shop/:id)
+    // must block the second (/shop/:name), or validateRoutePatterns will
+    // reject the build with "different slug names".
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "shop/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@a/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@a/[id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@b/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/@b/[name]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+
+      // Only one of /shop/:id or /shop/:name should be materialised
+      const conflictingSyntheticPatterns = patterns.filter(
+        (pattern) => pattern === "/shop/:id" || pattern === "/shop/:name",
+      );
+      expect(conflictingSyntheticPatterns).toHaveLength(1);
+      expect(patterns).toContain("/shop");
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
@@ -139,6 +225,49 @@ describe("App Router route graph builder", () => {
         patternParts: ["about"],
       });
     });
+  });
+
+  it("mints semantic ids for routes, entries, layouts, templates, and slots", async () => {
+    await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const graphRoutes: readonly AppRouteGraphRoute[] = graph.routes;
+      const route = findRoute(graph.routes, "/blog/:slug");
+
+      expect(graphRoutes).toHaveLength(1);
+      expect(route.ids).toEqual({
+        route: "route:/blog/:slug",
+        page: "page:/blog/:slug",
+        routeHandler: null,
+        layouts: ["layout:/", "layout:/(marketing)", "layout:/(marketing)/blog/[slug]"],
+        templates: ["template:/(marketing)/blog/[slug]"],
+        slots: {
+          "modal@(marketing)/blog/[slug]/@modal": "slot:modal:/(marketing)/blog/[slug]",
+        },
+      });
+      expect(route.parallelSlots[0]).toMatchObject({
+        id: "slot:modal:/(marketing)/blog/[slug]",
+        key: "modal@(marketing)/blog/[slug]/@modal",
+      });
+    });
+  });
+
+  it("keeps semantic ids stable across different filesystem roots", async () => {
+    const firstIds = await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      return findRoute(graph.routes, "/blog/:slug").ids;
+    });
+
+    const secondIds = await withTempApp(async (appDir) => {
+      await createSemanticIdsFixture(appDir);
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      return findRoute(graph.routes, "/blog/:slug").ids;
+    });
+
+    expect(firstIds).toBeDefined();
+    expect(secondIds).toEqual(firstIds);
   });
 
   it("links inherited parallel slot to a mirrored sub-page (literal segments)", async () => {
@@ -275,6 +404,56 @@ describe("App Router route graph builder", () => {
       await expect(buildAppRouteGraph(appDir, createValidFileMatcher())).rejects.toThrow(
         "Conflicting route and page at /dashboard",
       );
+    });
+  });
+
+  it("accepts dynamic segment names with dots and at-signs (Next.js parity)", async () => {
+    // Next.js PARAMETER_PATTERN accepts any non-] characters inside brackets.
+    // See: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-dynamic-param.ts
+    // Note: colon (:) is tested via patternToNextFormat in route-sorting.test.ts
+    // to avoid NTFS filename issues on Windows.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "products/[variant.id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "users/[user@domain]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/products/:variant.id");
+      expect(patterns).toContain("/users/:user@domain");
+    });
+  });
+
+  it("accepts catch-all and optional-catch-all segments with broadened param names", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[...variant.id]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "blog/[[...user@domain]]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/:variant.id+");
+      expect(patterns).toContain("/blog/:user@domain*");
+    });
+  });
+
+  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
+    // Param names ending in + or * would map to :id+ / :id*, which the trie
+    // matcher interprets as catch-all / optional-catch-all. Skip these routes
+    // entirely to avoid ambiguity.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[id+]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[id*]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern);
+
+      expect(patterns).not.toContain("/:id+");
+      expect(patterns).not.toContain("/:id*");
+      expect(patterns).toHaveLength(0);
     });
   });
 });

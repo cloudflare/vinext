@@ -34,6 +34,37 @@ export type CheckResult = {
   };
 };
 
+// ── Internal helpers ───────────────────────────────────────────────────────
+
+/** Sort order for statuses: unsupported first, then partial, then supported. */
+const STATUS_ORDER: Record<Status, number> = { unsupported: 0, partial: 1, supported: 2 };
+
+/** Comparator for sorting items by status (unsupported first). */
+function compareByStatus(a: { status: Status }, b: { status: Status }): number {
+  return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+}
+
+/**
+ * App Router file conventions. Each convention lists the extensions that the
+ * Next.js docs recognise for that file type — note that the boundary files
+ * (loading/error/not-found) only exist as React components, so they don't
+ * accept `.ts`/`.js`.
+ */
+const APP_ROUTER_EXTENSIONS = {
+  page: [".tsx", ".jsx", ".ts", ".js"],
+  layout: [".tsx", ".jsx", ".ts", ".js"],
+  loading: [".tsx", ".jsx"],
+  error: [".tsx", ".jsx"],
+  "not-found": [".tsx", ".jsx"],
+} as const satisfies Record<string, readonly string[]>;
+
+type AppRouterFileType = keyof typeof APP_ROUTER_EXTENSIONS;
+
+/** True if `file` is an App Router file of the given convention. */
+function isAppRouterFile(file: string, type: AppRouterFileType): boolean {
+  return APP_ROUTER_EXTENSIONS[type].some((ext) => file.endsWith(`${type}${ext}`));
+}
+
 // ── Import support map ─────────────────────────────────────────────────────
 
 const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
@@ -343,10 +374,7 @@ export function scanImports(root: string): CheckItem[] {
   }
 
   // Sort: unsupported first, then partial, then supported
-  items.sort((a, b) => {
-    const order: Record<Status, number> = { unsupported: 0, partial: 1, supported: 2 };
-    return order[a.status] - order[b.status];
-  });
+  items.sort(compareByStatus);
 
   return items;
 }
@@ -421,10 +449,7 @@ export function analyzeConfig(root: string): CheckItem[] {
   }
 
   // Sort: unsupported first
-  items.sort((a, b) => {
-    const order: Record<Status, number> = { unsupported: 0, partial: 1, supported: 2 };
-    return order[a.status] - order[b.status];
-  });
+  items.sort(compareByStatus);
 
   return items;
 }
@@ -451,10 +476,7 @@ export function checkLibraries(root: string): CheckItem[] {
   }
 
   // Sort: unsupported first
-  items.sort((a, b) => {
-    const order: Record<Status, number> = { unsupported: 0, partial: 1, supported: 2 };
-    return order[a.status] - order[b.status];
-  });
+  items.sort(compareByStatus);
 
   return items;
 }
@@ -524,28 +546,14 @@ export function checkConventions(root: string): CheckItem[] {
     });
 
     const appFiles = findSourceFiles(appDirPath);
-    const pages = appFiles.filter(
-      (f) =>
-        f.endsWith("page.tsx") ||
-        f.endsWith("page.jsx") ||
-        f.endsWith("page.ts") ||
-        f.endsWith("page.js"),
-    );
-    const layouts = appFiles.filter(
-      (f) =>
-        f.endsWith("layout.tsx") ||
-        f.endsWith("layout.jsx") ||
-        f.endsWith("layout.ts") ||
-        f.endsWith("layout.js"),
-    );
+    const pages = appFiles.filter((f) => isAppRouterFile(f, "page"));
+    const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout"));
     const routes = appFiles.filter(
       (f) => f.endsWith("route.tsx") || f.endsWith("route.ts") || f.endsWith("route.js"),
     );
-    const loadings = appFiles.filter((f) => f.endsWith("loading.tsx") || f.endsWith("loading.jsx"));
-    const errors = appFiles.filter((f) => f.endsWith("error.tsx") || f.endsWith("error.jsx"));
-    const notFounds = appFiles.filter(
-      (f) => f.endsWith("not-found.tsx") || f.endsWith("not-found.jsx"),
-    );
+    const loadings = appFiles.filter((f) => isAppRouterFile(f, "loading"));
+    const errors = appFiles.filter((f) => isAppRouterFile(f, "error"));
+    const notFounds = appFiles.filter((f) => isAppRouterFile(f, "not-found"));
 
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
     if (layouts.length) items.push({ name: `${layouts.length} layout(s)`, status: "supported" });

@@ -127,6 +127,31 @@ describe("app page request helpers", () => {
     expect(logGenerateStaticParamsError).toHaveBeenCalledTimes(1);
   });
 
+  it("checks remaining sources when an earlier generateStaticParams source throws", async () => {
+    const clearRequestContext = vi.fn();
+    const logGenerateStaticParamsError = vi.fn();
+    const throwsSource = vi.fn(() => {
+      throw new Error("source 1 failed");
+    });
+    const rejectsSource = vi.fn(async () => [{ slug: "other" }]);
+
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: true,
+      generateStaticParams: [throwsSource, rejectsSource],
+      isDynamicRoute: true,
+      logGenerateStaticParamsError,
+      params: { slug: "target" },
+    });
+
+    // First source threw → logged, then second source checked → rejected → 404.
+    expect(response?.status).toBe(404);
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    expect(logGenerateStaticParamsError).toHaveBeenCalledTimes(1);
+    expect(throwsSource).toHaveBeenCalledTimes(1);
+    expect(rejectsSource).toHaveBeenCalledTimes(1);
+  });
+
   it("renders intercepted source routes on RSC navigations", async () => {
     const setNavigationContext = vi.fn();
     const buildPageElementMock = vi.fn(async () => ({ type: "intercept-element" }));

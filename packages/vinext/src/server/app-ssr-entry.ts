@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
-import * as clientReferences from "virtual:vite-rsc/client-references";
+import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation";
 import {
   ServerInsertedHTMLContext,
@@ -24,12 +24,9 @@ import {
 } from "./html.js";
 import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
-import {
-  normalizeAppElements,
-  readAppElementsMetadata,
-  type AppWireElements,
-} from "./app-elements.js";
+import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
+import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 
 export type FontPreload = {
   href: string;
@@ -42,37 +39,19 @@ export type FontData = {
   preloads?: FontPreload[];
 };
 
-type ClientRequire = (id: string) => Promise<unknown>;
-
-let clientRefsPreloaded = false;
-
-function getClientReferenceRequire(): ClientRequire | undefined {
-  return (
-    globalThis as typeof globalThis & {
-      __vite_rsc_client_require__?: ClientRequire;
+const clientReferencePreloader = createClientReferencePreloader({
+  getReferences() {
+    return clientReferences;
+  },
+  getClientRequire() {
+    return globalThis.__vite_rsc_client_require__;
+  },
+  onPreloadError(id, error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[vinext] failed to preload client ref:", id, error);
     }
-  ).__vite_rsc_client_require__;
-}
-
-async function preloadClientReferences(): Promise<void> {
-  if (clientRefsPreloaded) return;
-
-  const refs = (clientReferences as { default?: Record<string, unknown> }).default;
-  const clientRequire = getClientReferenceRequire();
-  if (!refs || !clientRequire) return;
-
-  await Promise.all(
-    Object.keys(refs).map((id) =>
-      clientRequire(id).catch((error) => {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[vinext] failed to preload client ref:", id, error);
-        }
-      }),
-    ),
-  );
-
-  clientRefsPreloaded = true;
-}
+  },
+});
 
 function ssrErrorDigest(input: string): string {
   let hash = 5381;
@@ -178,7 +157,7 @@ export async function handleSsr(
   },
 ): Promise<ReadableStream<Uint8Array>> {
   return runWithNavigationContext(async () => {
-    await preloadClientReferences();
+    await clientReferencePreloader.preload();
 
     if (navContext) {
       setNavigationContext(navContext);
@@ -217,8 +196,8 @@ export async function handleSsr(
           flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
         }
         const wireElements = use(flightRoot);
-        const elements = normalizeAppElements(wireElements);
-        const metadata = readAppElementsMetadata(elements);
+        const elements = AppElementsWire.decode(wireElements);
+        const metadata = AppElementsWire.readMetadata(elements);
         return createReactElement(
           ElementsContext.Provider,
           { value: elements },

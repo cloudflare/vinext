@@ -6,6 +6,7 @@ import {
   resolveAppPageHtmlResponsePolicy,
   resolveAppPageRscResponsePolicy,
 } from "../packages/vinext/src/server/app-page-response.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 function createBody(text: string): ReadableStream {
   return new ReadableStream({
@@ -309,7 +310,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"slug":"test"}'));
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
     await expect(response.text()).resolves.toBe("flight");
   });
@@ -365,7 +366,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
-    expect(response.headers.get("vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
@@ -420,5 +421,45 @@ describe("mergeMiddlewareResponseHeaders", () => {
     mergeMiddlewareResponseHeaders(target, mwHeaders);
 
     expect(target.get("Vary")).toBe("RSC, Accept, Next-Router-State-Tree");
+  });
+
+  it("deduplicates Vary values when appending middleware headers", () => {
+    const target = new Headers({ Vary: VINEXT_RSC_VARY_HEADER });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "next-router-state-tree, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, X-Auth-State`);
+  });
+
+  it("preserves wildcard Vary semantics when appending middleware headers", () => {
+    const target = new Headers({ Vary: "RSC, Accept" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when target already has Vary wildcard", () => {
+    const target = new Headers({ Vary: "*" });
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
+  });
+
+  it("preserves wildcard Vary semantics when middleware is the first Vary source", () => {
+    const target = new Headers();
+    const mwHeaders = new Headers();
+    mwHeaders.set("Vary", "*, X-Auth-State");
+
+    mergeMiddlewareResponseHeaders(target, mwHeaders);
+
+    expect(target.get("Vary")).toBe("*");
   });
 });

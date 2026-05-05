@@ -128,9 +128,17 @@ describe("app page head resolution", () => {
     expect(result.metadata).toEqual({
       description: "tag next,vinext",
       openGraph: {
+        description: "tag next,vinext",
         images: ["/root-og.png", "/nested-og.png"],
+        title: "Post | Root",
       },
       title: "Post | Root",
+      twitter: {
+        card: "summary_large_image",
+        description: "tag next,vinext",
+        images: ["/root-og.png", "/nested-og.png"],
+        title: "Post | Root",
+      },
     });
     expect(result.viewport).toEqual({
       initialScale: 1,
@@ -314,9 +322,15 @@ describe("app page head resolution", () => {
     expect(result.metadata).toEqual({
       description: "Root description",
       openGraph: {
+        description: "Root description",
         title: "Slot OG title",
       },
       title: "Page title",
+      twitter: {
+        card: "summary",
+        description: "Root description",
+        title: "Slot OG title",
+      },
     });
   });
 
@@ -366,9 +380,15 @@ describe("app page head resolution", () => {
     expect(result.metadata).toEqual({
       description: "Primary page",
       openGraph: {
+        description: "Primary page",
         title: "Slot OG title",
       },
       title: "Page",
+      twitter: {
+        card: "summary",
+        description: "Primary page",
+        title: "Slot OG title",
+      },
     });
   });
 

@@ -1,3 +1,5 @@
+import { decodeMatchedParams } from "./utils";
+
 export type RoutePatternParams = Record<string, string | string[]>;
 
 function routePatternPart(segment: string): string {
@@ -135,5 +137,7 @@ export function matchRoutePattern(
     return matchFrom(urlIndex + 1, patternIndex + 1);
   }
 
-  return matchFrom(0, 0) ? params : null;
+  if (!matchFrom(0, 0)) return null;
+  decodeMatchedParams(params);
+  return params;
 }

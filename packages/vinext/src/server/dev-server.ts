@@ -29,11 +29,14 @@ import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
-import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
-import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
+import {
+  createValidFileMatcher,
+  findFileWithExtensions,
+  type ValidFileMatcher,
+} from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
   detectLocaleFromAcceptLanguage,
@@ -195,11 +198,6 @@ async function streamPageToResponse(
 
   // Write the document suffix (closing tags, scripts)
   res.end(suffix);
-}
-
-/** Check if a file exists with any configured page extension. */
-function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
-  return matcher.dottedExtensions.some((ext) => fs.existsSync(basePath + ext));
 }
 
 /**

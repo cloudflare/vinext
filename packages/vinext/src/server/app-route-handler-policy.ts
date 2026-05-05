@@ -4,6 +4,7 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
@@ -75,10 +76,11 @@ export function getAppRouteHandlerRevalidateSeconds(
   handler: Pick<AppRouteHandlerModule, "revalidate">,
 ): number | null {
   // 0 is a meaningful value ("never cache") and must be preserved so the
-  // header path can emit a no-store Cache-Control. Non-finite values
-  // (Infinity, NaN) are not valid revalidate durations and fall back to
-  // the null ("no revalidate configured") branch along with negatives.
+  // header path can emit a no-store Cache-Control.
+  // revalidate = false means "cache indefinitely" (Next.js segment config
+  // parity) — return Infinity to signal the cache-later path.
   const { revalidate } = handler;
+  if (revalidate === false) return Infinity;
   if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
     return null;
   }
@@ -129,6 +131,7 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isKnownDynamic &&
     (options.method === "GET" || options.isAutoHead) &&
@@ -159,6 +162,7 @@ export function shouldWriteAppRouteHandlerCache(
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
+    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     shouldApplyAppRouteHandlerRevalidateHeader(options)
   );
@@ -174,20 +178,20 @@ export function resolveAppRouteHandlerSpecialError(
   }
 
   const digest = String(error.digest);
-  if (digest.startsWith("NEXT_REDIRECT;")) {
-    const parts = digest.split(";");
-    const redirectUrl = decodeURIComponent(parts[2]);
+  const redirect = parseNextRedirectDigest(digest);
+  if (redirect) {
     return {
       kind: "redirect",
-      location: new URL(redirectUrl, requestUrl).toString(),
-      statusCode: options?.isAction ? 303 : parts[3] ? parseInt(parts[3], 10) : 307,
+      location: new URL(redirect.url, requestUrl).toString(),
+      statusCode: options?.isAction ? 303 : redirect.status,
     };
   }
 
-  if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+  const httpError = parseNextHttpErrorDigest(digest);
+  if (httpError) {
     return {
       kind: "status",
-      statusCode: digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10),
+      statusCode: httpError.status,
     };
   }
 

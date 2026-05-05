@@ -1,5 +1,9 @@
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
-import { buildCachedRevalidateCacheControl, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  buildCachedRevalidateCacheControl,
+  NEVER_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 
@@ -45,6 +49,12 @@ function buildRouteHandlerCacheControl(
     // with a 0 value, via applyRouteHandlerRevalidateHeader. In all such
     // cases the author opted out of caching entirely.
     return NEVER_CACHE_CONTROL;
+  }
+
+  if (revalidateSeconds === Infinity) {
+    // revalidate = false / Infinity means "cache indefinitely" — emit the
+    // same static Cache-Control used by pages, not a dynamic SWR value.
+    return STATIC_CACHE_CONTROL;
   }
 
   return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);

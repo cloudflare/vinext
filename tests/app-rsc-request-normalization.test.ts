@@ -190,19 +190,18 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.cleanPathname).toBe("/about");
   });
 
-  it("detects RSC request by Accept: text/x-component header", () => {
+  it("does not select RSC rendering by Accept: text/x-component header alone", () => {
     const result = normalized(
       normalizeRscRequest(req("/about", { accept: "text/x-component" }), ""),
     );
-    expect(result.isRscRequest).toBe(true);
+    expect(result.isRscRequest).toBe(false);
   });
 
-  it("cleanPathname equals pathname when no .rsc suffix (Accept-header RSC)", () => {
-    // Route matching must use cleanPathname. With Accept-header RSC and no suffix,
-    // cleanPathname should equal pathname so the correct route is matched.
+  it("cleanPathname equals pathname when RSC headers appear on an HTML URL", () => {
     const result = normalized(
       normalizeRscRequest(req("/about", { accept: "text/x-component" }), ""),
     );
+    expect(result.isRscRequest).toBe(false);
     expect(result.cleanPathname).toBe("/about");
   });
 
@@ -212,7 +211,7 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.cleanPathname).toBe("/about");
   });
 
-  it("strips .rsc suffix from cleanPathname even when isRscRequest is also set by Accept header", () => {
+  it("strips .rsc suffix from cleanPathname when RSC headers are also present", () => {
     const result = normalized(
       normalizeRscRequest(req("/about.rsc", { accept: "text/x-component" }), ""),
     );

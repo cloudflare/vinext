@@ -25,6 +25,12 @@ import { hasBasePath } from "../utils/base-path.js";
 import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
+import {
+  createRscRedirectLocation,
+  resolveInvalidRscCacheBustingRequest,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+} from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
@@ -244,7 +250,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
-  const redirectPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+  const redirectPathname = stripRscSuffix(pathname);
   const redirect = matchRedirect(
     redirectPathname,
     options.configRedirects,
@@ -254,11 +260,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const destination = sanitizeDestination(
       redirectDestinationWithBasePath(redirect.destination, options.basePath),
     );
+    const location =
+      isRscRequest && request.headers.get("RSC") === "1"
+        ? await createRscRedirectLocation(destination, request)
+        : destination;
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
-      headers: { Location: destination },
+      headers: { Location: location },
     });
   }
+
+  const rscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
+    isRscRequest,
+    request,
+  });
+  if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
   const middlewareContext: AppRscMiddlewareContext = {
     headers: null,
@@ -322,6 +338,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (publicFileResponse) {
     options.clearRequestContext();
     return publicFileResponse;
+  }
+
+  if (isRscRequest) {
+    stripRscCacheBustingSearchParam(url);
   }
 
   options.setNavigationContext({

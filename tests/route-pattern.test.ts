@@ -67,3 +67,31 @@ describe("route pattern helpers", () => {
     expect(matchRoutePattern(["docs", "icon"], ["docs+", "icon"])).toBeNull();
   });
 });
+
+// Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
+describe("matchRoutePattern param decoding", () => {
+  it("decodes %2F, %23, %3F in dynamic segment params without splitting segments", () => {
+    expect(matchRoutePattern(["files", "a%2Fb"], ["files", ":name"])).toEqual({ name: "a/b" });
+    expect(matchRoutePattern(["files", "a%23b"], ["files", ":name"])).toEqual({ name: "a#b" });
+    expect(matchRoutePattern(["files", "a%3Fb"], ["files", ":name"])).toEqual({ name: "a?b" });
+  });
+
+  it("decodes each element of catch-all and optional catch-all arrays individually", () => {
+    expect(matchRoutePattern(["docs", "a%2Fb", "c%23d"], ["docs", ":rest+"])).toEqual({
+      rest: ["a/b", "c#d"],
+    });
+
+    expect(matchRoutePattern(["docs", "a%2Fb", "c%23d"], ["docs", ":rest*"])).toEqual({
+      rest: ["a/b", "c#d"],
+    });
+  });
+
+  it("preserves malformed percent escapes without throwing", () => {
+    expect(matchRoutePattern(["files", "a%GGb"], ["files", ":name"])).toEqual({ name: "a%GGb" });
+  });
+
+  it("applies exactly one decodeURIComponent pass (double-encoded stays single-encoded)", () => {
+    expect(matchRoutePattern(["files", "a%252Fb"], ["files", ":name"])).toEqual({ name: "a%2Fb" });
+  });
+});
