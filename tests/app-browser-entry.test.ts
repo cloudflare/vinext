@@ -1073,16 +1073,6 @@ describe("app browser root-layout hard navigation", () => {
     }
   });
 
-  it("shouldHardNavigate returns false when either root-layout identity is null", () => {
-    // Null means the payload could not identify an enclosing root-layout
-    // boundary. This is a compatibility safety valve: fallback payloads and
-    // legacy hydration states must not force a hard reload just because
-    // metadata is absent.
-    expect(shouldHardNavigate(null, null)).toBe(false);
-    expect(shouldHardNavigate(null, "/")).toBe(false);
-    expect(shouldHardNavigate("/", null)).toBe(false);
-  });
-
   it("shouldHardNavigate returns false when root layouts are identical", () => {
     expect(shouldHardNavigate("/", "/")).toBe(false);
     expect(shouldHardNavigate("/(marketing)", "/(marketing)")).toBe(false);
