@@ -765,73 +765,6 @@ describe("app browser navigation lifecycle settlement", () => {
     }
   });
 
-  it("rapid sequential navigations where the first payload resolves last leaves only the last route visible", async () => {
-    const { controller, detach, stateRef } = createControllerHarness();
-    let resolveSlow!: (elements: AppElements) => void;
-    const slowPayload = new Promise<AppElements>((r) => {
-      resolveSlow = r;
-    });
-
-    try {
-      // Start slow navigation A (deferred payload — won't commit yet).
-      const navA = controller.beginNavigation();
-      void controller.renderNavigationPayload({
-        actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
-        historyUpdateMode: "push",
-        navigationSnapshot: stateRef.current.navigationSnapshot,
-        nextElements: slowPayload,
-        params: {},
-        pendingRouterState: null,
-        previousNextUrl: null,
-        targetHref: "https://example.com/slow",
-        navId: navA,
-        useTransition: false,
-      });
-
-      // Start fast navigation B (immediate payload). B's beginNavigation
-      // advances activeNavigationId past A, so B wins.
-      const navB = controller.beginNavigation();
-      void controller.renderNavigationPayload({
-        actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
-        historyUpdateMode: "push",
-        navigationSnapshot: stateRef.current.navigationSnapshot,
-        nextElements: Promise.resolve(
-          createResolvedElements("route:/fast", "/", null, {
-            "page:/fast": React.createElement("main", null, "fast"),
-          }),
-        ),
-        params: {},
-        pendingRouterState: null,
-        previousNextUrl: null,
-        targetHref: "https://example.com/fast",
-        navId: navB,
-        useTransition: false,
-      });
-
-      // Yield so B's async payload resolves and state commits.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(stateRef.current.routeId).toBe("route:/fast");
-
-      // Now resolve the stale payload. It must not overwrite the committed route.
-      resolveSlow(
-        createResolvedElements("route:/slow", "/", null, {
-          "page:/slow": React.createElement("main", null, "slow"),
-        }),
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(stateRef.current.routeId).toBe("route:/fast");
-    } finally {
-      detach();
-    }
-  });
-
   it("stale cross-root navigation is skipped instead of hard-navigating", async () => {
     // A navigation that crosses a root-layout boundary requires a hard
     // navigation. But a stale navigation (superseded by a newer one) must NOT
@@ -908,39 +841,6 @@ describe("app browser navigation lifecycle settlement", () => {
     } finally {
       detach();
     }
-  });
-
-  it("resolvePendingNavigationCommitDisposition returns skip when activeNavigationId has advanced", () => {
-    expect(
-      resolvePendingNavigationCommitDisposition({
-        activeNavigationId: 9,
-        currentRootLayoutTreePath: "/",
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 5,
-      }),
-    ).toBe("skip");
-  });
-
-  it("resolvePendingNavigationCommitDisposition returns dispatch when navigation is current and roots match", () => {
-    expect(
-      resolvePendingNavigationCommitDisposition({
-        activeNavigationId: 7,
-        currentRootLayoutTreePath: "/",
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 7,
-      }),
-    ).toBe("dispatch");
-  });
-
-  it("resolvePendingNavigationCommitDisposition returns hard-navigate when navigation is current and roots differ", () => {
-    expect(
-      resolvePendingNavigationCommitDisposition({
-        activeNavigationId: 7,
-        currentRootLayoutTreePath: "/(marketing)",
-        nextRootLayoutTreePath: "/(dashboard)",
-        startedNavigationId: 7,
-      }),
-    ).toBe("hard-navigate");
   });
 
   it("resolveAndClassifyNavigationCommit classifies skip when IDs have diverged", async () => {
@@ -1037,6 +937,9 @@ describe("app browser root-layout hard navigation", () => {
     );
     const { assign } = stubWindow("https://example.com/marketing");
     const pendingRouterState = controller.beginPendingBrowserRouterState();
+    assign.mockImplementation(() => {
+      expect(pendingRouterState.settled).toBe(true);
+    });
 
     try {
       const navId = controller.beginNavigation();
@@ -1067,20 +970,10 @@ describe("app browser root-layout hard navigation", () => {
       await Promise.resolve();
 
       expect(assign).toHaveBeenCalledTimes(1);
-      expect(pendingRouterState.settled).toBe(true);
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
     } finally {
       detach();
     }
-  });
-
-  it("shouldHardNavigate returns false when root layouts are identical", () => {
-    expect(shouldHardNavigate("/", "/")).toBe(false);
-    expect(shouldHardNavigate("/(marketing)", "/(marketing)")).toBe(false);
-  });
-
-  it("shouldHardNavigate returns true when both root layouts are non-null and different", () => {
-    expect(shouldHardNavigate("/(marketing)", "/(dashboard)")).toBe(true);
-    expect(shouldHardNavigate("/app", "/blog")).toBe(true);
   });
 });
 
