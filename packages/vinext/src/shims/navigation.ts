@@ -12,7 +12,7 @@
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
-import { createAppPayloadCacheKey } from "../server/app-elements.js";
+import { AppElementsWire } from "../server/app-elements.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -401,7 +401,7 @@ export function storePrefetchResponse(
   response: Response,
   interceptionContext: string | null = null,
 ): void {
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   evictPrefetchCacheIfNeeded();
   const entry: PrefetchCacheEntry = { timestamp: Date.now() };
   entry.pending = snapshotRscResponse(response)
@@ -475,7 +475,7 @@ export function prefetchRscResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
 ): void {
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
@@ -521,7 +521,7 @@ export function consumePrefetchResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
 ): CachedRscResponse | null {
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const entry = cache.get(cacheKey);
   if (!entry) return null;
@@ -1315,7 +1315,7 @@ const _appRouter = {
         headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
       }
       const rscUrl = await createRscRequestUrl(fullHref, headers);
-      const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+      const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
       if (prefetched.has(cacheKey)) return;
       prefetched.add(cacheKey);

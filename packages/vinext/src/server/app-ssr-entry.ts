@@ -24,11 +24,7 @@ import {
 } from "./html.js";
 import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
-import {
-  normalizeAppElements,
-  readAppElementsMetadata,
-  type AppWireElements,
-} from "./app-elements.js";
+import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 
 export type FontPreload = {
@@ -217,8 +213,8 @@ export async function handleSsr(
           flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
         }
         const wireElements = use(flightRoot);
-        const elements = normalizeAppElements(wireElements);
-        const metadata = readAppElementsMetadata(elements);
+        const elements = AppElementsWire.decode(wireElements);
+        const metadata = AppElementsWire.readMetadata(elements);
         return createReactElement(
           ElementsContext.Provider,
           { value: elements },

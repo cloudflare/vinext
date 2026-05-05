@@ -211,8 +211,7 @@ import {
   createAppFallbackRenderer as __createAppFallbackRenderer,
 } from ${JSON.stringify(appFallbackRendererPath)};
 import {
-  APP_INTERCEPTION_CONTEXT_KEY as __APP_INTERCEPTION_CONTEXT_KEY,
-  createAppPayloadRouteId as __createAppPayloadRouteId,
+  AppElementsWire as __AppElementsWire,
 } from ${JSON.stringify(appElementsPath)};
 import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
@@ -672,14 +671,16 @@ export default __createAppRscHandler({
       contentType,
       createNotFoundElement(actionRouteId) {
         return {
-          [__APP_INTERCEPTION_CONTEXT_KEY]: null,
-          __route: actionRouteId,
-          __rootLayout: null,
+          ...__AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            rootLayoutTreePath: null,
+            routeId: actionRouteId,
+          }),
           [actionRouteId]: createElement("div", null, "Page not found"),
         };
       },
       createPayloadRouteId(pathnameToRender, currentInterceptionContext) {
-        return __createAppPayloadRouteId(pathnameToRender, currentInterceptionContext);
+        return __AppElementsWire.encodeRouteId(pathnameToRender, currentInterceptionContext);
       },
       createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
         return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);

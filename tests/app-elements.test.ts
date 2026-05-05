@@ -2,6 +2,7 @@ import React from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { UNMATCHED_SLOT } from "../packages/vinext/src/shims/slot.js";
 import {
+  AppElementsWire,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
@@ -16,6 +17,65 @@ import {
   resolveVisitedResponseInterceptionContext,
   withLayoutFlags,
 } from "../packages/vinext/src/server/app-elements.js";
+
+describe("AppElementsWire", () => {
+  it("encodes outgoing record payloads without mutating caller-owned records", () => {
+    const element = {
+      "layout:/": "root-layout",
+      "page:/blog": "blog-page",
+    };
+
+    const encoded = AppElementsWire.encodeOutgoingPayload({
+      element,
+      layoutFlags: { "layout:/": "s" },
+    });
+
+    expect(encoded).not.toBe(element);
+    expect(isAppElementsRecord(encoded)).toBe(true);
+    if (isAppElementsRecord(encoded)) {
+      expect(encoded).toEqual({
+        "layout:/": "root-layout",
+        "page:/blog": "blog-page",
+        [APP_LAYOUT_FLAGS_KEY]: { "layout:/": "s" },
+      });
+    }
+    expect(element).toEqual({
+      "layout:/": "root-layout",
+      "page:/blog": "blog-page",
+    });
+  });
+
+  it("decodes wire payloads and reads metadata through one codec boundary", () => {
+    const decoded = AppElementsWire.decode({
+      [APP_INTERCEPTION_CONTEXT_KEY]: "/feed",
+      [APP_ROOT_LAYOUT_KEY]: "/",
+      [APP_ROUTE_KEY]: AppElementsWire.encodeRouteId("/photos/42", "/feed"),
+      "slot:modal:/": AppElementsWire.unmatchedSlotValue,
+    });
+
+    expect(decoded["slot:modal:/"]).toBe(UNMATCHED_SLOT);
+    expect(AppElementsWire.readMetadata(decoded)).toEqual({
+      interceptionContext: "/feed",
+      layoutFlags: {},
+      rootLayoutTreePath: "/",
+      routeId: "route:/photos/42\0/feed",
+    });
+  });
+
+  it("creates the canonical metadata entries for outgoing AppElements records", () => {
+    const metadata = AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      rootLayoutTreePath: "/(dashboard)",
+      routeId: AppElementsWire.encodeRouteId("/dashboard", null),
+    });
+
+    expect(metadata).toEqual({
+      [APP_INTERCEPTION_CONTEXT_KEY]: null,
+      [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
+      [APP_ROUTE_KEY]: "route:/dashboard",
+    });
+  });
+});
 
 describe("app elements payload helpers", () => {
   it("normalizes the unmatched-slot wire marker to UNMATCHED_SLOT for slot entries", () => {

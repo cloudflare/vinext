@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { CachedAppPageValue } from "vinext/shims/cache";
-import { buildOutgoingAppPayload, type AppOutgoingElements } from "./app-elements.js";
+import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -254,7 +254,7 @@ export async function renderAppPageLifecycle(
   // Render the CANONICAL element. The outgoing payload carries per-layout
   // static/dynamic flags under `__layoutFlags` so the client can later tell
   // which layouts are safe to skip on subsequent navigations.
-  const outgoingElement = buildOutgoingAppPayload({
+  const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
     layoutFlags,
   });

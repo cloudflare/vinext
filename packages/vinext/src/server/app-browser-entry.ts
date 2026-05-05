@@ -46,10 +46,8 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import {
-  createAppPayloadCacheKey,
+  AppElementsWire,
   getMountedSlotIdsHeader,
-  normalizeAppElements,
-  readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
   type AppElements,
   type AppWireElements,
@@ -289,7 +287,7 @@ function getVisitedResponse(
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
 ): VisitedResponseCacheEntry | null {
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cached = visitedResponseCache.get(cacheKey);
   if (!cached) {
     return null;
@@ -333,7 +331,7 @@ function storeVisitedResponseSnapshot(
   snapshot: CachedRscResponse,
   params: Record<string, string | string[]>,
 ): void {
-  const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
@@ -409,11 +407,11 @@ function handleDevRecoveryBoundaryCatch(resetKey: number): void {
   browserNavigationController.drainPrePaintEffects(resetKey);
 }
 
-function normalizeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
+function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
   // Wrap in Promise.resolve() because createFromReadableStream() returns a
   // React Flight thenable whose .then() returns undefined (not a new Promise).
   // Without the wrap, chaining .then() produces undefined → use() crashes.
-  return Promise.resolve(payload).then((elements) => normalizeAppElements(elements));
+  return Promise.resolve(payload).then((elements) => AppElementsWire.decode(elements));
 }
 
 function BrowserRoot({
@@ -424,7 +422,7 @@ function BrowserRoot({
   initialNavigationSnapshot: ClientNavigationRenderSnapshot;
 }) {
   const resolvedElements = use(initialElements);
-  const initialMetadata = readAppElementsMetadata(resolvedElements);
+  const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
   const [treeStateValue, setTreeStateValue] = useState<AppRouterState | Promise<AppRouterState>>({
     elements: resolvedElements,
     interceptionContext: initialMetadata.interceptionContext,
@@ -816,12 +814,12 @@ function registerServerActionCallback(): void {
     // redirects), this would need renderNavigationPayload().
     if (isServerActionResult(result)) {
       return commitSameUrlNavigatePayload(
-        Promise.resolve(normalizeAppElements(result.root)),
+        Promise.resolve(AppElementsWire.decode(result.root)),
         result.returnValue,
       );
     }
 
-    return commitSameUrlNavigatePayload(Promise.resolve(normalizeAppElements(result)));
+    return commitSameUrlNavigatePayload(Promise.resolve(AppElementsWire.decode(result)));
   });
 }
 
@@ -843,7 +841,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     installDevErrorOverlay();
   }
 
-  const root = normalizeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
+  const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
     latestClientParams,
@@ -967,7 +965,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             currentHref,
             cachedParams,
           );
-          const cachedPayload = normalizeAppElementsPromise(
+          const cachedPayload = decodeAppElementsPromise(
             createFromFetch<AppWireElements>(
               Promise.resolve(restoreRscResponse(cachedRoute.response)),
             ),
@@ -1106,7 +1104,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
-        const rscPayload = normalizeAppElementsPromise(
+        const rscPayload = decodeAppElementsPromise(
           createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
         );
 
@@ -1132,7 +1130,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
         const resolvedElements = await rscPayload;
-        const metadata = readAppElementsMetadata(resolvedElements);
+        const metadata = AppElementsWire.readMetadata(resolvedElements);
         storeVisitedResponseSnapshot(
           rscUrl,
           resolveVisitedResponseInterceptionContext(
@@ -1229,7 +1227,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // for the previousNextUrl mechanism.
         const hmrHeaders = createRscRequestHeaders();
         await browserNavigationController.hmrReplaceTree(
-          normalizeAppElementsPromise(
+          decodeAppElementsPromise(
             createFromFetch<AppWireElements>(
               fetch(
                 await createRscRequestUrl(

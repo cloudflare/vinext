@@ -27,7 +27,7 @@ import {
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
-import { createAppPayloadCacheKey } from "../server/app-elements.js";
+import { AppElementsWire } from "../server/app-elements.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -145,7 +145,7 @@ function prefetchUrl(href: string): void {
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
-        const cacheKey = createAppPayloadCacheKey(rscUrl, interceptionContext);
+        const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) return;
         prefetched.add(cacheKey);

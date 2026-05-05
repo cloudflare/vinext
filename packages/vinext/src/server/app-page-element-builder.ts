@@ -10,11 +10,7 @@ import {
   type AppPageRouteWiringRoute,
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
-import {
-  APP_INTERCEPTION_CONTEXT_KEY,
-  createAppPayloadRouteId,
-  type AppElements,
-} from "./app-elements.js";
+import { AppElementsWire, type AppElements } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
@@ -116,16 +112,18 @@ export async function buildPageElements<
 
   if (hasPageModule && !PageComponent) {
     const interceptionContext = opts?.interceptionContext ?? null;
-    const noExportRouteId = createAppPayloadRouteId(routePath, interceptionContext);
+    const noExportRouteId = AppElementsWire.encodeRouteId(routePath, interceptionContext);
     let noExportRootLayout: string | null = null;
     if (route.layouts?.length > 0) {
       const treePosition = route.layoutTreePositions?.[0] ?? 0;
       noExportRootLayout = createAppPageTreePath(route.routeSegments, treePosition);
     }
     return {
-      [APP_INTERCEPTION_CONTEXT_KEY]: interceptionContext,
-      __route: noExportRouteId,
-      __rootLayout: noExportRootLayout,
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext,
+        rootLayoutTreePath: noExportRootLayout,
+        routeId: noExportRouteId,
+      }),
       [noExportRouteId]: createElement("div", null, "Page has no default export"),
     };
   }

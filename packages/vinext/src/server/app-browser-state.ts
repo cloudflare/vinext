@@ -1,8 +1,8 @@
 import { mergeElements } from "vinext/shims/slot";
 import { stripBasePath } from "../utils/base-path.js";
 import {
+  AppElementsWire,
   getMountedSlotIdsHeader,
-  readAppElementsMetadata,
   type AppElements,
   type LayoutFlags,
 } from "./app-elements.js";
@@ -212,7 +212,7 @@ export async function createPendingNavigationCommit(options: {
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
-  const metadata = readAppElementsMetadata(elements);
+  const metadata = AppElementsWire.readMetadata(elements);
   const previousNextUrl =
     options.previousNextUrl !== undefined
       ? options.previousNextUrl
