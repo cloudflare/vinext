@@ -817,6 +817,20 @@ describe("App Router integration", () => {
     expect(html).toContain('content="noindex"');
   });
 
+  it("notFound() from async page with loading.tsx returns 404 (NEXT_NOT_FOUND digest)", async () => {
+    // Same regression path as redirect-with-loading.tsx, but for notFound().
+    // Distinct from forbidden/unauthorized: notFound() throws the bare
+    // "NEXT_NOT_FOUND" digest (not "NEXT_HTTP_ERROR_FALLBACK;404"), which
+    // takes a separate branch in resolveAppPageSpecialError. This is the
+    // most common loading-boundary special-error case in real apps —
+    // a dynamic detail page with a loading state that calls notFound()
+    // when the record is missing.
+    const res = await fetch(`${baseUrl}/notfound-loading`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("404 - Page Not Found");
+  });
+
   it("forbidden() from async page with loading.tsx returns 403 (digest status preserved)", async () => {
     // Same regression path as the redirect()-with-loading.tsx tests, but
     // for forbidden() — verifies the post-shell digest swap reads the
