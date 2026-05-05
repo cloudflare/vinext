@@ -774,6 +774,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
         // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
+        const isDev = env?.command === "serve";
         if (mode === "test") {
           resolvedNodeEnv = "test";
         } else if (env?.command === "build") {
@@ -1373,6 +1374,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }),
               },
             },
+            ...(isDev && hasPagesDir
+              ? {
+                  pages_ssr: {
+                    ...(hasCloudflarePlugin || hasNitroPlugin
+                      ? {}
+                      : {
+                          resolve: {
+                            external:
+                              userSsrExternal === true
+                                ? true
+                                : ["react", "react-dom", "react-dom/server", ...userSsrExternal],
+                            ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                          },
+                        }),
+                  },
+                }
+              : {}),
             client: {
               // Explicitly mark as client consumer so other plugins (e.g. Nitro)
               // can detect this during configEnvironment hooks — before Vite
@@ -1943,6 +1961,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         function getPagesRunner() {
           if (!pagesRunner) {
             const env =
+              server.environments["pages_ssr"] ??
               server.environments["ssr"] ??
               Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
               Object.values(server.environments)[0];
