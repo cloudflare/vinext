@@ -30,6 +30,7 @@ export function stripBasePath(pathname: string, basePath: string): string {
  */
 export function removeTrailingSlash(pathname: string): string {
   if (pathname === "/") return "/";
-  const stripped = pathname.replace(/\/+$/, "");
-  return stripped === "" ? "/" : stripped;
+  let end = pathname.length;
+  while (end > 0 && pathname.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return end === 0 ? "/" : pathname.slice(0, end);
 }
