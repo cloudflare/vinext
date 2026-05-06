@@ -778,6 +778,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
         // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
+        const isDev = env?.command === "serve";
         if (mode === "test") {
           resolvedNodeEnv = "test";
         } else if (env?.command === "build") {
@@ -1188,11 +1189,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
           // This also resolves extensionless-import issues in packages like
           // `validator` (see #189) by routing them through Vite's resolver.
+          //
+          // When App Router is active (hasAppDir), do NOT externalize React
+          // at the top level. The per-environment configs (environments.rsc,
+          // environments.ssr) define their own external lists without React.
+          // Vite merges the top-level ssr config into environments.ssr, so
+          // including React here would leak it into the SSR environment's
+          // external list, causing Node.js to resolve React from vinext's
+          // package scope instead of the project root — bypassing
+          // resolve.dedupe and producing dual React instances ("Invalid
+          // hook call" errors) in split-install topologies (npm/bun link).
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : {
                 ssr: {
-                  external: ["react", "react-dom", "react-dom/server"],
+                  external: hasAppDir ? [] : ["react", "react-dom", "react-dom/server"],
                   noExternal: true,
                 },
               }),
@@ -1367,6 +1378,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }),
               },
             },
+            ...(isDev && hasPagesDir
+              ? {
+                  pages_ssr: {
+                    ...(hasCloudflarePlugin || hasNitroPlugin
+                      ? {}
+                      : {
+                          resolve: {
+                            external:
+                              userSsrExternal === true
+                                ? true
+                                : ["react", "react-dom", "react-dom/server", ...userSsrExternal],
+                            ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                          },
+                        }),
+                  },
+                }
+              : {}),
             client: {
               // Explicitly mark as client consumer so other plugins (e.g. Nitro)
               // can detect this during configEnvironment hooks — before Vite
@@ -1937,6 +1965,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         function getPagesRunner() {
           if (!pagesRunner) {
             const env =
+              server.environments["pages_ssr"] ??
               server.environments["ssr"] ??
               Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
               Object.values(server.environments)[0];
