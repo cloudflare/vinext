@@ -37,6 +37,23 @@ export function addQueryParam(
 }
 
 /**
+ * Merge pathname-derived dynamic route params into a query object.
+ *
+ * Route params must win over same-name URL search params so `/posts/123?id=456`
+ * still exposes `id: "123"` to Pages Router APIs.
+ */
+export function mergeRouteParamsIntoQuery(
+  query: Record<string, string | string[]>,
+  params: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const merged: Record<string, string | string[]> = { ...query };
+  for (const [key, value] of Object.entries(params)) {
+    setOwnQueryValue(merged, key, Array.isArray(value) ? [...value] : value);
+  }
+  return merged;
+}
+
+/**
  * Parse a URL's query string into a Record, with multi-value keys promoted to arrays.
  */
 export function parseQueryString(url: string): Record<string, string | string[]> {

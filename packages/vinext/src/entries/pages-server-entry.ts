@@ -290,6 +290,10 @@ function parseQuery(url) {
   return q;
 }
 
+function mergeRouteParamsIntoQuery(query, params) {
+  return Object.assign(query, params);
+}
+
 function patternToNextFormat(pattern) {
   // Match any non-/ param name. Non-greedy with lookahead prevents
   // the +/* suffix being consumed into the param name when the name
@@ -450,10 +454,11 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
+      const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
-          query: { ...params, ...parseQuery(routeUrl) },
+          query,
           asPath: routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -490,13 +495,12 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
           _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
         }
       } catch (e) { /* font preloads not available */ }
-      const query = parseQuery(routeUrl);
       const pageDataResult = await __resolvePagesPageData({
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
               pathname: routePattern,
-              query: { ...params, ...query },
+              query,
               asPath: routeUrl,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,

@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
-import { addQueryParam } from "../utils/query.js";
+import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
 /**
@@ -197,15 +197,9 @@ export async function handleApiRoute(
       return true;
     }
 
-    // Parse query from URL + route params
-    const query: Record<string, string | string[]> = { ...params };
-    const queryString = url.split("?")[1];
-    if (queryString) {
-      const searchParams = new URLSearchParams(queryString);
-      for (const [key, value] of searchParams) {
-        addQueryParam(query, key, value);
-      }
-    }
+    // Parse query from URL + route params. Path params win over same-key search
+    // params so a query string cannot change the dynamic route value.
+    const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
 
     // Parse body
     const body = await parseBody(req);

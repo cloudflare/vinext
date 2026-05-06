@@ -1,5 +1,5 @@
 import type { Route } from "../routing/pages-router.js";
-import { addQueryParam } from "../utils/query.js";
+import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
 import {
   createPagesReqRes,
   parsePagesApiBody,
@@ -29,17 +29,7 @@ type HandlePagesApiRouteOptions = {
 };
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
-  const query: PagesRequestQuery = { ...params };
-  const search = url.split("?")[1];
-  if (!search) {
-    return query;
-  }
-
-  for (const [key, value] of new URLSearchParams(search)) {
-    addQueryParam(query, key, value);
-  }
-
-  return query;
+  return mergeRouteParamsIntoQuery(parseQueryString(url), params);
 }
 
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {

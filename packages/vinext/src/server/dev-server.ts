@@ -27,7 +27,7 @@ import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
-import { parseQueryString as parseQuery } from "../utils/query.js";
+import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -330,6 +330,7 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
+    const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
@@ -344,7 +345,7 @@ export function createSSRHandler(
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
-            query: { ...params, ...parseQuery(url) },
+            query,
             asPath: url,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -451,7 +452,7 @@ export function createSSRHandler(
             params,
             req,
             res,
-            query: parseQuery(url),
+            query,
             resolvedUrl: localeStrippedUrl,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -605,7 +606,7 @@ export function createSSRHandler(
                       if (typeof routerShim.setSSRContext === "function") {
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
-                          query: { ...params, ...parseQuery(url) },
+                          query,
                           asPath: url,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,

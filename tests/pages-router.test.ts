@@ -345,6 +345,16 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
   });
 
+  it("keeps dynamic route params ahead of same-key search params during SSR", async () => {
+    const res = await fetch(`${baseUrl}/posts/42?id=evil`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/Post:\s*(<!--\s*-->)?\s*42/);
+    expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
+    expect(html).not.toMatch(/Query ID:\s*(<!--\s*-->)?\s*evil/);
+  });
+
   it("next/compat/router: useRouter returns router object in Pages Router context", async () => {
     const res = await fetch(`${baseUrl}/compat-router-test`);
     expect(res.status).toBe(200);
@@ -470,6 +480,14 @@ describe("Pages Router integration", () => {
 
   it("handles dynamic API routes with query params", async () => {
     const res = await fetch(`${baseUrl}/api/users/123`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ user: { id: "123", name: "User 123" } });
+  });
+
+  it("keeps dynamic API route params ahead of same-key query params", async () => {
+    const res = await fetch(`${baseUrl}/api/users/123?id=evil`);
     expect(res.status).toBe(200);
 
     const data = await res.json();

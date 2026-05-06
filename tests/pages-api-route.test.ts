@@ -39,6 +39,25 @@ describe("pages api route", () => {
     });
   });
 
+  it("keeps dynamic params ahead of same-key query-string values", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (req, res) => {
+          res.json(req.query);
+        },
+        { id: "123" },
+      ),
+      request: new Request("https://example.com/api/users/123?id=evil&tag=a"),
+      url: "/api/users/123?id=evil&tag=a",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      id: "123",
+      tag: "a",
+    });
+  });
+
   it("returns 400 with an Invalid JSON statusText for malformed JSON bodies", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch((req, res) => {
