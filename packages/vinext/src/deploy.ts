@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync, type ExecSyncOptions } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
@@ -1207,7 +1207,7 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
     _findInNodeModules(root, ".bin/wrangler") ??
     path.join(root, "node_modules", ".bin", "wrangler"); // fallback for error message clarity
 
-  const execOpts: ExecSyncOptions = {
+  const execOpts: ExecFileSyncOptions = {
     cwd: root,
     stdio: "pipe",
     encoding: "utf-8",
