@@ -79,6 +79,7 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import {
   mergeOptimizeDepsExclude,
+  SSR_EXTERNAL_REACT_ENTRIES,
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
@@ -651,7 +652,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         });
       })
       .catch((cause) => {
-        throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", { cause });
+        throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", {
+          cause,
+        });
       });
   }
 
@@ -671,7 +674,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     reactPluginPromise = reactImport
       .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
       .catch((cause) => {
-        throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+        throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
+          cause,
+        });
       });
   }
 
@@ -1150,7 +1155,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // moduleSideEffects: 'no-external' could drop server packages
               // that rely on module-level side effects.
               ...(!isSSR && !isMultiEnv
-                ? { treeshake: getClientTreeshakeConfigForVite(viteMajorVersion) }
+                ? {
+                    treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
+                  }
                 : {}),
               // Code-split client bundles: separate framework (React/ReactDOM),
               // vinext runtime (shims), and vendor packages into their own
@@ -1199,7 +1206,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolve: {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
-            alias: { ...tsconfigPathAliases, ...nextConfig.aliases, ...nextShimMap },
+            alias: {
+              ...tsconfigPathAliases,
+              ...nextConfig.aliases,
+              ...nextShimMap,
+            },
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -1357,7 +1368,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                // When userSsrExternal === true, exclude React from the SSR
+                // optimizer so plugin-rsc's crawlFrameworkPkgs doesn't pre-bundle
+                // a duplicate React copy into deps_ssr/. The SSR env loads React
+                // via Node's resolver instead, sharing one instance with the
+                // renderer and any 'use client' module SSR'd through it. See
+                // https://github.com/cloudflare/vinext/issues/1103.
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  userSsrExternal === true ? SSR_EXTERNAL_REACT_ENTRIES : [],
+                ),
                 entries: optimizeEntries,
               },
               build: {
@@ -2384,7 +2405,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const requestOrigin = `http://${req.headers.host || "localhost"}`;
               const preMiddlewareReqUrl = new URL(url, requestOrigin);
               const preMiddlewareReqCtx: RequestContext = requestContextFromRequest(
-                new Request(preMiddlewareReqUrl, { headers: nodeRequestHeaders }),
+                new Request(preMiddlewareReqUrl, {
+                  headers: nodeRequestHeaders,
+                }),
               );
 
               // Config redirects run before middleware, but still match against
@@ -3237,7 +3260,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         },
       },
-    } as Plugin & { nitro: { setup: (nitro: NitroSetupContext) => Promise<void> } }, // Nitro plugin extension convention: https://nitro.build/guide/plugins
+    } as Plugin & {
+      nitro: { setup: (nitro: NitroSetupContext) => Promise<void> };
+    }, // Nitro plugin extension convention: https://nitro.build/guide/plugins
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
     // runtime, so rebuild those mappings from the emitted client bundle.

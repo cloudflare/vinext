@@ -146,7 +146,9 @@ describe("optimizeDeps.exclude for vinext", () => {
         plugins: [],
         optimizeDeps: { exclude: ["@lingui/macro"] },
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
@@ -201,7 +203,9 @@ describe("optimizeDeps.exclude for vinext", () => {
           include: ["some-lib"],
         },
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // All environments should contain the incoming excludes
       for (const envName of ["rsc", "ssr", "client"]) {
@@ -260,7 +264,9 @@ describe("optimizeDeps.exclude for vinext", () => {
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Top-level
       expect(result.optimizeDeps?.exclude).toContain("vinext");
@@ -273,6 +279,168 @@ describe("optimizeDeps.exclude for vinext", () => {
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.client.optimizeDeps?.exclude).toContain(shimExclude);
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  // Regression for #1103: when the user sets `ssr.external: true`, plugin-rsc's
+  // crawlFrameworkPkgs adds React to environments.ssr.optimizeDeps.include and
+  // Vite pre-bundles a second React copy into deps_ssr/. Externalized callers
+  // (vinext's runtime) and SSR-transformed 'use client' modules then end up
+  // with two distinct React module records, leaving React.H null and crashing
+  // every useContext / useSyncExternalStore call. The fix excludes React from
+  // the SSR optimizer so deps_ssr/ stays React-free.
+  const ssrExternalReactEntries = [
+    "react",
+    "react-dom",
+    "react-dom/server.edge",
+    "react-dom/static.edge",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-server-dom-webpack/client.edge",
+  ];
+
+  it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-true-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        ssr: { external: true },
+      };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExclude, `ssr exclude should contain ${entry}`).toContain(entry);
+      }
+      // RSC env still needs the react-server condition pre-bundled, so React
+      // must NOT be excluded there.
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      expect(rscExclude).not.toContain("react");
+      expect(rscExclude).not.toContain("react-dom");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("does NOT exclude React from ssr optimizeDeps when ssr.external is unset", async () => {
+    // Default mode (vinext sets noExternal: true on ssr) still pre-bundles
+    // React into deps_ssr — that's the path that already works because
+    // everything is bundled with one React copy.
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-default-"),
+    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExclude, `ssr exclude should NOT contain ${entry}`).not.toContain(entry);
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("does NOT exclude React from ssr optimizeDeps when ssr.external is a string array", async () => {
+    // Array form of ssr.external (e.g. ['pg']) should not trigger the
+    // React strip — only the blanket `true` form does.
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-array-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        ssr: { external: ["pg"] },
+      };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExclude, `ssr exclude should NOT contain ${entry}`).not.toContain(entry);
       }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -316,7 +484,10 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
@@ -343,7 +514,10 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(mockConfig, { command: "serve", mode: "development" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "serve",
+        mode: "development",
+      });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("development"));
     } finally {
@@ -360,7 +534,10 @@ describe("process.env.NODE_ENV define", () => {
         plugins: [],
         define: { "process.env.NODE_ENV": JSON.stringify("staging") },
       };
-      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "production",
+      });
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
@@ -405,7 +582,9 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // treeshake should be set on bundler options for non-SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toEqual({
@@ -446,7 +625,9 @@ describe("treeshake config integration", () => {
         build: { ssr: "virtual:vinext-server-entry" },
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // treeshake should NOT be set for SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
@@ -493,7 +674,9 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Global bundler options should NOT have treeshake (would leak into RSC/SSR)
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
@@ -541,7 +724,9 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // For standalone client builds (non-SSR, non-multi-env),
       // output config should include the min chunk size setting.
@@ -600,7 +785,9 @@ describe("treeshake config integration", () => {
         build: {},
         plugins: [fakeCloudflarePlugin],
       };
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "build",
+      });
 
       // Client environment should have manifest: true for lazy chunk detection
       expect(result.environments).toBeDefined();
@@ -1302,7 +1489,9 @@ describe("vinext:async-hooks-stub", () => {
   // mock context to control which environment is being simulated.
   function resolveId(id: string, environmentName: string | undefined): string | undefined {
     const handler = (
-      _asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }
+      _asyncHooksStubPlugin.resolveId as {
+        handler: (id: string) => string | undefined;
+      }
     ).handler;
     return handler.call(
       { environment: environmentName ? { name: environmentName } : undefined },
@@ -1311,8 +1500,11 @@ describe("vinext:async-hooks-stub", () => {
   }
 
   function load(id: string): string | undefined {
-    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined })
-      .handler;
+    const handler = (
+      _asyncHooksStubPlugin.load as {
+        handler: (id: string) => string | undefined;
+      }
+    ).handler;
     return handler.call({}, id);
   }
 
