@@ -469,17 +469,27 @@ describe("app browser entry state helpers", () => {
     });
 
     expect(approval.decision.disposition).toBe("no-commit");
-    expect(approval.decision.trace.entries[0]).toEqual({
-      code: NavigationTraceReasonCodes.staleOperation,
-      fields: {
-        activeNavigationId: 7,
-        currentRootLayoutTreePath: "/",
-        currentVisibleCommitVersion: 5,
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 7,
-        startedVisibleCommitVersion: 4,
+    expect(approval.decision.trace.entries).toEqual([
+      {
+        code: NavigationTraceTransactionCodes.noCommit,
+        fields: {
+          operationLane: "refresh",
+          pendingOperationId: 22,
+          startedVisibleCommitVersion: 4,
+        },
       },
-    });
+      {
+        code: NavigationTraceReasonCodes.staleOperation,
+        fields: {
+          activeNavigationId: 7,
+          currentRootLayoutTreePath: "/",
+          currentVisibleCommitVersion: 5,
+          nextRootLayoutTreePath: "/",
+          startedNavigationId: 7,
+          startedVisibleCommitVersion: 4,
+        },
+      },
+    ]);
     expect(approval.approvedCommit).toBeNull();
   });
 
@@ -507,17 +517,27 @@ describe("app browser entry state helpers", () => {
     });
 
     expect(approval.decision.disposition).toBe("no-commit");
-    expect(approval.decision.trace.entries[0]).toEqual({
-      code: NavigationTraceReasonCodes.staleOperation,
-      fields: {
-        activeNavigationId: 8,
-        currentRootLayoutTreePath: "/",
-        currentVisibleCommitVersion: 3,
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 8,
-        startedVisibleCommitVersion: 2,
+    expect(approval.decision.trace.entries).toEqual([
+      {
+        code: NavigationTraceTransactionCodes.noCommit,
+        fields: {
+          operationLane: "traverse",
+          pendingOperationId: 23,
+          startedVisibleCommitVersion: 2,
+        },
       },
-    });
+      {
+        code: NavigationTraceReasonCodes.staleOperation,
+        fields: {
+          activeNavigationId: 8,
+          currentRootLayoutTreePath: "/",
+          currentVisibleCommitVersion: 3,
+          nextRootLayoutTreePath: "/",
+          startedNavigationId: 8,
+          startedVisibleCommitVersion: 2,
+        },
+      },
+    ]);
     expect(approval.approvedCommit).toBeNull();
   });
 
@@ -1776,17 +1796,27 @@ describe("app browser navigation lifecycle settlement", () => {
     const result = await resultPromise;
     expect(result.decision.disposition).toBe("no-commit");
     expect(result.approvedCommit).toBeNull();
-    expect(result.trace.entries[0]).toEqual({
-      code: NavigationTraceReasonCodes.staleOperation,
-      fields: {
-        activeNavigationId: 9,
-        currentRootLayoutTreePath: "/",
-        currentVisibleCommitVersion: 0,
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 5,
-        startedVisibleCommitVersion: 0,
+    expect(result.trace.entries).toEqual([
+      {
+        code: NavigationTraceTransactionCodes.noCommit,
+        fields: {
+          operationLane: "server-action",
+          pendingOperationId: 24,
+          startedVisibleCommitVersion: 0,
+        },
       },
-    });
+      {
+        code: NavigationTraceReasonCodes.staleOperation,
+        fields: {
+          activeNavigationId: 9,
+          currentRootLayoutTreePath: "/",
+          currentVisibleCommitVersion: 0,
+          nextRootLayoutTreePath: "/",
+          startedNavigationId: 5,
+          startedVisibleCommitVersion: 0,
+        },
+      },
+    ]);
   });
 
   it("uses the approval state getter after the payload resolves", async () => {
@@ -1818,17 +1848,27 @@ describe("app browser navigation lifecycle settlement", () => {
     const result = await resultPromise;
     expect(result.decision.disposition).toBe("no-commit");
     expect(result.approvedCommit).toBeNull();
-    expect(result.trace.entries[0]).toEqual({
-      code: NavigationTraceReasonCodes.staleOperation,
-      fields: {
-        activeNavigationId: 8,
-        currentRootLayoutTreePath: "/",
-        currentVisibleCommitVersion: 1,
-        nextRootLayoutTreePath: "/",
-        startedNavigationId: 8,
-        startedVisibleCommitVersion: 0,
+    expect(result.trace.entries).toEqual([
+      {
+        code: NavigationTraceTransactionCodes.noCommit,
+        fields: {
+          operationLane: "server-action",
+          pendingOperationId: 25,
+          startedVisibleCommitVersion: 0,
+        },
       },
-    });
+      {
+        code: NavigationTraceReasonCodes.staleOperation,
+        fields: {
+          activeNavigationId: 8,
+          currentRootLayoutTreePath: "/",
+          currentVisibleCommitVersion: 1,
+          nextRootLayoutTreePath: "/",
+          startedNavigationId: 8,
+          startedVisibleCommitVersion: 0,
+        },
+      },
+    ]);
   });
 
   it("failed payload cleanly settles the pending router state without leaving it hanging", async () => {
