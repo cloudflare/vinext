@@ -1193,16 +1193,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           //   Any user-provided `ssr.noExternal` is intentionally superseded
           //   by this setting; only `ssr.external` entries escape Vite's transform.
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
+          // Also skip `noExternal: true` when the user opted into
+          // `ssr.external: true` — they've explicitly asked for everything
+          // external, and forcing `noExternal: true` here leaks down into
+          // `environments.ssr.resolve.noExternal` (Vite uses top-level
+          // `ssr.*` as the default for the per-env resolve config), which
+          // makes Vite bundle React despite the user's intent and produces
+          // the duplicate-React crashes documented in #1103.
           // This also resolves extensionless-import issues in packages like
           // `validator` (see #189) by routing them through Vite's resolver.
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
-            : {
-                ssr: {
-                  external: ["react", "react-dom", "react-dom/server"],
-                  noExternal: true,
-                },
-              }),
+            : config.ssr?.external === true
+              ? { ssr: { external: true as const } }
+              : {
+                  ssr: {
+                    external: ["react", "react-dom", "react-dom/server"],
+                    noExternal: true,
+                  },
+                }),
           resolve: {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
@@ -1519,6 +1528,37 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configResolved(config) {
+        // When the user sets `ssr.external: true`, strip React entries from
+        // `environments.ssr.resolve.noExternal`. @vitejs/plugin-rsc populates
+        // this list via crawlFrameworkPkgs, but `noExternal` overrides
+        // `external: true` for the listed packages. The result is that React
+        // gets bundled by Vite's transform pipeline despite the user opting
+        // for full externalization, producing a second React module record
+        // alongside the Node-loaded one used by externalized callers (vinext's
+        // runtime). 'use client' modules SSR'd through the bundled-React env
+        // then crash with `Invalid hook call` / `useContext null`. Stripping
+        // these entries forces the SSR env to load React via Node externals,
+        // matching the renderer's React. See #1103.
+        if (hasAppDir) {
+          const ssrEnv = config.environments?.ssr;
+          if (ssrEnv?.resolve?.external === true && Array.isArray(ssrEnv.resolve.noExternal)) {
+            // Strip React entries that @vitejs/plugin-rsc auto-adds to
+            // `environments.ssr.resolve.noExternal` via crawlFrameworkPkgs.
+            // With `ssr.external: true`, the SSR env loads React via Node's
+            // resolver, but `noExternal: ["react", ...]` overrides that for
+            // the listed packages — Vite bundles React anyway, producing a
+            // second module record alongside the Node-loaded one used by
+            // externalized callers (vinext's runtime). 'use client' modules
+            // SSR'd through that env then crash with `useContext null` /
+            // `Invalid hook call`. Stripping these entries forces the SSR
+            // env to load React via Node externals so the renderer and the
+            // runtime share a single React. See #1103.
+            ssrEnv.resolve.noExternal = ssrEnv.resolve.noExternal.filter(
+              (entry) => typeof entry !== "string" || !SSR_EXTERNAL_REACT_ENTRIES.includes(entry),
+            );
+          }
+        }
+
         // Detect double React plugin registration. When vinext auto-injects
         // @vitejs/plugin-react AND the user also registers it manually, the
         // React transform / refresh pipeline runs twice.

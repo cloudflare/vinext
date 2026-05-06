@@ -348,6 +348,12 @@ describe("optimizeDeps.exclude for vinext", () => {
       const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
       expect(rscExclude).not.toContain("react");
       expect(rscExclude).not.toContain("react-dom");
+      // Top-level ssr.noExternal: true also needs to be skipped — Vite
+      // applies top-level ssr.* as defaults for environments.ssr.*, so
+      // setting noExternal: true here would force-bundle React despite
+      // external: true and recreate the duplicate-React bug.
+      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.external).toBe(true);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
