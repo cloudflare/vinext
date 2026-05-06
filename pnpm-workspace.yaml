@@ -63,9 +63,9 @@ catalog:
   nuqs: ^2.8.8
   playwright: ^1.52.0
   postcss: 8.5.10
-  react: ^19.2.5
-  react-dom: ^19.2.5
-  react-server-dom-webpack: ^19.2.5
+  react: ^19.2.6
+  react-dom: ^19.2.6
+  react-server-dom-webpack: ^19.2.6
   server-only: ^0.0.1
   swr: ^2.0.0
   tailwind-merge: ^3.3.0

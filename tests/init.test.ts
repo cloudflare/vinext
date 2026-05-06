@@ -322,7 +322,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.5");
+    setupFakeReact(tmpDir, "19.2.6");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
@@ -604,7 +604,7 @@ describe("init — dependency installation", () => {
 
   it("does not upgrade React when version is already compatible", async () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.5");
+    setupFakeReact(tmpDir, "19.2.6");
 
     const { execCalls } = await runInit(tmpDir);
 
