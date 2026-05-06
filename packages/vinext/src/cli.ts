@@ -363,7 +363,7 @@ async function buildApp() {
     : createBuildLogger(vite);
 
   // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
-  // Without this, builds with react<19.2.5 produce a Worker that crashes at
+  // Without this, builds with older React versions can produce a Worker that crashes at
   // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
   if (isApp) {
     const reactUpgrade = getReactUpgradeDeps(process.cwd());

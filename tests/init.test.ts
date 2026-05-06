@@ -314,7 +314,7 @@ function setupFakeReact(dir: string, version: string): void {
 describe("getReactUpgradeDeps", () => {
   it("returns react@latest + react-dom@latest when React is below the RSDW security floor", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.4");
+    setupFakeReact(tmpDir, "19.2.5");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
