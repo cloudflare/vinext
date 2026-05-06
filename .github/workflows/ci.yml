@@ -107,7 +107,7 @@ jobs:
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
-        run: vp dlx create-next-app@16.2.3 "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@16.2.5 "${{ runner.temp }}/cna-test" --yes
 
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
