@@ -53,12 +53,12 @@ import {
 import { notFoundResponse } from "./http-error-responses.js";
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
+import { mimeType } from "./mime.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
-import { mimeType } from "./mime.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -109,10 +109,6 @@ const COMPRESSIBLE_TYPES = new Set([
 
 /** Minimum size threshold for compression (in bytes). Below this, compression overhead isn't worth it. */
 const COMPRESS_THRESHOLD = 1024;
-
-function contentTypeForExt(ext: string): string {
-  return mimeType(ext.startsWith(".") ? ext.slice(1) : ext);
-}
 
 /**
  * Parse the Accept-Encoding header and return the best supported encoding.
@@ -528,7 +524,7 @@ async function tryServeStatic(
   if (!resolved) return false;
 
   const ext = path.extname(resolved.path);
-  const ct = contentTypeForExt(ext);
+  const ct = mimeType(ext.startsWith(".") ? ext.slice(1) : ext);
   const isHashed = pathname.startsWith("/assets/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
@@ -1056,7 +1052,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // Block SVG and other unsafe content types by checking the file extension.
       // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
       const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = contentTypeForExt(ext);
+      const ct = mimeType(ext.startsWith(".") ? ext.slice(1) : ext);
       if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
@@ -1347,7 +1343,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Block SVG and other unsafe content types.
       // SVG is only allowed when dangerouslyAllowSVG is enabled.
       const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = contentTypeForExt(ext);
+      const ct = mimeType(ext.startsWith(".") ? ext.slice(1) : ext);
       if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
@@ -1667,6 +1663,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
+          // If the rewritten path has a file extension, it may point to a static
+          // file in public/ (copied to clientDir during build). Try to serve it
+          // directly before falling through to SSR (which would return 404).
           if (
             path.extname(resolvedPathname) &&
             (await tryServeStatic(
@@ -1709,7 +1708,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
-
+            // Check if fallback targets a static file in public/
             const fallbackPathname = fallbackRewrite.split("?")[0];
             if (
               path.extname(fallbackPathname) &&
@@ -1725,7 +1724,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             ) {
               return;
             }
-
             response = await renderPage(
               webRequest,
               fallbackRewrite,

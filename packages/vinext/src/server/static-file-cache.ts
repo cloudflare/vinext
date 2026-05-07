@@ -13,29 +13,12 @@
  */
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { MIME_TYPES, mimeType } from "./mime.js";
 
 /** Content-type lookup for static assets. Shared with prod-server.ts. */
-export const CONTENT_TYPES: Record<string, string> = {
-  ".js": "application/javascript",
-  ".mjs": "application/javascript",
-  ".css": "text/css",
-  ".html": "text/html",
-  ".json": "application/json",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".eot": "application/vnd.ms-fontobject",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".map": "application/json",
-  ".rsc": "text/x-component",
-};
+export const CONTENT_TYPES: Record<string, string> = Object.fromEntries(
+  Object.entries(MIME_TYPES).map(([ext, type]) => [`.${ext}`, type]),
+);
 
 /**
  * Files below this size are buffered in memory at startup for zero-syscall
@@ -116,7 +99,7 @@ export class StaticFileCache {
       if (relativePath.startsWith(".vite/") || relativePath === ".vite") continue;
 
       const ext = path.extname(relativePath);
-      const contentType = CONTENT_TYPES[ext] ?? "application/octet-stream";
+      const contentType = mimeType(ext.startsWith(".") ? ext.slice(1) : ext);
       const isHashed = relativePath.startsWith("assets/");
       const cacheControl = isHashed
         ? "public, max-age=31536000, immutable"

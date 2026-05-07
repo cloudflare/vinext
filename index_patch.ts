@@ -73,6 +73,7 @@ import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath, removeTrailingSlash } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { mimeType } from "./server/mime.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
@@ -2708,6 +2709,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+
               const resolvedPublicDir = path.resolve(root, "public");
 
               // Apply afterFiles rewrites — these run after initial route matching
@@ -2722,16 +2724,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 );
                 if (afterRewrite) {
                   resolvedUrl = afterRewrite;
+                  // External rewrite from afterFiles — proxy to external URL
                   if (isExternalUrl(afterRewrite)) {
-                    applyDeferredMwHeaders();
-                    applyMwRequestHeadersForExternalProxy();
                     await proxyExternalRewriteNode(req, res, afterRewrite);
                     return;
                   }
-
+                  // If the rewritten path has a file extension, it may point to a
+                  // static file in public/. Serve it directly before route matching
+                  // (which would miss it and SSR would return 404).
                   const afterFilesPathname = afterRewrite.split("?")[0];
                   if (path.extname(afterFilesPathname)) {
-                    const publicFilePath = path.resolve(resolvedPublicDir, "." + afterFilesPathname);
+                    // "." + afterFilesPathname works because rewrite destinations always start with "/"
+                    const publicFilePath = path.resolve(
+                      resolvedPublicDir,
+                      "." + afterFilesPathname,
+                    );
                     if (publicFilePath.startsWith(resolvedPublicDir + path.sep)) {
                       try {
                         const stat = fs.statSync(publicFilePath);
@@ -2743,22 +2750,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           res.end(content);
                           return;
                         }
-                      } catch (e) {
+                      } catch (e: unknown) {
                         if (
                           typeof e === "object" &&
                           e !== null &&
                           "code" in e &&
-                          e.code !== "ENOENT"
-                        ) {
+                          (e as { code?: unknown }).code !== "ENOENT"
+                        )
                           console.warn("[vinext] static file check failed:", e);
-                        }
                       }
                     }
                   }
                 }
               }
 
-              // External rewrite from afterFiles — proxy to external URL
+              // External rewrite (from beforeFiles) — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
                 applyDeferredMwHeaders();
                 applyMwRequestHeadersForExternalProxy();
@@ -2804,7 +2810,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     await proxyExternalRewriteNode(req, res, fallbackRewrite);
                     return;
                   }
-
+                  // Check if fallback targets a static file in public/
                   const fallbackPathname = fallbackRewrite.split("?")[0];
                   if (path.extname(fallbackPathname)) {
                     const publicFilePath = path.resolve(resolvedPublicDir, "." + fallbackPathname);
@@ -2819,19 +2825,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           res.end(content);
                           return;
                         }
-                      } catch (e) {
+                      } catch (e: unknown) {
                         if (
                           typeof e === "object" &&
                           e !== null &&
                           "code" in e &&
-                          e.code !== "ENOENT"
-                        ) {
+                          (e as { code?: unknown }).code !== "ENOENT"
+                        )
                           console.warn("[vinext] static file check failed:", e);
-                        }
                       }
                     }
                   }
-
                   const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
                   if (!fallbackMatch && hasAppDir) {
                     return next();
@@ -2849,7 +2853,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
               if (hasAppDir) return next();
 
-              await handler(req, res, resolvedUrl, mwStatus);
+              try {
+                await handler(req, res, resolvedUrl, mwStatus);
+              } catch (e) {
+                next(e);
+              }
             } catch (e) {
               next(e);
             }

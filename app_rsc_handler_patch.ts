@@ -168,10 +168,6 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   publicFiles: ReadonlySet<string>;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
-  resolveStaticFileAfterRewrite?: (
-    cleanPathname: string,
-    middlewareContext: AppRscMiddlewareContext,
-  ) => Response | null;
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
@@ -392,17 +388,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathname,
   );
   if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
-  if (afterFilesRewrite) {
-    cleanPathname = afterFilesRewrite;
-    const staticFileResponse = options.resolveStaticFileAfterRewrite?.(
-      cleanPathname,
-      middlewareContext,
-    );
-    if (staticFileResponse) {
-      options.clearRequestContext();
-      return staticFileResponse;
-    }
-  }
+  if (afterFilesRewrite) cleanPathname = afterFilesRewrite;
 
   let match = options.matchRoute(cleanPathname);
   if (!match) {
@@ -418,14 +404,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (fallbackRewrite instanceof Response) return fallbackRewrite;
     if (fallbackRewrite) {
       cleanPathname = fallbackRewrite;
-      const staticFileResponse = options.resolveStaticFileAfterRewrite?.(
-        cleanPathname,
-        middlewareContext,
-      );
-      if (staticFileResponse) {
-        options.clearRequestContext();
-        return staticFileResponse;
-      }
       match = options.matchRoute(cleanPathname);
     }
   }

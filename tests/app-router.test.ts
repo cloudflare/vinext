@@ -3521,6 +3521,37 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain("About");
   });
 
+  it("serves static HTML file from public/ when afterFiles rewrite points to .html path", async () => {
+    // Regresses issue #199: async rewrites() returning flat array (→ afterFiles) that maps
+    // a clean URL to a .html file in public/ should serve the file, not return 404.
+    const res = await fetch(`${baseUrl}/static-html-page`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Hello from static HTML");
+    // Should be served with text/html content-type
+    expect(res.headers.get("content-type")).toMatch(/text\/html/i);
+  });
+
+  it("serves nested static HTML file from public/ subdirectory via rewrite", async () => {
+    // Nested rewrites: /auth/no-access → /auth/no-access.html should resolve
+    // to public/auth/no-access.html and serve it.
+    const res = await fetch(`${baseUrl}/auth/no-access`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Access denied from nested static HTML");
+    expect(res.headers.get("content-type")).toMatch(/text\/html/i);
+  });
+
+  it("serves static HTML file from public/ when fallback rewrite points to .html path", async () => {
+    // Fallback rewrites run after route matching fails. /fallback-static-page has no
+    // matching app route, so the fallback rewrite maps it to /fallback-page.html in public/.
+    const res = await fetch(`${baseUrl}/fallback-static-page`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Hello from fallback static HTML");
+    expect(res.headers.get("content-type")).toMatch(/text\/html/i);
+  });
+
   it("fallback rewrites targeting Pages routes still work in mixed app/pages projects", async () => {
     const noAuthRes = await fetch(`${baseUrl}/mw-gated-fallback-pages`);
     expect(noAuthRes.status).toBe(404);
@@ -3678,6 +3709,35 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("/before-rewrite");
     expect(code).toContain("/after-rewrite");
     expect(code).toContain("/fallback-rewrite");
+  });
+
+  it("embeds root/public path for serving static files after rewrite", () => {
+    // When root is provided, the generated code should contain that public path
+    // so it can serve .html files from public/ when a rewrite produces a .html path.
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+      {},
+      null,
+      "/tmp/test",
+    );
+    // path.resolve produces a fully normalized absolute path; the generated code embeds via JSON.stringify
+    const expectedPublicDir = path.resolve("/tmp/test", "public");
+    expect(code).toContain(JSON.stringify(expectedPublicDir));
+    // __publicDir should be hoisted to module scope
+    expect(code).toContain("const __publicDir = " + JSON.stringify(expectedPublicDir));
+    // Should contain the node:fs and node:path imports for the static file handler
+    expect(code).toContain("__nodeFs");
+    expect(code).toContain("__nodePath");
+    expect(code).toContain("statSync");
+    // Should use path.resolve + startsWith for traversal protection
+    expect(code).toContain("__nodePath.resolve");
+    expect(code).toContain("startsWith");
   });
 
   it("generates custom header handling code when headers are provided", () => {
