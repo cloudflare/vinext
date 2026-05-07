@@ -109,6 +109,26 @@ jobs:
       - name: Scaffold a fresh create-next-app project
         run: vp dlx create-next-app@16.2.5 "${{ runner.temp }}/cna-test" --yes
 
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        # create-next-app's bundled pnpm links node_modules to a major-version
+        # store (e.g. v10). vp's bundled pnpm can drift to a newer major (v11),
+        # which then refuses to operate on the existing node_modules with
+        # ERR_PNPM_UNEXPECTED_STORE. vp respects the project's packageManager
+        # field, so writing the same one vinext itself uses makes vp's pnpm
+        # match the store layout from create-next-app. Tracks any future
+        # bump in vinext's root package.json automatically.
+        run: |
+          PKG_MGR=$(node -p "require('${{ github.workspace }}/package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "Pinned packageManager to $PKG_MGR"
+
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
