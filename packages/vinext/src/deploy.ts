@@ -1225,8 +1225,9 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
     console.log("\n  Deploying to production...");
   }
 
-  // Use execFileSync to avoid shell injection — args are passed as an array,
-  // never interpolated into a shell command string.
+  // execFileSync passes args as an array, avoiding shell injection on Unix.
+  // On Windows, shell: true is required for .cmd wrappers but the array form
+  // still prevents trivial injection.
   const output = execFileSync(wranglerBin, args, execOpts) as string;
 
   // Parse the deployed URL from wrangler output
