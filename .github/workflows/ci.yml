@@ -120,7 +120,10 @@ jobs:
         # match the store layout from create-next-app. Tracks any future
         # bump in vinext's root package.json automatically.
         run: |
-          PKG_MGR=$(node -p "require('${{ github.workspace }}/package.json').packageManager")
+          # cd into the workspace to read package.json via a relative path —
+          # ${{ github.workspace }} contains backslashes on Windows that get
+          # eaten by the JS string literal parser when interpolated inline.
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
