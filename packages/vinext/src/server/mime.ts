@@ -7,8 +7,8 @@
  * Keys are bare extensions (no leading dot). Use `mimeType()` for lookup.
  */
 export const MIME_TYPES: Record<string, string> = {
-  html: "text/html; charset=utf-8",
-  htm: "text/html; charset=utf-8",
+  html: "text/html",
+  htm: "text/html",
   css: "text/css",
   js: "application/javascript",
   mjs: "application/javascript",

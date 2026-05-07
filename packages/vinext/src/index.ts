@@ -28,6 +28,7 @@ import {
   type RouteClassificationChunk,
 } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
+import { mimeType } from "./server/mime.js";
 import {
   findNextConfigPath,
   loadNextConfig,
@@ -2731,7 +2732,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
                   const afterFilesPathname = afterRewrite.split("?")[0];
                   if (path.extname(afterFilesPathname)) {
-                    const publicFilePath = path.resolve(resolvedPublicDir, "." + afterFilesPathname);
+                    const publicFilePath = path.resolve(
+                      resolvedPublicDir,
+                      "." + afterFilesPathname,
+                    );
                     if (publicFilePath.startsWith(resolvedPublicDir + path.sep)) {
                       try {
                         const stat = fs.statSync(publicFilePath);
