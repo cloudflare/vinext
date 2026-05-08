@@ -468,6 +468,7 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
  *
  * See: https://github.com/vercel/next.js/pull/92521
  * Guard removed: https://github.com/vercel/next.js/pull/92923
+ * Stabilized (renamed from unstable_io): https://github.com/vercel/next.js/pull/93621
  *
  * Ported from Next.js: packages/next/src/server/request/io.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
@@ -484,7 +485,7 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
  * When no work unit store is present (e.g. client-side, standalone script),
  * resolves immediately — matching the browser/client implementation.
  */
-export function unstable_io(): Promise<void> {
+export function io(): Promise<void> {
   const workUnitStore = workUnitAsyncStorage.getStore();
 
   if (workUnitStore) {
@@ -500,7 +501,7 @@ export function unstable_io(): Promise<void> {
         return makeHangingPromise(
           workUnitStore.renderSignal,
           /* route */ workUnitStore.route ?? "unknown",
-          "`unstable_io()`",
+          "`io()`",
         );
       case "cache":
       case "private-cache":
@@ -517,6 +518,23 @@ export function unstable_io(): Promise<void> {
   // No work store — outside rendering context (client, standalone script).
   return _resolvedIOPromise;
 }
+
+/**
+ * @deprecated Use `io` instead. Kept as a transitional alias since vinext
+ * shipped the unstable name longer than upstream Next.js (see #805). Will be
+ * removed in a future minor.
+ */
+export function unstable_io(): Promise<void> {
+  if (!_unstableIoWarned) {
+    _unstableIoWarned = true;
+    console.warn(
+      "[vinext] `unstable_io` is deprecated. Import `io` from 'next/cache' instead.",
+    );
+  }
+  return io();
+}
+
+let _unstableIoWarned = false;
 
 // ---------------------------------------------------------------------------
 // Request-scoped cacheLife for page-level "use cache" directives.

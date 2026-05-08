@@ -1895,31 +1895,31 @@ describe("next/cache shim", () => {
 
   // Ported from Next.js: packages/next/src/client/request/io.browser.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/request/io.browser.ts
-  it("exports unstable_io function", async () => {
+  it("exports io function", async () => {
     const mod = await import("../packages/vinext/src/shims/cache.js");
-    expect(typeof mod.unstable_io).toBe("function");
+    expect(typeof mod.io).toBe("function");
   });
 
-  it("unstable_io returns a resolved promise", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
-    const result = unstable_io();
+  it("io returns a resolved promise", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
+    const result = io();
     expect(result).toBeInstanceOf(Promise);
     expect((result as any).status).toBe("fulfilled");
     expect((result as any).value).toBeUndefined();
     await expect(result).resolves.toBeUndefined();
   });
 
-  it("unstable_io returns same instance (singleton)", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
-    const r1 = unstable_io();
-    const r2 = unstable_io();
+  it("io returns same instance (singleton)", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
+    const r1 = io();
+    const r2 = io();
     expect(r1).toBe(r2);
   });
 
   // Ported from Next.js: packages/next/src/server/request/io.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
-  it("unstable_io returns a hanging promise during prerender", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io returns a hanging promise during prerender", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
@@ -1928,7 +1928,7 @@ describe("next/cache shim", () => {
     // run() returns whatever the callback returns — a hanging promise.
     const hanging = workUnitAsyncStorage.run(
       { type: "prerender", renderSignal: controller.signal },
-      unstable_io,
+      io,
     );
 
     // The promise should not be resolved or rejected (it's "hanging")
@@ -1945,30 +1945,30 @@ describe("next/cache shim", () => {
     controller.abort();
   });
 
-  it("unstable_io resolves immediately with request store", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io resolves immediately with request store", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
-    const promise = workUnitAsyncStorage.run({ type: "request" }, unstable_io);
+    const promise = workUnitAsyncStorage.run({ type: "request" }, io);
 
     expect(promise).toBeInstanceOf(Promise);
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it("unstable_io resolves immediately with cache store", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io resolves immediately with cache store", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
-    const promise = workUnitAsyncStorage.run({ type: "cache" }, unstable_io);
+    const promise = workUnitAsyncStorage.run({ type: "cache" }, io);
 
     expect(promise).toBeInstanceOf(Promise);
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it("unstable_io rejects hanging promise on abort when prerendering", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io rejects hanging promise on abort when prerendering", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
@@ -1976,18 +1976,18 @@ describe("next/cache shim", () => {
 
     const hanging = workUnitAsyncStorage.run(
       { type: "prerender", renderSignal: controller.signal },
-      unstable_io,
+      io,
     );
 
     expect(hanging).toBeInstanceOf(Promise);
 
     // Abort the signal — the hanging promise should reject
     controller.abort();
-    await expect(hanging).rejects.toThrow(/unstable_io/i);
+    await expect(hanging).rejects.toThrow(/`io\(\)`/);
   });
 
-  it("unstable_io returns rejected promise when signal already aborted", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io returns rejected promise when signal already aborted", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
@@ -1996,14 +1996,14 @@ describe("next/cache shim", () => {
 
     const promise = workUnitAsyncStorage.run(
       { type: "prerender", renderSignal: controller.signal },
-      unstable_io,
+      io,
     );
 
     await expect(promise).rejects.toThrow(/prerendering/i);
   });
 
-  it("unstable_io does not emit unhandled rejection when signal already aborted", async () => {
-    const { unstable_io } = await import("../packages/vinext/src/shims/cache.js");
+  it("io does not emit unhandled rejection when signal already aborted", async () => {
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =
       await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
@@ -2019,7 +2019,7 @@ describe("next/cache shim", () => {
 
       const promise = workUnitAsyncStorage.run(
         { type: "prerender", renderSignal: controller.signal, route: "/test" },
-        unstable_io,
+        io,
       );
 
       // Wait a tick for potential unhandled rejection to be detected
@@ -2035,6 +2035,25 @@ describe("next/cache shim", () => {
       expect(unhandledRejections.length).toBe(0);
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("unstable_io is exported as a deprecation alias for io", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.unstable_io).toBe("function");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = mod.unstable_io();
+      expect(result).toBeInstanceOf(Promise);
+      await expect(result).resolves.toBeUndefined();
+      // Warning fires at most once per process; at least one call must mention deprecation.
+      const warned = warn.mock.calls.some((args) =>
+        String(args[0] ?? "").includes("unstable_io"),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warn.mockRestore();
     }
   });
 

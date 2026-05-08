@@ -2,7 +2,7 @@
  * Sets up the work unit async storage for prerendering.
  *
  * When VINEXT_PRERENDER=1, wraps execution in a workUnitAsyncStorage.run()
- * with a PrerenderStore so that dynamic APIs (e.g., unstable_io()) can
+ * with a PrerenderStore so that dynamic APIs (e.g., io()) can
  * detect the prerender context and return hanging promises.
  *
  * Used by: app-rsc-entry.ts handler template.

@@ -521,6 +521,8 @@ declare module "next/cache" {
   ): T;
   export function unstable_noStore(): void;
   export function noStore(): void;
+  export function io(): Promise<void>;
+  /** @deprecated Use `io` instead. */
   export function unstable_io(): Promise<void>;
 
   // "use cache" APIs (Next.js 15+)

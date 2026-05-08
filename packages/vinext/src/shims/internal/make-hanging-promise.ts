@@ -1,7 +1,7 @@
 /**
  * makeHangingPromise — returns a promise that never resolves during prerendering.
  *
- * When prerendering, `unstable_io()` must return a hanging promise to prevent
+ * When prerendering, `io()` must return a hanging promise to prevent
  * React from executing past the IO boundary. The promise never resolves—it only
  * rejects if the render signal is aborted (e.g., due to a dynamic error or
  * cache-fill completion).
