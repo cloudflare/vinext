@@ -1,3 +1,5 @@
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+
 const NEXT_CACHE_IMPLICIT_TAG_ID = "_N_T_";
 
 type AppCacheLeafKind = "page" | "route";
@@ -58,5 +60,8 @@ export function buildPageCacheTags(
     appendUnique(tags, tag);
   }
 
-  return tags;
+  // Canonicalise to ASCII-safe form so path-derived tags from non-ASCII
+  // pathnames (e.g. `/שלום`) match what `revalidatePath`/`revalidateTag`
+  // produce after their own encoding pass.
+  return tags.map(encodeCacheTag);
 }

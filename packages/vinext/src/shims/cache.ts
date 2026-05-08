@@ -28,6 +28,7 @@ import {
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -395,7 +396,7 @@ export async function revalidateTag(
   if (!profile || !durations || durations.expire === 0) {
     markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   }
-  await _getActiveHandler().revalidateTag(tag, durations);
+  await _getActiveHandler().revalidateTag(encodeCacheTag(tag), durations);
 }
 
 /**
@@ -418,7 +419,7 @@ export async function revalidatePath(path: string, type?: "page" | "layout"): Pr
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
-  await _getActiveHandler().revalidateTag(tag);
+  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
 }
 
 /**
@@ -443,7 +444,7 @@ export function refresh(): void {
 export async function updateTag(tag: string): Promise<void> {
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await _getActiveHandler().revalidateTag(tag);
+  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
 }
 
 /**
@@ -791,7 +792,7 @@ export function cacheTag(...tags: string[]): void {
   try {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
-      ctx.tags.push(...tags);
+      ctx.tags.push(...encodeCacheTags(tags));
     }
   } catch {
     // Not in a cache context — no-op
@@ -945,7 +946,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // different functions may hash to the same key, or the same function may
   // hash differently across builds. Always pass explicit keyParts in
   // production to get a stable, collision-free cache key.
-  const tags = options?.tags ?? [];
+  const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
   const cachedFn = async (...args: Parameters<T>) => {

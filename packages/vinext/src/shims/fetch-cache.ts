@@ -20,6 +20,7 @@
  */
 
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
+import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -697,7 +698,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
     }
 
-    const tags = nextOpts?.tags ?? [];
+    const tags = encodeCacheTags(nextOpts?.tags ?? []);
     const softTags = _getState().currentFetchSoftTags;
     let fetchInit = stripNextFromInit(init, cacheDirective);
     let cacheKey: string;

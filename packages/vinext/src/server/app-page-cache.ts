@@ -4,6 +4,7 @@ import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -110,7 +111,10 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
       tags.push(tag);
     }
   }
-  return tags;
+  // Canonicalise to ASCII-safe form so path-derived tags from non-ASCII
+  // pathnames match what `revalidatePath`/`revalidateTag` produce after
+  // their own encoding pass.
+  return tags.map(encodeCacheTag);
 }
 
 function buildAppPageCacheControl(
