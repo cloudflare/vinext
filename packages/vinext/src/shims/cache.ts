@@ -527,9 +527,7 @@ export function io(): Promise<void> {
 export function unstable_io(): Promise<void> {
   if (!_unstableIoWarned) {
     _unstableIoWarned = true;
-    console.warn(
-      "[vinext] `unstable_io` is deprecated. Import `io` from 'next/cache' instead.",
-    );
+    console.warn("[vinext] `unstable_io` is deprecated. Import `io` from 'next/cache' instead.");
   }
   return io();
 }

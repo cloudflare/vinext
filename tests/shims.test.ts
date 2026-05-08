@@ -2048,9 +2048,7 @@ describe("next/cache shim", () => {
       expect(result).toBeInstanceOf(Promise);
       await expect(result).resolves.toBeUndefined();
       // Warning fires at most once per process; at least one call must mention deprecation.
-      const warned = warn.mock.calls.some((args) =>
-        String(args[0] ?? "").includes("unstable_io"),
-      );
+      const warned = warn.mock.calls.some((args) => String(args[0] ?? "").includes("unstable_io"));
       expect(warned).toBe(true);
     } finally {
       warn.mockRestore();
