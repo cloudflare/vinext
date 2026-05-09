@@ -730,9 +730,12 @@ async function typegen() {
   const root = process.cwd();
   loadDotenv({
     root,
-    mode: "development",
+    mode: "production",
   });
-  const resolvedNextConfig = await resolveNextConfig(await loadNextConfig(root), root);
+  const resolvedNextConfig = await resolveNextConfig(
+    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
+    root,
+  );
   const outputPath = await generateRouteTypes({
     root,
     pageExtensions: resolvedNextConfig.pageExtensions,

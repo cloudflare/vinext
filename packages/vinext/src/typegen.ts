@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appRouteGraph } from "./routing/app-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
+import { decodeRouteSegment } from "./routing/utils.js";
 
 type GenerateRouteTypesOptions = {
   root: string;
@@ -233,7 +234,8 @@ function treePathToRouteLiteral(treePath: string): string {
   const segments = treePath
     .split("/")
     .filter(Boolean)
-    .filter((segment) => !isInvisibleSegment(segment));
+    .filter((segment) => !isInvisibleSegment(segment))
+    .map((segment) => decodeRouteSegment(segment));
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
 
