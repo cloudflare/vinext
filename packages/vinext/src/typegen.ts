@@ -51,6 +51,7 @@ async function collectRouteTypeModel(
   const graph = await appRouteGraph(appDir, pageExtensions);
   const model = emptyRouteTypeModel();
   const segmentGraph = graph.routeManifest.segmentGraph;
+  const layoutRouteKeys = createLayoutRouteKeyMap(segmentGraph.layouts.values());
 
   for (const route of segmentGraph.pages.values()) {
     const routeEntry = segmentGraph.routes.get(route.routeId);
@@ -73,12 +74,13 @@ async function collectRouteTypeModel(
   }
 
   for (const layout of segmentGraph.layouts.values()) {
-    const route = treePathToRouteLiteral(layout.treePath);
+    const route = layoutRouteKeys.get(layout.treePath) ?? treePathToRouteLiteral(layout.treePath);
     addRoute(model.layoutRoutes, model.params, route, paramsForPatternParts(layout.patternParts));
   }
 
   for (const slot of segmentGraph.slots.values()) {
-    const layoutRoute = treePathToRouteLiteral(slot.ownerTreePath);
+    const layoutRoute =
+      layoutRouteKeys.get(slot.ownerTreePath) ?? treePathToRouteLiteral(slot.ownerTreePath);
     const slots = model.layoutSlots.get(layoutRoute) ?? [];
     if (!slots.includes(slot.name)) {
       slots.push(slot.name);
@@ -205,6 +207,27 @@ function paramsForPatternParts(patternParts: readonly string[]): ParamShape {
   return params;
 }
 
+function createLayoutRouteKeyMap(layouts: Iterable<{ treePath: string }>): Map<string, string> {
+  const treePathsByRoute = new Map<string, string[]>();
+  for (const { treePath } of layouts) {
+    const route = treePathToRouteLiteral(treePath);
+    const treePaths = treePathsByRoute.get(route) ?? [];
+    treePaths.push(treePath);
+    treePathsByRoute.set(route, treePaths);
+  }
+
+  const keys = new Map<string, string>();
+  for (const [route, treePaths] of treePathsByRoute) {
+    for (const treePath of treePaths) {
+      keys.set(
+        treePath,
+        treePaths.length === 1 ? route : treePathToScopedLayoutRouteLiteral(treePath),
+      );
+    }
+  }
+  return keys;
+}
+
 function treePathToRouteLiteral(treePath: string): string {
   if (treePath === "/") return "/";
 
@@ -216,10 +239,25 @@ function treePathToRouteLiteral(treePath: string): string {
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
 
+function treePathToScopedLayoutRouteLiteral(treePath: string): string {
+  if (treePath === "/") return "/";
+
+  const segments = treePath
+    .split("/")
+    .filter(Boolean)
+    .filter((segment) => !isSlotSegment(segment) && segment !== ".")
+    .map((segment) => decodeRouteSegment(segment));
+  return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+}
+
 function isInvisibleSegment(segment: string): boolean {
   return (
     segment === "." || (segment.startsWith("(") && segment.endsWith(")")) || segment.startsWith("@")
   );
+}
+
+function isSlotSegment(segment: string): boolean {
+  return segment.startsWith("@");
 }
 
 function addRoute(

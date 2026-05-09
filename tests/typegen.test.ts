@@ -82,6 +82,25 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("keeps layout slots scoped to their root route group", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/(marketing)/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/(marketing)/marketing/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/(marketing)/@modal/default.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/(shop)/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/(shop)/shop/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/(shop)/@cart/default.tsx", EMPTY_PAGE);
+
+      const outputPath = await generateRouteTypes({ root });
+      const generated = await readFile(outputPath, "utf-8");
+
+      expect(generated).toContain('type LayoutRoute = "/(marketing)" | "/(shop)";');
+      expect(generated).toContain('"/(marketing)": "modal";');
+      expect(generated).toContain('"/(shop)": "cart";');
+      expect(generated).not.toContain('"/": "cart" | "modal";');
+    });
+  });
+
   it("updates generated route helper types when App Router files are added in dev", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
