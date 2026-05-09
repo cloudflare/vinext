@@ -106,6 +106,19 @@ describe("generateRouteTypes", () => {
             'type PageRoute = "/" | "/about";',
           );
         });
+
+        const blogPage = path.join(root, "app/blog/page.tsx");
+        const docsPage = path.join(root, "app/docs/page.tsx");
+        await writeProjectFile(root, "app/blog/page.tsx", EMPTY_PAGE);
+        await writeProjectFile(root, "app/docs/page.tsx", EMPTY_PAGE);
+        server.watcher.emit("add", blogPage);
+        server.watcher.emit("add", docsPage);
+
+        await eventually(async () => {
+          expect(await readFile(generatedPath, "utf-8")).toContain(
+            'type PageRoute = "/" | "/about" | "/blog" | "/docs";',
+          );
+        });
       } finally {
         await server?.close();
       }

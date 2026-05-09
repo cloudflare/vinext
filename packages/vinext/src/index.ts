@@ -2188,13 +2188,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           invalidateRootParamsModule();
         }
 
+        let appRouteTypeGeneration: Promise<void> | null = null;
+        let appRouteTypeGenerationPending = false;
+
+        function warnRouteTypeGenerationFailure(error: unknown) {
+          server.config.logger.warn(
+            `[vinext] Failed to regenerate route types: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+
+        async function drainAppRouteTypeGeneration() {
+          while (appRouteTypeGenerationPending) {
+            appRouteTypeGenerationPending = false;
+            try {
+              await writeRouteTypes();
+            } catch (error) {
+              warnRouteTypeGenerationFailure(error);
+            }
+          }
+        }
+
         function regenerateAppRouteTypes() {
-          writeRouteTypes().catch((error: unknown) => {
-            server.config.logger.warn(
-              `[vinext] Failed to regenerate route types: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
+          appRouteTypeGenerationPending = true;
+          if (appRouteTypeGeneration) return;
+
+          appRouteTypeGeneration = drainAppRouteTypeGeneration().finally(() => {
+            appRouteTypeGeneration = null;
+            if (appRouteTypeGenerationPending) regenerateAppRouteTypes();
           });
         }
 
