@@ -213,6 +213,8 @@ export type RouteManifestRouteHandler = {
 export type RouteManifestLayout = {
   id: string;
   treePath: string;
+  patternParts: readonly string[];
+  paramNames: readonly string[];
   rootBoundaryId: RootBoundaryId | null;
 };
 
@@ -401,9 +403,12 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       if (existingLayout) {
         assertRouteManifestRootBoundary("layout", route, layoutId, existingLayout.rootBoundaryId);
       }
+      const layoutRouteParts = convertTreePathToRouteParts(treePath);
       const layout = {
         id: layoutId,
         treePath,
+        patternParts: layoutRouteParts.urlSegments,
+        paramNames: layoutRouteParts.params,
         rootBoundaryId: route.ids.rootBoundary,
       };
       layouts.set(layoutId, layout);
@@ -1235,6 +1240,19 @@ function createAppRouteGraphTreePath(
     return "/";
   }
   return `/${treePathSegments.join("/")}`;
+}
+
+function convertTreePathToRouteParts(treePath: string): {
+  urlSegments: string[];
+  params: string[];
+} {
+  if (treePath === "/") return { urlSegments: [], params: [] };
+  const segments = treePath.split("/").filter(Boolean);
+  const routeParts = convertSegmentsToRouteParts(segments);
+  if (!routeParts) {
+    throw new Error(`Invalid App Router layout tree path "${treePath}".`);
+  }
+  return { urlSegments: routeParts.urlSegments, params: routeParts.params };
 }
 
 /**

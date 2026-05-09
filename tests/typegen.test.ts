@@ -54,6 +54,8 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/dashboard/@analytics/default.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "app/%5Fsites/layout.tsx", EMPTY_LAYOUT);
       await writeProjectFile(root, "app/%5Fsites/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/%5Bslug%5D/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/%5Bslug%5D/page.tsx", EMPTY_PAGE);
 
       const outputPath = await generateRouteTypes({ root });
       const generated = await readFile(outputPath, "utf-8");
@@ -61,10 +63,11 @@ describe("generateRouteTypes", () => {
       expect(outputPath).toBe(path.join(root, ".next/types/routes.d.ts"));
       expect(generated).toContain("declare namespace VinextRouteTypes");
       expect(generated).toContain(
-        'type PageRoute = "/" | "/_sites" | "/blog/[slug]" | "/dashboard" | "/docs/[...slug]" | "/shop/[[...slug]]";',
+        'type PageRoute = "/" | "/[slug]" | "/_sites" | "/blog/[slug]" | "/dashboard" | "/docs/[...slug]" | "/shop/[[...slug]]";',
       );
-      expect(generated).toContain('type LayoutRoute = "/" | "/_sites" | "/dashboard";');
+      expect(generated).toContain('type LayoutRoute = "/" | "/[slug]" | "/_sites" | "/dashboard";');
       expect(generated).toContain('type RouteHandlerRoute = "/api/items/[id]";');
+      expect(generated).toContain('"/[slug]": {};');
       expect(generated).toContain('"/blog/[slug]": { slug: string; };');
       expect(generated).toContain('"/docs/[...slug]": { slug: string[]; };');
       expect(generated).toContain('"/shop/[[...slug]]": { slug?: string[]; };');

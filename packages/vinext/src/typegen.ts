@@ -74,7 +74,7 @@ async function collectRouteTypeModel(
 
   for (const layout of segmentGraph.layouts.values()) {
     const route = treePathToRouteLiteral(layout.treePath);
-    addRoute(model.layoutRoutes, model.params, route, paramsForRouteLiteral(route));
+    addRoute(model.layoutRoutes, model.params, route, paramsForPatternParts(layout.patternParts));
   }
 
   for (const slot of segmentGraph.slots.values()) {
@@ -187,29 +187,6 @@ function renderLayoutSlotMap(
       return `    ${quote(route)}: ${routeUnion(slots)};`;
     })
     .join("\n");
-}
-
-function paramsForRouteLiteral(route: string): ParamShape {
-  const params: ParamShape = new Map();
-  for (const segment of route.split("/")) {
-    const optionalCatchAll = segment.match(/^\[\[\.\.\.([^\]]+)\]\]$/);
-    if (optionalCatchAll) {
-      params.set(optionalCatchAll[1], "string[]?");
-      continue;
-    }
-
-    const catchAll = segment.match(/^\[\.\.\.([^\]]+)\]$/);
-    if (catchAll) {
-      params.set(catchAll[1], "string[]");
-      continue;
-    }
-
-    const dynamic = segment.match(/^\[([^\]]+)\]$/);
-    if (dynamic) {
-      params.set(dynamic[1], "string");
-    }
-  }
-  return params;
 }
 
 function paramsForPatternParts(patternParts: readonly string[]): ParamShape {

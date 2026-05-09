@@ -365,6 +365,8 @@ describe("App Router route graph builder", () => {
       expect(segmentGraph.layouts.get("layout:/(marketing)/blog/[slug]")).toEqual({
         id: "layout:/(marketing)/blog/[slug]",
         treePath: "/(marketing)/blog/[slug]",
+        patternParts: ["blog", ":slug"],
+        paramNames: ["slug"],
         rootBoundaryId: "root-boundary:/",
       });
       expect(segmentGraph.templates.get("template:/(marketing)/blog/[slug]")).toEqual({
