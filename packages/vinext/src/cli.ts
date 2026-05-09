@@ -727,7 +727,7 @@ async function typegen() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("typegen");
 
-  const root = process.cwd();
+  const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
   loadDotenv({
     root,
     mode: "production",
@@ -915,11 +915,11 @@ function printHelp(cmd?: string) {
     console.log(`
   vinext typegen - Generate App Router route helper types
 
-  Usage: vinext typegen [options]
+  Usage: vinext typegen [directory] [options]
 
   Generates Next-compatible global route helpers for App Router projects:
   PageProps, LayoutProps, and RouteContext. Output is written to
-  .next/types/routes.d.ts.
+  .next/types/routes.d.ts under the target directory.
 
   Options:
     -h, --help    Show this help

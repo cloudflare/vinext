@@ -279,6 +279,28 @@ describe("combined flags", () => {
   });
 });
 
+// ─── Positional arguments ───────────────────────────────────────────────────
+
+describe("positional arguments", () => {
+  it("keeps positional arguments for commands with directory targets", () => {
+    expect(parseArgs(["apps/web"])).toMatchObject({ positionals: ["apps/web"] });
+  });
+
+  it("keeps positionals alongside flags", () => {
+    expect(parseArgs(["apps/web", "--verbose"])).toMatchObject({
+      positionals: ["apps/web"],
+      verbose: true,
+    });
+  });
+
+  it("does not treat values consumed by flags as positional arguments", () => {
+    expect(parseArgs(["--port", "4000", "apps/web"])).toMatchObject({
+      port: 4000,
+      positionals: ["apps/web"],
+    });
+  });
+});
+
 // ─── Edge cases ─────────────────────────────────────────────────────────────
 
 describe("edge cases", () => {

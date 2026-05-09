@@ -16,6 +16,7 @@ type ParsedArgs = {
   prerenderAll?: boolean;
   prerenderConcurrency?: number;
   precompress?: boolean;
+  positionals?: string[];
 };
 
 // Matches long flags (--foo) and single-letter short flags (-x).
@@ -92,6 +93,11 @@ export function parsePositiveIntegerArg(raw: string, flag: string): number {
  */
 export function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {};
+  const addPositional = (arg: string): void => {
+    result.positionals ??= [];
+    result.positionals.push(arg);
+  };
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
@@ -165,6 +171,9 @@ export function parseArgs(args: string[]): ParsedArgs {
             "--prerender-concurrency",
           );
           break;
+        }
+        if (!FLAG_PATTERN.test(arg)) {
+          addPositional(arg);
         }
         break;
       }
