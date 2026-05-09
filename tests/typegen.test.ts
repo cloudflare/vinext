@@ -101,6 +101,21 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("maps slots to the owning layout when the slot directory has no layout", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/dashboard/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/dashboard/@analytics/default.tsx", EMPTY_PAGE);
+
+      const outputPath = await generateRouteTypes({ root });
+      const generated = await readFile(outputPath, "utf-8");
+
+      expect(generated).toContain('type LayoutRoute = "/";');
+      expect(generated).toContain('"/": "analytics";');
+      expect(generated).not.toContain('"/dashboard": "analytics";');
+    });
+  });
+
   it("updates generated route helper types when App Router files are added in dev", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);

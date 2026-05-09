@@ -79,8 +79,9 @@ async function collectRouteTypeModel(
   }
 
   for (const slot of segmentGraph.slots.values()) {
-    const layoutRoute =
-      layoutRouteKeys.get(slot.ownerTreePath) ?? treePathToRouteLiteral(slot.ownerTreePath);
+    const layoutRoute = layoutRouteKeyForSlot(slot, segmentGraph.layouts, layoutRouteKeys);
+    if (!layoutRoute) continue;
+
     const slots = model.layoutSlots.get(layoutRoute) ?? [];
     if (!slots.includes(slot.name)) {
       slots.push(slot.name);
@@ -226,6 +227,23 @@ function createLayoutRouteKeyMap(layouts: Iterable<{ treePath: string }>): Map<s
     }
   }
   return keys;
+}
+
+function layoutRouteKeyForSlot(
+  slot: { id: string; ownerLayoutId: string | null },
+  layouts: ReadonlyMap<string, { treePath: string }>,
+  layoutRouteKeys: ReadonlyMap<string, string>,
+): string | null {
+  if (!slot.ownerLayoutId) return null;
+
+  const layout = layouts.get(slot.ownerLayoutId);
+  if (!layout) {
+    throw new Error(
+      `[vinext] App route graph invariant violated: slot ${slot.id} references missing owner layout ${slot.ownerLayoutId}`,
+    );
+  }
+
+  return layoutRouteKeys.get(layout.treePath) ?? treePathToRouteLiteral(layout.treePath);
 }
 
 function treePathToRouteLiteral(treePath: string): string {
