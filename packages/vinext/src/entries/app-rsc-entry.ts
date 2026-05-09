@@ -8,8 +8,6 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import path from "node:path";
-import { MIME_TYPES } from "../server/mime.js";
 import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import type {
   NextHeader,
@@ -134,7 +132,6 @@ export function generateRscEntry(
   trailingSlash?: boolean,
   config?: AppRouterConfig,
   instrumentationPath?: string | null,
-  root?: string,
 ): string {
   const bp = basePath ?? "";
   const ts = trailingSlash ?? false;
@@ -146,7 +143,6 @@ export function generateRscEntry(
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
-  const publicDir = root ? path.resolve(root, "public") : null;
   const publicFiles = config?.publicFiles ?? [];
   const manifestCode = buildAppRscManifestCode({ routes, metadataRoutes, globalErrorPath });
   const {
@@ -170,7 +166,6 @@ async function __loadPrerenderPagesRoutes() {
     : "";
 
   return `
-import __nodeFs from "node:fs";
 import __nodePath from "node:path";
 import {
   renderToReadableStream as _renderToReadableStream,
@@ -413,8 +408,6 @@ const __configHeaders = ${JSON.stringify(headers)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
-const __mimeTypes = ${JSON.stringify(MIME_TYPES)};
-const __publicDir = ${JSON.stringify(publicDir)};
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
@@ -748,34 +741,20 @@ export default __createAppRscHandler({
   publicFiles: __publicFiles,
   resolveStaticFileAfterRewrite(cleanPathname, middlewareContext) {
     const __staticPathname = cleanPathname.split("?")[0];
-    const __staticExtname = __nodePath.extname(__staticPathname);
-    if (!__staticExtname || __publicDir === null) return null;
-
-    const __publicFile = __nodePath.resolve(__publicDir, "." + __staticPathname);
-    if (!__publicFile.startsWith(__publicDir + __nodePath.sep)) return null;
-
-    try {
-      const __stat = __nodeFs.statSync(__publicFile);
-      if (!__stat.isFile()) return null;
-
-      const __content = __nodeFs.readFileSync(__publicFile);
-      const __ext = __staticExtname.slice(1).toLowerCase();
-      const __headers = new Headers({ "Content-Type": __mimeTypes[__ext] ?? "application/octet-stream" });
-      if (middlewareContext.headers) {
-        for (const [__key, __value] of middlewareContext.headers) {
-          const __lowerKey = __key.toLowerCase();
-          if (__lowerKey === "set-cookie" || __lowerKey === "vary") __headers.append(__key, __value);
-          else __headers.set(__key, __value);
-        }
+    if (!__nodePath.extname(__staticPathname) || !__publicFiles.has(__staticPathname)) return null;
+    const __headers = new Headers();
+    if (middlewareContext.headers) {
+      for (const [__key, __value] of middlewareContext.headers) {
+        const __lowerKey = __key.toLowerCase();
+        if (__lowerKey === "set-cookie" || __lowerKey === "vary") __headers.append(__key, __value);
+        else __headers.set(__key, __value);
       }
-      return new Response(__content, {
-        status: middlewareContext.status ?? 200,
-        headers: __headers,
-      });
-    } catch (__e) {
-      if (__e?.code !== "ENOENT") console.warn("[vinext] static file check failed:", __e);
-      return null;
     }
+    __headers.set("x-vinext-static-file", encodeURIComponent(__staticPathname));
+    return new Response(null, {
+      status: middlewareContext.status ?? 200,
+      headers: __headers,
+    });
   },
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
     return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext);

@@ -1757,7 +1757,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               publicFiles: scanPublicFileRoutes(root),
             },
             instrumentationPath,
-            root,
           );
         }
         if (id === RESOLVED_ROOT_PARAMS) {

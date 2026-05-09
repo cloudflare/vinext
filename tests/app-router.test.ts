@@ -3724,20 +3724,18 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       false,
       {},
       null,
-      "/tmp/test",
     );
-    // path.resolve produces a fully normalized absolute path; the generated code embeds via JSON.stringify
-    const expectedPublicDir = path.resolve("/tmp/test", "public");
-    expect(code).toContain(JSON.stringify(expectedPublicDir));
-    // __publicDir should be hoisted to module scope
-    expect(code).toContain("const __publicDir = " + JSON.stringify(expectedPublicDir));
-    // Should contain the node:fs and node:path imports for the static file handler
-    expect(code).toContain("__nodeFs");
+    // Should contain the node:path import for extension checking
     expect(code).toContain("__nodePath");
-    expect(code).toContain("statSync");
-    // Should use path.resolve + startsWith for traversal protection
-    expect(code).toContain("__nodePath.resolve");
-    expect(code).toContain("startsWith");
+    // Should contain publicFiles set (pre-scanned at build time, no fs calls needed)
+    expect(code).toContain("__publicFiles");
+    expect(code).toContain("new Set");
+    // Should use the signal-based approach: x-vinext-static-file header instead of reading files
+    expect(code).toContain("x-vinext-static-file");
+    // Should NOT contain node:fs imports (signal approach delegates to outer layer)
+    expect(code).not.toContain("__nodeFs");
+    expect(code).not.toContain("statSync");
+    expect(code).not.toContain("readFileSync");
   });
 
   it("generates custom header handling code when headers are provided", () => {
