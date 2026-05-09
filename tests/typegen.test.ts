@@ -72,9 +72,7 @@ describe("generateRouteTypes", () => {
       expect(generated).toContain(
         "type PageProps<Route extends VinextRouteTypes.PageRoute = VinextRouteTypes.PageRoute>",
       );
-      expect(generated).toContain(
-        "type LayoutProps<Route extends VinextRouteTypes.LayoutRoute = VinextRouteTypes.LayoutRoute>",
-      );
+      expect(generated).toContain("type LayoutProps<Route extends VinextRouteTypes.LayoutRoute>");
       expect(generated).toContain(
         "type RouteContext<Route extends VinextRouteTypes.RouteHandlerRoute = VinextRouteTypes.RouteHandlerRoute>",
       );

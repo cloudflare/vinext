@@ -119,7 +119,7 @@ declare global {
     searchParams: Promise<Record<string, string | string[] | undefined>>;
   };
 
-  type LayoutProps<Route extends VinextRouteTypes.LayoutRoute = VinextRouteTypes.LayoutRoute> = {
+  type LayoutProps<Route extends VinextRouteTypes.LayoutRoute> = {
     params: Promise<VinextRouteTypes.ParamMap[Route]>;
     children: React.ReactNode;
   } & {
