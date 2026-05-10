@@ -257,6 +257,51 @@ describe("ErrorBoundary digest classification (actual class)", () => {
   });
 });
 
+describe("RedirectBoundary digest classification", () => {
+  let RedirectErrorBoundaryClass: {
+    getDerivedStateFromError(error: unknown): {
+      redirect: string | null;
+      redirectType: "push" | "replace" | null;
+    };
+  } | null = null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/error-boundary.js");
+    RedirectErrorBoundaryClass = Reflect.get(mod, "RedirectErrorBoundary") ?? null;
+  });
+
+  it("catches Vinext redirect digests and decodes the target", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT:/?auth=required"), {
+      digest: "NEXT_REDIRECT;;%2F%3Fauth%3Drequired",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: "/?auth=required",
+      redirectType: "replace",
+    });
+  });
+
+  it("catches Next-style redirect digests and preserves push type", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;push;/login;307;",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: "/login",
+      redirectType: "push",
+    });
+  });
+
+  it("re-throws non-redirect errors", () => {
+    const e = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+});
+
 // Test the actual ForbiddenBoundary.getDerivedStateFromError classification.
 // Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
 describe("ForbiddenBoundary digest classification", () => {

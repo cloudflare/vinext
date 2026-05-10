@@ -2,7 +2,10 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser-error.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import { devOnCaughtError } from "../packages/vinext/src/server/dev-error-overlay.js";
+import {
+  devOnCaughtError,
+  devOnUncaughtError,
+} from "../packages/vinext/src/server/dev-error-overlay.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_FLAGS_KEY,
@@ -2270,6 +2273,21 @@ describe("app browser entry previousNextUrl helpers", () => {
 });
 
 describe("devOnCaughtError (hydrateRoot dev handler)", () => {
+  it("ignores redirect sentinels handled by RedirectBoundary", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      devOnCaughtError(
+        Object.assign(new Error("NEXT_REDIRECT:/?auth=required"), {
+          digest: "NEXT_REDIRECT;;%2F%3Fauth%3Drequired",
+        }),
+        { componentStack: "\n    at ProtectedPage" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it("logs caught errors to console.error", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -2329,6 +2347,23 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
     try {
       devOnCaughtError(new Error("regression"), {});
       expect(consoleSpy.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+});
+
+describe("devOnUncaughtError (hydrateRoot dev handler)", () => {
+  it("ignores redirect sentinels handled by global redirect recovery", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      devOnUncaughtError(
+        Object.assign(new Error("NEXT_REDIRECT:/?auth=required"), {
+          digest: "NEXT_REDIRECT;;%2F%3Fauth%3Drequired",
+        }),
+        { componentStack: "\n    at ProtectedPage" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
     } finally {
       consoleSpy.mockRestore();
     }

@@ -34,6 +34,13 @@ export default function HomePage() {
         <Link href="/error-test" data-testid="error-test-link">
           Error Test
         </Link>
+        <Link
+          href="/delayed-protected-loading"
+          prefetch={false}
+          data-testid="delayed-protected-loading-link"
+        >
+          Delayed Protected Loading
+        </Link>
       </nav>
     </main>
   );

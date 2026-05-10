@@ -123,6 +123,19 @@ test.describe("Server-side redirects", () => {
     expect(page.url()).toBe(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
   });
+
+  test("client navigation handles delayed redirect under loading boundary", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("delayed-protected-loading-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(pageErrors.filter((message) => message.includes("NEXT_REDIRECT"))).toHaveLength(0);
+  });
 });
 
 test.describe("Dashboard nested not-found", () => {

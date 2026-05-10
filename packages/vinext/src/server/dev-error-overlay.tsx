@@ -48,12 +48,26 @@ function alreadyReported(error: unknown): boolean {
   return !!error && typeof error === "object" && reportedErrors.has(error);
 }
 
+function isNavigationSignalError(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("digest" in error)) {
+    return false;
+  }
+
+  const digest = String((error as { digest: unknown }).digest);
+  return (
+    digest === "NEXT_NOT_FOUND" ||
+    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
+    digest.startsWith("NEXT_REDIRECT;")
+  );
+}
+
 export function installDevErrorOverlay(): void {
   if (installed || typeof window === "undefined") return;
   installed = true;
 
   window.addEventListener("error", (event: ErrorEvent) => {
     const err = event.error;
+    if (isNavigationSignalError(err)) return;
     if (err instanceof Error) {
       if (alreadyReported(err)) return;
       reportDevError(err, { source: "window-error" });
@@ -64,6 +78,7 @@ export function installDevErrorOverlay(): void {
 
   window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
     const reason = event.reason;
+    if (isNavigationSignalError(reason)) return;
     if (reason instanceof Error) {
       if (alreadyReported(reason)) return;
       reportDevError(reason, { source: "unhandledrejection" });
@@ -106,6 +121,8 @@ export function devOnCaughtError(
   error: unknown,
   errorInfo: { componentStack?: string; errorBoundary?: unknown },
 ): void {
+  if (isNavigationSignalError(error)) return;
+
   console.error(error);
   if (errorInfo?.componentStack) {
     console.error("The above error occurred in a React component:\n" + errorInfo.componentStack);
@@ -122,6 +139,8 @@ export function devOnUncaughtError(
   error: unknown,
   errorInfo: { componentStack?: string; errorBoundary?: unknown },
 ): void {
+  if (isNavigationSignalError(error)) return;
+
   console.error(error);
   if (errorInfo?.componentStack) {
     console.error("The above error occurred in a React component:\n" + errorInfo.componentStack);

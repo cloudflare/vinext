@@ -3,7 +3,7 @@
 import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
-import { usePathname } from "./navigation.js";
+import { usePathname, useRouter } from "./navigation.js";
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
@@ -14,6 +14,16 @@ type CapturedError = {
   thrownValue: unknown;
 };
 
+type RedirectBoundaryState = {
+  redirect: string | null;
+  redirectType: "push" | "replace" | null;
+};
+
+type RedirectError = Error & {
+  digest: string;
+  handled?: boolean;
+};
+
 type ErrorBoundaryInnerProps = {
   pathname: string;
 } & ErrorBoundaryProps;
@@ -22,6 +32,112 @@ export type ErrorBoundaryState = {
   error: CapturedError | null;
   previousPathname: string;
 };
+
+function getErrorDigest(error: unknown): string | null {
+  if (!error || typeof error !== "object" || !("digest" in error)) {
+    return null;
+  }
+
+  return String((error as { digest: unknown }).digest);
+}
+
+function isRedirectError(error: unknown): error is RedirectError {
+  return getErrorDigest(error)?.startsWith("NEXT_REDIRECT;") ?? false;
+}
+
+function decodeRedirectTarget(target: string): string {
+  try {
+    return decodeURIComponent(target);
+  } catch {
+    return target;
+  }
+}
+
+function getURLFromRedirectError(error: RedirectError): string | null {
+  const parts = error.digest.split(";");
+  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
+  return encodedTarget ? decodeRedirectTarget(encodedTarget) : null;
+}
+
+function getRedirectTypeFromError(error: RedirectError): "push" | "replace" {
+  const type = error.digest.split(";", 2)[1];
+  return type === "push" ? "push" : "replace";
+}
+
+function HandleRedirect({
+  redirect,
+  redirectType,
+  reset,
+}: {
+  redirect: string;
+  redirectType: "push" | "replace";
+  reset: () => void;
+}) {
+  const router = useRouter();
+
+  React.useEffect(() => {
+    React.startTransition(() => {
+      if (redirectType === "push") {
+        router.push(redirect);
+      } else {
+        router.replace(redirect);
+      }
+      reset();
+    });
+  }, [redirect, redirectType, reset, router]);
+
+  return null;
+}
+
+export class RedirectErrorBoundary extends React.Component<
+  { children?: React.ReactNode },
+  RedirectBoundaryState
+> {
+  constructor(props: { children?: React.ReactNode }) {
+    super(props);
+    this.state = {
+      redirect: null,
+      redirectType: null,
+    };
+  }
+
+  static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
+    if (isRedirectError(error)) {
+      if (error.handled) {
+        return {
+          redirect: null,
+          redirectType: null,
+        };
+      }
+
+      return {
+        redirect: getURLFromRedirectError(error),
+        redirectType: getRedirectTypeFromError(error),
+      };
+    }
+
+    throw error;
+  }
+
+  render() {
+    const { redirect, redirectType } = this.state;
+    if (redirect !== null && redirectType !== null) {
+      return (
+        <HandleRedirect
+          redirect={redirect}
+          redirectType={redirectType}
+          reset={() => this.setState({ redirect: null })}
+        />
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
+  return <RedirectErrorBoundary>{children}</RedirectErrorBoundary>;
+}
 
 /**
  * Generic ErrorBoundary used to wrap route segments with error.tsx.

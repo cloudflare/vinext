@@ -27,7 +27,6 @@ import {
   restoreRscResponse,
   setClientParams,
   setPendingPathname,
-  snapshotRscResponse,
   setMountedSlotsHeader,
   setNavigationContext,
   type CachedRscResponse,
@@ -60,7 +59,7 @@ import {
   type AppRouterState,
   type OperationLane,
 } from "./app-browser-state.js";
-import { DevRecoveryBoundary } from "vinext/shims/error-boundary";
+import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 import { createOnUncaughtError } from "./app-browser-error.js";
 import {
@@ -512,12 +511,16 @@ function BrowserRoot({
   }, [treeState.previousNextUrl, treeState.renderId]);
 
   const innerTree = createElement(
-    NavigationCommitSignal,
-    { renderId: treeState.renderId },
+    RedirectBoundary,
+    null,
     createElement(
-      ElementsContext.Provider,
-      { value: treeState.elements },
-      createElement(Slot, { id: treeState.routeId }),
+      NavigationCommitSignal,
+      { renderId: treeState.renderId },
+      createElement(
+        ElementsContext.Provider,
+        { value: treeState.elements },
+        createElement(Slot, { id: treeState.routeId }),
+      ),
     ),
   );
 
@@ -1126,12 +1129,34 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // Build snapshot from local params, not latestClientParams
         const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
 
-        const responseSnapshot = await snapshotRscResponse(navResponse);
+        // Tee the response body so React can consume it incrementally —
+        // shell parses fast, and any Suspense boundary inside (e.g. the
+        // route's loading.tsx) shows its fallback while the rest of the
+        // RSC stream resolves. Buffering with `await response.arrayBuffer()`
+        // here would block the commit until the page's slowest server
+        // promise resolved, hiding the loading state entirely.
+        //
+        // The cache branch is read in the background so the visited-
+        // response snapshot lands as soon as the full stream completes,
+        // without holding up React's commit.
+        const navBody = navResponse.body;
+        if (!navBody) {
+          // Already validated above (`!navResponse.body` triggers a hard
+          // navigation), so this branch is unreachable — kept for type
+          // narrowing only.
+          return;
+        }
+        const [reactBranch, cacheBranch] = navBody.tee();
+        const reactResponse = new Response(reactBranch, {
+          status: navResponse.status,
+          headers: navResponse.headers,
+        });
+        const cacheBufferPromise = new Response(cacheBranch).arrayBuffer();
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         const rscPayload = decodeAppElementsPromise(
-          createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(responseSnapshot))),
+          createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
         );
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -1158,13 +1183,20 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // never actually rendered successfully.
         const resolvedElements = await rscPayload;
         const metadata = AppElementsWire.readMetadata(resolvedElements);
+        const cacheBuffer = await cacheBufferPromise;
         storeVisitedResponseSnapshot(
           rscUrl,
           resolveVisitedResponseInterceptionContext(
             requestInterceptionContext,
             metadata.interceptionContext,
           ),
-          responseSnapshot,
+          {
+            buffer: cacheBuffer,
+            contentType: navResponse.headers.get("content-type") ?? "text/x-component",
+            mountedSlotsHeader: navResponse.headers.get("X-Vinext-Mounted-Slots"),
+            paramsHeader: navResponse.headers.get("X-Vinext-Params"),
+            url: navResponse.url,
+          },
           navParams,
         );
         return;
