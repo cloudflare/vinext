@@ -362,6 +362,12 @@ declare global {
        * image optimizer (`next.config.js` → `images.dangerouslyAllowSVG`).
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG?: string;
+
+      /**
+       * `"true"` or `"false"` — whether hostnames resolving to private IPs
+       * are allowed (`next.config.js` → `images.dangerouslyAllowLocalIP`).
+       */
+      __VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP?: string;
     }
   }
 }

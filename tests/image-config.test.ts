@@ -9,6 +9,7 @@ import { describe, it, expect } from "vite-plus/test";
 import {
   matchRemotePattern,
   hasRemoteMatch,
+  isPrivateIp,
   type RemotePattern,
 } from "../packages/vinext/src/shims/image-config.js";
 
@@ -257,5 +258,61 @@ describe("matchRemotePattern glob edge cases", () => {
     expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/uploads/a.png"))).toBe(
       false,
     );
+  });
+});
+
+// ─── isPrivateIp ─────────────────────────────────────────────────────────
+// Ported from Next.js: packages/next/src/server/is-private-ip.test.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/is-private-ip.test.ts
+
+describe("isPrivateIp", () => {
+  it("returns true for private IPv4 addresses", () => {
+    expect(isPrivateIp("127.0.0.0")).toBe(true);
+    expect(isPrivateIp("127.0.0.1")).toBe(true);
+    expect(isPrivateIp("127.0.0.01")).toBe(true);
+    expect(isPrivateIp("127.0.0.001")).toBe(true);
+    expect(isPrivateIp("0.0.0.0")).toBe(true);
+    expect(isPrivateIp("10.0.0.0")).toBe(true);
+    expect(isPrivateIp("10.244.0.0")).toBe(true);
+    expect(isPrivateIp("192.168.0.0")).toBe(true);
+    expect(isPrivateIp("192.168.0.1")).toBe(true);
+    expect(isPrivateIp("192.168.0.01")).toBe(true);
+    expect(isPrivateIp("172.16.0.0")).toBe(true);
+    expect(isPrivateIp("172.16.0.1")).toBe(true);
+    expect(isPrivateIp("172.16.0.01")).toBe(true);
+    expect(isPrivateIp("169.254.169.254")).toBe(true);
+  });
+
+  it("returns true for private IPv6 addresses", () => {
+    expect(isPrivateIp("::")).toBe(true);
+    expect(isPrivateIp("::1")).toBe(true);
+    expect(isPrivateIp("::ffff:0.0.0.0")).toBe(true);
+    expect(isPrivateIp("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateIp("::ffff:7f00:1")).toBe(true);
+    expect(isPrivateIp("2001:2f:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(true);
+    expect(isPrivateIp("[2001:2f:ffff:ffff:ffff:ffff:ffff:ffff]")).toBe(true);
+    expect(isPrivateIp("2002::")).toBe(true);
+    expect(isPrivateIp("ff00::")).toBe(true);
+    expect(isPrivateIp("fc00::")).toBe(true);
+    expect(isPrivateIp("fe80::1")).toBe(true);
+    expect(isPrivateIp("fd00::1")).toBe(true);
+  });
+
+  it("returns false for public IP addresses", () => {
+    expect(isPrivateIp("76.76.21.21")).toBe(false);
+    expect(isPrivateIp("157.240.14.35")).toBe(false);
+    expect(isPrivateIp("8.8.8.8")).toBe(false);
+    expect(isPrivateIp("1.1.1.1")).toBe(false);
+    expect(isPrivateIp("::ffff:8.8.8.8")).toBe(false);
+    expect(isPrivateIp("::ffff:1.1.1.1")).toBe(false);
+    expect(isPrivateIp("2001:4860:4860::8888")).toBe(false);
+    expect(isPrivateIp("2606:4700:4700::1111")).toBe(false);
+  });
+
+  it("returns false for domain names", () => {
+    expect(isPrivateIp("vercel.com")).toBe(false);
+    expect(isPrivateIp("www.vercel.com")).toBe(false);
+    expect(isPrivateIp("nextjs.org")).toBe(false);
+    expect(isPrivateIp("docs.nextjs.org")).toBe(false);
   });
 });

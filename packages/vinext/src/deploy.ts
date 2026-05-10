@@ -562,6 +562,7 @@ const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: 
 const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
   contentDispositionType: vinextConfig.images.contentDispositionType,
   contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
 } : undefined;

@@ -898,6 +898,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowSVG ?? false),
         );
+        // Expose dangerouslyAllowLocalIP flag for the image shim's private-IP guard.
+        // When false (default), remote image URLs with literal private-IP hostnames are blocked.
+        defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
+          String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
+        );
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).

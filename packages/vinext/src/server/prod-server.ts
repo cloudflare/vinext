@@ -1210,6 +1210,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images
     ? {
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+        dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
       }
