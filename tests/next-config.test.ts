@@ -677,6 +677,16 @@ describe("generateBuildId", () => {
     expect(config.buildId.length).toBeGreaterThan(0);
   });
 
+  it("preserves dangerouslyAllowLocalIP from images config", async () => {
+    const config = await resolveNextConfig({ images: { dangerouslyAllowLocalIP: true } });
+    expect(config.images?.dangerouslyAllowLocalIP).toBe(true);
+  });
+
+  it("preserves dangerouslyAllowLocalIP as false", async () => {
+    const config = await resolveNextConfig({ images: { dangerouslyAllowLocalIP: false } });
+    expect(config.images?.dangerouslyAllowLocalIP).toBe(false);
+  });
+
   it("uses the string returned by generateBuildId", async () => {
     const config = await resolveNextConfig({ generateBuildId: () => "my-custom-build-id" });
     expect(config.buildId).toBe("my-custom-build-id");

@@ -3191,6 +3191,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           const imageConfig = {
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+            dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
           };

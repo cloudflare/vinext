@@ -29,6 +29,8 @@ export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 export type ImageConfig = {
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
+  /** Allow fetching upstream images that resolve to private/local IPs. Default: false. */
+  dangerouslyAllowLocalIP?: boolean;
   /** Content-Disposition header value. Default: "inline". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */

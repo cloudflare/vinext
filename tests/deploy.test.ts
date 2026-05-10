@@ -480,6 +480,14 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
+  it("includes dangerouslyAllowLocalIP in imageConfig extraction", () => {
+    const content = generateAppRouterWorkerEntry();
+    const imageConfigStart = content.indexOf("const imageConfig: ImageConfig | undefined");
+    const imageConfigEnd = content.indexOf("};", imageConfigStart);
+    const imageConfigBlock = content.slice(imageConfigStart, imageConfigEnd);
+    expect(imageConfigBlock).toContain("dangerouslyAllowLocalIP");
+  });
+
   it("does not include KV wiring when hasISR is false", () => {
     const content = generateAppRouterWorkerEntry(false);
     expect(content).not.toContain("KVCacheHandler");
@@ -663,6 +671,14 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+  });
+
+  it("includes dangerouslyAllowLocalIP in imageConfig extraction", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const imageConfigStart = content.indexOf("const imageConfig: ImageConfig");
+    const imageConfigEnd = content.indexOf("};", imageConfigStart);
+    const imageConfigBlock = content.slice(imageConfigStart, imageConfigEnd);
+    expect(imageConfigBlock).toContain("dangerouslyAllowLocalIP");
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {
@@ -1137,7 +1153,7 @@ describe("getFilesToGenerate", () => {
     const workerFile = files.find((f) => f.description === "worker/index.ts");
     expect(workerFile).toBeDefined();
     expect(workerFile!.content).toContain("vinext/server/app-router-entry");
-    expect(workerFile!.content).not.toContain("virtual:vinext-server-entry");
+    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
   });
 
   it("generates Pages Router worker entry for Pages Router project", () => {

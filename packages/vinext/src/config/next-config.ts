@@ -169,6 +169,8 @@ export type NextConfig = {
     imageSizes?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
+    /** Allow fetching upstream images that resolve to private/local IPs. Use only when hosting in a VPC with split-horizon DNS. Defaults to false. */
+    dangerouslyAllowLocalIP?: boolean;
     /** Content-Disposition header for image responses. Defaults to "inline". */
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
