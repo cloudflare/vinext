@@ -36,7 +36,6 @@ export default function HomePage() {
         </Link>
         <Link
           href="/delayed-protected-loading"
-          prefetch={false}
           data-testid="delayed-protected-loading-link"
         >
           Delayed Protected Loading
