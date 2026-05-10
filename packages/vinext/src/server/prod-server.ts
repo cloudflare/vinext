@@ -391,11 +391,8 @@ async function tryServeStatic(
   compress: boolean,
   cache?: StaticFileCache,
   extraHeaders?: Record<string, string | string[]>,
-  statusCode?: number,
 ): Promise<boolean> {
   if (pathname === "/") return false;
-  const responseStatus = statusCode ?? 200;
-  const omitBody = isNoBodyResponseStatus(responseStatus);
 
   // ── Fast path: pre-computed headers, minimal per-request work ──
   // When a cache is provided, all path validation happened at startup.
@@ -422,11 +419,7 @@ async function tryServeStatic(
 
     // 304 Not Modified: string compare against pre-computed ETag
     const ifNoneMatch = req.headers["if-none-match"];
-    if (
-      responseStatus === 200 &&
-      typeof ifNoneMatch === "string" &&
-      matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)
-    ) {
+    if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, entry.etag)) {
       if (extraHeaders) {
         res.writeHead(304, { ...entry.notModifiedHeaders, ...extraHeaders });
       } else {
@@ -456,12 +449,12 @@ async function tryServeStatic(
       : entry.original;
 
     if (extraHeaders) {
-      res.writeHead(responseStatus, { ...variant.headers, ...extraHeaders });
+      res.writeHead(200, { ...variant.headers, ...extraHeaders });
     } else {
-      res.writeHead(responseStatus, variant.headers);
+      res.writeHead(200, variant.headers);
     }
 
-    if (omitBody || req.method === "HEAD") {
+    if (req.method === "HEAD") {
       res.end();
       return true;
     }
@@ -522,11 +515,7 @@ async function tryServeStatic(
   // compress=false also skips all compressed variants.
   // Spreading undefined is a no-op in object literals (ES2018+).
   const ifNoneMatch = req.headers["if-none-match"];
-  if (
-    responseStatus === 200 &&
-    typeof ifNoneMatch === "string" &&
-    matchesIfNoneMatchHeader(ifNoneMatch, etag)
-  ) {
+  if (typeof ifNoneMatch === "string" && matchesIfNoneMatchHeader(ifNoneMatch, etag)) {
     const notModifiedHeaders: Record<string, string | string[]> = {
       ETag: etag,
       "Cache-Control": cacheControl,
@@ -550,12 +539,12 @@ async function tryServeStatic(
     if (encoding) {
       // Content-Length omitted intentionally: compressed size isn't known
       // ahead of time, so Node.js uses chunked transfer encoding.
-      res.writeHead(responseStatus, {
+      res.writeHead(200, {
         ...baseHeaders,
         "Content-Encoding": encoding,
         Vary: "Accept-Encoding",
       });
-      if (omitBody || req.method === "HEAD") {
+      if (req.method === "HEAD") {
         res.end();
         return true;
       }
@@ -572,11 +561,11 @@ async function tryServeStatic(
     }
   }
 
-  res.writeHead(responseStatus, {
+  res.writeHead(200, {
     ...baseHeaders,
     "Content-Length": String(resolved.size),
   });
-  if (omitBody || req.method === "HEAD") {
+  if (req.method === "HEAD") {
     res.end();
     return true;
   }
@@ -1055,46 +1044,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const request = nodeToWebRequest(req, normalizedUrl);
       const response = await rscHandler(request);
 
-      const staticFileSignal = response.headers.get("x-vinext-static-file");
-      if (staticFileSignal) {
-        let staticFilePath = "/";
-        try {
-          staticFilePath = decodeURIComponent(staticFileSignal);
-        } catch {
-          staticFilePath = staticFileSignal;
-        }
-
-        const staticResponseHeaders = omitHeadersCaseInsensitive(
-          mergeResponseHeaders({}, response),
-          ["x-vinext-static-file", "content-encoding", "content-length", "content-type"],
-        );
-
-        const served = await tryServeStatic(
-          req,
-          res,
-          clientDir,
-          staticFilePath,
-          compress,
-          staticCache,
-          staticResponseHeaders,
-          response.status,
-        );
-        cancelResponseBody(response);
-        if (served) {
-          return;
-        }
-        await sendWebResponse(
-          new Response("Not Found", {
-            status: 404,
-            headers: toWebHeaders(staticResponseHeaders),
-          }),
-          req,
-          res,
-          compress,
-        );
-        return;
-      }
-
       // Stream the Web Response back to the Node.js response
       await sendWebResponse(response, req, res, compress);
     } catch (e) {
@@ -1563,9 +1512,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
-      // Serve static files for beforeFiles rewrite targets. This matches
-      // Next.js behavior where beforeFiles rewrites can resolve to static
-      // files in public/ or other direct filesystem paths.
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
@@ -1576,22 +1522,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
-
-          // Try serving static file at the rewritten path
-          if (
-            path.extname(resolvedPathname) &&
-            (await tryServeStatic(
-              req,
-              res,
-              clientDir,
-              resolvedPathname,
-              compress,
-              staticCache,
-              middlewareHeaders,
-            ))
-          ) {
-            return;
-          }
         }
       }
 
@@ -1647,21 +1577,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
-
-          if (
-            path.extname(resolvedPathname) &&
-            (await tryServeStatic(
-              req,
-              res,
-              clientDir,
-              resolvedPathname,
-              compress,
-              undefined,
-              middlewareHeaders,
-            ))
-          ) {
-            return;
-          }
         }
       }
 
@@ -1681,21 +1596,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             if (isExternalUrl(fallbackRewrite)) {
               const proxyResponse = await proxyExternalRequest(webRequest, fallbackRewrite);
               await sendWebResponse(proxyResponse, req, res, compress);
-              return;
-            }
-            const fallbackPathname = fallbackRewrite.split("?")[0];
-            if (
-              path.extname(fallbackPathname) &&
-              (await tryServeStatic(
-                req,
-                res,
-                clientDir,
-                fallbackPathname,
-                compress,
-                undefined,
-                middlewareHeaders,
-              ))
-            ) {
               return;
             }
             response = await renderPage(webRequest, fallbackRewrite, ssrManifest);

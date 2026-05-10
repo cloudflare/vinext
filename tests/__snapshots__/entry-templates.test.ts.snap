@@ -14641,3 +14641,1192 @@ export * from "<ROOT>/packages/vinext/src/server/app-ssr-entry.ts";
 export { default } from "<ROOT>/packages/vinext/src/server/app-ssr-entry.ts";
 "
 `;
+
+exports[`Pages Router entry templates > client entry snapshot 1`] = `
+"
+import "vinext/instrumentation-client";
+import React from "react";
+import { hydrateRoot } from "react-dom/client";
+// Eagerly import the router shim so its module-level popstate listener is
+// registered.  Without this, browser back/forward buttons do nothing because
+// navigateClient() is never invoked on history changes.
+import "next/router";
+
+const pageLoaders = {
+  "/": () => import("<ROOT>/tests/fixtures/pages-basic/pages/index.tsx"),
+  "/404": () => import("<ROOT>/tests/fixtures/pages-basic/pages/404.tsx"),
+  "/about": () => import("<ROOT>/tests/fixtures/pages-basic/pages/about.tsx"),
+  "/alias-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/alias-test.tsx"),
+  "/before-pop-state-destination": () => import("<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-destination.tsx"),
+  "/before-pop-state-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx"),
+  "/cjs/basic": () => import("<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx"),
+  "/cjs/random": () => import("<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts"),
+  "/compat-router-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx"),
+  "/concurrent-head": () => import("<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx"),
+  "/concurrent-router": () => import("<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx"),
+  "/config-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx"),
+  "/counter": () => import("<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx"),
+  "/dynamic-page": () => import("<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx"),
+  "/dynamic-ssr-false": () => import("<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx"),
+  "/header-override-delete": () => import("<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx"),
+  "/instrumentation-client": () => import("<ROOT>/tests/fixtures/pages-basic/pages/instrumentation-client.tsx"),
+  "/isr-second-render-state": () => import("<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx"),
+  "/isr-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx"),
+  "/link-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx"),
+  "/mw-object-gated": () => import("<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx"),
+  "/nav-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx"),
+  "/posts/missing": () => import("<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx"),
+  "/redirect-xss": () => import("<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx"),
+  "/router-events-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx"),
+  "/script-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx"),
+  "/shallow-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx"),
+  "/ssr": () => import("<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx"),
+  "/ssr-headers": () => import("<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx"),
+  "/ssr-res-end": () => import("<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx"),
+  "/streaming-gssp-content-length": () => import("<ROOT>/tests/fixtures/pages-basic/pages/streaming-gssp-content-length.tsx"),
+  "/streaming-ssr": () => import("<ROOT>/tests/fixtures/pages-basic/pages/streaming-ssr.tsx"),
+  "/suspense-test": () => import("<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx"),
+  "/articles/[id]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx"),
+  "/blog/[slug]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx"),
+  "/posts/[id]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx"),
+  "/products/[pid]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx"),
+  "/docs/[...slug]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx"),
+  "/sign-up/[[...sign-up]]": () => import("<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx")
+};
+
+async function hydrate() {
+  const nextData = window.__NEXT_DATA__;
+  if (!nextData) {
+    console.error("[vinext] No __NEXT_DATA__ found");
+    return;
+  }
+
+  const { pageProps } = nextData.props;
+  const loader = pageLoaders[nextData.page];
+  if (!loader) {
+    console.error("[vinext] No page loader for route:", nextData.page);
+    return;
+  }
+
+  const pageModule = await loader();
+  const PageComponent = pageModule.default;
+  if (!PageComponent) {
+    console.error("[vinext] Page module has no default export");
+    return;
+  }
+
+  let element;
+  
+  try {
+    const appModule = await import("<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx");
+    const AppComponent = appModule.default;
+    window.__VINEXT_APP__ = AppComponent;
+    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+  } catch {
+    element = React.createElement(PageComponent, pageProps);
+  }
+  
+
+  // Wrap with RouterContext.Provider so next/compat/router works during hydration
+  const { wrapWithRouterContext } = await import("next/router");
+  element = wrapWithRouterContext(element);
+
+  const container = document.getElementById("__next");
+  if (!container) {
+    console.error("[vinext] No #__next element found");
+    return;
+  }
+
+  const root = hydrateRoot(container, element);
+  window.__VINEXT_ROOT__ = root;
+  window.__VINEXT_HYDRATED_AT = performance.now();
+}
+
+hydrate();
+"
+`;
+
+exports[`Pages Router entry templates > server entry snapshot 1`] = `
+"
+import React from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
+import { resetSSRHead, getSSRHeadHTML } from "next/head";
+import { flushPreloads } from "next/dynamic";
+import { setSSRContext, wrapWithRouterContext } from "next/router";
+import { _runWithCacheState } from "next/cache";
+import { runWithPrivateCache } from "vinext/cache-runtime";
+import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
+import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
+import "vinext/router-state";
+import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
+import { runWithHeadState } from "vinext/head-state";
+import "vinext/i18n-state";
+import { setI18nContext } from "vinext/i18n-context";
+import { safeJsonStringify } from "vinext/html";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
+import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
+import { sanitizeDestination as sanitizeDestinationLocal } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { resolvePagesI18nRequest } from "<ROOT>/packages/vinext/src/server/pages-i18n.js";
+import { createPagesReqRes as __createPagesReqRes } from "<ROOT>/packages/vinext/src/server/pages-node-compat.js";
+import { handlePagesApiRoute as __handlePagesApiRoute } from "<ROOT>/packages/vinext/src/server/pages-api-route.js";
+import {
+  isrGet as __sharedIsrGet,
+  isrSet as __sharedIsrSet,
+  isrCacheKey as __sharedIsrCacheKey,
+  triggerBackgroundRegeneration as __sharedTriggerBackgroundRegeneration,
+} from "<ROOT>/packages/vinext/src/server/isr-cache.js";
+import { resolvePagesPageData as __resolvePagesPageData } from "<ROOT>/packages/vinext/src/server/pages-page-data.js";
+import { renderPagesPageResponse as __renderPagesPageResponse } from "<ROOT>/packages/vinext/src/server/pages-page-response.js";
+import * as _instrumentation from "<ROOT>/tests/fixtures/pages-basic/instrumentation.ts";
+import * as middlewareModule from "<ROOT>/tests/fixtures/pages-basic/middleware.ts";
+import { NextRequest, NextFetchEvent } from "next/server";
+
+// Run instrumentation register() once at module evaluation time — before any
+// requests are handled. Matches Next.js semantics: register() is called once
+// on startup in the process that handles requests.
+if (typeof _instrumentation.register === "function") {
+  await _instrumentation.register();
+}
+// Store the onRequestError handler on globalThis so it is visible to all
+// code within the Worker (same global scope).
+if (typeof _instrumentation.onRequestError === "function") {
+  globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
+}
+
+// i18n config (embedded at build time)
+const i18nConfig = null;
+
+// Build ID (embedded at build time)
+const buildId = "test-build-id";
+
+// Full resolved config for production server (embedded at build time)
+export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false},{"source":"/redirect-before-middleware-rewrite","destination":"/about","permanent":false},{"source":"/redirect-before-middleware-response","destination":"/about","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]},{"source":"/headers-before-middleware-rewrite","headers":[{"key":"X-Rewrite-Source-Header","value":"1"}]}],"i18n":null,"images":{}};
+
+function isrGet(key) {
+  return __sharedIsrGet(key);
+}
+function isrSet(key, data, revalidateSeconds, tags) {
+  return __sharedIsrSet(key, data, revalidateSeconds, tags);
+}
+function triggerBackgroundRegeneration(key, renderFn) {
+  return __sharedTriggerBackgroundRegeneration(key, renderFn);
+}
+function isrCacheKey(router, pathname) {
+  return __sharedIsrCacheKey(router, pathname, buildId || undefined);
+}
+
+async function renderToStringAsync(element) {
+  const stream = await renderToReadableStream(element);
+  await stream.allReady;
+  return new Response(stream).text();
+}
+
+async function renderIsrPassToStringAsync(element) {
+  // The cache-fill render is a second render pass for the same request.
+  // Reset render-scoped state so it cannot leak from the streamed response
+  // render or affect async work that is still draining from that stream.
+  // Keep request identity state (pathname/query/locale/executionContext)
+  // intact: this second pass still belongs to the same request.
+  return await runWithServerInsertedHTMLState(() =>
+    runWithHeadState(() =>
+      _runWithCacheState(() =>
+        runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+      ),
+    ),
+  );
+}
+
+import * as page_0 from "<ROOT>/tests/fixtures/pages-basic/pages/index.tsx";
+import * as page_1 from "<ROOT>/tests/fixtures/pages-basic/pages/404.tsx";
+import * as page_2 from "<ROOT>/tests/fixtures/pages-basic/pages/about.tsx";
+import * as page_3 from "<ROOT>/tests/fixtures/pages-basic/pages/alias-test.tsx";
+import * as page_4 from "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-destination.tsx";
+import * as page_5 from "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx";
+import * as page_6 from "<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx";
+import * as page_7 from "<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts";
+import * as page_8 from "<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx";
+import * as page_9 from "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx";
+import * as page_10 from "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx";
+import * as page_11 from "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx";
+import * as page_12 from "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx";
+import * as page_13 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx";
+import * as page_14 from "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx";
+import * as page_15 from "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx";
+import * as page_16 from "<ROOT>/tests/fixtures/pages-basic/pages/instrumentation-client.tsx";
+import * as page_17 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx";
+import * as page_18 from "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx";
+import * as page_19 from "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx";
+import * as page_20 from "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx";
+import * as page_21 from "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx";
+import * as page_22 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx";
+import * as page_23 from "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx";
+import * as page_24 from "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx";
+import * as page_25 from "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx";
+import * as page_26 from "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx";
+import * as page_27 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx";
+import * as page_28 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx";
+import * as page_29 from "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx";
+import * as page_30 from "<ROOT>/tests/fixtures/pages-basic/pages/streaming-gssp-content-length.tsx";
+import * as page_31 from "<ROOT>/tests/fixtures/pages-basic/pages/streaming-ssr.tsx";
+import * as page_32 from "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx";
+import * as page_33 from "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx";
+import * as page_34 from "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx";
+import * as page_35 from "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx";
+import * as page_36 from "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx";
+import * as page_37 from "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx";
+import * as page_38 from "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx";
+import * as api_0 from "<ROOT>/tests/fixtures/pages-basic/pages/api/binary.ts";
+import * as api_1 from "<ROOT>/tests/fixtures/pages-basic/pages/api/echo-body.ts";
+import * as api_2 from "<ROOT>/tests/fixtures/pages-basic/pages/api/error-route.ts";
+import * as api_3 from "<ROOT>/tests/fixtures/pages-basic/pages/api/hello.ts";
+import * as api_4 from "<ROOT>/tests/fixtures/pages-basic/pages/api/instrumentation-test.ts";
+import * as api_5 from "<ROOT>/tests/fixtures/pages-basic/pages/api/middleware-test.ts";
+import * as api_6 from "<ROOT>/tests/fixtures/pages-basic/pages/api/no-content-type.ts";
+import * as api_7 from "<ROOT>/tests/fixtures/pages-basic/pages/api/parse.ts";
+import * as api_8 from "<ROOT>/tests/fixtures/pages-basic/pages/api/send-buffer.ts";
+import * as api_9 from "<ROOT>/tests/fixtures/pages-basic/pages/api/users/[id].ts";
+
+import { default as AppComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx";
+import { default as DocumentComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_document.tsx";
+
+export const pageRoutes = [
+  { pattern: "/", patternParts: [], isDynamic: false, params: [], module: page_0, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/index.tsx" },
+  { pattern: "/404", patternParts: ["404"], isDynamic: false, params: [], module: page_1, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/404.tsx" },
+  { pattern: "/about", patternParts: ["about"], isDynamic: false, params: [], module: page_2, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/about.tsx" },
+  { pattern: "/alias-test", patternParts: ["alias-test"], isDynamic: false, params: [], module: page_3, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/alias-test.tsx" },
+  { pattern: "/before-pop-state-destination", patternParts: ["before-pop-state-destination"], isDynamic: false, params: [], module: page_4, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-destination.tsx" },
+  { pattern: "/before-pop-state-test", patternParts: ["before-pop-state-test"], isDynamic: false, params: [], module: page_5, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx" },
+  { pattern: "/cjs/basic", patternParts: ["cjs","basic"], isDynamic: false, params: [], module: page_6, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/cjs/basic.tsx" },
+  { pattern: "/cjs/random", patternParts: ["cjs","random"], isDynamic: false, params: [], module: page_7, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/cjs/random.ts" },
+  { pattern: "/compat-router-test", patternParts: ["compat-router-test"], isDynamic: false, params: [], module: page_8, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/compat-router-test.tsx" },
+  { pattern: "/concurrent-head", patternParts: ["concurrent-head"], isDynamic: false, params: [], module: page_9, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-head.tsx" },
+  { pattern: "/concurrent-router", patternParts: ["concurrent-router"], isDynamic: false, params: [], module: page_10, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/concurrent-router.tsx" },
+  { pattern: "/config-test", patternParts: ["config-test"], isDynamic: false, params: [], module: page_11, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/config-test.tsx" },
+  { pattern: "/counter", patternParts: ["counter"], isDynamic: false, params: [], module: page_12, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/counter.tsx" },
+  { pattern: "/dynamic-page", patternParts: ["dynamic-page"], isDynamic: false, params: [], module: page_13, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-page.tsx" },
+  { pattern: "/dynamic-ssr-false", patternParts: ["dynamic-ssr-false"], isDynamic: false, params: [], module: page_14, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx" },
+  { pattern: "/header-override-delete", patternParts: ["header-override-delete"], isDynamic: false, params: [], module: page_15, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/header-override-delete.tsx" },
+  { pattern: "/instrumentation-client", patternParts: ["instrumentation-client"], isDynamic: false, params: [], module: page_16, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/instrumentation-client.tsx" },
+  { pattern: "/isr-second-render-state", patternParts: ["isr-second-render-state"], isDynamic: false, params: [], module: page_17, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-second-render-state.tsx" },
+  { pattern: "/isr-test", patternParts: ["isr-test"], isDynamic: false, params: [], module: page_18, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/isr-test.tsx" },
+  { pattern: "/link-test", patternParts: ["link-test"], isDynamic: false, params: [], module: page_19, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/link-test.tsx" },
+  { pattern: "/mw-object-gated", patternParts: ["mw-object-gated"], isDynamic: false, params: [], module: page_20, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/mw-object-gated.tsx" },
+  { pattern: "/nav-test", patternParts: ["nav-test"], isDynamic: false, params: [], module: page_21, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/nav-test.tsx" },
+  { pattern: "/posts/missing", patternParts: ["posts","missing"], isDynamic: false, params: [], module: page_22, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/missing.tsx" },
+  { pattern: "/redirect-xss", patternParts: ["redirect-xss"], isDynamic: false, params: [], module: page_23, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/redirect-xss.tsx" },
+  { pattern: "/router-events-test", patternParts: ["router-events-test"], isDynamic: false, params: [], module: page_24, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/router-events-test.tsx" },
+  { pattern: "/script-test", patternParts: ["script-test"], isDynamic: false, params: [], module: page_25, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/script-test.tsx" },
+  { pattern: "/shallow-test", patternParts: ["shallow-test"], isDynamic: false, params: [], module: page_26, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/shallow-test.tsx" },
+  { pattern: "/ssr", patternParts: ["ssr"], isDynamic: false, params: [], module: page_27, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr.tsx" },
+  { pattern: "/ssr-headers", patternParts: ["ssr-headers"], isDynamic: false, params: [], module: page_28, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-headers.tsx" },
+  { pattern: "/ssr-res-end", patternParts: ["ssr-res-end"], isDynamic: false, params: [], module: page_29, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/ssr-res-end.tsx" },
+  { pattern: "/streaming-gssp-content-length", patternParts: ["streaming-gssp-content-length"], isDynamic: false, params: [], module: page_30, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/streaming-gssp-content-length.tsx" },
+  { pattern: "/streaming-ssr", patternParts: ["streaming-ssr"], isDynamic: false, params: [], module: page_31, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/streaming-ssr.tsx" },
+  { pattern: "/suspense-test", patternParts: ["suspense-test"], isDynamic: false, params: [], module: page_32, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/suspense-test.tsx" },
+  { pattern: "/articles/:id", patternParts: ["articles",":id"], isDynamic: true, params: ["id"], module: page_33, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/articles/[id].tsx" },
+  { pattern: "/blog/:slug", patternParts: ["blog",":slug"], isDynamic: true, params: ["slug"], module: page_34, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
+  { pattern: "/posts/:id", patternParts: ["posts",":id"], isDynamic: true, params: ["id"], module: page_35, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
+  { pattern: "/products/:pid", patternParts: ["products",":pid"], isDynamic: true, params: ["pid"], module: page_36, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
+  { pattern: "/docs/:slug+", patternParts: ["docs",":slug+"], isDynamic: true, params: ["slug"], module: page_37, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" },
+  { pattern: "/sign-up/:sign-up*", patternParts: ["sign-up",":sign-up*"], isDynamic: true, params: ["sign-up"], module: page_38, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx" }
+];
+const _pageRouteTrie = _buildRouteTrie(pageRoutes);
+
+const apiRoutes = [
+  { pattern: "/api/binary", patternParts: ["api","binary"], isDynamic: false, params: [], module: api_0 },
+  { pattern: "/api/echo-body", patternParts: ["api","echo-body"], isDynamic: false, params: [], module: api_1 },
+  { pattern: "/api/error-route", patternParts: ["api","error-route"], isDynamic: false, params: [], module: api_2 },
+  { pattern: "/api/hello", patternParts: ["api","hello"], isDynamic: false, params: [], module: api_3 },
+  { pattern: "/api/instrumentation-test", patternParts: ["api","instrumentation-test"], isDynamic: false, params: [], module: api_4 },
+  { pattern: "/api/middleware-test", patternParts: ["api","middleware-test"], isDynamic: false, params: [], module: api_5 },
+  { pattern: "/api/no-content-type", patternParts: ["api","no-content-type"], isDynamic: false, params: [], module: api_6 },
+  { pattern: "/api/parse", patternParts: ["api","parse"], isDynamic: false, params: [], module: api_7 },
+  { pattern: "/api/send-buffer", patternParts: ["api","send-buffer"], isDynamic: false, params: [], module: api_8 },
+  { pattern: "/api/users/:id", patternParts: ["api","users",":id"], isDynamic: true, params: ["id"], module: api_9 }
+];
+const _apiRouteTrie = _buildRouteTrie(apiRoutes);
+
+function matchRoute(url, routes) {
+  const pathname = url.split("?")[0];
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+  // the entry point. Decoding again would create a double-decode vector.
+  const urlParts = normalizedUrl.split("/").filter(Boolean);
+  const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
+  return _trieMatch(trie, urlParts);
+}
+
+function parseQuery(url) {
+  const qs = url.split("?")[1];
+  if (!qs) return {};
+  const p = new URLSearchParams(qs);
+  const q = {};
+  for (const [k, v] of p) {
+    if (k in q) {
+      q[k] = Array.isArray(q[k]) ? q[k].concat(v) : [q[k], v];
+    } else {
+      q[k] = v;
+    }
+  }
+  return q;
+}
+
+function patternToNextFormat(pattern) {
+  return pattern
+    .replace(/:([\\w]+)\\*/g, "[[...$1]]")
+    .replace(/:([\\w]+)\\+/g, "[...$1]")
+    .replace(/:([\\w]+)/g, "[$1]");
+}
+
+function collectAssetTags(manifest, moduleIds) {
+  // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
+  const m = (manifest && Object.keys(manifest).length > 0)
+    ? manifest
+    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+  const tags = [];
+  const seen = new Set();
+
+  // Load the set of lazy chunk filenames (only reachable via dynamic imports).
+  // These should NOT get <link rel="modulepreload"> or <script type="module">
+  // tags — they are fetched on demand when the dynamic import() executes (e.g.
+  // chunks behind React.lazy() or next/dynamic boundaries).
+  var lazyChunks = (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
+  var lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
+
+  // Inject the client entry script if embedded by vinext:cloudflare-build
+  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
+    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
+    seen.add(entry);
+    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
+    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
+  }
+  if (m) {
+    // Always inject shared chunks (framework, vinext runtime, entry) and
+    // page-specific chunks. The manifest maps module file paths to their
+    // associated JS/CSS assets.
+    //
+    // For page-specific injection, the module IDs may be absolute paths
+    // while the manifest uses relative paths. Try both the original ID
+    // and a suffix match to find the correct manifest entry.
+    var allFiles = [];
+
+    if (moduleIds && moduleIds.length > 0) {
+      // Collect assets for the requested page modules
+      for (var mi = 0; mi < moduleIds.length; mi++) {
+        var id = moduleIds[mi];
+        var files = m[id];
+        if (!files) {
+          // Absolute path didn't match — try matching by suffix.
+          // Manifest keys are relative (e.g. "pages/about.tsx") while
+          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
+          for (var mk in m) {
+            if (id.endsWith("/" + mk) || id === mk) {
+              files = m[mk];
+              break;
+            }
+          }
+        }
+        if (files) {
+          for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
+        }
+      }
+
+      // Also inject shared chunks that every page needs: framework,
+      // vinext runtime, and the entry bootstrap. These are identified
+      // by scanning all manifest values for chunk filenames containing
+      // known prefixes.
+      for (var key in m) {
+        var vals = m[key];
+        if (!vals) continue;
+        for (var vi = 0; vi < vals.length; vi++) {
+          var file = vals[vi];
+          var basename = file.split("/").pop() || "";
+          if (
+            basename.startsWith("framework-") ||
+            basename.startsWith("vinext-") ||
+            basename.includes("vinext-client-entry") ||
+            basename.includes("vinext-app-browser-entry")
+          ) {
+            allFiles.push(file);
+          }
+        }
+      }
+    } else {
+      // No specific modules — include all assets from manifest
+      for (var akey in m) {
+        var avals = m[akey];
+        if (avals) {
+          for (var ai = 0; ai < avals.length; ai++) allFiles.push(avals[ai]);
+        }
+      }
+    }
+
+    for (var ti = 0; ti < allFiles.length; ti++) {
+      var tf = allFiles[ti];
+      // Normalize: Vite's SSR manifest values include a leading '/'
+      // (from base path), but we prepend '/' ourselves when building
+      // href/src attributes. Strip any existing leading slash to avoid
+      // producing protocol-relative URLs like "//assets/chunk.js".
+      // This also ensures consistent keys for the seen-set dedup and
+      // lazySet.has() checks (which use values without leading slash).
+      if (tf.charAt(0) === '/') tf = tf.slice(1);
+      if (seen.has(tf)) continue;
+      seen.add(tf);
+      if (tf.endsWith(".css")) {
+        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
+      } else if (tf.endsWith(".js")) {
+        // Skip lazy chunks — they are behind dynamic import() boundaries
+        // (React.lazy, next/dynamic) and should only be fetched on demand.
+        if (lazySet && lazySet.has(tf)) continue;
+        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
+        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
+      }
+    }
+  }
+  return tags.join("\\n  ");
+}
+
+// i18n helpers
+function extractLocale(url) {
+  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
+  const pathname = url.split("?")[0];
+  const parts = pathname.split("/").filter(Boolean);
+  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
+    const locale = parts[0];
+    const rest = "/" + parts.slice(1).join("/");
+    return { locale, url: (rest || "/") + query, hadPrefix: true };
+  }
+  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
+}
+
+function detectLocaleFromHeaders(headers) {
+  if (!i18nConfig) return null;
+  const acceptLang = headers.get("accept-language");
+  if (!acceptLang) return null;
+  const langs = acceptLang.split(",").map(function(part) {
+    const pieces = part.trim().split(";");
+    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
+    return { lang: pieces[0].trim().toLowerCase(), q: q };
+  }).sort(function(a, b) { return b.q - a.q; });
+  for (let k = 0; k < langs.length; k++) {
+    const lang = langs[k].lang;
+    for (let j = 0; j < i18nConfig.locales.length; j++) {
+      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
+    }
+    const prefix = lang.split("-")[0];
+    for (let j = 0; j < i18nConfig.locales.length; j++) {
+      const loc = i18nConfig.locales[j].toLowerCase();
+      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
+    }
+  }
+  return null;
+}
+
+function parseCookieLocaleFromHeader(cookieHeader) {
+  if (!i18nConfig || !cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
+  if (!match) return null;
+  var value;
+  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
+  if (i18nConfig.locales.indexOf(value) !== -1) return value;
+  return null;
+}
+
+export async function renderPage(request, url, manifest, ctx) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
+  return _renderPage(request, url, manifest);
+}
+
+async function _renderPage(request, url, manifest) {
+  const localeInfo = i18nConfig
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      )
+    : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
+  const locale = localeInfo.locale;
+  const routeUrl = localeInfo.url;
+  const currentDefaultLocale = i18nConfig
+    ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
+    : undefined;
+  const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+
+  if (localeInfo.redirectUrl) {
+    return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
+  }
+
+  const match = matchRoute(routeUrl, pageRoutes);
+  if (!match) {
+    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+      { status: 404, headers: { "Content-Type": "text/html" } });
+  }
+
+	  const { route, params } = match;
+	  const __uCtx = _createUnifiedCtx({
+	    executionContext: _getRequestExecutionContext(),
+	  });
+	  return _runWithUnifiedCtx(__uCtx, async () => {
+	    ensureFetchPatch();
+	    try {
+	    const routePattern = patternToNextFormat(route.pattern);
+	    if (typeof setSSRContext === "function") {
+	      setSSRContext({
+	        pathname: routePattern,
+	        query: { ...params, ...parseQuery(routeUrl) },
+	        asPath: routeUrl,
+	        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+      });
+    }
+
+    if (i18nConfig) {
+      setI18nContext({
+        locale: locale,
+        locales: i18nConfig.locales,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+        hostname: new URL(request.url).hostname,
+      });
+    }
+
+    const pageModule = route.module;
+    const PageComponent = pageModule.default;
+	    if (!PageComponent) {
+	      return new Response("Page has no default export", { status: 500 });
+	    }
+	    // Build font Link header early so it's available for ISR cached responses too.
+	    // Font preloads are module-level state populated at import time and persist across requests.
+	    var _fontLinkHeader = "";
+	    var _allFp = [];
+    try {
+      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
+      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
+      _allFp = _fpGoogle.concat(_fpLocal);
+	      if (_allFp.length > 0) {
+	        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
+	      }
+	    } catch (e) { /* font preloads not available */ }
+	    const query = parseQuery(routeUrl);
+	    const pageDataResult = await __resolvePagesPageData({
+	      applyRequestContexts() {
+	        if (typeof setSSRContext === "function") {
+	          setSSRContext({
+	            pathname: routePattern,
+	            query: { ...params, ...query },
+	            asPath: routeUrl,
+	            locale: locale,
+	            locales: i18nConfig ? i18nConfig.locales : undefined,
+	            defaultLocale: currentDefaultLocale,
+	            domainLocales: domainLocales,
+	          });
+	        }
+	        if (i18nConfig) {
+	          setI18nContext({
+	            locale: locale,
+	            locales: i18nConfig.locales,
+	            defaultLocale: currentDefaultLocale,
+	            domainLocales: domainLocales,
+	            hostname: new URL(request.url).hostname,
+	          });
+	        }
+	      },
+	      buildId,
+	      createGsspReqRes() {
+	        return __createPagesReqRes({ body: undefined, query, request, url: routeUrl });
+	      },
+	      createPageElement(currentPageProps) {
+	        var currentElement = AppComponent
+	          ? React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps })
+	          : React.createElement(PageComponent, currentPageProps);
+	        return wrapWithRouterContext(currentElement);
+	      },
+	      fontLinkHeader: _fontLinkHeader,
+	      i18n: {
+	        locale: locale,
+	        locales: i18nConfig ? i18nConfig.locales : undefined,
+	        defaultLocale: currentDefaultLocale,
+	        domainLocales: domainLocales,
+	      },
+	      isrCacheKey,
+	      isrGet,
+	      isrSet,
+	      pageModule,
+	      params,
+	      query,
+	      renderIsrPassToStringAsync,
+	      route: {
+	        isDynamic: route.isDynamic,
+	      },
+	      routePattern,
+	      routeUrl,
+	      runInFreshUnifiedContext(callback) {
+	        var revalCtx = _createUnifiedCtx({
+	          executionContext: _getRequestExecutionContext(),
+	        });
+	        return _runWithUnifiedCtx(revalCtx, async () => {
+	          ensureFetchPatch();
+	          return callback();
+	        });
+	      },
+	      safeJsonStringify,
+	      sanitizeDestination: sanitizeDestinationLocal,
+	      triggerBackgroundRegeneration,
+	    });
+	    if (pageDataResult.kind === "response") {
+	      return pageDataResult.response;
+	    }
+	    let pageProps = pageDataResult.pageProps;
+	    var gsspRes = pageDataResult.gsspRes;
+	    let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+
+	    const pageModuleIds = route.filePath ? [route.filePath] : [];
+	    const assetTags = collectAssetTags(manifest, pageModuleIds);
+
+    return __renderPagesPageResponse({
+      assetTags,
+      buildId,
+      clearSsrContext() {
+        if (typeof setSSRContext === "function") setSSRContext(null);
+      },
+      createPageElement(currentPageProps) {
+        var currentElement;
+        if (AppComponent) {
+          currentElement = React.createElement(AppComponent, { Component: PageComponent, pageProps: currentPageProps });
+        } else {
+          currentElement = React.createElement(PageComponent, currentPageProps);
+        }
+        return wrapWithRouterContext(currentElement);
+      },
+      DocumentComponent,
+      flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+      fontLinkHeader: _fontLinkHeader,
+      fontPreloads: _allFp,
+      getFontLinks() {
+        try {
+          return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+        } catch (e) {
+          return [];
+        }
+      },
+      getFontStyles() {
+        try {
+          var allFontStyles = [];
+          if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+          if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+          return allFontStyles;
+        } catch (e) {
+          return [];
+        }
+      },
+	      getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+	      gsspRes,
+      isrCacheKey,
+      isrRevalidateSeconds,
+      isrSet,
+      i18n: {
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+      },
+      pageProps,
+      params,
+      renderDocumentToString(element) {
+        return renderToStringAsync(element);
+      },
+      renderIsrPassToStringAsync,
+      renderToReadableStream(element) {
+        return renderToReadableStream(element);
+      },
+      resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+	      routePattern,
+      routeUrl,
+      safeJsonStringify,
+    });
+    } catch (e) {
+    console.error("[vinext] SSR error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+    ).catch(() => { /* ignore reporting errors */ });
+    return new Response("Internal Server Error", { status: 500 });
+    }
+  });
+}
+
+export async function handleApiRoute(request, url) {
+  const match = matchRoute(url, apiRoutes);
+  return __handlePagesApiRoute({
+    match,
+    request,
+    url,
+    reportRequestError(error, routePattern) {
+      console.error("[vinext] API error:", error);
+      void _reportRequestError(
+        error,
+        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "Pages Router", routePath: routePattern, routeType: "route" },
+      );
+    },
+  });
+}
+
+
+// --- Middleware support (generated from middleware-codegen.ts) ---
+
+function __normalizePath(pathname) {
+  if (
+    pathname === "/" ||
+    (pathname.length > 1 &&
+      pathname[0] === "/" &&
+      !pathname.includes("//") &&
+      !pathname.includes("/./") &&
+      !pathname.includes("/../") &&
+      !pathname.endsWith("/.") &&
+      !pathname.endsWith("/.."))
+  ) {
+    return pathname;
+  }
+  var segments = pathname.split("/");
+  var resolved = [];
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i];
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { resolved.pop(); }
+    else { resolved.push(seg); }
+  }
+  return "/" + resolved.join("/");
+}
+
+var __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  var segments = pathname.split("/");
+  var normalized = [];
+  for (var i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  var segments = pathname.split("/");
+  var normalized = [];
+  for (var i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
+function __isSafeRegex(pattern) {
+  var quantifierAtDepth = [];
+  var depth = 0;
+  var i = 0;
+  while (i < pattern.length) {
+    var ch = pattern[i];
+    if (ch === "\\\\") { i += 2; continue; }
+    if (ch === "[") {
+      i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        if (pattern[i] === "\\\\") i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
+      else quantifierAtDepth[depth] = false;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      var hadQ = depth > 0 && quantifierAtDepth[depth];
+      if (depth > 0) depth--;
+      var next = pattern[i + 1];
+      if (next === "+" || next === "*" || next === "{") {
+        if (hadQ) return false;
+        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "+" || ch === "*") {
+      if (depth > 0) quantifierAtDepth[depth] = true;
+      i++;
+      continue;
+    }
+    if (ch === "?") {
+      var prev = i > 0 ? pattern[i - 1] : "";
+      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      var j = i + 1;
+      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
+      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+        i = j + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  return true;
+}
+function __safeRegExp(pattern, flags) {
+  if (!__isSafeRegex(pattern)) {
+    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
+    return null;
+  }
+  try { return new RegExp(pattern, flags); } catch { return null; }
+}
+
+var __mwPatternCache = new Map();
+function __extractConstraint(str, re) {
+  if (str[re.lastIndex] !== "(") return null;
+  var start = re.lastIndex + 1;
+  var depth = 1;
+  var i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
+function __compileMwPattern(pattern) {
+  var hasConstraints = /:[\\w-]+[*+]?\\(/.test(pattern);
+  if (!hasConstraints && (pattern.includes("(") || pattern.includes("\\\\"))) {
+    return __safeRegExp("^" + pattern + "$");
+  }
+  var regexStr = "";
+  var tokenRe = /\\/:([\\w-]+)\\*|\\/:([\\w-]+)\\+|:([\\w-]+)|[.]|[^/:.]+|./g;
+  var tok;
+  while ((tok = tokenRe.exec(pattern)) !== null) {
+    if (tok[1] !== undefined) {
+      var c1 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c1 !== null ? "(?:/(" + c1 + "))?" : "(?:/.*)?";
+    }
+    else if (tok[2] !== undefined) {
+      var c2 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c2 !== null ? "(?:/(" + c2 + "))" : "(?:/.+)";
+    }
+    else if (tok[3] !== undefined) {
+      var constraint = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      var isOptional = pattern[tokenRe.lastIndex] === "?";
+      if (isOptional) tokenRe.lastIndex += 1;
+      var group = constraint !== null ? "(" + constraint + ")" : "([^/]+)";
+      if (isOptional && regexStr.endsWith("/")) {
+        regexStr = regexStr.slice(0, -1) + "(?:/" + group + ")?";
+      } else if (isOptional) {
+        regexStr += group + "?";
+      } else {
+        regexStr += group;
+      }
+    }
+    else if (tok[0] === ".") { regexStr += "\\\\."; }
+    else { regexStr += tok[0]; }
+  }
+  return __safeRegExp("^" + regexStr + "$");
+}
+function matchMiddlewarePattern(pathname, pattern) {
+  var cached = __mwPatternCache.get(pattern);
+  if (cached === undefined) {
+    cached = __compileMwPattern(pattern);
+    __mwPatternCache.set(pattern, cached);
+  }
+  return cached ? cached.test(pathname) : pathname === pattern;
+}
+
+var __middlewareConditionRegexCache = new Map();
+// Requestless matcher checks reuse this singleton. Treat it as immutable.
+var __emptyMiddlewareRequestContext = {
+  headers: new Headers(),
+  cookies: {},
+  query: new URLSearchParams(),
+  host: "",
+};
+
+function __normalizeMiddlewareHost(hostHeader, fallbackHostname) {
+  var host = hostHeader ?? fallbackHostname;
+  return host.split(":", 1)[0].toLowerCase();
+}
+
+function __parseMiddlewareCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  var cookies = {};
+  for (var part of cookieHeader.split(";")) {
+    var eq = part.indexOf("=");
+    if (eq === -1) continue;
+    var key = part.slice(0, eq).trim();
+    var value = part.slice(eq + 1).trim();
+    if (key) cookies[key] = value;
+  }
+  return cookies;
+}
+
+function __middlewareRequestContextFromRequest(request) {
+  if (!request) return __emptyMiddlewareRequestContext;
+  var url = new URL(request.url);
+  return {
+    headers: request.headers,
+    cookies: __parseMiddlewareCookies(request.headers.get("cookie")),
+    query: url.searchParams,
+    host: __normalizeMiddlewareHost(request.headers.get("host"), url.hostname),
+  };
+}
+
+function __stripMiddlewareLocalePrefix(pathname, i18nConfig) {
+  if (pathname === "/") return null;
+  var segments = pathname.split("/");
+  var firstSegment = segments[1];
+  if (!firstSegment || !i18nConfig || !i18nConfig.locales.includes(firstSegment)) {
+    return null;
+  }
+  var stripped = "/" + segments.slice(2).join("/");
+  return stripped === "/" ? "/" : stripped.replace(/\\/+$/, "") || "/";
+}
+
+function __matchMiddlewareMatcherPattern(pathname, pattern, i18nConfig) {
+  if (!i18nConfig) return matchMiddlewarePattern(pathname, pattern);
+  var localeStrippedPathname = __stripMiddlewareLocalePrefix(pathname, i18nConfig);
+  return matchMiddlewarePattern(localeStrippedPathname ?? pathname, pattern);
+}
+
+function __middlewareConditionRegex(value) {
+  if (__middlewareConditionRegexCache.has(value)) {
+    return __middlewareConditionRegexCache.get(value);
+  }
+  var re = __safeRegExp(value);
+  __middlewareConditionRegexCache.set(value, re);
+  return re;
+}
+
+function __checkMiddlewareCondition(condition, ctx) {
+  switch (condition.type) {
+    case "header": {
+      var headerValue = ctx.headers.get(condition.key);
+      if (headerValue === null) return false;
+      if (condition.value !== undefined) {
+        var re = __middlewareConditionRegex(condition.value);
+        if (re) return re.test(headerValue);
+        return headerValue === condition.value;
+      }
+      return true;
+    }
+    case "cookie": {
+      var cookieValue = ctx.cookies[condition.key];
+      if (cookieValue === undefined) return false;
+      if (condition.value !== undefined) {
+        var re = __middlewareConditionRegex(condition.value);
+        if (re) return re.test(cookieValue);
+        return cookieValue === condition.value;
+      }
+      return true;
+    }
+    case "query": {
+      var queryValue = ctx.query.get(condition.key);
+      if (queryValue === null) return false;
+      if (condition.value !== undefined) {
+        var re = __middlewareConditionRegex(condition.value);
+        if (re) return re.test(queryValue);
+        return queryValue === condition.value;
+      }
+      return true;
+    }
+    case "host": {
+      if (condition.value !== undefined) {
+        var re = __middlewareConditionRegex(condition.value);
+        if (re) return re.test(ctx.host);
+        return ctx.host === condition.value;
+      }
+      return ctx.host === condition.key;
+    }
+    default:
+      return false;
+  }
+}
+
+function __checkMiddlewareHasConditions(has, missing, ctx) {
+  if (has) {
+    for (var condition of has) {
+      if (!__checkMiddlewareCondition(condition, ctx)) return false;
+    }
+  }
+  if (missing) {
+    for (var condition of missing) {
+      if (__checkMiddlewareCondition(condition, ctx)) return false;
+    }
+  }
+  return true;
+}
+
+// Keep this in sync with isValidMiddlewareMatcherObject in middleware.ts.
+function __isValidMiddlewareMatcherObject(matcher) {
+  if (!matcher || typeof matcher !== "object" || Array.isArray(matcher)) return false;
+  if (typeof matcher.source !== "string") return false;
+  for (var key of Object.keys(matcher)) {
+    if (key !== "source" && key !== "locale" && key !== "has" && key !== "missing") {
+      return false;
+    }
+  }
+  if ("locale" in matcher && matcher.locale !== undefined && matcher.locale !== false) return false;
+  if ("has" in matcher && matcher.has !== undefined && !Array.isArray(matcher.has)) return false;
+  if ("missing" in matcher && matcher.missing !== undefined && !Array.isArray(matcher.missing)) {
+    return false;
+  }
+  return true;
+}
+
+function __matchMiddlewareObject(pathname, matcher, i18nConfig) {
+  return matcher.locale === false
+    ? matchMiddlewarePattern(pathname, matcher.source)
+    : __matchMiddlewareMatcherPattern(pathname, matcher.source, i18nConfig);
+}
+
+function matchesMiddleware(pathname, matcher, request, i18nConfig) {
+  if (!matcher) {
+    return true;
+  }
+  if (typeof matcher === "string") {
+    return __matchMiddlewareMatcherPattern(pathname, matcher, i18nConfig);
+  }
+  if (!Array.isArray(matcher)) {
+    return false;
+  }
+  var requestContext = __middlewareRequestContextFromRequest(request);
+  for (var m of matcher) {
+    if (typeof m === "string") {
+      if (__matchMiddlewareMatcherPattern(pathname, m, i18nConfig)) return true;
+      continue;
+    }
+    if (__isValidMiddlewareMatcherObject(m)) {
+      if (!__matchMiddlewareObject(pathname, m, i18nConfig)) continue;
+      if (!__checkMiddlewareHasConditions(m.has, m.missing, requestContext)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function runMiddleware(request, ctx) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _runMiddleware(request));
+  return _runMiddleware(request);
+}
+
+async function _runMiddleware(request) {
+  var isProxy = false;
+  var middlewareFn = isProxy
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    var fileType = isProxy ? "Proxy" : "Middleware";
+    var expectedExport = isProxy ? "proxy" : "middleware";
+    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
+  }
+
+  var config = middlewareModule.config;
+  var matcher = config && config.matcher;
+  var url = new URL(request.url);
+
+  // Normalize pathname before matching to prevent path-confusion bypasses
+  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
+  var decodedPathname;
+  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  var normalizedPathname = __normalizePath(decodedPathname);
+
+  if (!matchesMiddleware(normalizedPathname, matcher, request, i18nConfig)) return { continue: true };
+
+   // Construct a new Request with the decoded + normalized pathname so middleware
+   // always sees the same canonical path that the router uses.
+  var mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    var mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
+  var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
+  var response;
+  try { response = await middlewareFn(nextRequest, fetchEvent); }
+  catch (e) {
+    console.error("[vinext] Middleware error:", e);
+    var _mwCtxErr = _getRequestExecutionContext();
+    if (_mwCtxErr && typeof _mwCtxErr.waitUntil === "function") { _mwCtxErr.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
+    return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
+  }
+  var _mwCtx = _getRequestExecutionContext();
+  if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
+
+  if (!response) return { continue: true };
+
+  if (response.headers.get("x-middleware-next") === "1") {
+    var rHeaders = new Headers();
+    for (var [key, value] of response.headers) {
+      // Keep x-middleware-request-* headers so the production server can
+      // apply middleware-request header overrides before stripping internals
+      // from the final client response.
+      if (
+        !key.startsWith("x-middleware-") ||
+        key === "x-middleware-override-headers" ||
+        key.startsWith("x-middleware-request-")
+      ) rHeaders.append(key, value);
+    }
+    return { continue: true, responseHeaders: rHeaders };
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    var location = response.headers.get("Location") || response.headers.get("location");
+    if (location) {
+      var rdHeaders = new Headers();
+      for (var [rk, rv] of response.headers) {
+        if (!rk.startsWith("x-middleware-") && rk.toLowerCase() !== "location") rdHeaders.append(rk, rv);
+      }
+      return { continue: false, redirectUrl: location, redirectStatus: response.status, responseHeaders: rdHeaders };
+    }
+  }
+
+  var rewriteUrl = response.headers.get("x-middleware-rewrite");
+  if (rewriteUrl) {
+    var rwHeaders = new Headers();
+    for (var [k, v] of response.headers) {
+      if (!k.startsWith("x-middleware-") || k === "x-middleware-override-headers" || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
+    }
+    var rewritePath;
+    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
+    catch { rewritePath = rewriteUrl; }
+    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
+  }
+
+  return { continue: false, response: response };
+}
+
+"
+`;
