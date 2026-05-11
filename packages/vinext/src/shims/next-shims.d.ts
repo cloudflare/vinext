@@ -6,6 +6,21 @@
  * satisfies TypeScript when one shim imports another (e.g. link -> router).
  */
 
+declare module "next" {
+  import type { IncomingMessage, ServerResponse } from "node:http";
+  export interface NextApiRequest extends IncomingMessage {
+    query: Record<string, string | string[]>;
+    body: unknown;
+    cookies: Record<string, string>;
+  }
+  export interface NextApiResponse<T = unknown> extends ServerResponse {
+    status(code: number): NextApiResponse<T>;
+    json(data: T): void;
+    send(data: T): void;
+    redirect(statusOrUrl: number | string, url?: string): void;
+  }
+}
+
 declare module "next/router" {
   export function useRouter(): any;
   export function setSSRContext(ctx: any): void;
@@ -26,6 +41,14 @@ declare module "next/head" {
   export default Head;
   export function resetSSRHead(): void;
   export function getSSRHeadHTML(): string;
+}
+
+declare module "next/document" {
+  import { ComponentType, ReactNode } from "react";
+  export const Html: ComponentType<{ lang?: string; children?: ReactNode; [key: string]: unknown }>;
+  export const Head: ComponentType<{ children?: ReactNode }>;
+  export const Main: ComponentType;
+  export const NextScript: ComponentType;
 }
 
 declare module "next/dynamic" {
@@ -72,6 +95,31 @@ declare module "next/script" {
   export { ScriptProps };
   export function handleClientScriptLoad(props: ScriptProps): void;
   export function initScriptLoader(scripts: ScriptProps[]): void;
+}
+
+declare module "next/headers" {
+  export function headers(): Promise<Headers>;
+  export function cookies(): Promise<any>;
+  export function draftMode(): Promise<{ isEnabled: boolean }>;
+}
+
+declare module "next/link" {
+  import type { ComponentType, AnchorHTMLAttributes, ReactNode } from "react";
+  type UrlQueryValue = string | number | boolean | null | undefined;
+  type UrlQuery = Record<string, UrlQueryValue | readonly UrlQueryValue[]>;
+  interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
+    href: string | { pathname?: string; query?: UrlQuery };
+    as?: string;
+    replace?: boolean;
+    prefetch?: boolean;
+    passHref?: boolean;
+    scroll?: boolean;
+    locale?: string | false;
+    onNavigate?: (event: { preventDefault(): void }) => void;
+    children?: ReactNode;
+  }
+  const Link: ComponentType<LinkProps>;
+  export default Link;
 }
 
 declare module "next/navigation" {
@@ -452,6 +500,14 @@ declare module "next/font/local" {
   };
 
   export default function localFont(options: LocalFontOptions): FontResult;
+}
+
+declare module "next/app" {
+  import { ComponentType } from "react";
+  export interface AppProps {
+    Component: ComponentType<any>;
+    pageProps: Record<string, unknown>;
+  }
 }
 
 declare module "next/cache" {

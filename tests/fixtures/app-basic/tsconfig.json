@@ -11,5 +11,5 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["app", "*.ts"]
+  "include": ["app", "*.ts", "../../../packages/vinext/src/shims/next-shims.d.ts"]
 }

@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["vite/client", "@vitejs/plugin-rsc/types"]
   },
-  "include": ["src", "*.ts"]
+  "include": ["src", "*.ts", "../../../packages/vinext/src/shims/next-shims.d.ts"]
 }
