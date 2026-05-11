@@ -460,6 +460,27 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
     for (const slot of route.parallelSlots) {
       const ownerLayoutId = findSlotOwnerLayoutId(route, slot);
       const defaultId = slot.defaultPath ? createAppRouteGraphDefaultId(slot.id) : null;
+      if (slot.layoutPath) {
+        const slotLayoutTreePath = createSlotLayoutTreePath(slot);
+        const slotLayoutId = createAppRouteGraphLayoutId(slotLayoutTreePath);
+        const existingLayout = layouts.get(slotLayoutId);
+        if (existingLayout) {
+          assertRouteManifestRootBoundary(
+            "layout",
+            route,
+            slotLayoutId,
+            existingLayout.rootBoundaryId,
+          );
+        }
+        const slotLayoutRouteParts = convertTreePathToRouteParts(slotLayoutTreePath);
+        layouts.set(slotLayoutId, {
+          id: slotLayoutId,
+          treePath: slotLayoutTreePath,
+          patternParts: slotLayoutRouteParts.urlSegments,
+          paramNames: slotLayoutRouteParts.params,
+          rootBoundaryId: route.ids.rootBoundary,
+        });
+      }
       slots.set(slot.id, {
         id: slot.id,
         key: slot.key,
@@ -513,6 +534,12 @@ function findSlotOwnerLayoutId(
 ): string | null {
   if (slot.layoutIndex < 0) return null;
   return route.ids.layouts[slot.layoutIndex] ?? null;
+}
+
+function createSlotLayoutTreePath(slot: AppRouteGraphParallelSlot): string {
+  const slotSegment = `@${slot.name}`;
+  if (slot.ownerTreePath === "/") return `/${slotSegment}`;
+  return `${slot.ownerTreePath}/${slotSegment}`;
 }
 
 function createRouteManifestSlotBinding(

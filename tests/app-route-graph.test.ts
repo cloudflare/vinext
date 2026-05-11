@@ -314,6 +314,26 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("materializes slot-local layouts in the static segment graph", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@modal/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "@modal/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const { segmentGraph } = graph.routeManifest;
+
+      expect(segmentGraph.layouts.get("layout:/@modal")).toEqual({
+        id: "layout:/@modal",
+        treePath: "/@modal",
+        patternParts: [],
+        paramNames: [],
+        rootBoundaryId: "root-boundary:/",
+      });
+    });
+  });
+
   it("exposes a minimal RouteManifest read model keyed by semantic ids", async () => {
     await withTempApp(async (appDir) => {
       await createSemanticIdsFixture(appDir);

@@ -263,7 +263,7 @@ function treePathToScopedLayoutRouteLiteral(treePath: string): string {
   const segments = treePath
     .split("/")
     .filter(Boolean)
-    .filter((segment) => !isSlotSegment(segment) && segment !== ".")
+    .filter((segment) => segment !== ".")
     .map((segment) => decodeRouteSegment(segment));
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
@@ -272,10 +272,6 @@ function isInvisibleSegment(segment: string): boolean {
   return (
     segment === "." || (segment.startsWith("(") && segment.endsWith(")")) || segment.startsWith("@")
   );
-}
-
-function isSlotSegment(segment: string): boolean {
-  return segment.startsWith("@");
 }
 
 function addRoute(

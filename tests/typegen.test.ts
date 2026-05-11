@@ -116,6 +116,22 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("keeps slot-local layouts separate from their owning layout", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/@modal/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/@modal/page.tsx", EMPTY_PAGE);
+
+      const outputPath = await generateRouteTypes({ root });
+      const generated = await readFile(outputPath, "utf-8");
+
+      expect(generated).toContain('type LayoutRoute = "/" | "/@modal";');
+      expect(generated).toContain('"/": "modal";');
+      expect(generated).toContain('"/@modal": never;');
+    });
+  });
+
   it("updates generated route helper types when App Router files are added in dev", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
