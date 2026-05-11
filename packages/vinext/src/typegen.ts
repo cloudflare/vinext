@@ -12,6 +12,14 @@ type GenerateRouteTypesOptions = {
 
 type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
+const NEXT_ENV_FILE_CONTENT = `/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+import "./.next/types/routes.d.ts";
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+`;
+
 export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
   const root = path.resolve(options.root);
   const appDir = options.appDir ? path.resolve(options.appDir) : await findAppDir(root);
@@ -23,7 +31,17 @@ export async function generateRouteTypes(options: GenerateRouteTypesOptions): Pr
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
+  await ensureNextEnvFile(root);
   return outPath;
+}
+
+async function ensureNextEnvFile(root: string): Promise<void> {
+  const envPath = path.join(root, "next-env.d.ts");
+  try {
+    await fs.access(envPath);
+  } catch {
+    await fs.writeFile(envPath, NEXT_ENV_FILE_CONTENT, "utf-8");
+  }
 }
 
 type RouteTypeModel = {

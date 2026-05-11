@@ -132,6 +132,34 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("writes a Next-compatible next-env.d.ts stub when one is missing", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+
+      await generateRouteTypes({ root });
+      const generated = await readFile(path.join(root, "next-env.d.ts"), "utf-8");
+
+      expect(generated).toContain('/// <reference types="next" />');
+      expect(generated).toContain('/// <reference types="next/image-types/global" />');
+      expect(generated).toContain('import "./.next/types/routes.d.ts";');
+    });
+  });
+
+  it("preserves an existing next-env.d.ts", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      const customContent = '/// <reference types="custom" />\n';
+      await writeProjectFile(root, "next-env.d.ts", customContent);
+
+      await generateRouteTypes({ root });
+      const preserved = await readFile(path.join(root, "next-env.d.ts"), "utf-8");
+
+      expect(preserved).toBe(customContent);
+    });
+  });
+
   it("updates generated route helper types when App Router files are added in dev", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
