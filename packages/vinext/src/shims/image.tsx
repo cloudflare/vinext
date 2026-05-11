@@ -91,6 +91,9 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   }
 
   if (!__dangerouslyAllowLocalIP && isPrivateIp(url.hostname)) {
+    // Best-effort guard for literal-IP hostnames only. Domain names resolving
+    // to private IPs cannot be caught without server-side DNS resolution.
+    // See: Next.js fetchExternalImage in packages/next/src/server/image-optimizer.ts
     return {
       allowed: false,
       reason: `Image URL "${src}" resolved to private IP. If this is expected and you understand SSRF risk, use images.dangerouslyAllowLocalIP = true to continue.`,

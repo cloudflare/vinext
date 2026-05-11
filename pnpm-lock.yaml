@@ -117,6 +117,9 @@ catalogs:
     image-size:
       specifier: 2.0.2
       version: 2.0.2
+    ipaddr.js:
+      specifier: ^2.1.0
+      version: 2.4.0
     knip:
       specifier: ^6.6.2
       version: 6.6.2
@@ -788,6 +791,9 @@ importers:
       image-size:
         specifier: 'catalog:'
         version: 2.0.2
+      ipaddr.js:
+        specifier: 'catalog:'
+        version: 2.4.0
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
@@ -4543,6 +4549,10 @@ packages:
 
   intl-messageformat@11.1.2:
     resolution: {integrity: sha512-ucSrQmZGAxfiBHfBRXW/k7UC8MaGFlEj4Ry1tKiDcmgwQm1y3EDl40u+4VNHYomxJQMJi9NEI3riDRlth96jKg==}
+
+  ipaddr.js@2.4.0:
+    resolution: {integrity: sha512-9VGk3HGanVE6JoZXHiCpnGy5X0jYDnN4EA4lntFPj+1vIWlFhIylq2CrrCOJH9EAhc5CYhq18F2Av2tgoAPsYQ==}
+    engines: {node: '>= 10'}
 
   is-alphabetical@2.0.1:
     resolution: {integrity: sha512-FWyyY60MeTNyeSRpkM2Iry0G9hpr7/9kD40mD/cGQEuilcZYS4okz8SN2Q6rLCJ8gbCt6fN+rC+6tMGS99LaxQ==}
@@ -8652,6 +8662,8 @@ snapshots:
       '@formatjs/fast-memoize': 3.1.0
       '@formatjs/icu-messageformat-parser': 3.5.1
       tslib: 2.8.1
+
+  ipaddr.js@2.4.0: {}
 
   is-alphabetical@2.0.1: {}
 

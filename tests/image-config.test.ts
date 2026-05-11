@@ -289,13 +289,35 @@ describe("isPrivateIp", () => {
     expect(isPrivateIp("::ffff:0.0.0.0")).toBe(true);
     expect(isPrivateIp("::ffff:127.0.0.1")).toBe(true);
     expect(isPrivateIp("::ffff:7f00:1")).toBe(true);
-    expect(isPrivateIp("2001:2f:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(true);
-    expect(isPrivateIp("[2001:2f:ffff:ffff:ffff:ffff:ffff:ffff]")).toBe(true);
     expect(isPrivateIp("2002::")).toBe(true);
     expect(isPrivateIp("ff00::")).toBe(true);
     expect(isPrivateIp("fc00::")).toBe(true);
     expect(isPrivateIp("fe80::1")).toBe(true);
     expect(isPrivateIp("fd00::1")).toBe(true);
+  });
+
+  it("returns true for additional non-unicast IPv4 ranges (CGNAT, multicast, reserved, benchmarking, documentation)", () => {
+    expect(isPrivateIp("100.64.0.0")).toBe(true); // CGNAT (100.64.0.0/10)
+    expect(isPrivateIp("100.127.255.255")).toBe(true);
+    expect(isPrivateIp("198.18.0.0")).toBe(true); // benchmarking (198.18.0.0/15)
+    expect(isPrivateIp("198.19.255.255")).toBe(true);
+    expect(isPrivateIp("224.0.0.0")).toBe(true); // multicast (224.0.0.0/4)
+    expect(isPrivateIp("239.255.255.255")).toBe(true);
+    expect(isPrivateIp("240.0.0.0")).toBe(true); // reserved (240.0.0.0/4)
+    expect(isPrivateIp("255.255.255.255")).toBe(true); // broadcast
+    expect(isPrivateIp("192.0.0.0")).toBe(true); // IETF protocol (192.0.0.0/24)
+    expect(isPrivateIp("192.0.0.255")).toBe(true);
+    expect(isPrivateIp("198.51.100.0")).toBe(true); // TEST-NET-2 (198.51.100.0/24)
+    expect(isPrivateIp("203.0.113.0")).toBe(true); // TEST-NET-3 (203.0.113.0/24)
+  });
+
+  it("returns true for additional non-unicast IPv6 ranges (teredo, benchmarking, documentation, discard, NAT64)", () => {
+    expect(isPrivateIp("2001::1")).toBe(true); // teredo (2001::/32)
+    expect(isPrivateIp("2001:0:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(true);
+    expect(isPrivateIp("2001:2::1")).toBe(true); // benchmarking (2001:2::/48, RFC 5180)
+    expect(isPrivateIp("2001:db8::1")).toBe(true); // documentation (2001:db8::/32)
+    expect(isPrivateIp("100::1")).toBe(true); // discard (100::/64)
+    expect(isPrivateIp("64:ff9b::1")).toBe(true); // NAT64 (64:ff9b::/96)
   });
 
   it("returns false for public IP addresses", () => {

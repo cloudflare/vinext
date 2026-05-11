@@ -67,6 +67,7 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "image-size": "catalog:",
+    "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:"

@@ -53,6 +53,7 @@ catalog:
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.7.9
   image-size: 2.0.2
+  ipaddr.js: ^2.1.0
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   ms: 3.0.0-canary.1
