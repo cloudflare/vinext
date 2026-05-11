@@ -42,6 +42,11 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { UseCacheTimeoutError, UseCacheDeadlockError } from "./use-cache-errors.js";
+import {
+  getUseCacheProbe,
+  type UseCacheProbeRequestSnapshot,
+} from "../server/use-cache-probe-globals.js";
 
 // ---------------------------------------------------------------------------
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
@@ -339,16 +344,11 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 ): T {
   const cacheVariant = variant ?? "";
 
-  // In dev mode, skip the shared cache so code changes are immediately
-  // visible after HMR. Without this, the MemoryCacheHandler returns stale
-  // results because the cache key (module path + export name) doesn't
-  // change when the file is edited — only the function body changes.
-  // Per-request ("use cache: private") caching still works in dev since
-  // it's scoped to a single request and doesn't persist across HMR.
-  const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
-
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const cachedFn = async (...args: any[]): Promise<any> => {
+    // Evaluate isDev at call time so tests and HMR can toggle NODE_ENV
+    // without re-importing the module.
+    const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
     const rsc = await getRscModule();
     const keySeed = getUseCacheKeySeed();
 
@@ -398,8 +398,10 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // In dev mode, always execute fresh — skip shared cache lookup/storage.
     // This ensures HMR changes are reflected immediately.
+    // Wrap with a timeout and optional deadlock probe so module-scope hangs
+    // surface an actionable error instead of an indefinite stall.
     if (isDev) {
-      return executeWithContext(fn, args, cacheVariant);
+      return executeWithDevTimeoutAndProbe(fn, args, cacheVariant, id, cacheKey);
     }
 
     // Shared cache ("use cache" / "use cache: remote")
@@ -522,6 +524,106 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   const result = await cacheContextStorage.run(ctx, () => fn(...args));
   recordRequestScopedCacheLife(resolveCacheLife(ctx.lifeConfigs));
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Dev-only: timeout + deadlock probe around executeWithContext
+// ---------------------------------------------------------------------------
+
+function getUseCacheFillTimeoutMs(): number {
+  const envTimeout =
+    typeof process !== "undefined" ? Number(process.env.__VINEXT_USE_CACHE_TIMEOUT) : NaN;
+  if (Number.isFinite(envTimeout) && envTimeout > 0) {
+    return envTimeout * 1000;
+  }
+  // Default 30s, matching Next.js experimental.useCacheTimeout default.
+  return 30_000;
+}
+
+function buildProbeRequestSnapshot(): UseCacheProbeRequestSnapshot {
+  const ctx = isInsideUnifiedScope() ? getRequestContext() : null;
+  const headersContext = ctx?.headersContext;
+  const headers: [string, string][] = [];
+  let cookieHeader: string | undefined;
+  if (headersContext) {
+    for (const [k, v] of headersContext.headers.entries()) {
+      headers.push([k, v]);
+      if (k.toLowerCase() === "cookie") cookieHeader = v;
+    }
+  }
+  return {
+    headers,
+    cookieHeader,
+    urlPathname: ctx?.serverContext?.pathname ?? "/",
+    urlSearch: ctx?.serverContext?.searchParams?.toString() ?? "",
+    rootParams: (ctx?.rootParams ?? {}) as Record<string, string | string[]>,
+    isDraftMode: false,
+    isHmrRefresh: false,
+  };
+}
+
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeWithDevTimeoutAndProbe<T extends (...args: any[]) => Promise<any>>(
+  fn: T,
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  args: any[],
+  variant: string,
+  id: string,
+  _cacheKey: string,
+): Promise<Awaited<ReturnType<T>>> {
+  const timeoutMs = getUseCacheFillTimeoutMs();
+  const timeoutError = new UseCacheTimeoutError();
+
+  let deadlockError: UseCacheDeadlockError | undefined;
+
+  const devRenderAbortController = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError), timeoutMs);
+    devRenderAbortController.signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(deadlockError ?? (devRenderAbortController.signal.reason as Error));
+      },
+      { once: true },
+    );
+  });
+
+  let probeCleanup: (() => void) | undefined;
+  const probe = getUseCacheProbe();
+  if (probe) {
+    try {
+      const { setupPromiseProbe } = await import("../server/use-cache-probe-scheduler.js");
+      const requestSnapshot = buildProbeRequestSnapshot();
+      const argsKey = args.length > 0 ? stableStringify(args) : "";
+      deadlockError = new UseCacheDeadlockError();
+      probeCleanup = setupPromiseProbe({
+        id,
+        variant: variant || "default",
+        encodedArguments: argsKey,
+        requestSnapshot,
+        fillDeadlineAt: performance.now() + timeoutMs,
+        abortSignal: devRenderAbortController.signal,
+        onProbeCompleted: () => {
+          devRenderAbortController.abort(deadlockError);
+        },
+      });
+    } catch {
+      // Probe scheduler unavailable — fall back to plain timeout.
+    }
+  }
+
+  try {
+    const result = await Promise.race([executeWithContext(fn, args, variant), timeoutPromise]);
+    clearTimeout(timer!);
+    probeCleanup?.();
+    return result;
+  } catch (error) {
+    clearTimeout(timer!);
+    probeCleanup?.();
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

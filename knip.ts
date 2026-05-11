@@ -73,6 +73,9 @@ export default {
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",
+        // Worker entry loaded dynamically by use-cache-probe-pool.ts via
+        // getWorkerPath() + new Worker(). Not statically importable.
+        "src/server/use-cache-probe-worker.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

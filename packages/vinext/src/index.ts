@@ -16,6 +16,7 @@ import { handleApiRoute } from "./server/api-handler.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
+import { installUseCacheProbePool } from "./server/use-cache-probe-pool.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "./entries/app-browser-entry.js";
@@ -2071,6 +2072,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             invalidateAppRoutingModules();
           }
         });
+
+        // ── "use cache" deadlock probe (dev-only) ───────────────────────────
+        if (typeof process !== "undefined" && process.env.NODE_ENV === "development") {
+          installUseCacheProbePool({
+            onInvalidate: (cb) => {
+              server.watcher.on("add", cb);
+              server.watcher.on("change", cb);
+              server.watcher.on("unlink", cb);
+            },
+          });
+        }
 
         // ── Dev request origin check ─────────────────────────────────────
         // Registered directly (not in the returned function) so it runs
