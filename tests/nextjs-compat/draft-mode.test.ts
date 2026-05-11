@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, startFixtureServer, fetchJson } from "../helpers.js";
+import { APP_FIXTURE_DIR, startFixtureServer, fetchJson, fetchHtml } from "../helpers.js";
 
 describe("Next.js compat: draft-mode", () => {
   let server: ViteDevServer;
@@ -207,5 +207,26 @@ describe("Next.js compat: draft-mode", () => {
       /Page with `dynamic = (?:&quot;|\\")error(?:&quot;|\\")` used a dynamic API/,
     );
     expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  // ── Draft mode streams Suspense fallbacks ────────────────────
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.draft-mode.test.ts
+  // https://github.com/vercel/next.js/pull/93417
+
+  it("should stream Suspense fallbacks when draft mode is enabled", async () => {
+    // Enable draft mode and extract the bypass cookie
+    const draftRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
+    const setCookies = draftRes.headers.getSetCookie();
+    const bypassCookie = setCookies.find((c) => c.includes("__prerender_bypass"));
+    expect(bypassCookie).toBeDefined();
+    const rawCookie = bypassCookie!.split(";")[0];
+
+    // Request the streaming page with the draft cookie
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/draftmode/streaming", {
+      headers: { Cookie: rawCookie },
+    });
+
+    expect(html).toContain('id="draft-mode">true');
+    expect(html).toContain("Loading draft content...");
   });
 });
