@@ -64,6 +64,32 @@ describe("app page stream helpers", () => {
     await expect(new Response(htmlStream).text()).resolves.toBe("<html>ok</html>");
   });
 
+  it("forwards waitForAllReady to the SSR handler", async () => {
+    const ssrHandler = vi.fn(async () => createStream(["<html>all-ready</html>"]));
+
+    const htmlStream = await renderAppPageHtmlStream({
+      fontData: createAppPageFontData({
+        getLinks: () => [],
+        getPreloads: () => [],
+        getStyles: () => [],
+      }),
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      waitForAllReady: true,
+      ssrHandler: { handleSsr: ssrHandler },
+    });
+
+    await expect(new Response(htmlStream).text()).resolves.toBe("<html>all-ready</html>");
+    expect(ssrHandler).toHaveBeenCalledTimes(1);
+    const callArgs = ssrHandler.mock.calls[0] as unknown as [
+      unknown,
+      unknown,
+      unknown,
+      { waitForAllReady?: boolean },
+    ];
+    expect(callArgs[3]).toMatchObject({ waitForAllReady: true });
+  });
+
   it("defers clearRequestContext until the HTML stream body is fully consumed", async () => {
     // Regression test for issue #660: clearRequestContext() must not race the
     // lazy RSC/SSR stream pipeline. It should be called only after the HTTP

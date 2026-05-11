@@ -155,6 +155,10 @@ export async function handleSsr(
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    /** When true, wait for the full React tree (including Suspense boundaries)
+     *  to resolve before returning the HTML stream. Used for static prerender
+     *  and ISR cache writes to avoid caching fallback content. */
+    waitForAllReady?: boolean;
   },
 ): Promise<ReadableStream<Uint8Array>> {
   return runWithNavigationContext(async () => {
@@ -235,6 +239,14 @@ export async function handleSsr(
           return undefined;
         },
       });
+
+      // When producing static output (prerender / ISR cache writes), wait for
+      // the full React tree to resolve before emitting bytes. This prevents
+      // Suspense fallback content from being serialized to the cache.
+      // Matches Next.js waitForAllReady forkpoint in renderToNodeFizzStream.
+      if (options?.waitForAllReady === true) {
+        await htmlStream.allReady;
+      }
 
       const fontHTML = renderFontHtml(fontData, options?.scriptNonce);
       let didInjectHeadHTML = false;
