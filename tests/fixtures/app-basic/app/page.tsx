@@ -34,10 +34,7 @@ export default function HomePage() {
         <Link href="/error-test" data-testid="error-test-link">
           Error Test
         </Link>
-        <Link
-          href="/delayed-protected-loading"
-          data-testid="delayed-protected-loading-link"
-        >
+        <Link href="/delayed-protected-loading" data-testid="delayed-protected-loading-link">
           Delayed Protected Loading
         </Link>
       </nav>

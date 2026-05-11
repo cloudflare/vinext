@@ -12,6 +12,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import {
   type OverlayState,
   type ReportedError,
@@ -46,19 +47,6 @@ function rememberReported(error: unknown): void {
 
 function alreadyReported(error: unknown): boolean {
   return !!error && typeof error === "object" && reportedErrors.has(error);
-}
-
-function isNavigationSignalError(error: unknown): boolean {
-  if (!error || typeof error !== "object" || !("digest" in error)) {
-    return false;
-  }
-
-  const digest = String((error as { digest: unknown }).digest);
-  return (
-    digest === "NEXT_NOT_FOUND" ||
-    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
-    digest.startsWith("NEXT_REDIRECT;")
-  );
 }
 
 export function installDevErrorOverlay(): void {

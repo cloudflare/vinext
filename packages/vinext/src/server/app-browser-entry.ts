@@ -988,10 +988,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           // avoids wasted parse work; the post-check catches supersessions that
           // occur during the await. createFromFetch on a buffered response is fast
           // but still async, so the window exists. The non-cached path (below) places
-          // its heavyweight async steps (fetch, snapshotRscResponse, createFromFetch)
-          // between navId checks consistently; the cached path omits the check between
-          // createClientNavigationRenderSnapshot (synchronous) and createFromFetch
-          // because there is no await in that gap.
+          // its heavyweight async steps (fetch, body.tee + createFromFetch on the
+          // live RSC branch) between navId checks consistently; the cached path omits
+          // the check between createClientNavigationRenderSnapshot (synchronous) and
+          // createFromFetch because there is no await in that gap.
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           const cachedParams = cachedRoute.params;
           // createClientNavigationRenderSnapshot is synchronous (URL parsing + param

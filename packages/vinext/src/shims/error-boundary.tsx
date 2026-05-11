@@ -4,6 +4,7 @@ import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
 import { usePathname, useRouter } from "./navigation.js";
+import { getErrorDigest, isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
@@ -32,14 +33,6 @@ export type ErrorBoundaryState = {
   error: CapturedError | null;
   previousPathname: string;
 };
-
-function getErrorDigest(error: unknown): string | null {
-  if (!error || typeof error !== "object" || !("digest" in error)) {
-    return null;
-  }
-
-  return String((error as { digest: unknown }).digest);
-}
 
 function isRedirectError(error: unknown): error is RedirectError {
   return getErrorDigest(error)?.startsWith("NEXT_REDIRECT;") ?? false;
@@ -103,6 +96,13 @@ export class RedirectErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
     if (isRedirectError(error)) {
+      // Next.js parity: an outer RedirectBoundary that has already started
+      // handling a redirect marks the error as `handled` so that, if React
+      // re-throws the same error during a retry render, an inner boundary
+      // doesn't re-dispatch the same `router.replace()`. Vinext doesn't
+      // currently emit `handled` itself (we never assign it on the error
+      // object), but we keep the branch so behavior matches Next.js if a
+      // host or future change ever does.
       if (error.handled) {
         return {
           redirect: null,
@@ -110,8 +110,17 @@ export class RedirectErrorBoundary extends React.Component<
         };
       }
 
+      const url = getURLFromRedirectError(error);
+      if (url === null) {
+        // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
+        // segment). The server-side parser at next-error-digest.ts:51 also
+        // rejects this. Re-throw so the error reaches a regular error
+        // boundary instead of being silently swallowed.
+        throw error;
+      }
+
       return {
-        redirect: getURLFromRedirectError(error),
+        redirect: url,
         redirectType: getRedirectTypeFromError(error),
       };
     }
@@ -126,7 +135,7 @@ export class RedirectErrorBoundary extends React.Component<
         <HandleRedirect
           redirect={redirect}
           redirectType={redirectType}
-          reset={() => this.setState({ redirect: null })}
+          reset={() => this.setState({ redirect: null, redirectType: null })}
         />
       );
     }
@@ -167,15 +176,8 @@ export class ErrorBoundaryInner extends React.Component<
     // notFound(), forbidden(), unauthorized(), and redirect() must propagate
     // past error boundaries. Re-throw them so they bubble up to the
     // framework's HTTP access fallback / redirect handler.
-    if (error && typeof error === "object" && "digest" in error) {
-      const digest = String(error.digest);
-      if (
-        digest === "NEXT_NOT_FOUND" || // legacy compat
-        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
-        digest.startsWith("NEXT_REDIRECT;")
-      ) {
-        throw error;
-      }
+    if (isNavigationSignalError(error)) {
+      throw error;
     }
     return { error: { thrownValue: error } };
   }
@@ -464,15 +466,10 @@ export class DevRecoveryBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: unknown): Partial<DevRecoveryBoundaryState> {
-    if (error && typeof error === "object" && "digest" in error) {
-      const digest = String(error.digest);
-      if (
-        digest === "NEXT_NOT_FOUND" ||
-        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
-        digest.startsWith("NEXT_REDIRECT;")
-      ) {
-        throw error;
-      }
+    // Re-throw routing sentinels so they still reach NotFoundBoundary /
+    // RedirectBoundary / Forbidden / Unauthorized above.
+    if (isNavigationSignalError(error)) {
+      throw error;
     }
     return { error: { thrownValue: error } };
   }
