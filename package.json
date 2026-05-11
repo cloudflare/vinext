@@ -14,7 +14,8 @@
     "lint": "vp lint",
     "test:e2e": "playwright test",
     "knip": "knip",
-    "prepare": "vp config"
+    "prepare": "vp config",
+    "postinstall": "vp run vinext#build"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",
