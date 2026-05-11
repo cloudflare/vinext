@@ -8,17 +8,17 @@
 
 declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
-  export interface NextApiRequest extends IncomingMessage {
+  export type NextApiRequest = {
     query: Record<string, string | string[]>;
     body: unknown;
     cookies: Record<string, string>;
-  }
-  export interface NextApiResponse<T = unknown> extends ServerResponse {
+  } & IncomingMessage;
+  export type NextApiResponse<T = unknown> = {
     status(code: number): NextApiResponse<T>;
     json(data: T): void;
     send(data: T): void;
     redirect(statusOrUrl: number | string, url?: string): void;
-  }
+  } & ServerResponse;
 }
 
 declare module "next/router" {
@@ -107,7 +107,7 @@ declare module "next/link" {
   import type { ComponentType, AnchorHTMLAttributes, ReactNode } from "react";
   type UrlQueryValue = string | number | boolean | null | undefined;
   type UrlQuery = Record<string, UrlQueryValue | readonly UrlQueryValue[]>;
-  interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
+  type LinkProps = {
     href: string | { pathname?: string; query?: UrlQuery };
     as?: string;
     replace?: boolean;
@@ -117,8 +117,7 @@ declare module "next/link" {
     locale?: string | false;
     onNavigate?: (event: { preventDefault(): void }) => void;
     children?: ReactNode;
-  }
-  const Link: ComponentType<LinkProps>;
+  } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
   export default Link;
 }
 
@@ -504,10 +503,10 @@ declare module "next/font/local" {
 
 declare module "next/app" {
   import { ComponentType } from "react";
-  export interface AppProps {
+  export type AppProps = {
     Component: ComponentType<any>;
     pageProps: Record<string, unknown>;
-  }
+  };
 }
 
 declare module "next/cache" {
