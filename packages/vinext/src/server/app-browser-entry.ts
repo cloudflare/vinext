@@ -918,6 +918,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   );
   window.__VINEXT_HYDRATED_AT = performance.now();
 
+  // Exposed so the navigation shim's `router.refresh()` can invalidate the
+  // entire client navigation cache (visited-response + prefetch) before
+  // re-fetching, matching Next.js refresh semantics — see refresh-reducer.ts
+  // header comment: "the segment cache contains the actual RSC data which
+  // needs to be re-fetched."
+  window.__VINEXT_CLEAR_NAV_CACHES__ = clearClientNavigationCaches;
+
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(
     href: string,
     redirectDepth = 0,

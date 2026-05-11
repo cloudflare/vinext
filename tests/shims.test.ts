@@ -49,6 +49,52 @@ describe("next/navigation shim", () => {
     expect(typeof router.prefetch).toBe("function");
   });
 
+  // Next.js parity: refresh-reducer.ts invalidates the entire segment cache.
+  // Our equivalent is clearClientNavigationCaches(), which router.refresh()
+  // must call before re-fetching, or stale cached RSC payloads for sibling
+  // routes will still satisfy a subsequent client navigation. The clear must
+  // happen before the rscNavigate dispatch so it cannot race with prefetches
+  // kicked off during the transition's renders.
+  // Ported from: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/refresh-reducer.ts
+  it("router.refresh() clears nav caches before dispatching the RSC re-fetch", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      __VINEXT_CLEAR_NAV_CACHES__: () => {
+        calls.push("clear");
+      },
+      __VINEXT_RSC_NAVIGATE__: async (_href: string, _depth: number, kind: string) => {
+        calls.push(`navigate:${kind}`);
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { useRouter } = await import("../packages/vinext/src/shims/navigation.js");
+      useRouter().refresh();
+      // refresh() schedules the rscNavigate inside React.startTransition, so
+      // the navigate call lands after the synchronous clear but is dispatched
+      // in the same tick — yield once to let it flush.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(calls[0]).toBe("clear");
+      expect(calls).toContain("navigate:refresh");
+      expect(calls.indexOf("clear")).toBeLessThan(calls.indexOf("navigate:refresh"));
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   it("keeps pending render snapshot active when external history.pushState syncs the URL", async () => {
     const previousWindow = (globalThis as any).window;
     const win = {

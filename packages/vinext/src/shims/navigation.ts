@@ -1269,6 +1269,16 @@ const _appRouter = {
   },
   refresh(): void {
     if (isServer) return;
+    // Drop cached RSC payloads for every previously-visited / prefetched route
+    // before re-fetching. Next.js's refresh-reducer invalidates the entire
+    // segment cache (refresh-reducer.ts → invalidateSegmentCacheEntries), so
+    // without this, a stale cached payload for a sibling route (e.g. a page
+    // gated by a session that has since been cleared) would still satisfy a
+    // subsequent client navigation and bypass the server's redirect logic.
+    const clearCaches = window.__VINEXT_CLEAR_NAV_CACHES__;
+    if (typeof clearCaches === "function") {
+      clearCaches();
+    }
     // Re-fetch the current page's RSC stream
     const rscNavigate = window.__VINEXT_RSC_NAVIGATE__;
     if (typeof rscNavigate === "function") {
