@@ -3,7 +3,7 @@ import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { matchHeaders } from "../config/config-matchers.js";
 import {
-  INTERNAL_HEADERS as INTERNAL_HEADERS_CONSTANTS,
+  INTERNAL_HEADERS,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
@@ -560,9 +560,9 @@ export function processMiddlewareHeaders(headers: Headers): void {
  * from external requests. An attacker could forge these to influence routing
  * or impersonate internal data fetches.
  *
- * @see {@link INTERNAL_HEADERS_CONSTANTS} in `./headers.ts` for the canonical definition.
+ * @see `./headers.ts` for the canonical definition.
  */
-export const INTERNAL_HEADERS = INTERNAL_HEADERS_CONSTANTS;
+export { INTERNAL_HEADERS } from "./headers.js";
 
 type RequestInitWithCf = RequestInit & { cf?: unknown };
 
