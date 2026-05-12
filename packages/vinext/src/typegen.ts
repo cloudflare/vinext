@@ -39,9 +39,9 @@ export async function generateRouteTypes(options: GenerateRouteTypesOptions): Pr
 async function ensureNextEnvFile(root: string): Promise<void> {
   const envPath = path.join(root, "next-env.d.ts");
   try {
-    await fs.access(envPath);
-  } catch {
-    await fs.writeFile(envPath, NEXT_ENV_FILE_CONTENT, "utf-8");
+    await fs.writeFile(envPath, NEXT_ENV_FILE_CONTENT, { encoding: "utf-8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
 }
 
@@ -108,17 +108,31 @@ async function collectRouteTypeModel(
     );
   }
 
+  const layoutSlotSets = new Map<string, Set<string>>();
   for (const slot of segmentGraph.slots.values()) {
     const layoutRoute = layoutRouteKeyForSlot(slot, segmentGraph.layouts, layoutRouteKeys);
     if (!layoutRoute) continue;
 
-    const slots = model.layoutSlots.get(layoutRoute) ?? [];
-    if (!slots.includes(slot.name)) {
-      slots.push(slot.name);
-      slots.sort(compareStrings);
+    let slotNames = layoutSlotSets.get(layoutRoute);
+    if (!slotNames) {
+      slotNames = new Set();
+      layoutSlotSets.set(layoutRoute, slotNames);
+      model.layoutSlots.set(layoutRoute, []);
     }
-    model.layoutSlots.set(layoutRoute, slots);
+    if (!slotNames.has(slot.name)) {
+      slotNames.add(slot.name);
+      model.layoutSlots.get(layoutRoute)?.push(slot.name);
+    }
   }
+
+  // Sort all collected route lists once after collection. addRoute() and the
+  // slot loop above intentionally skip per-insertion sorts to keep collection
+  // O(n) — the rendered output relies on stable sorted order, so the single
+  // pass here is enough.
+  model.pageRoutes.sort(compareStrings);
+  model.layoutRoutes.sort(compareStrings);
+  model.routeHandlerRoutes.sort(compareStrings);
+  for (const slotNames of model.layoutSlots.values()) slotNames.sort(compareStrings);
 
   return model;
 }
@@ -276,6 +290,7 @@ function layoutRouteKeyForSlot(
   return layoutRouteKeys.get(layout.treePath) ?? treePathToRouteLiteral(layout.treePath);
 }
 
+/** Convert a layout tree path to its URL route literal, stripping invisible segments. */
 function treePathToRouteLiteral(treePath: string): string {
   if (treePath === "/") return "/";
 
@@ -287,6 +302,12 @@ function treePathToRouteLiteral(treePath: string): string {
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
 
+/**
+ * Convert a layout tree path to a scoped route literal that preserves
+ * route-group and `@slot` segments. Used only as a fallback key when multiple
+ * layouts collapse to the same URL route literal, so consumers can keep their
+ * slot/params typings distinct.
+ */
 function treePathToScopedLayoutRouteLiteral(treePath: string): string {
   if (treePath === "/") return "/";
 
@@ -308,7 +329,6 @@ function addRoute(
   if (!seen.has(route)) {
     seen.add(route);
     routes.push(route);
-    routes.sort(compareStrings);
   }
   params.set(route, paramShape);
 }
