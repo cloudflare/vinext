@@ -102,10 +102,10 @@ export const MIDDLEWARE_NEXT_HEADER = "x-middleware-next";
 export const MIDDLEWARE_REWRITE_HEADER = "x-middleware-rewrite";
 
 /** Redirect URL set by middleware. */
-export const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
+const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
 
 /** Skip-middleware signal. */
-export const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
+const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
 
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
@@ -132,10 +132,10 @@ export const FLIGHT_HEADERS: readonly string[] = [
 // Vercel / Now.sh legacy internal headers (stripped from inbound requests)
 // ---------------------------------------------------------------------------
 
-export const NOW_ROUTE_MATCHES_HEADER = "x-now-route-matches";
-export const MATCHED_PATH_HEADER = "x-matched-path";
-export const NEXTJS_DATA_HEADER = "x-nextjs-data";
-export const NEXT_RESUME_STATE_LENGTH_HEADER = "x-next-resume-state-length";
+const NOW_ROUTE_MATCHES_HEADER = "x-now-route-matches";
+const MATCHED_PATH_HEADER = "x-matched-path";
+const NEXTJS_DATA_HEADER = "x-nextjs-data";
+const NEXT_RESUME_STATE_LENGTH_HEADER = "x-next-resume-state-length";
 
 // ---------------------------------------------------------------------------
 // Internal headers blocklist — stripped from inbound requests for security
