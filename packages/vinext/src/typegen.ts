@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
@@ -70,11 +71,15 @@ async function collectRouteTypeModel(
   const model = emptyRouteTypeModel();
   const segmentGraph = graph.routeManifest.segmentGraph;
   const layoutRouteKeys = createLayoutRouteKeyMap(segmentGraph.layouts.values());
+  const pageRouteSet = new Set<string>();
+  const layoutRouteSet = new Set<string>();
+  const routeHandlerRouteSet = new Set<string>();
 
   for (const route of segmentGraph.pages.values()) {
     const routeEntry = segmentGraph.routes.get(route.routeId);
     addRoute(
       model.pageRoutes,
+      pageRouteSet,
       model.params,
       patternToNextFormat(route.pattern),
       paramsForPatternParts(routeEntry?.patternParts ?? []),
@@ -85,6 +90,7 @@ async function collectRouteTypeModel(
     const routeEntry = segmentGraph.routes.get(route.routeId);
     addRoute(
       model.routeHandlerRoutes,
+      routeHandlerRouteSet,
       model.params,
       patternToNextFormat(route.pattern),
       paramsForPatternParts(routeEntry?.patternParts ?? []),
@@ -93,7 +99,13 @@ async function collectRouteTypeModel(
 
   for (const layout of segmentGraph.layouts.values()) {
     const route = layoutRouteKeys.get(layout.treePath) ?? treePathToRouteLiteral(layout.treePath);
-    addRoute(model.layoutRoutes, model.params, route, paramsForPatternParts(layout.patternParts));
+    addRoute(
+      model.layoutRoutes,
+      layoutRouteSet,
+      model.params,
+      route,
+      paramsForPatternParts(layout.patternParts),
+    );
   }
 
   for (const slot of segmentGraph.slots.values()) {
@@ -286,19 +298,15 @@ function treePathToScopedLayoutRouteLiteral(treePath: string): string {
   return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
 
-function isInvisibleSegment(segment: string): boolean {
-  return (
-    segment === "." || (segment.startsWith("(") && segment.endsWith(")")) || segment.startsWith("@")
-  );
-}
-
 function addRoute(
   routes: string[],
+  seen: Set<string>,
   params: Map<string, ParamShape>,
   route: string,
   paramShape: ParamShape,
 ): void {
-  if (!routes.includes(route)) {
+  if (!seen.has(route)) {
+    seen.add(route);
     routes.push(route);
     routes.sort(compareStrings);
   }

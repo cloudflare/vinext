@@ -461,6 +461,11 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       const ownerLayoutId = findSlotOwnerLayoutId(route, slot);
       const defaultId = slot.defaultPath ? createAppRouteGraphDefaultId(slot.id) : null;
       if (slot.layoutPath) {
+        // Materialize the slot-local layout as its own entry so consumers
+        // (e.g. typegen) can distinguish it from the owning layout. Note
+        // that this layout may have zero entries in `slots`: the slot
+        // itself is registered below against `ownerLayoutId`, which points
+        // to the ancestor layout that owns the slot prop.
         const slotLayoutTreePath = createSlotLayoutTreePath(slot);
         const slotLayoutId = createAppRouteGraphLayoutId(slotLayoutTreePath);
         const existingLayout = layouts.get(slotLayoutId);
@@ -1927,7 +1932,7 @@ function collectInterceptingPages(
  * Used by computeInterceptTarget, convertSegmentsToRouteParts, and
  * hasRemainingVisibleSegments — keep this the single source of truth.
  */
-function isInvisibleSegment(segment: string): boolean {
+export function isInvisibleSegment(segment: string): boolean {
   if (segment === ".") return true;
   if (segment.startsWith("(") && segment.endsWith(")")) return true;
   if (segment.startsWith("@")) return true;

@@ -167,6 +167,10 @@ describe("generateRouteTypes", () => {
 
       let server: ViteDevServer | null = null;
       try {
+        // `appDir` in the vinext plugin options names the project root, not
+        // the App Router directory; the plugin auto-detects `app/` (or
+        // `src/app/`) under it. Pass the project root explicitly here so
+        // the dev server uses the same root path for both Vite and vinext.
         server = await createServer({
           root,
           logLevel: "silent",

@@ -2216,6 +2216,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           appRouteTypeGeneration = drainAppRouteTypeGeneration().finally(() => {
             appRouteTypeGeneration = null;
+            // A watcher event may have arrived after the drain loop's final
+            // check but before this finally runs; restart the loop if so.
             if (appRouteTypeGenerationPending) regenerateAppRouteTypes();
           });
         }
