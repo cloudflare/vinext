@@ -104,7 +104,7 @@ declare module "next/headers" {
 }
 
 declare module "next/link" {
-  import type { ComponentType, AnchorHTMLAttributes, ReactNode } from "react";
+  import { ComponentType, AnchorHTMLAttributes, ReactNode } from "react";
   type UrlQueryValue = string | number | boolean | null | undefined;
   type UrlQuery = Record<string, UrlQueryValue | readonly UrlQueryValue[]>;
   type LinkProps = {
@@ -118,6 +118,7 @@ declare module "next/link" {
     onNavigate?: (event: { preventDefault(): void }) => void;
     children?: ReactNode;
   } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
+  const Link: ComponentType<LinkProps>;
   export default Link;
 }
 
