@@ -132,7 +132,7 @@ test.describe("Server-side redirects", () => {
     await waitForAppRouterHydration(page);
     await page.getByTestId("delayed-protected-loading-link").click();
 
-    // The fixture page awaits 50ms before throwing redirect(); the route has
+    // The fixture page awaits 500ms before throwing redirect(); the route has
     // its own loading.tsx, so the Suspense fallback must paint during that
     // window. This covers the second half of the cross-route-loading fix —
     // without the keyed Suspense, React's transition reconciliation would
