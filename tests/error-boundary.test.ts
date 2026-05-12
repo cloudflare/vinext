@@ -312,6 +312,19 @@ describe("RedirectBoundary digest classification", () => {
     expect(RedirectErrorBoundaryClass).not.toBeNull();
     expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
   });
+
+  it("returns null state for handled redirect errors (Next.js parity placeholder)", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;;%2Flogin",
+      handled: true,
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: null,
+      redirectType: null,
+    });
+  });
 });
 
 // Test the actual ForbiddenBoundary.getDerivedStateFromError classification.

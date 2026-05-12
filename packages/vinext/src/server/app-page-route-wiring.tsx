@@ -631,8 +631,11 @@ export function buildAppPageElements<
   // boundary's null-render → router.replace transition, and segment
   // reuse keeps their React state intact.
   //
-  // Placed inside the Suspense (loading) boundary to match Next.js nesting:
-  //   Error > Loading (Suspense) > AccessFallback > Redirect > content
+  // Placed inside the Suspense (loading) boundary to match Next.js nesting
+  // for the redirect boundary specifically:
+  //   Error > AccessFallback > Loading (Suspense) > Redirect > content
+  // (Note: Next.js places AccessFallback inside Loading, not outside — that
+  // is a pre-existing nesting divergence tracked separately.)
   // This keeps the loading fallback visible during redirect-driven
   // transitions rather than unmounting it.
   routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
