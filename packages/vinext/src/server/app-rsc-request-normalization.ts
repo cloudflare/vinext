@@ -2,9 +2,13 @@ import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { VINEXT_INTERCEPTION_CONTEXT_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import {
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "./headers.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
-import { stripRscSuffix, VINEXT_RSC_RENDER_MODE_HEADER } from "./app-rsc-cache-busting.js";
+import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   parseAppRscRenderMode,
