@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { Route } from "../routing/pages-router.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { VINEXT_CACHE_HEADER } from "./headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
@@ -172,7 +173,7 @@ function buildPagesCacheResponse(
     cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
-    "X-Vinext-Cache": cacheState,
+    [VINEXT_CACHE_HEADER]: cacheState,
     "Cache-Control": buildCachedRevalidateCacheControl(
       cacheState,
       effectiveRevalidateSeconds,

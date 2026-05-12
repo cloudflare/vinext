@@ -2,6 +2,12 @@ import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import {
+  ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
+  ACTION_REDIRECT_TYPE_HEADER,
+  ACTION_REVALIDATED_HEADER,
+} from "./headers.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -208,7 +214,7 @@ const ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC = 1 satisfies ActionRevalidationK
 
 function setActionRevalidatedHeader(headers: Headers, kind: ActionRevalidationKind): void {
   if (kind === ACTION_DID_NOT_REVALIDATE) return;
-  headers.set("x-action-revalidated", JSON.stringify(kind));
+  headers.set(ACTION_REVALIDATED_HEADER, JSON.stringify(kind));
 }
 
 function resolveActionRevalidationKind(hasModifiedCookies: boolean): ActionRevalidationKind {
@@ -626,9 +632,9 @@ export async function handleServerActionRscRequest<
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
-      redirectHeaders.set("x-action-redirect", actionRedirect.url);
-      redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-      redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
+      redirectHeaders.set(ACTION_REDIRECT_HEADER, actionRedirect.url);
+      redirectHeaders.set(ACTION_REDIRECT_TYPE_HEADER, actionRedirect.type);
+      redirectHeaders.set(ACTION_REDIRECT_STATUS_HEADER, String(actionRedirect.status));
       for (const cookie of actionPendingCookies) {
         redirectHeaders.append("Set-Cookie", cookie);
       }

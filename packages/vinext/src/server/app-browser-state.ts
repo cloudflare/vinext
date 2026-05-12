@@ -7,6 +7,11 @@ import {
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
+  RSC_ACTION_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+} from "./headers.js";
+import {
   NavigationTraceReasonCodes,
   createNavigationLifecycleTraceFields,
   createNavigationTrace,
@@ -173,19 +178,19 @@ export function resolveServerActionRequestState(
   options: ResolveServerActionRequestStateOptions,
 ): ResolveServerActionRequestStateResult {
   const headers = createRscRequestHeaders();
-  headers.set("x-rsc-action", options.actionId);
+  headers.set(RSC_ACTION_HEADER, options.actionId);
 
   const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
     options.previousNextUrl,
     options.basePath,
   );
   if (interceptionContext !== null) {
-    headers.set("X-Vinext-Interception-Context", interceptionContext);
+    headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
   }
 
   const mountedSlotsHeader = getMountedSlotIdsHeader(options.elements);
   if (mountedSlotsHeader !== null) {
-    headers.set("X-Vinext-Mounted-Slots", mountedSlotsHeader);
+    headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
   }
 
   return { headers };

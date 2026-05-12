@@ -42,6 +42,13 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import {
+  MIDDLEWARE_HEADER_PREFIX,
+  MIDDLEWARE_NEXT_HEADER,
+  MIDDLEWARE_REWRITE_HEADER,
+  VINEXT_MW_CTX_HEADER,
+  VINEXT_TIMING_HEADER,
+} from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
@@ -2196,7 +2203,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               const _origSetHeader = res.setHeader.bind(res);
               res.setHeader = function (name, value) {
-                if (name.toLowerCase() === "x-vinext-timing") {
+                if (name.toLowerCase() === VINEXT_TIMING_HEADER) {
                   _parseTiming(value);
                   return res; // drop the header — don't forward to client
                 }
@@ -2218,7 +2225,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Pull timing out of the headers object when present.
                 if (headers && typeof headers === "object" && !Array.isArray(headers)) {
                   const timingKey = Object.keys(headers).find(
-                    (k) => k.toLowerCase() === "x-vinext-timing",
+                    (k) => k.toLowerCase() === VINEXT_TIMING_HEADER,
                   );
                   if (timingKey) {
                     _parseTiming(headers[timingKey]);
@@ -2500,7 +2507,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 if (middlewareRequestHeaders) {
                   applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                 } else {
-                  delete req.headers["x-vinext-mw-ctx"];
+                  delete req.headers[VINEXT_MW_CTX_HEADER];
                 }
               };
 
@@ -2601,13 +2608,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     // entry (via x-vinext-mw-ctx) for App Router routes.
                     deferredMwResponseHeaders = [];
                     for (const [key, value] of result.responseHeaders) {
-                      if (!key.startsWith("x-middleware-")) {
+                      if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
                         deferredMwResponseHeaders.push([key, value]);
                       }
                     }
                   } else {
                     for (const [key, value] of result.responseHeaders) {
-                      if (!key.startsWith("x-middleware-")) {
+                      if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
                         res.appendHeader(key, value);
                       }
                     }
@@ -2641,12 +2648,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     for (const [key, value] of result.responseHeaders) {
                       // Exclude control headers that runMiddleware already
                       // consumed — matches the RSC entry's inline filtering.
-                      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+                      if (key !== MIDDLEWARE_NEXT_HEADER && key !== MIDDLEWARE_REWRITE_HEADER) {
                         mwCtxEntries.push([key, value]);
                       }
                     }
                   }
-                  req.headers["x-vinext-mw-ctx"] = JSON.stringify({
+                  req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
                     h: mwCtxEntries,
                     s: middlewareStatus ?? null,
                     r: result.rewriteUrl ?? null,

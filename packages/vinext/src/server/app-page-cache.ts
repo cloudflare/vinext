@@ -1,6 +1,7 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { VINEXT_CACHE_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { readStreamAsText } from "../utils/text-stream.js";
@@ -151,11 +152,11 @@ function buildAppPageCachedHeaders(options: {
     "Cache-Control": options.cacheControl,
     "Content-Type": options.contentType,
     Vary: VINEXT_RSC_VARY_HEADER,
-    "X-Vinext-Cache": options.cacheState,
+    [VINEXT_CACHE_HEADER]: options.cacheState,
   });
 
   if (options.mountedSlotsHeader) {
-    headers.set("X-Vinext-Mounted-Slots", options.mountedSlotsHeader);
+    headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
@@ -377,7 +378,7 @@ export function finalizeAppPageHtmlCacheResponse(
     // consumed. Until that late dynamic check finishes, downstream shared caches
     // must not cache a response whose ISR policy was known before streaming.
     clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-    clientHeaders.set("X-Vinext-Cache", "MISS");
+    clientHeaders.set(VINEXT_CACHE_HEADER, "MISS");
   }
 
   const cachePromise = (async () => {
@@ -461,7 +462,7 @@ export function finalizeAppPageRscCacheResponse(
   // late request API was used, the client-facing MISS response must not enter a
   // shared cache when the ISR policy was known before streaming.
   clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-  clientHeaders.set("X-Vinext-Cache", "MISS");
+  clientHeaders.set(VINEXT_CACHE_HEADER, "MISS");
 
   return new Response(response.body, {
     status: response.status,

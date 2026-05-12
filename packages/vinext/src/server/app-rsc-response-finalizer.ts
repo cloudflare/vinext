@@ -1,5 +1,6 @@
 import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
+import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -42,7 +43,7 @@ export function finalizeAppRscResponse(
     return response;
   }
 
-  if (!response.headers.has("x-vinext-static-file")) {
+  if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
     mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
   }
 

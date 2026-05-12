@@ -32,6 +32,7 @@ import {
 } from "vinext/shims/cache";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
+import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 export { readPrerenderSecret } from "./server-manifest.js";
@@ -503,7 +504,7 @@ export async function prerenderPages({
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     const secretHeaders: Record<string, string> = prerenderSecret
-      ? { "x-vinext-prerender-secret": prerenderSecret }
+      ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
     type BundleRoute = {
@@ -837,7 +838,7 @@ export async function prerenderApp({
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     const secretHeaders: Record<string, string> = prerenderSecret
-      ? { "x-vinext-prerender-secret": prerenderSecret }
+      ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
     rscHandler = (req: Request) => {

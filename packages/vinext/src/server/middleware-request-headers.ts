@@ -1,6 +1,8 @@
-const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
-const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
-const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
+import {
+  MIDDLEWARE_OVERRIDE_HEADERS,
+  MIDDLEWARE_REQUEST_HEADER_PREFIX,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+} from "./headers.js";
 const CREDENTIAL_REQUEST_HEADERS = ["authorization", "cookie"] as const;
 
 type MiddlewareHeaderValue = string | string[];

@@ -2,6 +2,7 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
+import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
@@ -41,13 +42,8 @@ type ForwardedMiddlewareContext = {
   s?: unknown;
 };
 
-export const FLIGHT_HEADERS: readonly string[] = [
-  "rsc",
-  "next-router-state-tree",
-  "next-router-prefetch",
-  "next-hmr-refresh",
-  "next-router-segment-prefetch",
-];
+// Re-exported from headers.ts for backward compatibility.
+export { FLIGHT_HEADERS } from "./headers.js";
 
 const FLIGHT_HEADER_SET = new Set(FLIGHT_HEADERS);
 
@@ -169,7 +165,7 @@ function applyForwardedMiddlewareContext(
     return { applied: false };
   }
 
-  const header = request.headers.get("x-vinext-mw-ctx");
+  const header = request.headers.get(VINEXT_MW_CTX_HEADER);
   if (!header) return { applied: false };
 
   try {

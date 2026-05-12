@@ -36,6 +36,7 @@ import {
   type CacheControlMetadata,
   type CacheLifeConfig,
 } from "./cache.js";
+import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
@@ -409,7 +410,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
     const existing = await handler.get(cacheKey, { kind: "FETCH" });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
-        if (rsc && existing.value.data.headers["x-vinext-rsc"] === "1") {
+        if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
           const stream = uint8ToStream(bytes);
@@ -454,7 +455,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
         const stream = rsc.renderToReadableStream(result);
         const bytes = await collectStream(stream);
         body = uint8ToBase64(bytes);
-        headers["x-vinext-rsc"] = "1";
+        headers[VINEXT_RSC_MARKER_HEADER] = "1";
       } else {
         // JSON fallback
         body = JSON.stringify(result);

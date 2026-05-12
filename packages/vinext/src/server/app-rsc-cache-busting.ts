@@ -4,6 +4,16 @@ import {
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
+  RSC_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "./headers.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make a `.rsc` payload vary.
@@ -13,25 +23,22 @@ import {
  */
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
-export const VINEXT_RSC_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
-export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
-const VINEXT_RSC_HEADER = "RSC";
-const VINEXT_RSC_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
-const NEXT_ROUTER_STATE_TREE_HEADER = "Next-Router-State-Tree";
-const NEXT_ROUTER_PREFETCH_HEADER = "Next-Router-Prefetch";
-const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = "Next-Router-Segment-Prefetch";
-const NEXT_URL_HEADER = "Next-Url";
+/** @deprecated Import {@link VINEXT_MOUNTED_SLOTS_HEADER} from `./headers.js` instead. */
+export const VINEXT_RSC_MOUNTED_SLOTS_HEADER = VINEXT_MOUNTED_SLOTS_HEADER;
+
+// Re-export so existing consumers that import from this module keep working.
+export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
 export const VINEXT_RSC_VARY_HEADER = [
-  VINEXT_RSC_HEADER,
+  RSC_HEADER,
   "Accept",
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_URL_HEADER,
-  VINEXT_RSC_INTERCEPTION_CONTEXT_HEADER,
-  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 ].join(", ");
 
@@ -82,8 +89,8 @@ function createCacheBustingInput(
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
-    headers.get(VINEXT_RSC_INTERCEPTION_CONTEXT_HEADER),
-    headers.get(VINEXT_RSC_MOUNTED_SLOTS_HEADER),
+    headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
@@ -176,15 +183,15 @@ export function stripRscSuffix(pathname: string): string {
 export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
   const headers = new Headers({
     Accept: VINEXT_RSC_CONTENT_TYPE,
-    [VINEXT_RSC_HEADER]: "1",
+    [RSC_HEADER]: "1",
   });
 
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
-    headers.set(VINEXT_RSC_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);
+    headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);
   }
 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
-    headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
+    headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;

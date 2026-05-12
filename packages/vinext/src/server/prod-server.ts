@@ -57,6 +57,7 @@ import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
+import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 
@@ -1015,7 +1016,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       pathname === "/__vinext/prerender/static-params" ||
       pathname === "/__vinext/prerender/pages-static-paths"
     ) {
-      const secret = req.headers["x-vinext-prerender-secret"];
+      const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
         res.writeHead(403);
         res.end("Forbidden");
@@ -1094,7 +1095,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const request = nodeToWebRequest(req, normalizedUrl);
       const response = await rscHandler(request);
 
-      const staticFileSignal = response.headers.get("x-vinext-static-file");
+      const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
       if (staticFileSignal) {
         let staticFilePath = "/";
         try {
@@ -1105,7 +1106,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
         const staticResponseHeaders = omitHeadersCaseInsensitive(
           mergeResponseHeaders({}, response),
-          ["x-vinext-static-file", "content-encoding", "content-length", "content-type"],
+          [VINEXT_STATIC_FILE_HEADER, "content-encoding", "content-length", "content-type"],
         );
 
         const served = await tryServeStatic(
@@ -1307,7 +1308,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
     if (pathname === "/__vinext/prerender/pages-static-paths") {
-      const secret = req.headers["x-vinext-prerender-secret"];
+      const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
         res.writeHead(403);
         res.end("Forbidden");

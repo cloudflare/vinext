@@ -13,6 +13,12 @@ import {
   sanitizeDestination,
 } from "../config/config-matchers.js";
 import { headersContextFromRequest } from "vinext/shims/headers";
+import {
+  NEXT_ACTION_HEADER,
+  RSC_ACTION_HEADER,
+  RSC_HEADER,
+  VINEXT_MW_CTX_HEADER,
+} from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
 import {
@@ -305,7 +311,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       redirectDestinationWithBasePath(redirect.destination, options.basePath),
     );
     const location =
-      isRscRequest && request.headers.get("RSC") === "1"
+      isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
         : destination;
     return new Response(null, {
@@ -400,7 +406,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     params: {},
   });
 
-  const actionId = request.headers.get("x-rsc-action") ?? request.headers.get("next-action");
+  const actionId =
+    request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
   const contentType = request.headers.get("content-type") || "";
 
   const progressiveActionResult = await options.handleProgressiveActionRequest({
@@ -547,10 +554,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // x-vinext-mw-ctx to req.headers after the Request is built, so it is
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
-    const mwCtx = rawRequest.headers.get("x-vinext-mw-ctx");
+    const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
-      filteredHeaders.set("x-vinext-mw-ctx", mwCtx);
+      filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }
     const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
 
