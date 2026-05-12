@@ -14,7 +14,7 @@
  */
 import React, { forwardRef, useEffect, useLayoutEffect, useRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
-import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
+import { hasRemoteMatch, isPrivateIp, type RemotePattern } from "./image-config.js";
 import { useMergedRef } from "./use-merged-ref.js";
 
 export type StaticImageData = {
@@ -62,6 +62,13 @@ const __imageDeviceSizes: number[] = (() => {
  */
 const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true";
 /**
+ * Whether dangerouslyAllowLocalIP is enabled in next.config.js.
+ * When false (default), remote image URLs with literal private-IP hostnames
+ * are blocked to mitigate SSRF risk.
+ */
+const __dangerouslyAllowLocalIP = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP === "true";
+
+/**
  * Validate that a remote URL is allowed by the configured remote patterns.
  * Returns true if the URL is allowed, false otherwise.
  *
@@ -71,18 +78,31 @@ const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG =
  * When patterns ARE configured, only matching URLs are allowed.
  * In development, non-matching URLs produce a console warning.
  * In production, non-matching URLs are blocked (src replaced with empty string).
+ *
+ * Private-IP hostnames are additionally rejected unless dangerouslyAllowLocalIP
+ * is set, mirroring Next.js's fetchExternalImage guard.
  */
 function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
-  if (!__hasImageConfig) {
-    // No image config — allow everything (backwards-compatible)
-    return { allowed: true };
-  }
-
   let url: URL;
   try {
     url = new URL(src, "http://n");
   } catch {
     return { allowed: false, reason: `Invalid URL: ${src}` };
+  }
+
+  if (!__dangerouslyAllowLocalIP && isPrivateIp(url.hostname)) {
+    // Best-effort guard for literal-IP hostnames only. Domain names resolving
+    // to private IPs cannot be caught without server-side DNS resolution.
+    // See: Next.js fetchExternalImage in packages/next/src/server/image-optimizer.ts
+    return {
+      allowed: false,
+      reason: `Image URL "${src}" resolved to private IP. If this is expected and you understand SSRF risk, use images.dangerouslyAllowLocalIP = true to continue.`,
+    };
+  }
+
+  if (!__hasImageConfig) {
+    // No image config — allow everything (backwards-compatible)
+    return { allowed: true };
   }
 
   if (hasRemoteMatch(__imageDomains, __imageRemotePatterns, url)) {

@@ -10,130 +10,23 @@
  * Run with: npx vitest run tests/ecosystem.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  FIXTURE_HOOK_TIMEOUT_MS,
+  startFixtureDevServer,
+  stopFixtureDevServer,
+} from "./fixture-dev-server.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "fixtures", "ecosystem");
-const STARTUP_TIMEOUT_MS = process.env.CI ? 90_000 : 30_000;
-const READY_POLL_INTERVAL_MS = 250;
 
-/**
- * Start a Vite dev server as a child process and wait for it to be ready.
- */
-async function startFixture(
-  name: string,
-  port: number,
-): Promise<{
-  process: ChildProcess;
-  baseUrl: string;
-  fetchPage: (pathname: string) => Promise<{ html: string; status: number }>;
-}> {
-  const root = path.join(FIXTURES_DIR, name);
-  const baseUrl = `http://localhost:${port}`;
-
-  const proc = spawn("npx", ["vp", "dev", "--port", String(port), "--strictPort"], {
-    cwd: root,
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
-    detached: process.platform !== "win32",
+function startFixture(name: string, port: number) {
+  return startFixtureDevServer({
+    name,
+    port,
+    root: path.join(FIXTURES_DIR, name),
   });
-
-  let output = "";
-  const appendOutput = (data: Buffer | string) => {
-    output += data.toString();
-  };
-
-  proc.stdout?.on("data", appendOutput);
-  proc.stderr?.on("data", appendOutput);
-
-  await new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-
-    const onError = (err: Error) => {
-      cleanup();
-      reject(err);
-    };
-
-    const onExit = (code: number | null) => {
-      cleanup();
-      reject(new Error(`Fixture "${name}" exited with code ${code}: ${output}`));
-    };
-
-    const cleanup = () => {
-      proc.off("error", onError);
-      proc.off("exit", onExit);
-    };
-
-    const checkReady = async () => {
-      if (Date.now() >= deadline) {
-        cleanup();
-        reject(
-          new Error(`Fixture "${name}" did not start within ${STARTUP_TIMEOUT_MS}ms: ${output}`),
-        );
-        return;
-      }
-
-      try {
-        const res = await fetch(`${baseUrl}/`, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(2_000),
-        });
-        await res.body?.cancel();
-        cleanup();
-        resolve();
-      } catch {
-        setTimeout(checkReady, READY_POLL_INTERVAL_MS);
-      }
-    };
-
-    proc.on("error", onError);
-    proc.on("exit", onExit);
-    void checkReady();
-  });
-
-  // Give the server a moment to be fully ready for requests
-  await new Promise((r) => setTimeout(r, 500));
-
-  async function fetchPage(pathname: string) {
-    const res = await fetch(`${baseUrl}${pathname}`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    const html = await res.text();
-    return { html, status: res.status };
-  }
-
-  return { process: proc, baseUrl, fetchPage };
-}
-
-function killProcess(proc: ChildProcess | null) {
-  if (!proc || proc.killed) {
-    return;
-  }
-
-  if (process.platform === "win32") {
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      return;
-    }
-    return;
-  }
-
-  const pid = proc.pid;
-  if (pid == null) {
-    return;
-  }
-
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // ignore
-    }
-  }
 }
 
 // ─── next-themes ──────────────────────────────────────────────────────────────
@@ -145,9 +38,9 @@ describe("next-themes", () => {
     const fixture = await startFixture("next-themes", 4400);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders SSR content", async () => {
     const { html, status } = await fetchPage("/");
@@ -183,9 +76,9 @@ describe("next-view-transitions", () => {
     const fixture = await startFixture("next-view-transitions", 4401);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders home page with view transition styles", async () => {
     const { html, status } = await fetchPage("/");
@@ -224,9 +117,9 @@ describe("nuqs", () => {
     const fixture = await startFixture("nuqs", 4402);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders SSR content", async () => {
     const { html, status } = await fetchPage("/");
@@ -281,9 +174,9 @@ describe("next-intl", () => {
     const fixture = await startFixture("next-intl", 4403);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders English SSR content", async () => {
     const { html, status } = await fetchPage("/en");
@@ -335,9 +228,9 @@ describe("better-auth", () => {
     proc = fixture.process;
     baseUrl = fixture.baseUrl;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders SSR content", async () => {
     const { html, status } = await fetchPage("/");
@@ -438,9 +331,9 @@ describe("shadcn", () => {
     const fixture = await startFixture("shadcn", 4405);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("renders SSR content", async () => {
     const { html, status } = await fetchPage("/");
@@ -493,9 +386,9 @@ describe("validator", () => {
     const fixture = await startFixture("validator", 4406);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, STARTUP_TIMEOUT_MS);
+  }, FIXTURE_HOOK_TIMEOUT_MS);
 
-  afterAll(() => killProcess(proc));
+  afterAll(() => stopFixtureDevServer(proc));
 
   it("can import and use validator/es/lib/isEmail.js in SSR", async () => {
     const { html, status } = await fetchPage("/");

@@ -213,6 +213,25 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("treats progressive action HTML responses as no-store", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        isProgressiveActionRender: true,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("treats revalidate = 0 as no-store in RSC response policy", () => {
     expect(
       resolveAppPageRscResponsePolicy({

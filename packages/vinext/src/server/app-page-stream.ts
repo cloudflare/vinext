@@ -1,4 +1,5 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
+import type { ReactFormState } from "react-dom/client";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
@@ -20,15 +21,19 @@ export type AppPageSsrHandler = {
     navigationContext: unknown,
     fontData: AppPageFontData,
     options?: {
+      formState?: ReactFormState | null;
       scriptNonce?: string;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+      /** When true, wait for the full React tree before emitting bytes. */
+      waitForAllReady?: boolean;
     },
   ) => Promise<ReadableStream<Uint8Array>>;
 };
 
 type RenderAppPageHtmlStreamOptions = {
   fontData: AppPageFontData;
+  formState?: ReactFormState | null;
   navigationContext: unknown;
   rscStream: ReadableStream<Uint8Array>;
   scriptNonce?: string;
@@ -38,6 +43,8 @@ type RenderAppPageHtmlStreamOptions = {
   sideStream?: ReadableStream<Uint8Array>;
   /** Out-parameter filled with accumulated raw RSC bytes after stream consumption. */
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+  /** When true, wait for the full React tree before emitting bytes. */
+  waitForAllReady?: boolean;
 };
 
 type RenderAppPageHtmlResponseOptions = {
@@ -89,9 +96,11 @@ export async function renderAppPageHtmlStream(
   options: RenderAppPageHtmlStreamOptions,
 ): Promise<ReadableStream<Uint8Array>> {
   const ssrOptions = {
+    formState: options.formState ?? null,
     scriptNonce: options.scriptNonce,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
+    waitForAllReady: options.waitForAllReady,
   };
 
   return options.ssrHandler.handleSsr(

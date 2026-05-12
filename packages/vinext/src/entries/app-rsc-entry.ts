@@ -169,6 +169,7 @@ async function __loadPrerenderPagesRoutes() {
 import {
   renderToReadableStream as _renderToReadableStream,
   decodeAction,
+  decodeFormState,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
@@ -447,8 +448,10 @@ export default __createAppRscHandler({
   configRewrites: __configRewrites,
   dispatchMatchedPage({
     cleanPathname,
+    formState,
     handlerStart,
     interceptionContext,
+    isProgressiveActionRender,
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
@@ -457,6 +460,7 @@ export default __createAppRscHandler({
     route,
     scriptNonce,
     searchParams,
+    renderMode,
   }) {
     const PageComponent = route.page?.default;
     const __segmentConfig = __resolveAppPageSegmentConfig({
@@ -479,6 +483,7 @@ export default __createAppRscHandler({
           isRscRequest,
           request,
           mountedSlotsHeader,
+          renderMode,
         });
       },
       cleanPathname,
@@ -509,6 +514,8 @@ export default __createAppRscHandler({
       handlerStart,
       interceptionContext,
       expireSeconds: __expireTime,
+      formState,
+      isProgressiveActionRender,
       isProduction: process.env.NODE_ENV === "production",
       isRscRequest,
       isrDebug: __isrDebug,
@@ -566,6 +573,7 @@ export default __createAppRscHandler({
       scriptNonce,
       searchParams,
       setNavigationContext,
+      renderMode,
     });
   },
   dispatchMatchedRouteHandler({
@@ -623,6 +631,7 @@ export default __createAppRscHandler({
       },
       contentType,
       decodeAction,
+      decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
@@ -656,6 +665,7 @@ export default __createAppRscHandler({
         isRscRequest: actionIsRscRequest,
         request: actionRequest,
         mountedSlotsHeader: actionMountedSlotsHeader,
+        renderMode: actionRenderMode,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
           opts: interceptOpts,
@@ -663,6 +673,7 @@ export default __createAppRscHandler({
           isRscRequest: actionIsRscRequest,
           request: actionRequest,
           mountedSlotsHeader: actionMountedSlotsHeader,
+          renderMode: actionRenderMode,
         });
       },
       cleanPathname,

@@ -593,6 +593,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("configRewrites.afterFiles");
     expect(content).toContain("configRewrites.fallback");
     expect(content).toContain("matchRewrite(resolvedPathname");
+    expect(content).toContain("matchPageRoute");
+    expect(content).toContain("matchPageRoute(resolvedPathname, request)");
   });
 
   it("applies next.config.js custom headers", () => {

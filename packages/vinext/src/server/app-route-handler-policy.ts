@@ -4,6 +4,7 @@ import {
   type RouteHandlerHttpMethod,
   type RouteHandlerModule,
 } from "./app-route-handler-runtime.js";
+import { NEXT_ACTION_HEADER, RSC_ACTION_HEADER } from "./headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 
 export type AppRouteHandlerModule = {
@@ -63,8 +64,8 @@ export function isPossibleAppRouteActionRequest(
 
   const contentType = request.headers.get("content-type");
   return (
-    request.headers.has("x-rsc-action") ||
-    request.headers.has("next-action") ||
+    request.headers.has(RSC_ACTION_HEADER) ||
+    request.headers.has(NEXT_ACTION_HEADER) ||
     // Next.js uses strict equality here, so charset variants intentionally do
     // not classify as action requests even though they are valid form posts.
     contentType === "application/x-www-form-urlencoded" ||

@@ -10,6 +10,7 @@ import {
   createAppPageLayoutEntries,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 function readNode(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -35,6 +36,22 @@ function readChildren(value: unknown): ReactNode {
   }
 
   return null;
+}
+
+function containsElementType(node: unknown, type: unknown): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => containsElementType(child, type));
+  }
+
+  if (!isValidElement<{ children?: unknown; fallback?: unknown }>(node)) {
+    return false;
+  }
+
+  return (
+    node.type === type ||
+    containsElementType(node.props.children, type) ||
+    containsElementType(node.props.fallback, type)
+  );
 }
 
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -168,6 +185,14 @@ function PageProbe() {
   return createElement("main", { "data-page-segments": segments.join("|") }, "Page");
 }
 
+function RouteLoadingProbe() {
+  return createElement("p", null, "Route loading");
+}
+
+function SlotLoadingProbe() {
+  return createElement("p", null, "Slot loading");
+}
+
 function LayoutWithoutChildren() {
   return createElement("div", { "data-layout": "without-children" }, "Layout only");
 }
@@ -277,6 +302,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements.__route).toBe("route:/blog/post");
+    expect(elements.__layoutIds).toEqual(["layout:/", "layout:/(marketing)"]);
     expect(elements.__rootLayout).toBe("/");
     expect(elements["layout:/"]).toBeDefined();
     expect(elements["layout:/(marketing)"]).toBeDefined();
@@ -298,6 +324,48 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-page-segments=""');
     expect(html).toContain('data-segments="(marketing)|blog|post"');
     expect(html).toContain('data-segments="blog|post"');
+  });
+
+  it("suppresses route and slot loading boundaries for refresh payloads", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: { default: SlotLoadingProbe },
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+    });
+
+    expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(false);
+    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(false);
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {

@@ -47,6 +47,7 @@ describe("App browser stream helpers", () => {
   afterEach(() => {
     resetBrowserGlobals();
     setGlobalDocument(originalDocument);
+    vi.useRealTimers();
   });
 
   it("turns embedded chunks into a readable byte stream", async () => {
@@ -64,6 +65,7 @@ describe("App browser stream helpers", () => {
       addEventListener: vi.fn((event: string, callback: EventListenerOrEventListenerObject) => {
         listeners.set(event, callback as () => void);
       }),
+      removeEventListener: vi.fn(),
     } as unknown as Document);
 
     vinext.__VINEXT_RSC_CHUNKS__ = ["shell"];
@@ -88,6 +90,7 @@ describe("App browser stream helpers", () => {
     setGlobalDocument({
       readyState: "loading",
       addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
     } as unknown as Document);
 
     vinext.__VINEXT_RSC_CHUNKS__ = [];
@@ -105,7 +108,7 @@ describe("App browser stream helpers", () => {
     expect(await readText(reader)).toEqual({ done: true, text: undefined });
   });
 
-  it("closes truncated streams on DOMContentLoaded", async () => {
+  it("errors truncated streams on DOMContentLoaded before the done marker", async () => {
     let onDomContentLoaded: (() => void) | undefined;
     setGlobalDocument({
       readyState: "loading",
@@ -114,6 +117,7 @@ describe("App browser stream helpers", () => {
           onDomContentLoaded = callback as () => void;
         }
       }),
+      removeEventListener: vi.fn(),
     } as unknown as Document);
 
     vinext.__VINEXT_RSC_CHUNKS__ = [];
@@ -125,6 +129,28 @@ describe("App browser stream helpers", () => {
     expect(onDomContentLoaded).toBeTypeOf("function");
     onDomContentLoaded!();
 
-    expect(await pendingRead).toEqual({ done: true, text: undefined });
+    await expect(pendingRead).rejects.toThrow("The connection to the page was unexpectedly closed");
+  });
+
+  it("defers already-loaded document errors so the done marker can close cleanly", async () => {
+    vi.useFakeTimers();
+    setGlobalDocument({
+      readyState: "complete",
+    } as unknown as Document);
+
+    vinext.__VINEXT_RSC_CHUNKS__ = [];
+    vinext.__VINEXT_RSC_DONE__ = false;
+
+    const reader = createProgressiveRscStream().getReader();
+    const pendingRead = readText(reader);
+
+    vinext.__VINEXT_RSC_DONE__ = true;
+    vinext.__VINEXT_RSC_CHUNKS__!.push("final");
+
+    expect(await pendingRead).toEqual({ done: false, text: "final" });
+    expect(await readText(reader)).toEqual({ done: true, text: undefined });
+
+    vi.runAllTimers();
+    expect(await readText(reader)).toEqual({ done: true, text: undefined });
   });
 });

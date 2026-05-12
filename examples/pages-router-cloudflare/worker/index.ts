@@ -6,6 +6,7 @@
  * - handleApiRoute(request, url) -> Response
  * - runMiddleware(request) -> middleware result
  * - vinextConfig -> embedded next.config.js settings
+ * - matchPageRoute(url, request) -> route match metadata
  *
  * Both use Web-standard Request/Response APIs, making them
  * directly usable in a Worker fetch handler.
@@ -22,7 +23,7 @@ import {
 import { mergeHeaders } from "vinext/server/worker-utils";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
@@ -204,8 +205,11 @@ export default {
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
 
+      const pageMatch =
+        typeof matchPageRoute === "function" ? matchPageRoute(resolvedPathname, request) : null;
+
       // Apply afterFiles rewrites
-      if (configRewrites.afterFiles?.length) {
+      if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {

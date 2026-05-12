@@ -29,6 +29,12 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
     await expect(page.locator("h1")).toHaveText("Hello from Pages Router on Workers!");
   });
 
+  test("concrete page wins before afterFiles rewrites in the built Worker", async ({ page }) => {
+    await page.goto(BASE + "/nav-test");
+    await expect(page.locator("h1")).toHaveText("Navigation Test");
+    await expect(page.locator("body")).not.toContainText("This is the about page");
+  });
+
   test("each page has correct __NEXT_DATA__.page value", async ({ page }) => {
     // Home
     let res = await page.goto(BASE + "/");

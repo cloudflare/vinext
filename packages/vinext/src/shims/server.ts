@@ -9,6 +9,11 @@
  * rather than bug-for-bug parity with Next.js internals.
  */
 
+import {
+  MIDDLEWARE_NEXT_HEADER,
+  MIDDLEWARE_REWRITE_HEADER,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+} from "../server/headers.js";
 import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
@@ -248,7 +253,7 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static rewrite(destination: string | URL, init?: MiddlewareResponseInit): NextResponse {
     const headers = new Headers(init?.headers);
-    headers.set("x-middleware-rewrite", validateURL(destination));
+    headers.set(MIDDLEWARE_REWRITE_HEADER, validateURL(destination));
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
     }
@@ -261,7 +266,7 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static next(init?: MiddlewareResponseInit): NextResponse {
     const headers = new Headers(init?.headers);
-    headers.set("x-middleware-next", "1");
+    headers.set(MIDDLEWARE_NEXT_HEADER, "1");
     if (init?.request?.headers) {
       encodeMiddlewareRequestHeaders(headers, init.request.headers);
     }
@@ -760,11 +765,11 @@ class MiddlewareResponseCookies extends ResponseCookies {
   private _syncMiddlewareCookieHeader(): void {
     const cookies = this._responseHeaders.getSetCookie();
     if (cookies.length === 0) {
-      this._responseHeaders.delete("x-middleware-set-cookie");
+      this._responseHeaders.delete(MIDDLEWARE_SET_COOKIE_HEADER);
       return;
     }
 
-    this._responseHeaders.set("x-middleware-set-cookie", cookies.join(","));
+    this._responseHeaders.set(MIDDLEWARE_SET_COOKIE_HEADER, cookies.join(","));
   }
 }
 

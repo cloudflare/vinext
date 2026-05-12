@@ -53,11 +53,12 @@ catalog:
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.7.9
   image-size: 2.0.2
+  ipaddr.js: ^2.1.0
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   ms: 3.0.0-canary.1
-  next: 16.2.5
-  next-intl: ^4.9.1
+  next: 16.2.6
+  next-intl: ^4.9.2
   next-themes: ^0.4.6
   next-view-transitions: ^0.3.5
   nitro: npm:nitro-nightly@latest
@@ -79,6 +80,7 @@ catalog:
   vite-plus: 0.1.17
   vite-tsconfig-paths: ^6.1.1
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.17
+  web-vitals: ^4.2.4
   wrangler: ^4.80.0
   zod: 3.24.3
   knip: ^6.6.2

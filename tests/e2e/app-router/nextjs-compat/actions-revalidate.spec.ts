@@ -9,12 +9,48 @@
  * and that router.refresh() re-renders the page with fresh data.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: actions-revalidate (browser)", () => {
+  async function expectActionRefreshPreservesLoading(page: Page, buttonSelector: string) {
+    const loadingLogs: string[] = [];
+    page.on("console", (message) => {
+      if (message.text() === "Action refresh loading mounted") {
+        loadingLogs.push(message.text());
+      }
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-refresh-no-rerender`);
+    await waitForAppRouterHydration(page);
+    loadingLogs.length = 0;
+
+    const initialValue = await page.locator("#flag-value").textContent();
+
+    await page.click(buttonSelector);
+
+    await expect(async () => {
+      const nextValue = await page.locator("#flag-value").textContent();
+      expect(nextValue).toBeTruthy();
+      expect(nextValue).not.toBe(initialValue);
+    }).toPass({ timeout: 10_000 });
+
+    expect(await page.locator("#action-refresh-loading").count()).toBe(0);
+    expect(loadingLogs).toEqual([]);
+  }
+
+  test("server action followed by router.refresh does not mount route loading", async ({
+    page,
+  }) => {
+    await expectActionRefreshPreservesLoading(page, "#action-refresh");
+  });
+
+  test("refresh() inside server action does not mount route loading", async ({ page }) => {
+    await expectActionRefreshPreservesLoading(page, "#action-refresh-from-server");
+  });
+
   // Next.js: 'should not remount the page + loading component when revalidating'
   // Adapted: Verify that clicking revalidate button updates the timestamp
   test("revalidatePath via server action updates page data", async ({ page }) => {

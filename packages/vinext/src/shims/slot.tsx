@@ -27,21 +27,37 @@ export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
 
+type MergeElementsOptions = {
+  clearAbsentSlots?: boolean;
+  preserveElementIds?: readonly string[];
+};
+
 export function mergeElements(
   prev: AppElements,
   next: AppElements,
-  clearAbsentSlots = false,
+  options: MergeElementsOptions | boolean = {},
 ): AppElements {
-  const merged: Record<string, AppElementValue> = { ...prev, ...next };
+  const clearAbsentSlots =
+    typeof options === "boolean" ? options : (options.clearAbsentSlots ?? false);
+  const preserveElementIds = typeof options === "boolean" ? [] : (options.preserveElementIds ?? []);
+  const merged: Record<string, AppElementValue> = { ...next };
+
+  for (const id of preserveElementIds) {
+    if (Object.hasOwn(merged, id)) continue;
+    if (Object.hasOwn(prev, id)) {
+      const value = prev[id];
+      if (value !== undefined) merged[id] = value;
+    }
+  }
+
   // On soft navigation, unmatched parallel slots preserve their previous subtree
   // instead of firing notFound(). Only hard navigation (full page load) should 404.
   // This matches Next.js behavior for parallel route persistence.
-  for (const key of Object.keys(merged)) {
-    if (
-      AppElementsWire.isSlotId(key) &&
-      merged[key] === UNMATCHED_SLOT &&
-      Object.hasOwn(prev, key)
-    ) {
+  const slotKeys = new Set(
+    [...Object.keys(prev), ...Object.keys(next)].filter((key) => AppElementsWire.isSlotId(key)),
+  );
+  for (const key of slotKeys) {
+    if (next[key] === UNMATCHED_SLOT && Object.hasOwn(prev, key)) {
       merged[key] = prev[key];
     }
   }
@@ -51,9 +67,16 @@ export function mergeElements(
   // runs for traversals because soft forward navigations may omit parent layout
   // slots that should be preserved.
   if (clearAbsentSlots) {
-    for (const key of Object.keys(merged)) {
-      if (AppElementsWire.isSlotId(key) && !Object.hasOwn(next, key)) {
+    for (const key of slotKeys) {
+      if (!Object.hasOwn(next, key)) {
         delete merged[key];
+      }
+    }
+  } else {
+    for (const key of slotKeys) {
+      if (!Object.hasOwn(merged, key) && Object.hasOwn(prev, key)) {
+        const value = prev[key];
+        if (value !== undefined) merged[key] = value;
       }
     }
   }

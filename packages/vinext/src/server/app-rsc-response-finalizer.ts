@@ -1,6 +1,9 @@
 import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
+import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
@@ -18,7 +21,8 @@ type FinalizeAppRscResponseOptions = {
 };
 
 /**
- * Apply next.config.js response headers to an App Router response.
+ * Apply App Router response finalization that must happen outside individual
+ * route dispatchers.
  *
  * Called once per request in the outer handler() wrapper, after all route
  * handling, so that every response path (page, route handler, server action,
@@ -37,6 +41,10 @@ export function finalizeAppRscResponse(
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
     return response;
+  }
+
+  if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
+    mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
   }
 
   if (!options.configHeaders.length) {

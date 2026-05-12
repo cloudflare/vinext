@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
+  APP_LAYOUT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
 } from "../packages/vinext/src/server/app-elements.js";
@@ -140,6 +141,7 @@ describe("buildPageElements", () => {
 
     const record = result as Record<string, unknown>;
     expect(record[APP_ROOT_LAYOUT_KEY]).toBe("/");
+    expect(record[APP_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/dashboard"]);
   });
 
   it("constructs a full element tree for a page with a default export", async () => {

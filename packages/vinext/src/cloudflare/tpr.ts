@@ -23,6 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { VINEXT_REVALIDATE_HEADER } from "../server/headers.js";
 import { isrCacheKey } from "../server/isr-cache.js";
 import { ENTRY_PREFIX } from "./kv-cache-handler.js";
 
@@ -565,7 +566,7 @@ async function prerenderRoutes(
               if (
                 key === "content-type" ||
                 key === "cache-control" ||
-                key === "x-vinext-revalidate" ||
+                key === VINEXT_REVALIDATE_HEADER ||
                 key === "location"
               ) {
                 headers[key] = value;
@@ -683,7 +684,7 @@ export function buildTprKVPairs(
   const pairs: Array<{ key: string; value: string; expiration_ttl: number }> = [];
 
   for (const [routePath, result] of entries) {
-    const revalidateHeader = result.headers["x-vinext-revalidate"];
+    const revalidateHeader = result.headers[VINEXT_REVALIDATE_HEADER];
     const revalidateSeconds =
       revalidateHeader && !isNaN(Number(revalidateHeader))
         ? Number(revalidateHeader)

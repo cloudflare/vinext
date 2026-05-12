@@ -9,6 +9,7 @@ const APP_INTERCEPTION_SEPARATOR = "\0";
 
 export const APP_ARTIFACT_COMPATIBILITY_KEY = "__artifactCompatibility";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
+export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
@@ -44,6 +45,7 @@ export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 type AppElementsMetadata = {
   artifactCompatibility: ArtifactCompatibilityEnvelope;
   interceptionContext: string | null;
+  layoutIds: readonly string[];
   layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
@@ -58,6 +60,7 @@ type AppElementsWireElementKey =
 
 type AppElementsWireMetadataInput = {
   interceptionContext: string | null;
+  layoutIds?: readonly string[];
   routeId: string;
   rootLayoutTreePath: string | null;
 };
@@ -65,6 +68,7 @@ type AppElementsWireMetadataInput = {
 type AppElementsWireMetadataEntries = Readonly<{
   [APP_ROUTE_KEY]: string;
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
+  [APP_LAYOUT_IDS_KEY]: readonly string[];
   [APP_ROOT_LAYOUT_KEY]: string | null;
 }>;
 
@@ -81,6 +85,7 @@ export type AppOutgoingElements = Readonly<
 type AppElementsWireKeys = {
   readonly artifactCompatibility: typeof APP_ARTIFACT_COMPATIBILITY_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
+  readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
   readonly layoutFlags: typeof APP_LAYOUT_FLAGS_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
@@ -211,6 +216,7 @@ function createAppElementsWireMetadataEntries(
   return {
     [APP_ROUTE_KEY]: input.routeId,
     [APP_INTERCEPTION_CONTEXT_KEY]: input.interceptionContext,
+    [APP_LAYOUT_IDS_KEY]: [...(input.layoutIds ?? [])],
     [APP_ROOT_LAYOUT_KEY]: input.rootLayoutTreePath,
   };
 }
@@ -250,6 +256,32 @@ function isLayoutFlagsRecord(value: unknown): value is LayoutFlags {
 function parseLayoutFlags(value: unknown): LayoutFlags {
   if (isLayoutFlagsRecord(value)) return value;
   return {};
+}
+
+function parseLayoutIds(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "[vinext] Invalid __layoutIds in App Router payload: expected layout id string[]",
+    );
+  }
+
+  const layoutIds: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      throw new Error(
+        "[vinext] Invalid __layoutIds in App Router payload: expected layout id string[]",
+      );
+    }
+
+    const parsed = parseAppElementsWireElementKey(entry);
+    if (parsed?.kind !== "layout") {
+      throw new Error("[vinext] Invalid __layoutIds in App Router payload: expected layout ids");
+    }
+
+    layoutIds.push(entry);
+  }
+  return layoutIds;
 }
 
 /**
@@ -328,6 +360,7 @@ export function readAppElementsMetadata(
   }
 
   const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
+  const layoutIds = parseLayoutIds(elements[APP_LAYOUT_IDS_KEY]);
   const artifactCompatibility = readArtifactCompatibilityMetadata(
     elements[APP_ARTIFACT_COMPATIBILITY_KEY],
   );
@@ -335,6 +368,7 @@ export function readAppElementsMetadata(
   return {
     artifactCompatibility,
     interceptionContext: interceptionContext ?? null,
+    layoutIds,
     layoutFlags,
     routeId,
     rootLayoutTreePath,
@@ -347,6 +381,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   keys: {
     artifactCompatibility: APP_ARTIFACT_COMPATIBILITY_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
+    layoutIds: APP_LAYOUT_IDS_KEY,
     layoutFlags: APP_LAYOUT_FLAGS_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,

@@ -54,6 +54,7 @@ function createCommonOptions() {
       _navContext: unknown,
       _fontData: unknown,
       options?: {
+        formState?: unknown;
         scriptNonce?: string;
         sideStream?: ReadableStream<Uint8Array>;
         capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
@@ -135,6 +136,7 @@ function createCommonOptions() {
       isDraftMode: false,
       isForceDynamic: false,
       isForceStatic: false,
+      isProgressiveActionRender: false,
       isProduction: false,
       isRscRequest: false,
       isrHtmlKey(pathname: string) {
@@ -251,6 +253,37 @@ describe("clearRequestContext timing — issue #660", () => {
 
     // Context must be cleared after the stream is fully consumed.
     expect(contextCleared).toHaveLength(1);
+  });
+});
+
+describe("form state rendering", () => {
+  it("passes action form state to SSR and disables HTML cache writes", async () => {
+    const common = createCommonOptions();
+    const formState = ["action-result", "key-path", "reference-id", 1] as never;
+    const loadSsrHandler = vi.fn(async () => ({
+      async handleSsr(
+        _rscStream: ReadableStream<Uint8Array>,
+        _navContext: unknown,
+        _fontData: unknown,
+        options?: { formState?: unknown },
+      ) {
+        expect(options?.formState).toBe(formState);
+        return createStream(["<html>action state</html>"]);
+      },
+    }));
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      formState,
+      isProgressiveActionRender: true,
+      isProduction: true,
+      loadSsrHandler,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(common.isrSet).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>action state</html>");
   });
 });
 

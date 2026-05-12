@@ -19,6 +19,11 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  shouldSuppressLoadingBoundaries,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 
 type AppPageComponentProps = {
   children?: ReactNode;
@@ -141,6 +146,7 @@ type BuildAppPageElementsOptions<
   interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
+  renderMode?: AppRscRenderMode;
   routePath: string;
 };
 
@@ -393,6 +399,7 @@ export function buildAppPageElements<
   const elements: Record<string, ReactNode | string | null> = {
     ...AppElementsWire.createMetadataEntries({
       interceptionContext,
+      layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
       rootLayoutTreePath,
       routeId,
     }),
@@ -588,7 +595,10 @@ export function buildAppPageElements<
     }
 
     const slotLoadingComponent = getDefaultExport(slot.loading);
-    if (slotLoadingComponent) {
+    if (
+      slotLoadingComponent &&
+      !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION)
+    ) {
       const SlotLoadingComponent = slotLoadingComponent;
       slotElement = <Suspense fallback={<SlotLoadingComponent />}>{slotElement}</Suspense>;
     }
@@ -628,7 +638,10 @@ export function buildAppPageElements<
   routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
-  if (routeLoadingComponent) {
+  if (
+    routeLoadingComponent &&
+    !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION)
+  ) {
     const RouteLoadingComponent = routeLoadingComponent;
     // Key the Suspense by pageId so cross-route navigations produce a fresh
     // Suspense identity. Without this, React's transition behavior matches

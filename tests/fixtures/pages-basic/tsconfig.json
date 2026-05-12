@@ -10,5 +10,5 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["pages", "components", "*.ts"]
+  "include": ["pages", "components", "*.ts", "../../../packages/vinext/src/shims/next-shims.d.ts"]
 }

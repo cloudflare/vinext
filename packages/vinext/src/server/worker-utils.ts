@@ -5,6 +5,7 @@
  * "vinext/server/worker-utils". The generated worker entry (deploy.ts)
  * inlines these functions in its template string.
  */
+import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -115,7 +116,7 @@ export async function resolveStaticAssetSignal(
     fetchAsset(path: string): Promise<Response>;
   },
 ): Promise<Response | null> {
-  const signal = signalResponse.headers.get("x-vinext-static-file");
+  const signal = signalResponse.headers.get(VINEXT_STATIC_FILE_HEADER);
   if (!signal) return null;
 
   let assetPath = "/";
@@ -126,7 +127,7 @@ export async function resolveStaticAssetSignal(
   }
 
   const extraHeaders = buildHeaderRecord(signalResponse, [
-    "x-vinext-static-file",
+    VINEXT_STATIC_FILE_HEADER,
     "content-encoding",
     "content-length",
     "content-type",

@@ -234,8 +234,17 @@ export type RouteManifestSlot = {
   ownerTreePath: string;
   ownerLayoutId: string | null;
   rootBoundaryId: RootBoundaryId | null;
+  defaultId: string | null;
   hasDefault: boolean;
   hasPage: boolean;
+};
+
+export type RouteManifestDefault = {
+  id: string;
+  slotId: string;
+  ownerTreePath: string;
+  ownerLayoutId: string | null;
+  rootBoundaryId: RootBoundaryId | null;
 };
 
 export type RouteManifestSlotBindingState = "active" | "default" | "unmatched";
@@ -246,6 +255,7 @@ export type RouteManifestSlotBinding = {
   slotId: string;
   ownerLayoutId: string | null;
   state: RouteManifestSlotBindingState;
+  defaultId: string | null;
   routeSegments: readonly string[] | null;
   slotPatternParts?: readonly string[];
   slotParamNames?: readonly string[];
@@ -274,6 +284,7 @@ export type StaticSegmentGraph = {
   layouts: ReadonlyMap<string, RouteManifestLayout>;
   templates: ReadonlyMap<string, RouteManifestTemplate>;
   slots: ReadonlyMap<string, RouteManifestSlot>;
+  defaults: ReadonlyMap<string, RouteManifestDefault>;
   slotBindings: ReadonlyMap<string, RouteManifestSlotBinding>;
   boundaries: ReadonlyMap<string, RouteManifestBoundary>;
   rootBoundaries: ReadonlyMap<RootBoundaryId, RouteManifestRootBoundary>;
@@ -308,6 +319,10 @@ function createAppRouteGraphSlotId(slotName: string, ownerTreePath: string): str
   return `slot:${slotName}:${ownerTreePath}`;
 }
 
+function createAppRouteGraphDefaultId(slotId: string): string {
+  return `default:${slotId}`;
+}
+
 function createAppRouteGraphRootBoundaryId(treePath: string): RootBoundaryId {
   return `root-boundary:${treePath}`;
 }
@@ -340,6 +355,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
   const layouts = new Map<string, RouteManifestLayout>();
   const templates = new Map<string, RouteManifestTemplate>();
   const slots = new Map<string, RouteManifestSlot>();
+  const defaults = new Map<string, RouteManifestDefault>();
   const slotBindings = new Map<string, RouteManifestSlotBinding>();
   const boundaries = new Map<string, RouteManifestBoundary>();
   const rootBoundaries = new Map<RootBoundaryId, RouteManifestRootBoundary>();
@@ -408,6 +424,8 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       }
     }
 
+    addRouteManifestSegmentErrorBoundaryFacts({ boundaries, route });
+
     for (const [index, templateId] of route.ids.templates.entries()) {
       const treePosition = route.templateTreePositions?.[index];
       assertRouteManifestTreePosition("template", route, templateId, treePosition);
@@ -436,6 +454,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
 
     for (const slot of route.parallelSlots) {
       const ownerLayoutId = findSlotOwnerLayoutId(route, slot);
+      const defaultId = slot.defaultPath ? createAppRouteGraphDefaultId(slot.id) : null;
       slots.set(slot.id, {
         id: slot.id,
         key: slot.key,
@@ -443,10 +462,20 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
         ownerTreePath: slot.ownerTreePath,
         ownerLayoutId,
         rootBoundaryId: ownerLayoutId ? route.ids.rootBoundary : null,
+        defaultId,
         hasDefault: slot.defaultPath !== null,
         hasPage: slot.hasPage,
       });
-      const binding = createRouteManifestSlotBinding(route, slot, ownerLayoutId);
+      if (defaultId) {
+        defaults.set(defaultId, {
+          id: defaultId,
+          slotId: slot.id,
+          ownerTreePath: slot.ownerTreePath,
+          ownerLayoutId,
+          rootBoundaryId: ownerLayoutId ? route.ids.rootBoundary : null,
+        });
+      }
+      const binding = createRouteManifestSlotBinding(route, slot, ownerLayoutId, defaultId);
       slotBindings.set(binding.id, binding);
     }
   }
@@ -458,6 +487,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
     layouts,
     templates,
     slots,
+    defaults,
     slotBindings,
     boundaries,
     rootBoundaries,
@@ -484,13 +514,16 @@ function createRouteManifestSlotBinding(
   route: AppRouteGraphRoute,
   slot: AppRouteGraphParallelSlot,
   ownerLayoutId: string | null,
+  defaultId: string | null,
 ): RouteManifestSlotBinding {
+  const state = getRouteManifestSlotBindingState(slot);
   const binding: RouteManifestSlotBinding = {
     id: `${route.ids.route}::${slot.id}`,
     routeId: route.ids.route,
     slotId: slot.id,
     ownerLayoutId,
-    state: getRouteManifestSlotBindingState(slot),
+    state,
+    defaultId: state === "default" ? defaultId : null,
     routeSegments: slot.routeSegments ? [...slot.routeSegments] : null,
   };
 
@@ -529,11 +562,35 @@ function addRouteManifestBoundaryFacts(input: {
   );
 }
 
+function addRouteManifestSegmentErrorBoundaryFacts(input: {
+  boundaries: Map<string, RouteManifestBoundary>;
+  route: AppRouteGraphRoute;
+}): void {
+  for (const [index, boundaryPath] of (input.route.errorPaths ?? []).entries()) {
+    const treePosition = input.route.errorTreePositions?.[index];
+    assertRouteManifestBoundaryTreePosition(input.route, boundaryPath, treePosition);
+    const ownerLayoutId = findRouteManifestOwnerLayoutId(input.route, treePosition);
+    if (ownerLayoutId !== null) continue;
+
+    const treePath = createAppRouteGraphTreePath(input.route.routeSegments, treePosition);
+    addRouteManifestBoundaryFact(
+      {
+        boundaries: input.boundaries,
+        route: input.route,
+        layoutId: ownerLayoutId,
+        treePath,
+      },
+      "error",
+      boundaryPath,
+    );
+  }
+}
+
 function addRouteManifestBoundaryFact(
   input: {
     boundaries: Map<string, RouteManifestBoundary>;
     route: AppRouteGraphRoute;
-    layoutId: string;
+    layoutId: string | null;
     treePath: string;
   },
   outcome: RouteManifestBoundaryOutcome,
@@ -564,6 +621,18 @@ function assertRouteManifestTreePosition(
   );
 }
 
+function assertRouteManifestBoundaryTreePosition(
+  route: AppRouteGraphRoute,
+  boundaryPath: string,
+  treePosition: number | undefined,
+): asserts treePosition is number {
+  if (treePosition !== undefined) return;
+
+  throw new Error(
+    `[vinext] App route graph invariant violated: missing boundary tree position for ${boundaryPath} on ${route.pattern}`,
+  );
+}
+
 function assertRouteManifestRootBoundary(
   kind: "layout" | "template",
   route: AppRouteGraphRoute,
@@ -588,6 +657,7 @@ function createRouteManifestGraphVersion(segmentGraph: StaticSegmentGraph): Grap
     layouts: sortedMapValues(segmentGraph.layouts),
     templates: sortedMapValues(segmentGraph.templates),
     slots: sortedMapValues(segmentGraph.slots),
+    defaults: sortedMapValues(segmentGraph.defaults),
     slotBindings: sortedMapValues(segmentGraph.slotBindings),
     boundaries: sortedMapValues(segmentGraph.boundaries),
     rootBoundaries: sortedMapValues(segmentGraph.rootBoundaries),

@@ -255,7 +255,9 @@ export async function dispatchAppRouteHandler(
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
       params: makeThenableParams(options.params),
-      reportRequestError,
+      reportRequestError(error, request, context) {
+        void reportRequestError(error, request, context);
+      },
       request: options.request,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,

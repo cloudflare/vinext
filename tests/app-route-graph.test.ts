@@ -48,6 +48,7 @@ function snapshotRouteManifest(manifest: RouteManifest) {
     routeHandlers: Array.from(manifest.segmentGraph.routeHandlers.entries()),
     templates: Array.from(manifest.segmentGraph.templates.entries()),
     slots: Array.from(manifest.segmentGraph.slots.entries()),
+    defaults: Array.from(manifest.segmentGraph.defaults.entries()),
     slotBindings: Array.from(manifest.segmentGraph.slotBindings.entries()),
     boundaries: Array.from(manifest.segmentGraph.boundaries.entries()),
     rootBoundaries: Array.from(manifest.segmentGraph.rootBoundaries.entries()),
@@ -383,8 +384,16 @@ describe("App Router route graph builder", () => {
         ownerTreePath: "/(marketing)/blog/[slug]",
         ownerLayoutId: "layout:/(marketing)/blog/[slug]",
         rootBoundaryId: "root-boundary:/",
+        defaultId: "default:slot:modal:/(marketing)/blog/[slug]",
         hasDefault: true,
         hasPage: false,
+      });
+      expect(segmentGraph.defaults.get("default:slot:modal:/(marketing)/blog/[slug]")).toEqual({
+        id: "default:slot:modal:/(marketing)/blog/[slug]",
+        slotId: "slot:modal:/(marketing)/blog/[slug]",
+        ownerLayoutId: "layout:/(marketing)/blog/[slug]",
+        ownerTreePath: "/(marketing)/blog/[slug]",
+        rootBoundaryId: "root-boundary:/",
       });
       expect(segmentGraph.rootBoundaries.get("root-boundary:/")).toEqual({
         id: "root-boundary:/",
@@ -464,6 +473,7 @@ describe("App Router route graph builder", () => {
         ownerTreePath: "/(marketing)/dashboard",
         ownerLayoutId: "layout:/(marketing)/dashboard",
         rootBoundaryId: "root-boundary:/(marketing)",
+        defaultId: "default:slot:analytics:/(marketing)/dashboard",
         hasDefault: true,
         hasPage: false,
       });
@@ -471,8 +481,16 @@ describe("App Router route graph builder", () => {
         ownerTreePath: "/(marketing)/dashboard",
         ownerLayoutId: "layout:/(marketing)/dashboard",
         rootBoundaryId: "root-boundary:/(marketing)",
+        defaultId: "default:slot:modal:/(marketing)/dashboard",
         hasDefault: true,
         hasPage: true,
+      });
+      expect(segmentGraph.defaults.get("default:slot:analytics:/(marketing)/dashboard")).toEqual({
+        id: "default:slot:analytics:/(marketing)/dashboard",
+        slotId: "slot:analytics:/(marketing)/dashboard",
+        ownerLayoutId: "layout:/(marketing)/dashboard",
+        ownerTreePath: "/(marketing)/dashboard",
+        rootBoundaryId: "root-boundary:/(marketing)",
       });
 
       expect(
@@ -483,6 +501,7 @@ describe("App Router route graph builder", () => {
         slotId: "slot:analytics:/(marketing)/dashboard",
         ownerLayoutId: "layout:/(marketing)/dashboard",
         state: "default",
+        defaultId: "default:slot:analytics:/(marketing)/dashboard",
         routeSegments: null,
       });
       expect(
@@ -493,6 +512,7 @@ describe("App Router route graph builder", () => {
         slotId: "slot:modal:/(marketing)/dashboard",
         ownerLayoutId: "layout:/(marketing)/dashboard",
         state: "active",
+        defaultId: null,
         routeSegments: [],
       });
       expect(
@@ -505,6 +525,7 @@ describe("App Router route graph builder", () => {
         slotId: "slot:modal:/(marketing)/dashboard",
         ownerLayoutId: "layout:/(marketing)/dashboard",
         state: "active",
+        defaultId: null,
         routeSegments: ["settings"],
       });
 
@@ -557,6 +578,28 @@ describe("App Router route graph builder", () => {
         ownerLayoutId: "layout:/(marketing)/dashboard",
         rootBoundaryId: "root-boundary:/(marketing)",
       });
+    });
+  });
+
+  it("exposes segment error boundary facts even when the segment has no sibling layout", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "docs/(group)/error.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "docs/(group)/child/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const boundary = graph.routeManifest.segmentGraph.boundaries.get(
+        "boundary:error:/docs/(group)",
+      );
+
+      expect(boundary).toEqual({
+        id: "boundary:error:/docs/(group)",
+        outcome: "error",
+        treePath: "/docs/(group)",
+        ownerLayoutId: null,
+        rootBoundaryId: "root-boundary:/",
+      });
+      expect(graph.routeManifest.segmentGraph.boundaries.has("boundary:error:/docs")).toBe(false);
     });
   });
 

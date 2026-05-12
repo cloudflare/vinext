@@ -14,6 +14,6 @@
     "isolatedModules": true,
     "jsx": "react-jsx"
   },
-  "include": ["next-shims.d.ts", "**/*.ts", "**/*.tsx"],
+  "include": ["**/*.ts", "**/*.tsx", "../../packages/vinext/src/shims/next-shims.d.ts"],
   "exclude": ["node_modules"]
 }

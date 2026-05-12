@@ -9,6 +9,7 @@
  */
 
 import type { AsyncLocalStorage } from "node:async_hooks";
+import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -69,7 +70,6 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
 const EXPIRED_COOKIE_DATE = new Date(0).toUTCString();
-const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 
 function splitMiddlewareSetCookieHeader(value: string): string[] {
   const cookies: string[] = [];
@@ -477,6 +477,26 @@ function _decorateRequestApiPromise<T extends object>(
   });
 }
 
+// React.use() tracks thenables by identity, so request APIs must reuse the
+// same decorated promise for the same underlying request view.
+const _decoratedHeadersPromises = new WeakMap<Headers, Promise<Headers> & Headers>();
+const _decoratedCookiesPromises = new WeakMap<
+  RequestCookies,
+  Promise<RequestCookies> & RequestCookies
+>();
+
+function _getOrCreateDecoratedRequestApiPromise<T extends object>(
+  cache: WeakMap<T, Promise<T> & T>,
+  target: T,
+): Promise<T> & T {
+  const cached = cache.get(target);
+  if (cached) return cached;
+
+  const promise = _decorateRequestApiPromise(Promise.resolve(target), target);
+  cache.set(target, promise);
+  return promise;
+}
+
 function _decorateRejectedRequestApiPromise<T extends object>(error: unknown): Promise<T> & T {
   const normalizedError = error instanceof Error ? error : new Error(String(error));
   const promise = Promise.reject(normalizedError) as Promise<T>;
@@ -679,7 +699,7 @@ export function headers(): Promise<Headers> & Headers {
 
   markDynamicUsage();
   const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
-  return _decorateRequestApiPromise(Promise.resolve(readonlyHeaders), readonlyHeaders);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
 }
 
 /**
@@ -711,7 +731,7 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
     ? _getMutableCookies(state.headersContext)
     : _getReadonlyCookies(state.headersContext);
 
-  return _decorateRequestApiPromise(Promise.resolve(cookieStore), cookieStore);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
 }
 
 // ---------------------------------------------------------------------------
@@ -771,7 +791,7 @@ export function isDraftModeRequest(request: Request): boolean {
 }
 
 type DraftModeResult = {
-  isEnabled: boolean;
+  readonly isEnabled: boolean;
   enable(): void;
   disable(): void;
 };
@@ -799,12 +819,13 @@ export async function draftMode(): Promise<DraftModeResult> {
   }
   markDynamicUsage();
   const secret = getDraftSecret();
-  const isEnabled = state.headersContext
-    ? state.headersContext.cookies.get(DRAFT_MODE_COOKIE) === secret
-    : false;
 
   return {
-    isEnabled,
+    get isEnabled(): boolean {
+      return state.headersContext
+        ? state.headersContext.cookies.get(DRAFT_MODE_COOKIE) === secret
+        : false;
+    },
     enable(): void {
       if (state.headersContext?.accessError) {
         throw state.headersContext.accessError;

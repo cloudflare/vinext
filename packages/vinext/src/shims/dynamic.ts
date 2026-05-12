@@ -13,18 +13,113 @@
  * - Client: React.lazy + Suspense (standard code splitting)
  *
  * Supports:
+ * - dynamic(import('./Component'))
  * - dynamic(() => import('./Component'))
+ * - dynamic({ loader })
  * - dynamic(() => import('./Component'), { loading: () => <Spinner /> })
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
 
-type DynamicOptions = {
-  loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+type DynamicLoadingProps = {
+  error?: Error | null;
+  isLoading?: boolean;
+  pastDelay?: boolean;
+  retry?: () => void;
+  timedOut?: boolean;
+};
+
+type ComponentModule<P> = { default: ComponentType<P> };
+type LoaderComponent<P> = Promise<ComponentModule<P> | ComponentType<P>>;
+type LoaderFn<P> = () => LoaderComponent<P>;
+
+type DynamicOptions<P> = {
+  loading?: ComponentType<DynamicLoadingProps>;
+  loader?: Loader<P>;
   ssr?: boolean;
 };
 
-type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>;
+type Loader<P> = LoaderFn<P> | LoaderComponent<P>;
+type DynamicInput<P> = DynamicOptions<P> | Loader<P>;
+
+const noopRetry = () => {};
+
+function createDynamicLoadingProps(
+  overrides: Partial<DynamicLoadingProps> = {},
+): DynamicLoadingProps {
+  return {
+    error: null,
+    isLoading: true,
+    pastDelay: true,
+    retry: noopRetry,
+    timedOut: false,
+    ...overrides,
+  };
+}
+
+function hasDefaultExport<P>(
+  mod: ComponentModule<P> | ComponentType<P>,
+): mod is ComponentModule<P> {
+  return (typeof mod === "object" || typeof mod === "function") && mod !== null && "default" in mod;
+}
+
+function normalizeLoader<P extends object>(loader: Loader<P>): LoaderFn<P> {
+  if (typeof loader === "function") {
+    return loader;
+  }
+  return () => loader;
+}
+
+function normalizeDynamicOptions<P extends object>(
+  dynamicInput: DynamicInput<P>,
+  options?: DynamicOptions<P>,
+): DynamicOptions<P> {
+  let normalizedOptions: DynamicOptions<P>;
+
+  if (dynamicInput instanceof Promise || typeof dynamicInput === "function") {
+    normalizedOptions = { loader: normalizeLoader(dynamicInput) };
+  } else {
+    normalizedOptions = dynamicInput;
+  }
+
+  return {
+    ...normalizedOptions,
+    ...options,
+  };
+}
+
+function createLazyComponent<P extends object>(loader: LoaderFn<P>) {
+  return React.lazy(async () => {
+    const mod = await loader();
+    if (hasDefaultExport(mod)) return mod;
+    return { default: mod };
+  });
+}
+
+function useRetryableLazyComponent<P extends object>(
+  loader: LoaderFn<P>,
+  initialLazyComponent: ReturnType<typeof createLazyComponent<P>>,
+) {
+  const [LazyComponent, setLazyComponent] = React.useState(() => initialLazyComponent);
+  const [retryKey, setRetryKey] = React.useState(0);
+  const retry = React.useCallback(() => {
+    setLazyComponent(() => createLazyComponent(loader));
+    setRetryKey((key) => key + 1);
+  }, [loader]);
+  return { LazyComponent, retry, retryKey };
+}
+
+type DynamicErrorBoundaryProps = {
+  fallback: ComponentType<DynamicLoadingProps>;
+  retry: () => void;
+  resetKey: number;
+  children?: React.ReactNode;
+};
+
+type DynamicErrorBoundaryState = {
+  error: Error | null;
+  resetKey: number;
+};
 
 /**
  * Lightweight error boundary that renders the loading component with the error
@@ -35,35 +130,39 @@ type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
  */
-// oxlint-disable-next-line typescript/no-explicit-any
-let DynamicErrorBoundary: any;
+let DynamicErrorBoundary: ComponentType<DynamicErrorBoundaryProps> | null | undefined;
 function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
   if (!React.Component) return null;
   DynamicErrorBoundary = class extends (
-    React.Component<
-      {
-        fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
-        children: React.ReactNode;
-      },
-      { error: Error | null }
-    >
+    React.Component<DynamicErrorBoundaryProps, DynamicErrorBoundaryState>
   ) {
-    // oxlint-disable-next-line typescript/no-explicit-any
-    constructor(props: any) {
+    constructor(props: DynamicErrorBoundaryProps) {
       super(props);
-      this.state = { error: null };
+      this.state = { error: null, resetKey: props.resetKey };
+    }
+    static getDerivedStateFromProps(
+      props: DynamicErrorBoundaryProps,
+      state: DynamicErrorBoundaryState,
+    ) {
+      if (props.resetKey !== state.resetKey) {
+        return { error: null, resetKey: props.resetKey };
+      }
+      return null;
     }
     static getDerivedStateFromError(error: unknown) {
       return { error: error instanceof Error ? error : new Error(String(error)) };
     }
     render() {
       if (this.state.error) {
-        return React.createElement(this.props.fallback, {
-          isLoading: false,
-          pastDelay: true,
-          error: this.state.error,
-        });
+        return React.createElement(
+          this.props.fallback,
+          createDynamicLoadingProps({
+            isLoading: false,
+            error: this.state.error,
+            retry: this.props.retry,
+          }),
+        );
       }
       return this.props.children;
     }
@@ -90,10 +189,15 @@ export function flushPreloads(): Promise<void[]> {
 }
 
 function dynamic<P extends object = object>(
-  loader: Loader<P>,
-  options?: DynamicOptions,
+  dynamicInput: DynamicInput<P>,
+  options?: DynamicOptions<P>,
 ): ComponentType<P> {
-  const { loading: LoadingComponent, ssr = true } = options ?? {};
+  const {
+    loader: dynamicLoader,
+    loading: LoadingComponent,
+    ssr = true,
+  } = normalizeDynamicOptions(dynamicInput, options);
+  const loader = dynamicLoader ? normalizeLoader(dynamicLoader) : () => Promise.resolve(() => null);
 
   // ssr: false — render nothing on the server, lazy-load on client
   if (!ssr) {
@@ -101,37 +205,44 @@ function dynamic<P extends object = object>(
       // On the server (SSR or RSC), just render the loading state or nothing
       const SSRFalse = (_props: P) =>
         LoadingComponent
-          ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+          ? React.createElement(LoadingComponent, createDynamicLoadingProps({ pastDelay: false }))
           : null;
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
     }
 
-    // Client: use lazy with Suspense
-    const LazyComponent = React.lazy(async () => {
-      const mod = await loader();
-      if ("default" in mod) return mod as { default: ComponentType<P> };
-      return { default: mod as ComponentType<P> };
-    });
+    const InitialLazyComponent = createLazyComponent(loader);
 
     const ClientSSRFalse = (props: P) => {
       const [mounted, setMounted] = React.useState(false);
+      const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
+        loader,
+        InitialLazyComponent,
+      );
       React.useEffect(() => setMounted(true), []);
 
       if (!mounted) {
         return LoadingComponent
-          ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+          ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
           : null;
       }
 
       const fallback = LoadingComponent
-        ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+        ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
         : null;
-      return React.createElement(
-        React.Suspense,
-        { fallback },
-        React.createElement(LazyComponent, props),
-      );
+      const lazyElement = React.createElement(LazyComponent, props);
+      let content: React.ReactNode = lazyElement;
+      if (LoadingComponent) {
+        const ErrorBoundary = getDynamicErrorBoundary();
+        if (ErrorBoundary) {
+          content = React.createElement(
+            ErrorBoundary,
+            { fallback: LoadingComponent, retry, resetKey: retryKey },
+            lazyElement,
+          );
+        }
+      }
+      return React.createElement(React.Suspense, { fallback }, content);
     };
 
     ClientSSRFalse.displayName = "DynamicClientSSRFalse";
@@ -165,23 +276,26 @@ function dynamic<P extends object = object>(
 
     // SSR path: Use React.lazy so that renderToReadableStream can suspend
     // until the dynamically-imported component is available.
-    const LazyServer = React.lazy(async () => {
-      const mod = await loader();
-      if ("default" in mod) return mod as { default: ComponentType<P> };
-      return { default: mod as ComponentType<P> };
-    });
+    const LazyServer = createLazyComponent(loader);
 
     const ServerDynamic = (props: P) => {
       const fallback = LoadingComponent
-        ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
+        ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
       const lazyElement = React.createElement(LazyServer, props);
       // Wrap with error boundary so loader rejections render the loading
       // component with the error instead of propagating uncaught.
-      const ErrorBoundary = LoadingComponent ? getDynamicErrorBoundary() : null;
-      const content = ErrorBoundary
-        ? React.createElement(ErrorBoundary, { fallback: LoadingComponent }, lazyElement)
-        : lazyElement;
+      let content: React.ReactNode = lazyElement;
+      if (LoadingComponent) {
+        const ErrorBoundary = getDynamicErrorBoundary();
+        if (ErrorBoundary) {
+          content = React.createElement(
+            ErrorBoundary,
+            { fallback: LoadingComponent, retry: noopRetry, resetKey: 0 },
+            lazyElement,
+          );
+        }
+      }
       return React.createElement(React.Suspense, { fallback }, content);
     };
 
@@ -189,22 +303,29 @@ function dynamic<P extends object = object>(
     return ServerDynamic;
   }
 
-  // Client path: standard React.lazy with Suspense
-  const LazyComponent = React.lazy(async () => {
-    const mod = await loader();
-    if ("default" in mod) return mod as { default: ComponentType<P> };
-    return { default: mod as ComponentType<P> };
-  });
+  const InitialLazyComponent = createLazyComponent(loader);
 
   const ClientDynamic = (props: P) => {
-    const fallback = LoadingComponent
-      ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
-      : null;
-    return React.createElement(
-      React.Suspense,
-      { fallback },
-      React.createElement(LazyComponent, props),
+    const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
+      loader,
+      InitialLazyComponent,
     );
+    const fallback = LoadingComponent
+      ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
+      : null;
+    const lazyElement = React.createElement(LazyComponent, props);
+    let content: React.ReactNode = lazyElement;
+    if (LoadingComponent) {
+      const ErrorBoundary = getDynamicErrorBoundary();
+      if (ErrorBoundary) {
+        content = React.createElement(
+          ErrorBoundary,
+          { fallback: LoadingComponent, retry, resetKey: retryKey },
+          lazyElement,
+        );
+      }
+    }
+    return React.createElement(React.Suspense, { fallback }, content);
   };
 
   ClientDynamic.displayName = "DynamicClient";

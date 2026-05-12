@@ -3,11 +3,13 @@ import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
+  VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 type TestRoute = {
+  isDynamic: boolean;
   page?: { default?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
@@ -19,6 +21,7 @@ type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
 
 function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
   return {
+    isDynamic: false,
     page: { default() {} },
     pattern: "/about",
     routeSegments: ["about"],
@@ -87,6 +90,34 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(200);
     expect(response.headers.get("x-test-header")).toBe("applied");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("marks progressive action page renders even when decoded form state is null", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return { kind: "form-state", formState: null };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        formState: null,
+        isProgressiveActionRender: true,
+      }),
+    );
   });
 
   it("returns config redirects before route dispatch and skips finalization", async () => {
@@ -102,6 +133,81 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe("/docs/about");
     expect(response.headers.get("x-test-header")).toBeNull();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("lets middleware redirect headers override earlier matching config headers", async () => {
+    // Next.js route order reference:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      dispatchMatchedPage,
+      middlewareModule: {
+        default: () =>
+          new Response(null, {
+            status: 307,
+            headers: {
+              Location: "/login",
+              "x-test-header": "middleware",
+            },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(response.headers.get("x-test-header")).toBe("middleware");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("carries config headers on middleware redirects when middleware does not override them", async () => {
+    // Next.js route order reference:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      dispatchMatchedPage,
+      middlewareModule: {
+        default: () =>
+          new Response(null, {
+            status: 307,
+            headers: { Location: "/login" },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(response.headers.get("x-test-header")).toBe("applied");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate additive config headers on non-redirect middleware responses", async () => {
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Vary", value: "X-Config" }],
+        },
+      ],
+      middlewareModule: {
+        default: () =>
+          new Response("blocked", {
+            status: 401,
+            headers: { Vary: "User-Agent" },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+    const varyTokens = (response.headers.get("vary") ?? "").split(",").map((token) => token.trim());
+
+    expect(response.status).toBe(401);
+    expect(varyTokens).toContain("User-Agent");
+    expect(varyTokens).toContain("X-Config");
+    expect(varyTokens.filter((token) => token === "X-Config")).toHaveLength(1);
   });
 
   it("canonicalizes config redirect locations for RSC requests", async () => {
@@ -224,6 +330,79 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("does not let afterFiles rewrites override non-dynamic app routes", async () => {
+    const routes = {
+      "/about": createPageRoute({ pattern: "/about", routeSegments: ["about"] }),
+      "/nav": createPageRoute({ pattern: "/nav", routeSegments: ["nav"] }),
+    };
+    const dispatchMatchedPage = vi.fn(
+      async ({ route }) => new Response(`page:${route.pattern}`, { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/nav", destination: "/about" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/about") return { params: {}, route: routes["/about"] };
+        if (pathname === "/nav") return { params: {}, route: routes["/nav"] };
+        return null;
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/nav"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page:/nav");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/nav", route: routes["/nav"] }),
+    );
+  });
+
+  it("runs afterFiles rewrites before dynamic app route matching", async () => {
+    const routes = {
+      "/about": createPageRoute({ pattern: "/about", routeSegments: ["about"] }),
+      dynamicBlog: createPageRoute({
+        isDynamic: true,
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      }),
+    };
+    const dispatchMatchedPage = vi.fn(
+      async ({ route }) => new Response(`page:${route.pattern}`, { status: 200 }),
+    );
+    const emptyParams: Record<string, string | string[]> = {};
+    const legacyParams: Record<string, string | string[]> = { slug: "legacy" };
+    const matchRoute: HandlerOptions["matchRoute"] = (pathname) => {
+      if (pathname === "/about") return { params: emptyParams, route: routes["/about"] };
+      if (pathname === "/blog/legacy") {
+        return { params: legacyParams, route: routes.dynamicBlog };
+      }
+      return null;
+    };
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/blog/legacy", destination: "/about" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchRoute,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/blog/legacy"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page:/about");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/about", route: routes["/about"] }),
+    );
+  });
+
   it("serves public files before route matching and clears request context", async () => {
     const clearRequestContext = vi.fn();
     const matchRoute = vi.fn(() => null);
@@ -238,6 +417,7 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(response.headers.get("vary")).toBeNull();
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
     expect(matchRoute).not.toHaveBeenCalled();
   });
@@ -322,6 +502,34 @@ describe("createAppRscHandler", () => {
         route,
       }),
     );
+  });
+
+  it("appends App Router RSC vary values to route handler responses", async () => {
+    const route = createPageRoute({
+      page: null,
+      pattern: "/api/:id",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["api", "[id]"],
+    });
+    const dispatchMatchedRouteHandler = vi.fn(
+      async () => new Response("route", { status: 200, headers: { Vary: "User-Agent" } }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      matchRoute: (pathname: string) =>
+        pathname === "/api/123"
+          ? {
+              params: { id: "123" },
+              route,
+            }
+          : null,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/api/123"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
   });
 
   it("clears request context before returning the plain 404 fallback", async () => {

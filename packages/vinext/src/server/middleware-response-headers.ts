@@ -1,6 +1,6 @@
 const ADDITIVE_RESPONSE_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 
-function mergeVaryHeader(target: Headers, value: string): void {
+export function mergeVaryHeader(target: Headers, value: string): void {
   const existing = target.get("Vary");
   const tokens = (existing ? `${existing}, ${value}` : value)
     .split(",")

@@ -131,31 +131,34 @@ describe("ErrorBoundary digest classification (actual class)", () => {
   });
 
   it("rethrows NEXT_NOT_FOUND", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_NOT_FOUND" });
+    const e = createErrorWithDigest("NEXT_NOT_FOUND", "NEXT_NOT_FOUND");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;404", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;404", "NEXT_HTTP_ERROR_FALLBACK;404");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;403", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;403", "NEXT_HTTP_ERROR_FALLBACK;403");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_HTTP_ERROR_FALLBACK;401", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;401", "NEXT_HTTP_ERROR_FALLBACK;401");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("rethrows NEXT_REDIRECT", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_REDIRECT;replace;/login;307;" });
+    const e = createErrorWithDigest(
+      "NEXT_REDIRECT;replace;/login;307;",
+      "NEXT_REDIRECT;replace;/login;307;",
+    );
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     expect(() => ErrorBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
@@ -168,14 +171,14 @@ describe("ErrorBoundary digest classification (actual class)", () => {
   });
 
   it("catches errors with unknown digest", () => {
-    const e = Object.assign(new Error(), { digest: "CUSTOM_ERROR" });
+    const e = createErrorWithDigest("CUSTOM_ERROR", "CUSTOM_ERROR");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
     expect(state).toEqual({ error: { thrownValue: e } });
   });
 
   it("catches errors with empty digest", () => {
-    const e = Object.assign(new Error(), { digest: "" });
+    const e = createErrorWithDigest("Empty digest", "");
     expect(ErrorBoundaryInnerClass).not.toBeNull();
     const state = ErrorBoundaryInnerClass?.getDerivedStateFromError(e);
     expect(state).toEqual({ error: { thrownValue: e } });
@@ -324,26 +327,29 @@ describe("ForbiddenBoundary digest classification", () => {
   });
 
   it("catches NEXT_HTTP_ERROR_FALLBACK;403", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;403", "NEXT_HTTP_ERROR_FALLBACK;403");
     expect(ForbiddenBoundaryInnerClass).not.toBeNull();
     const state = ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e);
     expect(state).toMatchObject({ forbidden: true });
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;404 (notFound domain)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;404", "NEXT_HTTP_ERROR_FALLBACK;404");
     expect(ForbiddenBoundaryInnerClass).not.toBeNull();
     expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;401 (unauthorized domain)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;401", "NEXT_HTTP_ERROR_FALLBACK;401");
     expect(ForbiddenBoundaryInnerClass).not.toBeNull();
     expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;4030 (defensive: exact match, startsWith would be wrong)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;4030" });
+    const e = createErrorWithDigest(
+      "NEXT_HTTP_ERROR_FALLBACK;4030",
+      "NEXT_HTTP_ERROR_FALLBACK;4030",
+    );
     expect(ForbiddenBoundaryInnerClass).not.toBeNull();
     expect(() => ForbiddenBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
@@ -368,26 +374,29 @@ describe("UnauthorizedBoundary digest classification", () => {
   });
 
   it("catches NEXT_HTTP_ERROR_FALLBACK;401", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;401" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;401", "NEXT_HTTP_ERROR_FALLBACK;401");
     expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
     const state = UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e);
     expect(state).toMatchObject({ unauthorized: true });
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;404 (notFound domain)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;404", "NEXT_HTTP_ERROR_FALLBACK;404");
     expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;403 (forbidden domain)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    const e = createErrorWithDigest("NEXT_HTTP_ERROR_FALLBACK;403", "NEXT_HTTP_ERROR_FALLBACK;403");
     expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
   it("re-throws NEXT_HTTP_ERROR_FALLBACK;4010 (defensive: exact match, startsWith would be wrong)", () => {
-    const e = Object.assign(new Error(), { digest: "NEXT_HTTP_ERROR_FALLBACK;4010" });
+    const e = createErrorWithDigest(
+      "NEXT_HTTP_ERROR_FALLBACK;4010",
+      "NEXT_HTTP_ERROR_FALLBACK;4010",
+    );
     expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });

@@ -1,3 +1,6 @@
+import type { ReactFormState } from "react-dom/client";
+import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+
 type NavigationSnapshot = {
   pathname: string;
   searchParams: [string, string][];
@@ -13,12 +16,19 @@ type VinextBrowserGlobals = {
   __VINEXT_RSC__?: LegacyRscEmbedData;
   __VINEXT_RSC_CHUNKS__?: string[];
   __VINEXT_RSC_DONE__?: boolean;
+  [RSC_FORM_STATE_GLOBAL]?: ReactFormState;
   __VINEXT_RSC_PARAMS__?: Record<string, string | string[]>;
   __VINEXT_RSC_NAV__?: NavigationSnapshot;
 };
 
 export function getVinextBrowserGlobal(): typeof globalThis & VinextBrowserGlobals {
   return globalThis as typeof globalThis & VinextBrowserGlobals;
+}
+
+function createUnexpectedRscStreamCloseError(): Error {
+  return new Error(
+    "The connection to the page was unexpectedly closed, possibly due to the stop button being clicked, loss of Wi-Fi, or an unstable internet connection.",
+  );
 }
 
 /**
@@ -61,10 +71,24 @@ export function createProgressiveRscStream(): ReadableStream<Uint8Array> {
       }
 
       let closed = false;
+      let cancelDocumentCompletionCheck: (() => void) | undefined;
+      const cancelPendingDocumentCompletionCheck = () => {
+        const cancel = cancelDocumentCompletionCheck;
+        cancelDocumentCompletionCheck = undefined;
+        cancel?.();
+      };
       const closeOnce = () => {
         if (!closed) {
           closed = true;
+          cancelPendingDocumentCompletionCheck();
           controller.close();
+        }
+      };
+      const errorOnce = () => {
+        if (!closed) {
+          closed = true;
+          cancelPendingDocumentCompletionCheck();
+          controller.error(createUnexpectedRscStreamCloseError());
         }
       };
 
@@ -87,9 +111,12 @@ export function createProgressiveRscStream(): ReadableStream<Uint8Array> {
 
       if (typeof document !== "undefined") {
         if (document.readyState === "loading") {
-          document.addEventListener("DOMContentLoaded", closeOnce);
+          document.addEventListener("DOMContentLoaded", errorOnce);
+          cancelDocumentCompletionCheck = () =>
+            document.removeEventListener("DOMContentLoaded", errorOnce);
         } else {
-          closeOnce();
+          const timeoutId = setTimeout(errorOnce);
+          cancelDocumentCompletionCheck = () => clearTimeout(timeoutId);
         }
       }
     },

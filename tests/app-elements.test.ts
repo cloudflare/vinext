@@ -7,6 +7,7 @@ import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   AppElementsWire,
   APP_INTERCEPTION_CONTEXT_KEY,
+  APP_LAYOUT_IDS_KEY,
   APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -66,6 +67,7 @@ describe("AppElementsWire", () => {
     expect(AppElementsWire.readMetadata(decoded)).toEqual({
       artifactCompatibility: createArtifactCompatibilityEnvelope(),
       interceptionContext: "/feed",
+      layoutIds: [],
       layoutFlags: {},
       rootLayoutTreePath: "/",
       routeId: "route:/photos/42\0/feed",
@@ -75,12 +77,14 @@ describe("AppElementsWire", () => {
   it("creates the canonical metadata entries for outgoing AppElements records", () => {
     const metadata = AppElementsWire.createMetadataEntries({
       interceptionContext: null,
+      layoutIds: ["layout:/(dashboard)"],
       rootLayoutTreePath: "/(dashboard)",
       routeId: AppElementsWire.encodeRouteId("/dashboard", null),
     });
 
     expect(metadata).toEqual({
       [APP_INTERCEPTION_CONTEXT_KEY]: null,
+      [APP_LAYOUT_IDS_KEY]: ["layout:/(dashboard)"],
       [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
       [APP_ROUTE_KEY]: "route:/dashboard",
     });
@@ -160,6 +164,7 @@ describe("AppElementsWire", () => {
     expect(AppElementsWire.readMetadata(payload)).toEqual({
       artifactCompatibility: createArtifactCompatibilityEnvelope(),
       interceptionContext: null,
+      layoutIds: [],
       layoutFlags: { [AppElementsWire.encodeLayoutId("/")]: "s" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard",
@@ -340,6 +345,7 @@ describe("app elements payload helpers", () => {
     };
     const metadata = readAppElementsMetadata(elements);
 
+    expect(metadata.layoutIds).toEqual([]);
     expect(metadata.layoutFlags).toEqual({ "layout:/": "s", "layout:/blog": "d" });
   });
 
@@ -352,7 +358,49 @@ describe("app elements payload helpers", () => {
       }),
     );
 
+    expect(metadata.layoutIds).toEqual([]);
     expect(metadata.layoutFlags).toEqual({});
+  });
+
+  it("reads layoutIds from payload metadata", () => {
+    const metadata = readAppElementsMetadata(
+      normalizeAppElements({
+        [APP_LAYOUT_IDS_KEY]: ["layout:/", "layout:/dashboard"],
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_ROUTE_KEY]: "route:/dashboard/settings",
+        "route:/dashboard/settings": React.createElement("div", null, "route"),
+      }),
+    );
+
+    expect(metadata.layoutIds).toEqual(["layout:/", "layout:/dashboard"]);
+  });
+
+  it("rejects invalid layoutIds metadata", () => {
+    expect(() =>
+      readAppElementsMetadata({
+        ...normalizeAppElements({
+          [APP_ROOT_LAYOUT_KEY]: "/",
+          [APP_ROUTE_KEY]: "route:/dashboard",
+        }),
+        [APP_LAYOUT_IDS_KEY]: ["layout:/", 1],
+      }),
+    ).toThrow("[vinext] Invalid __layoutIds in App Router payload: expected layout id string[]");
+  });
+
+  it.each([
+    ["page id", "page:/dashboard"],
+    ["slot id", "slot:modal:/dashboard"],
+    ["malformed layout id", "layout:dashboard"],
+  ])("rejects %s in layoutIds metadata", (_, layoutId) => {
+    expect(() =>
+      readAppElementsMetadata({
+        ...normalizeAppElements({
+          [APP_ROOT_LAYOUT_KEY]: "/",
+          [APP_ROUTE_KEY]: "route:/dashboard",
+        }),
+        [APP_LAYOUT_IDS_KEY]: ["layout:/", layoutId],
+      }),
+    ).toThrow("[vinext] Invalid __layoutIds in App Router payload: expected layout ids");
   });
 
   it("reads artifact compatibility envelope metadata", () => {

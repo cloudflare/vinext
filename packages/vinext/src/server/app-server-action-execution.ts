@@ -1,9 +1,20 @@
 import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "vinext/shims/cache";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
+import type { ReactFormState } from "react-dom/client";
+import {
+  ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
+  ACTION_REDIRECT_TYPE_HEADER,
+  ACTION_REVALIDATED_HEADER,
+} from "./headers.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   getNextErrorDigest,
   parseNextHttpErrorDigest,
@@ -27,6 +38,10 @@ type AppServerActionErrorReporter = (
 ) => void;
 
 type AppServerActionDecoder = (body: FormData) => Promise<unknown>;
+type AppServerActionFormStateDecoder = (
+  actionResult: unknown,
+  body: FormData,
+) => Promise<ReactFormState | undefined>;
 
 type ReadFormDataWithLimit = (request: Request, maxBytes: number) => Promise<FormData>;
 
@@ -54,6 +69,11 @@ type AppServerActionRoute = {
   pattern: string;
 };
 
+type ProgressiveServerActionResult = {
+  formState: ReactFormState | null;
+  kind: "form-state";
+};
+
 type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
   params: AppPageParams;
   route: TRoute;
@@ -75,11 +95,17 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
+  renderMode: AppRscRenderMode;
 };
 
 type AppServerActionRscModel<TElement> = {
+  /**
+   * Omitted when the action did not invalidate page data. This mirrors Next.js'
+   * empty Flight payload for non-revalidating fetch actions: the client resolves
+   * the action value without committing a visible router update.
+   */
+  root?: TElement;
   returnValue: AppServerActionReturnValue;
-  root: TElement;
 };
 
 type RenderServerActionRscStreamOptions<TTemporaryReferences> = {
@@ -98,6 +124,7 @@ export type HandleProgressiveServerActionRequestOptions = {
   clearRequestContext: () => void;
   contentType: string;
   decodeAction: AppServerActionDecoder;
+  decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
   maxActionBodySize: number;
@@ -187,7 +214,7 @@ const ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC = 1 satisfies ActionRevalidationK
 
 function setActionRevalidatedHeader(headers: Headers, kind: ActionRevalidationKind): void {
   if (kind === ACTION_DID_NOT_REVALIDATE) return;
-  headers.set("x-action-revalidated", JSON.stringify(kind));
+  headers.set(ACTION_REVALIDATED_HEADER, JSON.stringify(kind));
 }
 
 function resolveActionRevalidationKind(hasModifiedCookies: boolean): ActionRevalidationKind {
@@ -302,7 +329,7 @@ function getActionRedirect(error: unknown): AppServerActionRedirect | null {
 
   return {
     status: redirect.status,
-    type: redirect.type,
+    type: redirect.type ?? "push",
     url: redirect.url,
   };
 }
@@ -373,7 +400,7 @@ export function isProgressiveServerActionRequest(
 
 export async function handleProgressiveServerActionRequest(
   options: HandleProgressiveServerActionRequestOptions,
-): Promise<Response | null> {
+): Promise<Response | ProgressiveServerActionResult | null> {
   if (!isProgressiveServerActionRequest(options.request, options.contentType, options.actionId)) {
     return null;
   }
@@ -414,14 +441,15 @@ export async function handleProgressiveServerActionRequest(
     }
 
     const action = await options.decodeAction(body);
-    if (typeof action !== "function") {
+    if (!isAppServerActionFunction(action)) {
       return null;
     }
 
     let actionControlResponse: ActionControlResponse | null = null;
+    let actionResult: unknown;
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
-      await action();
+      actionResult = await action();
     } catch (error) {
       actionControlResponse = getActionControlResponse(error);
       if (!actionControlResponse) {
@@ -432,11 +460,9 @@ export async function handleProgressiveServerActionRequest(
     }
 
     if (!actionControlResponse) {
-      // Next.js decodes form state and re-renders after a successful MPA action.
-      // vinext currently supports the redirect/error status cases; successful
-      // non-redirect actions intentionally fall through to the page render.
       getAndClearActionRevalidationKind();
-      return null;
+      const formState = await options.decodeFormState(actionResult, body);
+      return { kind: "form-state", formState: formState ?? null };
     }
 
     const actionPendingCookies = options.getAndClearPendingCookies();
@@ -606,15 +632,47 @@ export async function handleServerActionRscRequest<
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
-      redirectHeaders.set("x-action-redirect", actionRedirect.url);
-      redirectHeaders.set("x-action-redirect-type", actionRedirect.type);
-      redirectHeaders.set("x-action-redirect-status", String(actionRedirect.status));
+      redirectHeaders.set(ACTION_REDIRECT_HEADER, actionRedirect.url);
+      redirectHeaders.set(ACTION_REDIRECT_TYPE_HEADER, actionRedirect.type);
+      redirectHeaders.set(ACTION_REDIRECT_STATUS_HEADER, String(actionRedirect.status));
       for (const cookie of actionPendingCookies) {
         redirectHeaders.append("Set-Cookie", cookie);
       }
       if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
       setActionRevalidatedHeader(redirectHeaders, actionRevalidationKind);
       return new Response("", { status: 200, headers: redirectHeaders });
+    }
+
+    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionDraftCookie = options.getDraftModeCookieHeader();
+    const actionRevalidationKind = resolveActionRevalidationKind(
+      actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
+    );
+
+    const shouldSkipPageRendering = actionRevalidationKind === ACTION_DID_NOT_REVALIDATE;
+    if (shouldSkipPageRendering) {
+      const onRenderError = options.createRscOnErrorHandler(
+        options.request,
+        options.cleanPathname,
+        options.cleanPathname,
+      );
+      const rscStream = await options.renderToReadableStream(
+        { returnValue },
+        { temporaryReferences, onError: onRenderError },
+      );
+
+      options.clearRequestContext();
+
+      const actionHeaders = new Headers({
+        "Content-Type": "text/x-component; charset=utf-8",
+        Vary: VINEXT_RSC_VARY_HEADER,
+      });
+      mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
+
+      return new Response(rscStream, {
+        status: options.middlewareStatus ?? actionStatus,
+        headers: actionHeaders,
+      });
     }
 
     const match = options.matchRoute(options.cleanPathname);
@@ -650,6 +708,7 @@ export async function handleServerActionRscRequest<
         request: options.request,
         route: actionRerenderTarget.route,
         searchParams: options.searchParams,
+        renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
       });
       errorPattern = actionRerenderTarget.route.pattern;
     } else {
@@ -665,12 +724,6 @@ export async function handleServerActionRscRequest<
     const rscStream = await options.renderToReadableStream(
       { root: element, returnValue },
       { temporaryReferences, onError: onRenderError },
-    );
-
-    const actionPendingCookies = options.getAndClearPendingCookies();
-    const actionDraftCookie = options.getDraftModeCookieHeader();
-    const actionRevalidationKind = resolveActionRevalidationKind(
-      actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
     );
 
     const actionHeaders = new Headers({

@@ -215,7 +215,7 @@ describe("slot primitives", () => {
     expect(normalized["slot:modal:/"]).toBe(mod.UNMATCHED_SLOT);
   });
 
-  it("mergeElements shallow-merges previous and next elements", async () => {
+  it("mergeElements preserves approved non-slot elements", async () => {
     const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
 
     const merged = mergeElements(
@@ -227,12 +227,31 @@ describe("slot primitives", () => {
         "page:/blog/hello": React.createElement("div", null, "page"),
         "slot:modal:/": React.createElement("div", null, "next slot"),
       },
+      { preserveElementIds: ["layout:/"] },
     );
 
-    expect(Object.keys(merged)).toEqual(["layout:/", "slot:modal:/", "page:/blog/hello"]);
+    expect(Object.keys(merged).sort()).toEqual(["layout:/", "page:/blog/hello", "slot:modal:/"]);
     expect(merged["layout:/"]).toBeDefined();
     expect(merged["page:/blog/hello"]).toBeDefined();
     expect(merged["slot:modal:/"]).not.toBeNull();
+  });
+
+  it("mergeElements drops absent non-slot elements without approved persistence", async () => {
+    const { mergeElements } = await import("../packages/vinext/src/shims/slot.js");
+
+    const merged = mergeElements(
+      {
+        "layout:/": React.createElement("div", null, "layout"),
+        "page:/dashboard": React.createElement("div", null, "dashboard"),
+      },
+      {
+        "page:/settings": React.createElement("div", null, "settings"),
+      },
+    );
+
+    expect(Object.hasOwn(merged, "layout:/")).toBe(false);
+    expect(Object.hasOwn(merged, "page:/dashboard")).toBe(false);
+    expect(Object.hasOwn(merged, "page:/settings")).toBe(true);
   });
 
   it("mergeElements preserves previous slot content when next marks it unmatched", async () => {
@@ -249,6 +268,7 @@ describe("slot primitives", () => {
         "page:/blog": React.createElement("div", null, "blog page"),
         "slot:modal:/": UNMATCHED_SLOT,
       },
+      { preserveElementIds: ["layout:/"] },
     );
 
     // The slot should keep its previous content, not become UNMATCHED_SLOT.
@@ -271,6 +291,7 @@ describe("slot primitives", () => {
         "page:/blog": React.createElement("div", null, "blog"),
         "slot:modal:/": UNMATCHED_SLOT,
       },
+      { preserveElementIds: ["layout:/"] },
     );
 
     // No previous value to preserve — the sentinel passes through.
@@ -312,7 +333,7 @@ describe("slot primitives", () => {
         // @ts-expect-error - typescript is not correctly inferring the type of the symbol
         "slot:modal:/feed": UNMATCHED_SLOT,
       },
-      true,
+      { clearAbsentSlots: true, preserveElementIds: ["layout:/"] },
     );
 
     // The slot IS present in next (as UNMATCHED_SLOT), so clearAbsentSlots does not

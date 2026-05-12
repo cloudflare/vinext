@@ -13,12 +13,13 @@
 import * as React from "react";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { AppElementsWire } from "../server/app-elements.js";
+import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { VINEXT_MOUNTED_SLOTS_HEADER, VINEXT_PARAMS_HEADER } from "../server/headers.js";
 import {
-  createRscRequestHeaders,
-  createRscRequestUrl,
-  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
-} from "../server/app-rsc-cache-busting.js";
-import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
+  isHashOnlyBrowserUrlChange,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+} from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
@@ -411,8 +412,8 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
   return {
     buffer,
     contentType: response.headers.get("content-type") ?? "text/x-component",
-    mountedSlotsHeader: response.headers.get("X-Vinext-Mounted-Slots"),
-    paramsHeader: response.headers.get("X-Vinext-Params"),
+    mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
+    paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
     url: response.url,
   };
 }
@@ -435,10 +436,10 @@ export async function snapshotRscResponse(response: Response): Promise<CachedRsc
 export function restoreRscResponse(cached: CachedRscResponse, copy = true): Response {
   const headers = new Headers({ "content-type": cached.contentType });
   if (cached.mountedSlotsHeader != null) {
-    headers.set("X-Vinext-Mounted-Slots", cached.mountedSlotsHeader);
+    headers.set(VINEXT_MOUNTED_SLOTS_HEADER, cached.mountedSlotsHeader);
   }
   if (cached.paramsHeader != null) {
-    headers.set("X-Vinext-Params", cached.paramsHeader);
+    headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
   }
 
   return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
@@ -965,18 +966,7 @@ function isExternalUrl(href: string): boolean {
 function isHashOnlyChange(href: string): boolean {
   if (typeof window === "undefined") return false;
   if (href.startsWith("#")) return true;
-  try {
-    const current = new URL(window.location.href);
-    const next = new URL(href, window.location.href);
-    // Strip basePath for consistent same-origin comparison.
-    const strippedCurrentPath = stripBasePath(current.pathname, __basePath);
-    const strippedNextPath = stripBasePath(next.pathname, __basePath);
-    return (
-      strippedCurrentPath === strippedNextPath && current.search === next.search && next.hash !== ""
-    );
-  } catch {
-    return false;
-  }
+  return isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
 }
 
 /**
@@ -1310,7 +1300,7 @@ const _appRouter = {
       const mountedSlotsHeader = getMountedSlotsHeader();
       const headers = createRscRequestHeaders({ interceptionContext });
       if (mountedSlotsHeader) {
-        headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+        headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
       }
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);

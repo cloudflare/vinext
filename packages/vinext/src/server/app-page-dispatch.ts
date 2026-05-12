@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { ReactFormState } from "react-dom/client";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -49,6 +50,11 @@ import {
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  shouldSuppressLoadingBoundaries,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
@@ -137,6 +143,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
+  formState?: ReactFormState | null;
   generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
@@ -148,12 +155,17 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasPageModule: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
+  isrRscKey: (
+    pathname: string,
+    mountedSlotsHeader?: string | null,
+    renderMode?: AppRscRenderMode,
+  ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
@@ -192,9 +204,11 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string;
     searchParams: URLSearchParams;
   }) => void;
+  renderMode?: AppRscRenderMode;
 };
 
 function shouldReadAppPageCache(options: {
+  isProgressiveActionRender: boolean;
   isDraftMode: boolean;
   isForceDynamic: boolean;
   isProduction: boolean;
@@ -204,6 +218,7 @@ function shouldReadAppPageCache(options: {
 }): boolean {
   return (
     options.isProduction &&
+    !options.isProgressiveActionRender &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     (options.isRscRequest || !options.scriptNonce) &&
@@ -326,7 +341,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return methodResponse;
   }
 
-  if (isForceStatic || isDynamicError) {
+  if ((isForceStatic || isDynamicError) && !isDraftMode) {
     setHeadersContext(
       createStaticGenerationHeadersContext({
         dynamicConfig,
@@ -345,6 +360,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
+      isProgressiveActionRender: options.isProgressiveActionRender === true,
       isProduction: options.isProduction,
       isRscRequest: options.isRscRequest,
       revalidateSeconds: currentRevalidateSeconds,
@@ -363,6 +379,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
       // cacheLife-only routes discover their actual revalidate during the
       // fresh render; this seed only gets them into the cache read path.
@@ -560,7 +577,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return _peekRequestScopedCacheLife();
     },
     handlerStart: options.handlerStart,
-    hasLoadingBoundary: Boolean(route.loading?.default),
+    hasLoadingBoundary: shouldSuppressLoadingBoundaries(
+      options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
+    )
+      ? false
+      : Boolean(route.loading?.default),
+    formState: options.formState ?? null,
+    isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
     isDraftMode,
     isForceDynamic,
@@ -607,6 +630,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
     renderErrorBoundaryResponse(renderError) {
       return options.renderErrorBoundaryPage(renderError);
     },

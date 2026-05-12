@@ -28,7 +28,7 @@ type TestTemporaryReferences = {
 
 type TestActionModel = {
   returnValue: unknown;
-  root: string;
+  root?: string;
 };
 
 function createMultipartRequest(headers?: HeadersInit): Request {
@@ -90,6 +90,9 @@ function createOptions(
     async decodeAction() {
       return null;
     },
+    async decodeFormState() {
+      return undefined;
+    },
     getAndClearPendingCookies() {
       return [];
     },
@@ -106,6 +109,18 @@ function createOptions(
     setHeadersAccessPhase,
     ...overrides,
   };
+}
+
+type ProgressiveActionRequestResult = Awaited<
+  ReturnType<typeof handleProgressiveServerActionRequest>
+>;
+
+function requireProgressiveActionResponse(result: ProgressiveActionRequestResult): Response {
+  if (result instanceof Response) {
+    return result;
+  }
+
+  throw new Error(`Expected progressive action response, received ${result?.kind ?? "null"}`);
 }
 
 function createFetchActionRequest(headers?: HeadersInit): Request {
@@ -311,29 +326,33 @@ describe("app server action execution helpers", () => {
 
   it("enforces content-length and stream body limits", async () => {
     const clearContext = vi.fn();
-    const lengthResponse = await handleProgressiveServerActionRequest(
-      createOptions({
-        clearRequestContext: clearContext,
-        maxActionBodySize: 10,
-        request: createMultipartRequest({ "content-length": "11" }),
-      }),
+    const lengthResponse = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          clearRequestContext: clearContext,
+          maxActionBodySize: 10,
+          request: createMultipartRequest({ "content-length": "11" }),
+        }),
+      ),
     );
 
-    expect(lengthResponse?.status).toBe(413);
-    expect(await lengthResponse?.text()).toBe("Payload Too Large");
+    expect(lengthResponse.status).toBe(413);
+    expect(await lengthResponse.text()).toBe("Payload Too Large");
     expect(clearContext).toHaveBeenCalledTimes(1);
 
-    const streamLimitResponse = await handleProgressiveServerActionRequest(
-      createOptions({
-        clearRequestContext: clearContext,
-        readFormDataWithLimit() {
-          throw new Error("Request body too large");
-        },
-      }),
+    const streamLimitResponse = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          clearRequestContext: clearContext,
+          readFormDataWithLimit() {
+            throw new Error("Request body too large");
+          },
+        }),
+      ),
     );
 
-    expect(streamLimitResponse?.status).toBe(413);
-    expect(await streamLimitResponse?.text()).toBe("Payload Too Large");
+    expect(streamLimitResponse.status).toBe(413);
+    expect(await streamLimitResponse.text()).toBe("Payload Too Large");
     expect(clearContext).toHaveBeenCalledTimes(2);
   });
 
@@ -342,17 +361,19 @@ describe("app server action execution helpers", () => {
     formData.set("0", '"$Q1"');
     const decodeAction = vi.fn();
 
-    const response = await handleProgressiveServerActionRequest(
-      createOptions({
-        decodeAction,
-        readFormDataWithLimit() {
-          return Promise.resolve(formData);
-        },
-      }),
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          decodeAction,
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
     );
 
-    expect(response?.status).toBe(400);
-    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid server action payload");
     expect(decodeAction).not.toHaveBeenCalled();
   });
 
@@ -362,54 +383,64 @@ describe("app server action execution helpers", () => {
     const formData = new FormData();
     formData.set("$ACTION_ID_test", "");
 
-    const response = await handleProgressiveServerActionRequest(
-      createOptions({
-        clearRequestContext: clearContext,
-        async decodeAction(body) {
-          expect(body).toBe(formData);
-          return () => {
-            throw { digest: "NEXT_REDIRECT;replace;%2Fresult%3Fok%3D1;307" };
-          };
-        },
-        getAndClearPendingCookies() {
-          return ["session=1; Path=/"];
-        },
-        getDraftModeCookieHeader() {
-          return "draft=1; Path=/";
-        },
-        middlewareHeaders: new Headers([["x-middleware", "present"]]),
-        readFormDataWithLimit() {
-          return Promise.resolve(formData);
-        },
-        setHeadersAccessPhase(phase) {
-          phaseCalls.push(phase);
-          return "render";
-        },
-      }),
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          clearRequestContext: clearContext,
+          async decodeAction(body) {
+            expect(body).toBe(formData);
+            return () => {
+              throw { digest: "NEXT_REDIRECT;replace;%2Fresult%3Fok%3D1;307" };
+            };
+          },
+          getAndClearPendingCookies() {
+            return ["session=1; Path=/"];
+          },
+          getDraftModeCookieHeader() {
+            return "draft=1; Path=/";
+          },
+          middlewareHeaders: new Headers([["x-middleware", "present"]]),
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+          setHeadersAccessPhase(phase) {
+            phaseCalls.push(phase);
+            return "render";
+          },
+        }),
+      ),
     );
 
-    expect(response?.status).toBe(303);
-    expect(response?.headers.get("location")).toBe("https://example.com/result?ok=1");
-    expect(response?.headers.get("x-middleware")).toBe("present");
-    expect(response?.headers.getSetCookie()).toEqual(["session=1; Path=/", "draft=1; Path=/"]);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://example.com/result?ok=1");
+    expect(response.headers.get("x-middleware")).toBe("present");
+    expect(response.headers.getSetCookie()).toEqual(["session=1; Path=/", "draft=1; Path=/"]);
     expect(phaseCalls).toEqual(["action", "render"]);
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
-  it("falls through after successful non-redirect actions without consuming the original body", async () => {
+  it("returns decoded form state after successful non-redirect actions without consuming the original body", async () => {
     const formData = new FormData();
     formData.set("$ACTION_ID_test", "");
     formData.set("field", "value");
     const request = createMultipartBodyRequest(formData);
+    const formState = ["action-result", "key-path", "reference-id", 1] as never;
     let actionRan = false;
 
-    const response = await handleProgressiveServerActionRequest(
+    const result = await handleProgressiveServerActionRequest(
       createOptions({
         contentType: request.headers.get("content-type") ?? "",
         async decodeAction() {
           return () => {
             actionRan = true;
+            return { count: 1 };
           };
+        },
+        async decodeFormState(actionResult, body) {
+          expect(actionResult).toEqual({ count: 1 });
+          expect(body.get("$ACTION_ID_test")).toBe("");
+          expect(body.get("field")).toBe("value");
+          return formState;
         },
         readFormDataWithLimit(readRequest) {
           return readRequest.formData();
@@ -418,7 +449,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response).toBeNull();
+    expect(result).toEqual({ kind: "form-state", formState });
     expect(actionRan).toBe(true);
     expect((await request.formData()).get("field")).toBe("value");
   });
@@ -431,21 +462,23 @@ describe("app server action execution helpers", () => {
       const clearContext = vi.fn();
       const reportedErrors: Error[] = [];
 
-      const response = await handleProgressiveServerActionRequest(
-        createOptions({
-          clearRequestContext: clearContext,
-          async decodeAction() {
-            return () => {
-              throw { digest };
-            };
-          },
-          reportRequestError(error) {
-            reportedErrors.push(error);
-          },
-        }),
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            clearRequestContext: clearContext,
+            async decodeAction() {
+              return () => {
+                throw { digest };
+              };
+            },
+            reportRequestError(error) {
+              reportedErrors.push(error);
+            },
+          }),
+        ),
       );
 
-      expect(response?.status).toBe(statusCode);
+      expect(response.status).toBe(statusCode);
       expect(reportedErrors).toEqual([]);
       expect(clearContext).toHaveBeenCalledTimes(1);
     }
@@ -457,24 +490,26 @@ describe("app server action execution helpers", () => {
     const clearContext = vi.fn();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await handleProgressiveServerActionRequest(
-      createOptions({
-        cleanPathname: "/action-source",
-        clearRequestContext: clearContext,
-        async decodeAction() {
-          return () => {
-            throw new Error("boom");
-          };
-        },
-        getAndClearPendingCookies: clearedCookies,
-        reportRequestError(error) {
-          reportedErrors.push(error);
-        },
-      }),
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          cleanPathname: "/action-source",
+          clearRequestContext: clearContext,
+          async decodeAction() {
+            return () => {
+              throw new Error("boom");
+            };
+          },
+          getAndClearPendingCookies: clearedCookies,
+          reportRequestError(error) {
+            reportedErrors.push(error);
+          },
+        }),
+      ),
     );
 
-    expect(response?.status).toBe(500);
-    expect(await response?.text()).toBe("Server action failed: boom");
+    expect(response.status).toBe(500);
+    expect(await response.text()).toBe("Server action failed: boom");
     expect(reportedErrors.map((error) => error.message)).toEqual(["boom"]);
     expect(clearedCookies).toHaveBeenCalledTimes(1);
     expect(clearContext).toHaveBeenCalledTimes(1);
@@ -488,40 +523,44 @@ describe("app server action execution helpers", () => {
     const reportedErrors: Error[] = [];
     const clearContext = vi.fn();
 
-    const response = await handleProgressiveServerActionRequest(
-      createOptions({
-        clearRequestContext: clearContext,
-        async decodeAction() {
-          throw new Error(
-            "Failed to find Server Action. This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action",
-          );
-        },
-        reportRequestError(error) {
-          reportedErrors.push(error);
-        },
-      }),
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          clearRequestContext: clearContext,
+          async decodeAction() {
+            throw new Error(
+              "Failed to find Server Action. This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action",
+            );
+          },
+          reportRequestError(error) {
+            reportedErrors.push(error);
+          },
+        }),
+      ),
     );
 
-    expect(response?.status).toBe(404);
-    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
-    expect(await response?.text()).toBe("Server action not found.");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response.text()).toBe("Server action not found.");
     expect(reportedErrors).toEqual([]);
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
   it("returns action-not-found for progressive decode misses that include an action id", async () => {
-    const response = await handleProgressiveServerActionRequest(
-      createOptions({
-        async decodeAction() {
-          throw new Error(
-            'Failed to find Server Action "stale-action-id". This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action',
-          );
-        },
-      }),
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            throw new Error(
+              'Failed to find Server Action "stale-action-id". This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action',
+            );
+          },
+        }),
+      ),
     );
 
-    expect(response?.status).toBe(404);
-    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
   it("returns null for non-fetch RSC action requests", async () => {
@@ -597,6 +636,32 @@ describe("app server action execution helpers", () => {
     });
     expect(phaseCalls).toEqual(["action", "render"]);
     expect(navigationContexts).toEqual([{ params: {}, pathname: "/dashboard" }]);
+  });
+
+  it("skips page rerendering for fetch actions that do not revalidate", async () => {
+    const buildPageElement = vi.fn(() => "dashboard:{}:none");
+    const setNavigationContext = vi.fn();
+    const renderToReadableStream = vi.fn(
+      (model: TestActionModel) => new Response(JSON.stringify(model)).body,
+    );
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        renderToReadableStream,
+        setNavigationContext,
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response?.headers.get("x-action-revalidated")).toBeNull();
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(setNavigationContext).not.toHaveBeenCalled();
+
+    const model = JSON.parse(await response!.text()) as Partial<TestActionModel>;
+    expect(model.returnValue).toEqual({ ok: true, data: "action-result" });
+    expect(model).not.toHaveProperty("root");
   });
 
   // Mirrors Next.js' action revalidation header contract:
@@ -696,7 +761,6 @@ describe("app server action execution helpers", () => {
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
       expect(renderedModel).toEqual({
-        root: "dashboard:{}:none",
         returnValue: {
           ok: false,
           data: "Server Action arguments list is too long (1001). Maximum allowed is 1000.",
@@ -871,7 +935,6 @@ describe("app server action execution helpers", () => {
       expect(response?.status).toBe(statusCode);
       expect(await response?.text()).toBe("fallback-flight");
       expect(renderedModel).toEqual({
-        root: "dashboard:{}:none",
         returnValue: { ok: false, data: fallbackError },
       });
     }

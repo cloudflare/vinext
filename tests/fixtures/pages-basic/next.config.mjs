@@ -54,6 +54,10 @@ const nextConfig = {
           source: "/after-rewrite",
           destination: "/about",
         },
+        {
+          source: "/nav-test",
+          destination: "/about",
+        },
         // Used by Vitest: pages-router.test.ts — afterFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-user=1 via
         // x-middleware-request-cookie when ?mw-auth is present. The afterFiles

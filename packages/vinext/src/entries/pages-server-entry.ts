@@ -106,6 +106,7 @@ export async function generateServerEntry(
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+      dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
       contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
     },
@@ -273,6 +274,20 @@ function matchRoute(url, routes) {
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
   return _trieMatch(trie, urlParts);
+}
+
+export function matchPageRoute(url, request) {
+  const routeUrl = i18nConfig && request
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      ).url
+    : url;
+  return matchRoute(routeUrl, pageRoutes);
 }
 
 function parseQuery(url) {

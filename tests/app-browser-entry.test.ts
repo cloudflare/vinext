@@ -1,6 +1,12 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser-error.js";
+import { shouldClearClientNavigationCachesForServerActionResult } from "../packages/vinext/src/server/app-browser-action-result.js";
+import {
+  RSC_FORM_STATE_GLOBAL,
+  consumeInitialFormState,
+  createVinextHydrateRootOptions,
+} from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
   devOnCaughtError,
@@ -8,6 +14,8 @@ import {
 } from "../packages/vinext/src/server/dev-error-overlay.js";
 import {
   APP_INTERCEPTION_CONTEXT_KEY,
+  AppElementsWire,
+  APP_LAYOUT_IDS_KEY,
   APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -25,9 +33,7 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
-  resolvePendingNavigationCommitDisposition,
   resolvePendingNavigationCommitDispositionDecision,
-  shouldHardNavigate,
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
@@ -49,9 +55,13 @@ function createResolvedElements(
   rootLayoutTreePath: string | null,
   interceptionContext: string | null = null,
   extraEntries: Record<string, unknown> = {},
+  layoutIds: readonly string[] = rootLayoutTreePath === null
+    ? []
+    : [AppElementsWire.encodeLayoutId(rootLayoutTreePath)],
 ) {
   return normalizeAppElements({
     [APP_INTERCEPTION_CONTEXT_KEY]: interceptionContext,
+    [APP_LAYOUT_IDS_KEY]: layoutIds,
     [APP_ROUTE_KEY]: routeId,
     [APP_ROOT_LAYOUT_KEY]: rootLayoutTreePath,
     ...extraEntries,
@@ -61,6 +71,7 @@ function createResolvedElements(
 function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
   return {
     elements: createResolvedElements("route:/initial", "/"),
+    layoutIds: [AppElementsWire.encodeLayoutId("/")],
     layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
@@ -72,6 +83,46 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     visibleCommitVersion: 0,
     ...overrides,
   };
+}
+
+type TestPendingDispositionOptions = {
+  activeNavigationId: number;
+  currentRootLayoutTreePath: string | null;
+  currentVisibleCommitVersion: number;
+  nextRootLayoutTreePath: string | null;
+  renderId?: number;
+  startedNavigationId: number;
+  startedVisibleCommitVersion: number;
+};
+
+async function resolveTestPendingNavigationCommitDispositionDecision(
+  options: TestPendingDispositionOptions,
+) {
+  const startState = createState({
+    rootLayoutTreePath: options.currentRootLayoutTreePath,
+    visibleCommitVersion: options.startedVisibleCommitVersion,
+  });
+  const currentState = createState({
+    rootLayoutTreePath: options.currentRootLayoutTreePath,
+    visibleCommitVersion: options.currentVisibleCommitVersion,
+  });
+  const pending = await createPendingNavigationCommit({
+    currentState: startState,
+    nextElements: Promise.resolve(
+      createResolvedElements("route:/dashboard", options.nextRootLayoutTreePath),
+    ),
+    navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+    operationLane: "navigation",
+    renderId: options.renderId ?? options.startedNavigationId,
+    type: "navigate",
+  });
+
+  return resolvePendingNavigationCommitDispositionDecision({
+    activeNavigationId: options.activeNavigationId,
+    currentState,
+    pending,
+    startedNavigationId: options.startedNavigationId,
+  });
 }
 
 function createControllerHarness(initialState: AppRouterState = createState()) {
@@ -96,6 +147,7 @@ type ApprovedTestCommitOptions = {
   activeNavigationId?: number;
   extraEntries?: Record<string, unknown>;
   interceptionContext?: string | null;
+  layoutIds?: readonly string[];
   layoutFlags?: AppRouterState["layoutFlags"];
   navigationSnapshot?: AppRouterState["navigationSnapshot"];
   operationLane?: OperationLane;
@@ -104,6 +156,7 @@ type ApprovedTestCommitOptions = {
   rootLayoutTreePath: string | null;
   routeId: string;
   startedNavigationId?: number;
+  targetHref?: string;
   type?: "navigate" | "replace" | "traverse";
 };
 
@@ -122,6 +175,7 @@ async function applyApprovedTestCommit(
           [APP_LAYOUT_FLAGS_KEY]: options.layoutFlags ?? {},
           ...options.extraEntries,
         },
+        options.layoutIds,
       ),
     ),
     navigationSnapshot: options.navigationSnapshot ?? state.navigationSnapshot,
@@ -136,6 +190,7 @@ async function applyApprovedTestCommit(
     currentState: state,
     pending,
     startedNavigationId: options.startedNavigationId ?? activeNavigationId,
+    targetHref: options.targetHref ?? "https://example.com/initial",
   });
 
   if (approval.approvedCommit === null) {
@@ -180,6 +235,25 @@ afterEach(() => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("keeps client navigation caches for no-root server action results", () => {
+    expect(
+      shouldClearClientNavigationCachesForServerActionResult({
+        returnValue: { ok: true, data: "action-result" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearClientNavigationCachesForServerActionResult({
+        root: createResolvedElements("route:/settings", "/"),
+        returnValue: { ok: true, data: "action-result" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldClearClientNavigationCachesForServerActionResult(
+        createResolvedElements("route:/settings", "/"),
+      ),
+    ).toBe(true);
+  });
+
   it("does not expose a per-navigation transition override at the controller boundary", () => {
     type Controller = ReturnType<typeof createAppBrowserNavigationController>;
     function assertNoTransitionOverride(controller: Controller) {
@@ -269,6 +343,7 @@ describe("app browser entry state helpers", () => {
       currentState: state,
       pending,
       startedNavigationId: 1,
+      targetHref: "https://example.com/next",
     });
     if (approval.approvedCommit === null) {
       throw new Error("Expected approved visible commit");
@@ -374,14 +449,12 @@ describe("app browser entry state helpers", () => {
     });
 
     expect(
-      resolvePendingNavigationCommitDisposition({
+      resolvePendingNavigationCommitDispositionDecision({
         activeNavigationId: 3,
-        currentVisibleCommitVersion: currentState.visibleCommitVersion,
-        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
-        nextRootLayoutTreePath: pending.rootLayoutTreePath,
+        currentState,
+        pending,
         startedNavigationId: 3,
-        startedVisibleCommitVersion: pending.action.operation.startedVisibleCommitVersion,
-      }),
+      }).disposition,
     ).toBe("hard-navigate");
   });
 
@@ -449,6 +522,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 1,
+      targetHref: "https://example.com/dashboard",
     });
     if (approval.approvedCommit === null) {
       throw new Error("Expected approved visible commit");
@@ -477,14 +551,12 @@ describe("app browser entry state helpers", () => {
     });
 
     expect(
-      resolvePendingNavigationCommitDisposition({
+      resolvePendingNavigationCommitDispositionDecision({
         activeNavigationId: 5,
-        currentVisibleCommitVersion: currentState.visibleCommitVersion,
-        currentRootLayoutTreePath: currentState.rootLayoutTreePath,
-        nextRootLayoutTreePath: pending.rootLayoutTreePath,
+        currentState,
+        pending,
         startedNavigationId: 4,
-        startedVisibleCommitVersion: pending.action.operation.startedVisibleCommitVersion,
-      }),
+      }).disposition,
     ).toBe("skip");
   });
 
@@ -508,6 +580,7 @@ describe("app browser entry state helpers", () => {
       currentState: latestState,
       pending,
       startedNavigationId: 7,
+      targetHref: "https://example.com/dashboard",
     });
 
     expect(approval.decision.disposition).toBe("no-commit");
@@ -529,6 +602,7 @@ describe("app browser entry state helpers", () => {
           nextRootLayoutTreePath: "/",
           startedNavigationId: 7,
           startedVisibleCommitVersion: 4,
+          targetHref: "https://example.com/dashboard",
         },
       },
     ]);
@@ -556,6 +630,7 @@ describe("app browser entry state helpers", () => {
       currentState: latestState,
       pending,
       startedNavigationId: 8,
+      targetHref: "https://example.com/previous",
     });
 
     expect(approval.decision.disposition).toBe("no-commit");
@@ -577,14 +652,15 @@ describe("app browser entry state helpers", () => {
           nextRootLayoutTreePath: "/",
           startedNavigationId: 8,
           startedVisibleCommitVersion: 2,
+          targetHref: "https://example.com/previous",
         },
       },
     ]);
     expect(approval.approvedCommit).toBeNull();
   });
 
-  it("traces stale pending commits with compact reason codes and structured fields", () => {
-    const decision = resolvePendingNavigationCommitDispositionDecision({
+  it("traces stale pending commits with compact reason codes and structured fields", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 5,
       currentVisibleCommitVersion: 0,
       currentRootLayoutTreePath: "/",
@@ -612,12 +688,12 @@ describe("app browser entry state helpers", () => {
     });
   });
 
-  it("treats a visible commit version mismatch as stale before root-boundary decisions", () => {
-    const decision = resolvePendingNavigationCommitDispositionDecision({
+  it("treats a visible commit version mismatch as stale before root-boundary decisions", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
       currentVisibleCommitVersion: 1,
-      currentRootLayoutTreePath: "/(marketing)",
-      nextRootLayoutTreePath: "/(dashboard)",
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
       startedNavigationId: 2,
       startedVisibleCommitVersion: 0,
     });
@@ -626,8 +702,40 @@ describe("app browser entry state helpers", () => {
     expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
   });
 
-  it("traces root-boundary hard navigation decisions", () => {
-    const decision = resolvePendingNavigationCommitDispositionDecision({
+  it("treats stale state as authoritative even when the root boundary changed", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/(marketing)",
+      nextRootLayoutTreePath: "/(dashboard)",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision).toEqual({
+      disposition: "skip",
+      preserveElementIds: [],
+      trace: {
+        schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
+        entries: [
+          {
+            code: NavigationTraceReasonCodes.staleOperation,
+            fields: {
+              activeNavigationId: 2,
+              currentRootLayoutTreePath: "/(marketing)",
+              currentVisibleCommitVersion: 1,
+              nextRootLayoutTreePath: "/(dashboard)",
+              startedNavigationId: 2,
+              startedVisibleCommitVersion: 0,
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it("traces root-boundary hard navigation decisions", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
       currentVisibleCommitVersion: 0,
       currentRootLayoutTreePath: "/(marketing)",
@@ -652,8 +760,8 @@ describe("app browser entry state helpers", () => {
     ]);
   });
 
-  it("traces unknown root-layout identity as a legacy soft-commit fallback", () => {
-    const decision = resolvePendingNavigationCommitDispositionDecision({
+  it("traces unknown root-layout identity as a legacy soft-commit fallback", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
       currentVisibleCommitVersion: 0,
       currentRootLayoutTreePath: "/",
@@ -666,8 +774,8 @@ describe("app browser entry state helpers", () => {
     expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
   });
 
-  it("traces matching root-layout dispatches as current commits", () => {
-    const decision = resolvePendingNavigationCommitDispositionDecision({
+  it("traces matching root-layout dispatches as current commits", async () => {
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
       currentVisibleCommitVersion: 0,
       currentRootLayoutTreePath: "/",
@@ -729,6 +837,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 4,
+      targetHref: "https://example.com/dashboard",
     });
 
     expect(approval.decision.disposition).toBe("commit");
@@ -756,6 +865,7 @@ describe("app browser entry state helpers", () => {
           nextRootLayoutTreePath: "/",
           startedNavigationId: 4,
           startedVisibleCommitVersion: 0,
+          targetHref: "https://example.com/dashboard",
         },
       },
     ]);
@@ -788,6 +898,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 6,
+      targetHref: "https://example.com/legacy-payload",
     });
 
     expect(approval.decision.disposition).toBe("commit");
@@ -873,6 +984,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 4,
+      targetHref: "https://example.com/next",
     });
 
     if (approval.approvedCommit === null) {
@@ -910,6 +1022,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 4,
+      targetHref: "https://example.com/feed",
     });
 
     if (approval.approvedCommit === null) {
@@ -944,6 +1057,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 7,
+      targetHref: "https://example.com/dashboard",
     });
     expect(staleApproval.decision.disposition).toBe("no-commit");
     expect(staleApproval.decision.trace.entries[0]?.code).toBe(
@@ -959,6 +1073,7 @@ describe("app browser entry state helpers", () => {
       currentState,
       pending,
       startedNavigationId: 8,
+      targetHref: "https://example.com/dashboard?from=planner",
     });
     expect(hardNavigateApproval.decision.disposition).toBe("hard-navigate");
     expect(hardNavigateApproval.decision.trace.entries[0]?.code).toBe(
@@ -967,21 +1082,23 @@ describe("app browser entry state helpers", () => {
     expect(hardNavigateApproval.decision.trace.entries[1]?.code).toBe(
       NavigationTraceReasonCodes.rootBoundaryChanged,
     );
+    expect(hardNavigateApproval.decision.trace.entries[1]?.fields.targetHref).toBe(
+      "https://example.com/dashboard?from=planner",
+    );
     expect(hardNavigateApproval.approvedCommit).toBeNull();
   });
 
-  it("merges layoutFlags on approved navigate commits", async () => {
+  it("preserves layoutFlags only for approved same-layout ancestors", async () => {
     const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
     const nextState = await applyApprovedTestCommit(state, {
-      layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
+      layoutFlags: { "layout:/blog": "d" },
+      layoutIds: ["layout:/", "layout:/blog"],
       rootLayoutTreePath: "/",
       routeId: "route:/next",
     });
 
-    // Navigate merges: old flags preserved, new flags override
     expect(nextState.layoutFlags).toEqual({
       "layout:/": "s",
-      "layout:/old": "d",
       "layout:/blog": "d",
     });
   });
@@ -1794,6 +1911,7 @@ describe("app browser navigation lifecycle settlement", () => {
       operationLane: "navigation",
       renderId: 3,
       startedNavigationId: 5,
+      targetHref: "https://example.com/dashboard",
       type: "navigate",
     });
 
@@ -1818,6 +1936,7 @@ describe("app browser navigation lifecycle settlement", () => {
       operationLane: "server-action",
       renderId: 24,
       startedNavigationId: 5,
+      targetHref: "https://example.com/dashboard",
       type: "navigate",
     });
 
@@ -1845,6 +1964,7 @@ describe("app browser navigation lifecycle settlement", () => {
           nextRootLayoutTreePath: "/",
           startedNavigationId: 5,
           startedVisibleCommitVersion: 0,
+          targetHref: "https://example.com/dashboard",
         },
       },
     ]);
@@ -1867,6 +1987,7 @@ describe("app browser navigation lifecycle settlement", () => {
       operationLane: "server-action",
       renderId: 25,
       startedNavigationId: 8,
+      targetHref: "https://example.com/dashboard",
       type: "navigate",
     });
 
@@ -1897,6 +2018,7 @@ describe("app browser navigation lifecycle settlement", () => {
           nextRootLayoutTreePath: "/",
           startedNavigationId: 8,
           startedVisibleCommitVersion: 0,
+          targetHref: "https://example.com/dashboard",
         },
       },
     ]);
@@ -2209,6 +2331,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       operationLane: "server-action",
       renderId: 3,
       startedNavigationId: 7,
+      targetHref: "https://example.com/dashboard?action=same-url",
       type: "navigate",
     });
 
@@ -2217,6 +2340,9 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(result.pending.action.renderId).toBe(3);
     expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.hardNavigate);
     expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
+    expect(result.trace.entries[1]?.fields.targetHref).toBe(
+      "https://example.com/dashboard?action=same-url",
+    );
   });
 
   it("creates navigation trace entries without retaining field ownership", () => {
@@ -2233,10 +2359,78 @@ describe("app browser entry previousNextUrl helpers", () => {
     ]);
   });
 
-  it("treats null root-layout identities as soft-navigation compatible", () => {
-    expect(shouldHardNavigate(null, null)).toBe(false);
-    expect(shouldHardNavigate(null, "/")).toBe(false);
-    expect(shouldHardNavigate("/", null)).toBe(false);
+  it("preserves only planner-approved same-layout ancestors on navigate commits", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const dashboardLayout = React.createElement("div", null, "dashboard layout");
+    const staleLayout = React.createElement("div", null, "stale layout");
+    const stalePage = React.createElement("main", null, "stale page");
+    const state = createState({
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+          "layout:/dashboard": dashboardLayout,
+          "layout:/stale": staleLayout,
+          "page:/stale": stalePage,
+        },
+        ["layout:/", "layout:/dashboard"],
+      ),
+      layoutFlags: {
+        "layout:/": "s",
+        "layout:/dashboard": "s",
+        "layout:/stale": "d",
+      },
+      layoutIds: ["layout:/", "layout:/dashboard"],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "page:/dashboard/settings": React.createElement("main", null, "settings"),
+      },
+      layoutIds: ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
+      layoutFlags: { "layout:/dashboard/settings": "d" },
+      rootLayoutTreePath: "/",
+      routeId: "route:/dashboard/settings",
+    });
+
+    expect(nextState.elements["layout:/"]).toBe(rootLayout);
+    expect(nextState.elements["layout:/dashboard"]).toBe(dashboardLayout);
+    expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
+    expect(Object.hasOwn(nextState.elements, "page:/stale")).toBe(false);
+    expect(nextState.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "s",
+      "layout:/dashboard/settings": "d",
+    });
+    expect(nextState.layoutIds).toEqual([
+      "layout:/",
+      "layout:/dashboard",
+      "layout:/dashboard/settings",
+    ]);
+  });
+
+  it("does not preserve same-layout ancestors when root identity is unknown", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const state = createState({
+      elements: createResolvedElements("route:/dashboard", "/", null, { "layout:/": rootLayout }, [
+        "layout:/",
+      ]),
+      layoutIds: ["layout:/"],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "page:/legacy": React.createElement("main", null, "legacy"),
+      },
+      layoutIds: [],
+      rootLayoutTreePath: null,
+      routeId: "route:/legacy",
+    });
+
+    expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
+    expect(nextState.layoutIds).toEqual([]);
   });
 
   it("clears stale parallel slots on approved traverse commits", async () => {
@@ -2445,6 +2639,50 @@ describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+});
+
+describe("app browser form-state hydration", () => {
+  it("passes the one-shot form-state bootstrap payload to hydrateRoot options", () => {
+    const formState = ["action-result", "key-path", "reference-id", 1] as never;
+    const global = { [RSC_FORM_STATE_GLOBAL]: formState };
+    const onCaughtError = vi.fn();
+    const onUncaughtError = vi.fn();
+    const hydrateRoot = vi.fn();
+
+    const consumedFormState = consumeInitialFormState(global);
+    const hydrateOptions = createVinextHydrateRootOptions({
+      formState: consumedFormState,
+      onCaughtError,
+      onUncaughtError,
+    });
+    hydrateRoot("document", "root", hydrateOptions);
+
+    expect(global).not.toHaveProperty(RSC_FORM_STATE_GLOBAL);
+    expect(hydrateRoot).toHaveBeenCalledWith(
+      "document",
+      "root",
+      expect.objectContaining({ formState }),
+    );
+    expect(hydrateOptions).toEqual({
+      formState,
+      onCaughtError,
+      onUncaughtError,
+    });
+  });
+
+  it("preserves null form state as an explicit hydrateRoot option", () => {
+    const onUncaughtError = vi.fn();
+
+    expect(
+      createVinextHydrateRootOptions({
+        formState: consumeInitialFormState({}),
+        onUncaughtError,
+      }),
+    ).toEqual({
+      formState: null,
+      onUncaughtError,
+    });
   });
 });
 

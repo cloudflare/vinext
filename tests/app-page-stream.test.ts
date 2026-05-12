@@ -64,6 +64,56 @@ describe("app page stream helpers", () => {
     await expect(new Response(htmlStream).text()).resolves.toBe("<html>ok</html>");
   });
 
+  it("forwards waitForAllReady to the SSR handler", async () => {
+    const ssrHandler = vi.fn(async () => createStream(["<html>all-ready</html>"]));
+
+    const htmlStream = await renderAppPageHtmlStream({
+      fontData: createAppPageFontData({
+        getLinks: () => [],
+        getPreloads: () => [],
+        getStyles: () => [],
+      }),
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      waitForAllReady: true,
+      ssrHandler: { handleSsr: ssrHandler },
+    });
+
+    await expect(new Response(htmlStream).text()).resolves.toBe("<html>all-ready</html>");
+    expect(ssrHandler).toHaveBeenCalledTimes(1);
+    expect(ssrHandler).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      expect.anything(),
+      expect.objectContaining({ waitForAllReady: true }),
+    );
+  });
+
+  it("forwards form state to the SSR handler", async () => {
+    const formState = ["action-result", "key-path", "reference-id", 1] as never;
+    const ssrHandler = vi.fn(async () => createStream(["<html>form-state</html>"]));
+
+    const htmlStream = await renderAppPageHtmlStream({
+      fontData: createAppPageFontData({
+        getLinks: () => [],
+        getPreloads: () => [],
+        getStyles: () => [],
+      }),
+      formState,
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: { handleSsr: ssrHandler },
+    });
+
+    await expect(new Response(htmlStream).text()).resolves.toBe("<html>form-state</html>");
+    expect(ssrHandler).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      expect.anything(),
+      expect.objectContaining({ formState }),
+    );
+  });
+
   it("defers clearRequestContext until the HTML stream body is fully consumed", async () => {
     // Regression test for issue #660: clearRequestContext() must not race the
     // lazy RSC/SSR stream pipeline. It should be called only after the HTTP

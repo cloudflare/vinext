@@ -7,6 +7,11 @@ import {
 } from "vinext/shims/request-context";
 import { NextFetchEvent, NextRequest } from "vinext/shims/server";
 import { normalizePath } from "./normalize-path.js";
+import {
+  MIDDLEWARE_HEADER_PREFIX,
+  MIDDLEWARE_NEXT_HEADER,
+  MIDDLEWARE_REWRITE_HEADER,
+} from "./headers.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
@@ -100,7 +105,7 @@ function stripMiddlewareHeadersFromResponse(response: Response): Response {
 function collectMiddlewareHeaders(response: Response): Headers {
   const responseHeaders = new Headers();
   for (const [key, value] of response.headers) {
-    if (!key.startsWith("x-middleware-") || shouldKeepMiddlewareHeader(key)) {
+    if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) || shouldKeepMiddlewareHeader(key)) {
       responseHeaders.append(key, value);
     }
   }
@@ -208,7 +213,7 @@ export async function executeMiddleware(
     return { continue: true, waitUntilPromises };
   }
 
-  if (response.headers.get("x-middleware-next") === "1") {
+  if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
     return {
       continue: true,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -222,7 +227,7 @@ export async function executeMiddleware(
     if (location) {
       const responseHeaders = new Headers();
       for (const [key, value] of response.headers) {
-        if (!key.startsWith("x-middleware-") && key.toLowerCase() !== "location") {
+        if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key.toLowerCase() !== "location") {
           responseHeaders.append(key, value);
         }
       }
@@ -237,7 +242,7 @@ export async function executeMiddleware(
     }
   }
 
-  const rewriteUrl = response.headers.get("x-middleware-rewrite");
+  const rewriteUrl = response.headers.get(MIDDLEWARE_REWRITE_HEADER);
   if (rewriteUrl) {
     let rewritePath: string;
     try {

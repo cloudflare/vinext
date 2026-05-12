@@ -4770,12 +4770,15 @@ describe("chained middleware → config rewrites", () => {
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fsp.symlink(rootNodeModules, path.join(chainTmpDir, "node_modules"), "junction");
 
-    // Config with afterFiles rewrite: /intermediate → /final
+    // Config with afterFiles rewrites:
+    // - /rewrite-source lacks a page file, so afterFiles can rewrite it to /final.
+    // - /intermediate owns a page file, so it wins before afterFiles.
     await fsp.writeFile(
       path.join(chainTmpDir, "next.config.mjs"),
       `export default {
   async rewrites() {
     return [
+      { source: "/rewrite-source", destination: "/final" },
       { source: "/intermediate", destination: "/final" },
     ];
   },
@@ -4784,14 +4787,14 @@ describe("chained middleware → config rewrites", () => {
 
     await fsp.mkdir(path.join(chainTmpDir, "pages"), { recursive: true });
 
-    // Middleware: rewrites /original → /intermediate
+    // Middleware: rewrites /original → /rewrite-source
     await fsp.writeFile(
       path.join(chainTmpDir, "middleware.ts"),
       `import { NextResponse } from "next/server";
 export function middleware(request) {
   const url = new URL(request.url);
   if (url.pathname === "/original") {
-    return NextResponse.rewrite(new URL("/intermediate", request.url));
+    return NextResponse.rewrite(new URL("/rewrite-source", request.url));
   }
   return NextResponse.next();
 }`,
@@ -4803,7 +4806,7 @@ export function middleware(request) {
       `export default function Original() { return <h1>ORIGINAL PAGE</h1>; }`,
     );
 
-    // /intermediate — middleware rewrites to here, then config rewrites to /final
+    // /intermediate — concrete page files win before afterFiles rewrites.
     await fsp.writeFile(
       path.join(chainTmpDir, "pages", "intermediate.tsx"),
       `export default function Intermediate() { return <h1>INTERMEDIATE PAGE</h1>; }`,
@@ -4815,7 +4818,6 @@ export function middleware(request) {
       `export default function Final() { return <h1>FINAL PAGE</h1>; }`,
     );
 
-    // /direct-intermediate — tests that config rewrite works independently
     await fsp.writeFile(
       path.join(chainTmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
@@ -4852,23 +4854,29 @@ export function middleware(request) {
     await fsp.rm(chainTmpDir, { recursive: true, force: true }).catch(() => {});
   }, 15000);
 
-  it("middleware rewrite alone works: /original renders /intermediate content", async () => {
-    // Middleware rewrites /original → /intermediate
-    // Without chaining, we'd see INTERMEDIATE PAGE content
+  it("chains middleware rewrites into afterFiles rewrites when no page file wins", async () => {
+    // Middleware rewrites /original to /rewrite-source. There is no page file at
+    // /rewrite-source, so the afterFiles rewrite can continue to /final.
     const res = await fetch(`${chainBaseUrl}/original`);
     const html = await res.text();
-    // The middleware first rewrites to /intermediate, then the config rewrite
-    // rewrites /intermediate → /final. So we expect FINAL PAGE.
     expect(html).toContain("FINAL PAGE");
+    expect(html).not.toContain("ORIGINAL PAGE");
   });
 
-  it("config rewrite alone works: /intermediate renders /final content", async () => {
-    const res = await fetch(`${chainBaseUrl}/intermediate`);
+  it("applies afterFiles rewrites for paths with no page file", async () => {
+    const res = await fetch(`${chainBaseUrl}/rewrite-source`);
     const html = await res.text();
     expect(html).toContain("FINAL PAGE");
   });
 
-  it("chained: /original → middleware → /intermediate → config → /final", async () => {
+  it("does not let afterFiles rewrites override concrete page files", async () => {
+    const res = await fetch(`${chainBaseUrl}/intermediate`);
+    const html = await res.text();
+    expect(html).toContain("INTERMEDIATE PAGE");
+    expect(html).not.toContain("FINAL PAGE");
+  });
+
+  it("chained: /original → middleware → /rewrite-source → config → /final", async () => {
     const res = await fetch(`${chainBaseUrl}/original`);
     expect(res.status).toBe(200);
     const html = await res.text();

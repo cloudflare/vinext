@@ -490,6 +490,7 @@ export function createAppBrowserNavigationController(
         currentState: getBrowserRouterState(),
         pending,
         startedNavigationId: options.navId,
+        targetHref: options.targetHref,
       });
 
       if (approval.decision.disposition === "no-commit") {
@@ -563,6 +564,7 @@ export function createAppBrowserNavigationController(
       renderId: allocateRenderId(),
       operationLane: "server-action",
       startedNavigationId,
+      targetHref: window.location.href,
       type: "navigate",
     });
 
@@ -582,6 +584,7 @@ export function createAppBrowserNavigationController(
         currentState: getBrowserRouterState(),
         pending,
         startedNavigationId,
+        targetHref: window.location.href,
       });
 
       if (latestApproval.decision.disposition === "hard-navigate") {

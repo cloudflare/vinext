@@ -4,11 +4,15 @@ export type NavigationTraceSchemaVersion = 0;
 
 export const NavigationTraceReasonCodes = {
   commitCurrent: "NC_COMMIT",
+  prefetchOnly: "NC_PREFETCH_ONLY",
+  requestWork: "NC_REQUEST",
   rootBoundaryChanged: "NC_ROOT",
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN",
   staleOperation: "NC_STALE",
 } satisfies Readonly<{
   commitCurrent: "NC_COMMIT";
+  prefetchOnly: "NC_PREFETCH_ONLY";
+  requestWork: "NC_REQUEST";
   rootBoundaryChanged: "NC_ROOT";
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN";
   staleOperation: "NC_STALE";
@@ -35,11 +39,14 @@ export type NavigationTraceCode = NavigationTraceReasonCode | NavigationTraceTra
 export type NavigationTraceFieldName =
   | "activeNavigationId"
   | "currentRootLayoutTreePath"
+  | "currentVisibleCommitVersion"
   | "nextRootLayoutTreePath"
+  | "eventKind"
   | "operationLane"
   | "pendingOperationId"
   | "startedVisibleCommitVersion"
-  | "startedNavigationId";
+  | "startedNavigationId"
+  | "targetHref";
 
 export type NavigationTraceFieldValue = string | number | boolean | null;
 
@@ -56,6 +63,28 @@ export type NavigationTrace = Readonly<{
   schemaVersion: NavigationTraceSchemaVersion;
   entries: readonly NavigationTraceEntry[];
 }>;
+
+export function createNavigationLifecycleTraceFields(options: {
+  activeNavigationId?: number;
+  currentRootLayoutTreePath: string | null;
+  currentVisibleCommitVersion: number;
+  nextRootLayoutTreePath: string | null;
+  startedNavigationId?: number;
+  startedVisibleCommitVersion: number;
+}): NavigationTraceFields {
+  return {
+    ...(options.activeNavigationId !== undefined
+      ? { activeNavigationId: options.activeNavigationId }
+      : {}),
+    currentRootLayoutTreePath: options.currentRootLayoutTreePath,
+    currentVisibleCommitVersion: options.currentVisibleCommitVersion,
+    nextRootLayoutTreePath: options.nextRootLayoutTreePath,
+    ...(options.startedNavigationId !== undefined
+      ? { startedNavigationId: options.startedNavigationId }
+      : {}),
+    startedVisibleCommitVersion: options.startedVisibleCommitVersion,
+  };
+}
 
 function createNavigationTraceEntry(
   code: NavigationTraceCode,

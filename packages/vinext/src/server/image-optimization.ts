@@ -29,6 +29,16 @@ export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 export type ImageConfig = {
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
+  /**
+   * Allow image optimization for hostnames that resolve to private IP addresses.
+   * Default: false.
+   *
+   * Note: This field is currently reserved for future server-side remote-image
+   * fetching. vinext's image optimization endpoint only serves local files, so
+   * there is no active server-side SSRF vector — the flag is consumed client-side
+   * via the image shim instead.
+   */
+  dangerouslyAllowLocalIP?: boolean;
   /** Content-Disposition header value. Default: "inline". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */

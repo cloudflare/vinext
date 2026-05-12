@@ -6,6 +6,21 @@
  * satisfies TypeScript when one shim imports another (e.g. link -> router).
  */
 
+declare module "next" {
+  import type { IncomingMessage, ServerResponse } from "node:http";
+  export type NextApiRequest = {
+    query: Record<string, string | string[]>;
+    body: unknown;
+    cookies: Record<string, string>;
+  } & IncomingMessage;
+  export type NextApiResponse<T = unknown> = {
+    status(code: number): NextApiResponse<T>;
+    json(data: T): void;
+    send(data: T): void;
+    redirect(statusOrUrl: number | string, url?: string): void;
+  } & ServerResponse;
+}
+
 declare module "next/router" {
   export function useRouter(): any;
   export function setSSRContext(ctx: any): void;
@@ -28,11 +43,26 @@ declare module "next/head" {
   export function getSSRHeadHTML(): string;
 }
 
+declare module "next/document" {
+  import { ComponentType, ReactNode } from "react";
+  export const Html: ComponentType<{ lang?: string; children?: ReactNode; [key: string]: unknown }>;
+  export const Head: ComponentType<{ children?: ReactNode }>;
+  export const Main: ComponentType;
+  export const NextScript: ComponentType;
+}
+
 declare module "next/dynamic" {
   import { ComponentType } from "react";
+  type DynamicOptionsLoadingProps = {
+    error?: Error | null;
+    isLoading?: boolean;
+    pastDelay?: boolean;
+    retry?: () => void;
+    timedOut?: boolean;
+  };
   function dynamic<P extends object = object>(
     loader: () => Promise<{ default: ComponentType<P> } | ComponentType<P>>,
-    options?: { loading?: ComponentType<any>; ssr?: boolean },
+    options?: { loading?: ComponentType<DynamicOptionsLoadingProps>; ssr?: boolean },
   ): ComponentType<P>;
   export default dynamic;
   export function flushPreloads(): Promise<void[]>;
@@ -65,6 +95,31 @@ declare module "next/script" {
   export { ScriptProps };
   export function handleClientScriptLoad(props: ScriptProps): void;
   export function initScriptLoader(scripts: ScriptProps[]): void;
+}
+
+declare module "next/headers" {
+  export function headers(): Promise<Headers>;
+  export function cookies(): Promise<any>;
+  export function draftMode(): Promise<{ isEnabled: boolean }>;
+}
+
+declare module "next/link" {
+  import { ComponentType, AnchorHTMLAttributes, ReactNode } from "react";
+  type UrlQueryValue = string | number | boolean | null | undefined;
+  type UrlQuery = Record<string, UrlQueryValue | readonly UrlQueryValue[]>;
+  type LinkProps = {
+    href: string | { pathname?: string; query?: UrlQuery };
+    as?: string;
+    replace?: boolean;
+    prefetch?: boolean;
+    passHref?: boolean;
+    scroll?: boolean;
+    locale?: string | false;
+    onNavigate?: (event: { preventDefault(): void }) => void;
+    children?: ReactNode;
+  } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
+  const Link: ComponentType<LinkProps>;
+  export default Link;
 }
 
 declare module "next/navigation" {
@@ -447,6 +502,14 @@ declare module "next/font/local" {
   export default function localFont(options: LocalFontOptions): FontResult;
 }
 
+declare module "next/app" {
+  import { ComponentType } from "react";
+  export type AppProps = {
+    Component: ComponentType<any>;
+    pageProps: Record<string, unknown>;
+  };
+}
+
 declare module "next/cache" {
   export type CacheHandler = {
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
@@ -550,15 +613,10 @@ declare module "next/form" {
 }
 
 declare module "next/web-vitals" {
-  type WebVitalsMetric = {
-    id: string;
-    name: string;
-    value: number;
-    rating?: "good" | "needs-improvement" | "poor";
-    delta: number;
-    navigationType?: "navigate" | "reload" | "back-forward" | "prerender";
-  };
-  type ReportWebVitalsCallback = (metric: WebVitalsMetric) => void;
+  import type { MetricType } from "web-vitals";
+
+  export type WebVitalsMetric = MetricType;
+  export type ReportWebVitalsCallback = (metric: WebVitalsMetric) => void;
   export function useReportWebVitals(callback: ReportWebVitalsCallback): void;
 }
 

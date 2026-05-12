@@ -115,3 +115,19 @@ export function toBrowserNavigationHref(href: string, currentUrl?: string, baseP
 
   return withBasePath(resolved, basePath);
 }
+
+export function isHashOnlyBrowserUrlChange(
+  href: string,
+  currentHref: string,
+  basePath = "",
+): boolean {
+  try {
+    const current = new URL(currentHref);
+    const next = new URL(href, currentHref);
+    const currentPathname = stripBasePath(current.pathname, basePath);
+    const nextPathname = stripBasePath(next.pathname, basePath);
+    return currentPathname === nextPathname && current.search === next.search && next.hash !== "";
+  } catch {
+    return false;
+  }
+}

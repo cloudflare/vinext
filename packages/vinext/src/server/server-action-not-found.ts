@@ -1,7 +1,7 @@
+import { NEXTJS_ACTION_NOT_FOUND_HEADER as SERVER_ACTION_NOT_FOUND_HEADER } from "./headers.js";
+
 const SERVER_ACTION_NOT_FOUND_DOCS =
   "https://nextjs.org/docs/messages/failed-to-find-server-action";
-
-const SERVER_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
 const SERVER_ACTION_NOT_FOUND_BODY = "Server action not found.";
 
 function getServerActionNotFoundPrefix(actionId: string | null): string {

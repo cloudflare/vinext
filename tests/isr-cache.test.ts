@@ -23,6 +23,7 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -156,7 +157,46 @@ describe("App Router ISR cache key primitives", () => {
     const second = appIsrRscKey("/feed", "sidebar modal");
 
     expect(first).toBe(second);
-    expect(first).toMatch(/^app:\/feed:rsc:[a-z0-9]+$/);
+    expect(first).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+$/);
+  });
+
+  it("keys RSC refresh variants separately from normal navigation variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toBe(
+      "app:/feed:rsc:preserve-ui",
+    );
+    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toMatch(
+      /^app:\/feed:rsc:slots:[a-z0-9]+:preserve-ui$/,
+    );
+  });
+
+  it("round-trips normal and preserve-current-UI RSC payloads under separate keys", async () => {
+    delete process.env.__VINEXT_BUILD_ID;
+    setCacheHandler(new MemoryCacheHandler());
+
+    const normalKey = appIsrRscKey("/feed");
+    const preserveUiKey = appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+    const normalPayload = new TextEncoder().encode("normal-rsc").buffer;
+    const preserveUiPayload = new TextEncoder().encode("preserve-ui-rsc").buffer;
+
+    await isrSet(normalKey, buildAppPageCacheValue("", normalPayload), 60, []);
+    await isrSet(preserveUiKey, buildAppPageCacheValue("", preserveUiPayload), 60, []);
+
+    const normalEntry = await isrGet(normalKey);
+    const preserveUiEntry = await isrGet(preserveUiKey);
+
+    expect(normalEntry?.value.value?.kind).toBe("APP_PAGE");
+    expect(preserveUiEntry?.value.value?.kind).toBe("APP_PAGE");
+    if (
+      normalEntry?.value.value?.kind !== "APP_PAGE" ||
+      preserveUiEntry?.value.value?.kind !== "APP_PAGE"
+    ) {
+      throw new Error("Expected App Router page cache entries");
+    }
+
+    expect(new TextDecoder().decode(normalEntry.value.value.rscData)).toBe("normal-rsc");
+    expect(new TextDecoder().decode(preserveUiEntry.value.value.rscData)).toBe("preserve-ui-rsc");
   });
 });
 

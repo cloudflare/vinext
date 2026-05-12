@@ -536,7 +536,7 @@ import {
 } from "vinext/server/request-pipeline";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 
 interface Env {
   ASSETS: Fetcher;
@@ -562,6 +562,7 @@ const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: 
 const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
   contentDispositionType: vinextConfig.images.contentDispositionType,
   contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
 } : undefined;
@@ -801,8 +802,12 @@ export default {
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
 
+      const pageMatch =
+        typeof matchPageRoute === "function" ? matchPageRoute(resolvedPathname, request) : null;
+
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
-      if (configRewrites.afterFiles?.length) {
+      // These run after non-dynamic page routes but before dynamic routes.
+      if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {

@@ -6,6 +6,11 @@
  */
 
 import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
+import {
+  MIDDLEWARE_HEADER_PREFIX,
+  VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 
 /**
@@ -511,7 +516,7 @@ export function applyMiddlewareRequestHeaders(
   );
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith("x-middleware-")) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
       delete middlewareHeaders[key];
     }
   }
@@ -1079,7 +1084,7 @@ export async function proxyExternalRequest(
   stripHopByHopRequestHeaders(headers);
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
-    if (key.startsWith("x-middleware-")) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
       keysToDelete.push(key);
     }
   }
@@ -1089,9 +1094,9 @@ export async function proxyExternalRequest(
   // Internal prerender authentication header must never be forwarded to
   // external rewrite destinations. It authorizes hidden production endpoints
   // used only by vinext's own prerender pipeline.
-  headers.delete("x-vinext-prerender-secret");
+  headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
   // Internal App Router dev middleware context must never leave the dev server.
-  headers.delete("x-vinext-mw-ctx");
+  headers.delete(VINEXT_MW_CTX_HEADER);
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";

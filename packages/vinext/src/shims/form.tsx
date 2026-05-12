@@ -244,7 +244,16 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
   }
 
-  return <form ref={ref} action={action} onSubmit={handleSubmit} {...rest} />;
+  return (
+    <form
+      ref={ref}
+      action={action}
+      onSubmit={(event) => {
+        void handleSubmit(event);
+      }}
+      {...rest}
+    />
+  );
 });
 
 export default Form;

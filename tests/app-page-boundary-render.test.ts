@@ -310,7 +310,64 @@ describe("app page boundary render helpers", () => {
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
     expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual(["layout:/", "layout:/posts"]);
     expect(payload.__rootLayout).toBe("/");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("derives HTTP access fallback layout metadata from the rendered layout subset", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      layoutModules: [rootLayoutModule],
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__layoutIds).toEqual(["layout:/"]);
+    expect(payload.__rootLayout).toBe("/");
+    expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("uses unknown root metadata when no route layout is rendered for an HTTP access fallback", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      layoutModules: [],
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModule,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__layoutIds).toEqual([]);
+    expect(payload.__rootLayout).toBeNull();
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -355,6 +412,7 @@ describe("app page boundary render helpers", () => {
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
     expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual([]);
     expect(payload.__rootLayout).toBeNull();
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
@@ -494,6 +552,7 @@ describe("app page boundary render helpers", () => {
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
     expect(payload.__route).toBe("route:/posts/missing");
+    expect(payload.__layoutIds).toEqual(["layout:/"]);
     expect(payload.__rootLayout).toBe("/");
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });

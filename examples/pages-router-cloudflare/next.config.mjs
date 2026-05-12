@@ -22,4 +22,12 @@ export default {
       },
     ];
   },
+
+  async rewrites() {
+    return {
+      beforeFiles: [],
+      afterFiles: [{ source: "/nav-test", destination: "/about" }],
+      fallback: [],
+    };
+  },
 };

@@ -2,6 +2,11 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import type { NextHeader } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { matchHeaders } from "../config/config-matchers.js";
+import {
+  INTERNAL_HEADERS,
+  MIDDLEWARE_HEADER_PREFIX,
+  VINEXT_STATIC_FILE_HEADER,
+} from "./headers.js";
 import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
 
 /**
@@ -208,7 +213,7 @@ export function createStaticFileSignal(
   context: StaticFileSignalContext,
 ): Response {
   const headers = new Headers({
-    "x-vinext-static-file": encodeURIComponent(pathname),
+    [VINEXT_STATIC_FILE_HEADER]: encodeURIComponent(pathname),
   });
   if (context.headers) {
     for (const [key, value] of context.headers) {
@@ -462,6 +467,7 @@ function matchWildcardDomain(domain: string, pattern: string): boolean {
   while (patternParts.length) {
     const patternPart = patternParts.pop();
     const domainPart = domainParts.pop();
+    if (patternPart === undefined) return false;
 
     switch (patternPart) {
       case "":
@@ -539,7 +545,7 @@ export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
 
   for (const key of headers.keys()) {
-    if (key.startsWith("x-middleware-")) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
       keysToDelete.push(key);
     }
   }
@@ -554,25 +560,9 @@ export function processMiddlewareHeaders(headers: Headers): void {
  * from external requests. An attacker could forge these to influence routing
  * or impersonate internal data fetches.
  *
- * Ported from Next.js `INTERNAL_HEADERS`:
- * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/server-ipc/utils.ts
- *
- * Next.js strips these via `filterInternalHeaders()` at the router-server
- * entry point before any handler sees the request:
- * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+ * @see `./headers.ts` for the canonical definition.
  */
-export const INTERNAL_HEADERS = [
-  "x-middleware-rewrite",
-  "x-middleware-redirect",
-  "x-middleware-set-cookie",
-  "x-middleware-skip",
-  "x-middleware-override-headers",
-  "x-middleware-next",
-  "x-now-route-matches",
-  "x-matched-path",
-  "x-nextjs-data",
-  "x-next-resume-state-length",
-];
+export { INTERNAL_HEADERS } from "./headers.js";
 
 type RequestInitWithCf = RequestInit & { cf?: unknown };
 
@@ -601,7 +591,7 @@ export function filterInternalHeaders(headers: Headers): Headers {
   return filtered;
 }
 
-function getRequestCf(request: Request): unknown | undefined {
+function getRequestCf(request: Request): unknown {
   const cf = Reflect.get(request, "cf");
   return cf === undefined ? undefined : cf;
 }

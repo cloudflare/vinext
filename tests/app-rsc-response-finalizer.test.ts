@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/config-matchers.js";
 
@@ -29,9 +30,12 @@ describe("finalizeAppRscResponse — config header application", () => {
     expect(response.headers.get("x-added")).toBe("config");
   });
 
-  it("does not apply config headers when none are configured", () => {
-    // Behavior: empty configHeaders list → response returned as-is with no mutation.
-    // Regression: unexpected header appears, or function throws.
+  it("adds the App Router RSC vary header when no config headers are configured", () => {
+    // Behavior: App Router responses always carry the RSC vary key, even when
+    // no next.config.js headers match. This covers app route handlers that
+    // return their own Response object instead of using app page helpers.
+    // Ported from Next.js:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/vary-header/test/index.test.ts
     const response = new Response("body", { status: 200, headers: { "x-existing": "keep" } });
     const request = new Request("http://example.com/about");
 
@@ -43,6 +47,7 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(result).toBe(response);
     expect(result.headers.get("x-existing")).toBe("keep");
+    expect(result.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });
 
   it("does not apply config headers when source pattern does not match", () => {
@@ -58,6 +63,52 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+});
+
+// ── App Router RSC vary header ──────────────────────────────────────────
+
+describe("finalizeAppRscResponse — App Router RSC vary header", () => {
+  it("preserves custom Vary values while appending the internal RSC vary key", () => {
+    const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
+    const request = new Request("http://example.com/normal");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("vary")).toBe(`User-Agent, ${VINEXT_RSC_VARY_HEADER}`);
+  });
+
+  it("does not duplicate RSC vary tokens already set by app page helpers", () => {
+    const response = new Response("body", {
+      status: 200,
+      headers: { Vary: VINEXT_RSC_VARY_HEADER },
+    });
+    const request = new Request("http://example.com/about");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("preserves wildcard Vary semantics", () => {
+    const response = new Response("body", { status: 200, headers: { Vary: "*" } });
+    const request = new Request("http://example.com/about");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [],
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("vary")).toBe("*");
   });
 });
 

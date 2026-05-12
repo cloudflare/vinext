@@ -1,10 +1,12 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { VINEXT_CACHE_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -46,11 +48,16 @@ type ReadAppPageCacheResponseOptions = {
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
+  isrRscKey: (
+    pathname: string,
+    mountedSlotsHeader?: string | null,
+    renderMode?: AppRscRenderMode,
+  ) => string;
   isrSet: AppPageCacheSetter;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  renderMode?: AppRscRenderMode;
   expireSeconds?: number;
   revalidateSeconds: number;
   renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
@@ -66,7 +73,11 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
+  isrRscKey: (
+    pathname: string,
+    mountedSlotsHeader?: string | null,
+    renderMode?: AppRscRenderMode,
+  ) => string;
   isrSet: AppPageCacheSetter;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -82,9 +93,14 @@ type ScheduleAppPageRscCacheWriteOptions = {
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
-  isrRscKey: (pathname: string, mountedSlotsHeader?: string | null) => string;
+  isrRscKey: (
+    pathname: string,
+    mountedSlotsHeader?: string | null,
+    renderMode?: AppRscRenderMode,
+  ) => string;
   isrSet: AppPageCacheSetter;
   mountedSlotsHeader?: string | null;
+  renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
@@ -136,11 +152,11 @@ function buildAppPageCachedHeaders(options: {
     "Cache-Control": options.cacheControl,
     "Content-Type": options.contentType,
     Vary: VINEXT_RSC_VARY_HEADER,
-    "X-Vinext-Cache": options.cacheState,
+    [VINEXT_CACHE_HEADER]: options.cacheState,
   });
 
   if (options.mountedSlotsHeader) {
-    headers.set("X-Vinext-Mounted-Slots", options.mountedSlotsHeader);
+    headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
@@ -234,7 +250,7 @@ export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
   const isrKey = options.isRscRequest
-    ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader)
+    ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
     : options.isrHtmlKey(options.cleanPathname);
 
   try {
@@ -267,7 +283,7 @@ export async function readAppPageCacheResponse(
 
     if (cached?.isStale && cachedValue) {
       const regenerationKey = options.isRscRequest
-        ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader)
+        ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
         : options.isrHtmlKey(options.cleanPathname);
 
       // Preserve the legacy behavior from the inline generator: stale entries
@@ -280,7 +296,11 @@ export async function readAppPageCacheResponse(
         const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
         const writes = [
           options.isrSet(
-            options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader),
+            options.isrRscKey(
+              options.cleanPathname,
+              options.mountedSlotsHeader,
+              options.renderMode,
+            ),
             buildAppPageCacheValue("", revalidatedPage.rscData, 200),
             revalidateSeconds,
             revalidatedPage.tags,
@@ -358,7 +378,7 @@ export function finalizeAppPageHtmlCacheResponse(
     // consumed. Until that late dynamic check finishes, downstream shared caches
     // must not cache a response whose ISR policy was known before streaming.
     clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-    clientHeaders.set("X-Vinext-Cache", "MISS");
+    clientHeaders.set(VINEXT_CACHE_HEADER, "MISS");
   }
 
   const cachePromise = (async () => {
@@ -442,7 +462,7 @@ export function finalizeAppPageRscCacheResponse(
   // late request API was used, the client-facing MISS response must not enter a
   // shared cache when the ISR policy was known before streaming.
   clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-  clientHeaders.set("X-Vinext-Cache", "MISS");
+  clientHeaders.set(VINEXT_CACHE_HEADER, "MISS");
 
   return new Response(response.body, {
     status: response.status,
@@ -459,7 +479,11 @@ export function scheduleAppPageRscCacheWrite(
     return false;
   }
 
-  const rscKey = options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader);
+  const rscKey = options.isrRscKey(
+    options.cleanPathname,
+    options.mountedSlotsHeader,
+    options.renderMode,
+  );
   const cachePromise = (async () => {
     try {
       const rscData = await capturedRscDataPromise;

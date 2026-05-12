@@ -9,7 +9,11 @@ import { useState, useEffect, useCallback, useMemo, createElement, type ReactEle
 import { RouterContext } from "./internal/router-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
-import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
+import {
+  isHashOnlyBrowserUrlChange,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+} from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import {
@@ -189,13 +193,7 @@ function resolveHashUrl(url: string): string {
 export function isHashOnlyChange(href: string): boolean {
   if (href.startsWith("#")) return true;
   if (typeof window === "undefined") return false;
-  try {
-    const current = new URL(window.location.href);
-    const next = new URL(href, window.location.href);
-    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
-  } catch {
-    return false;
-  }
+  return isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
 }
 
 /** Scroll to hash target element, or top if no hash */
@@ -669,8 +667,8 @@ export function useRouter(): NextRouter {
       const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
 
       // Hash-only change — no page fetch needed
-      if (isHashOnlyChange(resolved)) {
-        const eventUrl = resolveHashUrl(resolved);
+      if (isHashOnlyChange(full)) {
+        const eventUrl = resolveHashUrl(full);
         routerEvents.emit("hashChangeStart", eventUrl, {
           shallow: options?.shallow ?? false,
         });
@@ -729,8 +727,8 @@ export function useRouter(): NextRouter {
       const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
 
       // Hash-only change — no page fetch needed
-      if (isHashOnlyChange(resolved)) {
-        const eventUrl = resolveHashUrl(resolved);
+      if (isHashOnlyChange(full)) {
+        const eventUrl = resolveHashUrl(full);
         routerEvents.emit("hashChangeStart", eventUrl, {
           shallow: options?.shallow ?? false,
         });
@@ -917,8 +915,8 @@ const Router = {
     const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
 
     // Hash-only change
-    if (isHashOnlyChange(resolved)) {
-      const eventUrl = resolveHashUrl(resolved);
+    if (isHashOnlyChange(full)) {
+      const eventUrl = resolveHashUrl(full);
       routerEvents.emit("hashChangeStart", eventUrl, {
         shallow: options?.shallow ?? false,
       });
@@ -970,8 +968,8 @@ const Router = {
     const full = toBrowserNavigationHref(resolved, window.location.href, __basePath);
 
     // Hash-only change
-    if (isHashOnlyChange(resolved)) {
-      const eventUrl = resolveHashUrl(resolved);
+    if (isHashOnlyChange(full)) {
+      const eventUrl = resolveHashUrl(full);
       routerEvents.emit("hashChangeStart", eventUrl, {
         shallow: options?.shallow ?? false,
       });
