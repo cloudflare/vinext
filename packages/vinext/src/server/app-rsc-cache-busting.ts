@@ -24,9 +24,6 @@ import {
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
-/** @deprecated Import {@link VINEXT_MOUNTED_SLOTS_HEADER} from `./headers.js` instead. */
-export const VINEXT_RSC_MOUNTED_SLOTS_HEADER = VINEXT_MOUNTED_SLOTS_HEADER;
-
 // Re-export so existing consumers that import from this module keep working.
 export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 

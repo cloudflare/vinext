@@ -28,11 +28,8 @@ import {
   prefetchRscResponse,
 } from "./navigation.js";
 import { AppElementsWire } from "../server/app-elements.js";
-import {
-  createRscRequestHeaders,
-  createRscRequestUrl,
-  VINEXT_RSC_MOUNTED_SLOTS_HEADER,
-} from "../server/app-rsc-cache-busting.js";
+import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
 import { isDangerousScheme } from "./url-safety.js";
 import {
   resolveRelativeHref,
@@ -140,7 +137,7 @@ function prefetchUrl(href: string): void {
         const mountedSlotsHeader = getMountedSlotsHeader();
         const headers = createRscRequestHeaders({ interceptionContext });
         if (mountedSlotsHeader) {
-          headers.set(VINEXT_RSC_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+          headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
