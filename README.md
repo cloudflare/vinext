@@ -240,7 +240,7 @@ export default async function Page() {
 }
 ```
 
-This works because `@cloudflare/vite-plugin` runs the RSC environment in workerd, where `cloudflare:workers` is a native module. In production builds, the import is externalized so workerd resolves it at runtime. All binding types are supported: D1, R2, KV, Durable Objects, AI, Queues, Vectorize, Browser Rendering, etc.
+This works because `@cloudflare/vite-plugin` runs the RSC environment in workers, where `cloudflare:workers` is a native module. In production builds, the import is externalized so workers resolves it at runtime. All binding types are supported: D1, R2, KV, Durable Objects, AI, Queues, Vectorize, Browser Rendering, etc.
 
 Define your bindings in `wrangler.jsonc` as usual:
 
