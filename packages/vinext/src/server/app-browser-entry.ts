@@ -1231,8 +1231,8 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           {
             buffer: cacheBuffer,
             contentType: navResponse.headers.get("content-type") ?? "text/x-component",
-            mountedSlotsHeader: navResponse.headers.get("X-Vinext-Mounted-Slots"),
-            paramsHeader: navResponse.headers.get("X-Vinext-Params"),
+            mountedSlotsHeader: navResponse.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
+            paramsHeader: navResponse.headers.get(VINEXT_PARAMS_HEADER),
             url: navResponse.url,
           },
           navParams,
