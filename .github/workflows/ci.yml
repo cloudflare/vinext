@@ -109,6 +109,21 @@ jobs:
       - name: Scaffold a fresh create-next-app project
         run: vp dlx create-next-app@16.2.6 "${{ runner.temp }}/cna-test" --yes
 
+      - name: Deny build scripts in scaffolded project
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        # pnpm 11 may auto-add placeholder allowBuilds entries during the
+        # scaffold install. Replace them with explicit false values.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  sharp: false\n  unrs-resolver: false\n";
+            fs.writeFileSync(f, y);
+          '
+
       - name: Pin pnpm in scaffolded project to vinext's version
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash

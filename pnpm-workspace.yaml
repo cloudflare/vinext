@@ -3,12 +3,6 @@ frozenLockfile: true
 preferFrozenLockfile: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
-minimumReleaseAgeExclude:
-  - "@vitejs/plugin-rsc"
-  - react-server-dom-webpack
-  - react-dom
-  - react
-  - next
 
 packages:
   - packages/*
@@ -112,3 +106,4 @@ allowBuilds:
   workerd: true
   "@parcel/watcher": true
   "@swc/core": true
+  unrs-resolver: false
