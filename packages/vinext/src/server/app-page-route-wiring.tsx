@@ -610,6 +610,23 @@ export function buildAppPageElements<
     </LayoutSegmentProvider>
   );
 
+  // Wrap the page slot in a per-segment RedirectBoundary so that a
+  // redirect() thrown from a server component (or a client component
+  // within the page subtree) is caught here — below the route's layouts —
+  // rather than at the top-level boundary in app-browser-entry. Catching
+  // at the top level unmounts the entire route tree including layouts,
+  // which destroys client-side state in layout-hosted components
+  // (counters, theme toggles, form drafts). Here, only the page subtree
+  // is unmounted; the surrounding layouts stay mounted across the
+  // boundary's null-render → router.replace transition, and segment
+  // reuse keeps their React state intact.
+  //
+  // Placed inside the Suspense (loading) boundary to match Next.js nesting:
+  //   Error > Loading (Suspense) > AccessFallback > Redirect > content
+  // This keeps the loading fallback visible during redirect-driven
+  // transitions rather than unmounting it.
+  routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
+
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   if (routeLoadingComponent) {
     const RouteLoadingComponent = routeLoadingComponent;
@@ -626,18 +643,6 @@ export function buildAppPageElements<
       </Suspense>
     );
   }
-
-  // Wrap the page slot in a per-segment RedirectBoundary so that a
-  // redirect() thrown from a server component (or a client component
-  // within the page subtree) is caught here — below the route's layouts —
-  // rather than at the top-level boundary in app-browser-entry. Catching
-  // at the top level unmounts the entire route tree including layouts,
-  // which destroys client-side state in layout-hosted components
-  // (counters, theme toggles, form drafts). Here, only the page subtree
-  // is unmounted; the surrounding layouts stay mounted across the
-  // boundary's null-render → router.replace transition, and segment
-  // reuse keeps their React state intact.
-  routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
 
   const lastLayoutErrorModule =
     errorEntries.length > 0 ? errorEntries[errorEntries.length - 1].errorModule : null;

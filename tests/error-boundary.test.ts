@@ -300,6 +300,15 @@ describe("RedirectBoundary digest classification", () => {
     expect(RedirectErrorBoundaryClass).not.toBeNull();
     expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
   });
+
+  it("re-throws redirect errors with malformed/empty URL", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;push;",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
 });
 
 // Test the actual ForbiddenBoundary.getDerivedStateFromError classification.

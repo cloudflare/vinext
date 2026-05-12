@@ -48,6 +48,11 @@ function decodeRedirectTarget(target: string): string {
 
 function getURLFromRedirectError(error: RedirectError): string | null {
   const parts = error.digest.split(";");
+  // vinext emits 3-part (redirect: `NEXT_REDIRECT;;<encoded>`) or 4-part
+  // (permanentRedirect: `NEXT_REDIRECT;<type>;<encoded>;308`) digests;
+  // Next.js emits 5-part digests (`NEXT_REDIRECT;<type>;<url>;<status>;<isClient>`).
+  // vinext's `isRedirectError` is more permissive (just `startsWith("NEXT_REDIRECT;")`)
+  // so we branch on length rather than always using `slice(2, -2)`.
   const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
   return encodedTarget ? decodeRedirectTarget(encodedTarget) : null;
 }
@@ -60,11 +65,9 @@ function getRedirectTypeFromError(error: RedirectError): "push" | "replace" {
 function HandleRedirect({
   redirect,
   redirectType,
-  reset,
 }: {
   redirect: string;
   redirectType: "push" | "replace";
-  reset: () => void;
 }) {
   const router = useRouter();
 
@@ -75,9 +78,17 @@ function HandleRedirect({
       } else {
         router.replace(redirect);
       }
-      reset();
+      // Intentionally no reset() here. The boundary stays in its "redirect
+      // caught" state (rendering this component, which returns null) until
+      // router.push()/replace() triggers a new render at the destination
+      // route. That naturally unmounts this boundary and mounts a fresh one.
+      // Calling reset() would clear the boundary state, causing React to
+      // re-render children — which re-mounts the page component that threw
+      // redirect() in the first place. For deterministic redirects (e.g.
+      // auth guards), that creates an infinite redirect loop.
+      // Matches Next.js's HandleRedirect in redirect-boundary.tsx.
     });
-  }, [redirect, redirectType, reset, router]);
+  }, [redirect, redirectType, router]);
 
   return null;
 }
@@ -131,13 +142,7 @@ export class RedirectErrorBoundary extends React.Component<
   render() {
     const { redirect, redirectType } = this.state;
     if (redirect !== null && redirectType !== null) {
-      return (
-        <HandleRedirect
-          redirect={redirect}
-          redirectType={redirectType}
-          reset={() => this.setState({ redirect: null, redirectType: null })}
-        />
-      );
+      return <HandleRedirect redirect={redirect} redirectType={redirectType} />;
     }
 
     return this.props.children;
