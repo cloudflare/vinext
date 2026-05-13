@@ -138,6 +138,8 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           node-version: "22"
+          # Skip install — the workspace is already fully built in the cache
+          run-install: false
 
       - name: Enable pnpm shim for Next.js scripts
         run: corepack enable pnpm

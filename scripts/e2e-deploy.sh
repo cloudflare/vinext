@@ -73,7 +73,43 @@ run_pnpm() {
     return
   fi
 
-  corepack pnpm "$@"
+  if command -v corepack >/dev/null 2>&1; then
+    corepack pnpm "$@"
+    return
+  fi
+
+  # Vite+ (vp) environments expose vp instead of pnpm. The subcommand
+  # names (install, run, exec) are the same, but pnpm-specific flags
+  # must be forwarded as pass-through args.
+  if command -v vp >/dev/null 2>&1; then
+    local subcmd="$1"
+    shift
+
+    if [ "${subcmd}" = "install" ]; then
+      local vp_args=()
+      local passthrough_args=()
+
+      for arg in "$@"; do
+        case "${arg}" in
+          --no-frozen-lockfile) vp_args+=("${arg}") ;;
+          --strict-peer-dependencies=*) passthrough_args+=("${arg}") ;;
+          *) vp_args+=("${arg}") ;;
+        esac
+      done
+
+      if [ ${#passthrough_args[@]} -gt 0 ]; then
+        vp install "${vp_args[@]}" -- "${passthrough_args[@]}"
+      else
+        vp install "${vp_args[@]}"
+      fi
+    else
+      vp "${subcmd}" "$@"
+    fi
+    return
+  fi
+
+  echo "No package manager found (tried pnpm, corepack, vp)" >&2
+  exit 1
 }
 
 find_free_port() {
@@ -171,19 +207,34 @@ cleanup_on_error() {
   if [ -f "${PID_FILE}" ]; then
     local pid
     pid="$(cat "${PID_FILE}")"
-    kill -TERM "${pid}" >/dev/null 2>&1 || true
+    kill -TERM "-${pid}" >/dev/null 2>&1 || kill -TERM "${pid}" >/dev/null 2>&1 || true
     sleep 1
-    kill -KILL "${pid}" >/dev/null 2>&1 || true
+    kill -KILL "-${pid}" >/dev/null 2>&1 || kill -KILL "${pid}" >/dev/null 2>&1 || true
+  fi
+
+  # Kill any process still listening on the allocated port (handles orphaned children).
+  if [ -f "${PORT_FILE}" ]; then
+    local listener_pid
+    listener_pid="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    if [ -n "${listener_pid}" ]; then
+      kill -TERM ${listener_pid} >/dev/null 2>&1 || true
+      sleep 1
+      kill -KILL ${listener_pid} >/dev/null 2>&1 || true
+    fi
   fi
 
   {
     echo
     echo "=== vinext deploy debug ==="
     if [ -f "${BUILD_LOG}" ]; then
-      echo "--- ${BUILD_LOG} persisted to ${DEBUG_RUN_DIR}/${BUILD_LOG} ($(wc -c < "${BUILD_LOG}" 2>/dev/null || echo unknown) bytes) ---"
+      echo "--- last 80 lines of ${BUILD_LOG} ---"
+      tail -80 "${BUILD_LOG}" 2>/dev/null || true
+      echo "--- end ${BUILD_LOG} (persisted to ${DEBUG_RUN_DIR}/${BUILD_LOG}) ---"
     fi
     if [ -f "${SERVER_LOG}" ]; then
-      echo "--- ${SERVER_LOG} persisted to ${DEBUG_RUN_DIR}/${SERVER_LOG} ($(wc -c < "${SERVER_LOG}" 2>/dev/null || echo unknown) bytes) ---"
+      echo "--- last 40 lines of ${SERVER_LOG} ---"
+      tail -40 "${SERVER_LOG}" 2>/dev/null || true
+      echo "--- end ${SERVER_LOG} (persisted to ${DEBUG_RUN_DIR}/${SERVER_LOG}) ---"
     fi
     echo "=== end vinext deploy debug ==="
     echo
@@ -201,7 +252,6 @@ fi
 PORT="$(find_free_port)"
 DEPLOYMENT_URL="http://127.0.0.1:${PORT}"
 DEPLOYMENT_ID="${NEXT_DEPLOYMENT_ID:-vinext-local-${PORT}}"
-IMMUTABLE_ASSET_TOKEN="undefined"
 
 {
   echo "vinext dir: ${VINEXT_DIR}"
@@ -341,12 +391,35 @@ for (const dep of [
   }
 }
 
+// Ensure "type": "module" so Rolldown outputs .js (ESM) not .mjs — matches
+// what the RSC plugin expects for cross-environment imports. This is the same
+// thing `vinext init` does (step 3).
+if (pkg.type !== 'module') {
+  pkg.type = 'module'
+  console.log('Added "type": "module" to package.json')
+}
+
 pkg.scripts = pkg.scripts || {}
 pkg.scripts['build:vinext'] = 'vinext build'
 pkg.scripts['start:vinext'] = 'vinext start'
 
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')
+
+// Generate a minimal vite.config.ts if one doesn't exist (same as `vinext init` step 5).
+const viteConfigPath = path.join(process.cwd(), 'vite.config.ts')
+if (!fs.existsSync(viteConfigPath)) {
+  fs.writeFileSync(viteConfigPath, [
+    'import vinext from "vinext";',
+    'import { defineConfig } from "vite";',
+    '',
+    'export default defineConfig({',
+    '  plugins: [vinext()],',
+    '});',
+    '',
+  ].join('\n'))
+  console.log('Generated vite.config.ts')
+}
 EOF
 
 export CI=1
@@ -380,10 +453,12 @@ mkdir -p ".next"
 
 BUILD_ID="$(read_build_id)"
 
+# The Next.js test harness parses these markers from the logs script output
+# (see next-deploy.ts parseIdsFromCliOuput). All three are required.
 {
   echo "BUILD_ID: ${BUILD_ID}"
   echo "DEPLOYMENT_ID: ${DEPLOYMENT_ID}"
-  echo "IMMUTABLE_ASSET_TOKEN: ${IMMUTABLE_ASSET_TOKEN}"
+  echo "NEXT_SUPPORTS_IMMUTABLE_ASSETS: 0"
 } >> "${BUILD_LOG}"
 
 echo "${PORT}" > "${PORT_FILE}"
