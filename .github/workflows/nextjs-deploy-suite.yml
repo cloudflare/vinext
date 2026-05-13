@@ -1,6 +1,9 @@
 name: Next.js Deploy Suite
 
 on:
+  # TODO: remove pull_request trigger before merging
+  pull_request:
+    types: [synchronize]
   schedule:
     # Nightly at 02:00 UTC against main
     - cron: "0 2 * * *"
