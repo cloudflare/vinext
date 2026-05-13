@@ -167,20 +167,39 @@ jobs:
         run: |
           vp exec vite dev --host 127.0.0.1 --port 3099 &
           SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
-          for i in $(seq 1 30); do
-            STATUS=$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3099/ || true)
-            echo "HTTP status from dev server: ${STATUS:-curl failed} (attempt $i)"
+          for i in $(seq 1 45); do
+            STATUS=$(node -e '
+              const http = require("node:http");
+              let done = false;
+              function finish(status) {
+                if (done) return;
+                done = true;
+                console.log(status);
+                process.exit(status === 200 ? 0 : 1);
+              }
+              const req = http.get("http://127.0.0.1:3099/", (res) => {
+                res.resume();
+                finish(res.statusCode);
+              });
+              req.setTimeout(10000, () => {
+                req.destroy();
+                finish("timeout");
+              });
+              req.on("error", () => {
+                finish("000");
+              });
+            ' || true)
+            echo "HTTP status from dev server: ${STATUS:-request failed} (attempt $i)"
             if [ "$STATUS" = "200" ]; then
               echo "Server responded with HTTP 200 (attempt $i)"
-              kill "$SERVER_PID" 2>/dev/null || true
               exit 0
             fi
             sleep 1
           done
 
-          echo "Server did not respond with HTTP 200 within 30 seconds"
-          kill "$SERVER_PID" 2>/dev/null || true
+          echo "Server did not respond with HTTP 200 before the retry limit"
           exit 1
 
   e2e:
