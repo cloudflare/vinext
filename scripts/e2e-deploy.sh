@@ -391,35 +391,8 @@ for (const dep of [
   }
 }
 
-// Ensure "type": "module" so Rolldown outputs .js (ESM) not .mjs — matches
-// what the RSC plugin expects for cross-environment imports. This is the same
-// thing `vinext init` does (step 3).
-if (pkg.type !== 'module') {
-  pkg.type = 'module'
-  console.log('Added "type": "module" to package.json')
-}
-
-pkg.scripts = pkg.scripts || {}
-pkg.scripts['build:vinext'] = 'vinext build'
-pkg.scripts['start:vinext'] = 'vinext start'
-
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')
-
-// Generate a minimal vite.config.ts if one doesn't exist (same as `vinext init` step 5).
-const viteConfigPath = path.join(process.cwd(), 'vite.config.ts')
-if (!fs.existsSync(viteConfigPath)) {
-  fs.writeFileSync(viteConfigPath, [
-    'import vinext from "vinext";',
-    'import { defineConfig } from "vite";',
-    '',
-    'export default defineConfig({',
-    '  plugins: [vinext()],',
-    '});',
-    '',
-  ].join('\n'))
-  console.log('Generated vite.config.ts')
-}
 EOF
 
 export CI=1
@@ -434,6 +407,14 @@ run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile >> "${BUI
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
   run_pnpm run setup >> "${BUILD_LOG}" 2>&1
 fi
+
+# Run vinext init to set up the project for vinext: adds "type": "module",
+# renames CJS configs (e.g. next.config.js → .cjs), and generates vite.config.ts.
+# --skip-check avoids the interactive compat report, --force overwrites any
+# existing vite.config.ts. Dep installation is a no-op since we already injected
+# them above.
+run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
+
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests

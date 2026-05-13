@@ -12,8 +12,10 @@
  *   7. Update .gitignore to include /dist/
  *   8. Print summary
  *
- * Non-destructive: does NOT modify next.config, tsconfig, or source files.
- * The project should work with both Next.js and vinext simultaneously.
+ * Non-destructive: does NOT modify tsconfig or source files. The only
+ * config file change is renaming CJS `.js` configs (including next.config.js)
+ * to `.cjs` when adding "type": "module" — this preserves the content and
+ * is required for Node.js to load them correctly.
  */
 
 import fs from "node:fs";

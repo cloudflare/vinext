@@ -12,6 +12,7 @@ import path from "node:path";
 
 /** Common CJS config files that may need renaming when adding "type": "module" */
 const CJS_CONFIG_FILES = [
+  "next.config.js",
   "postcss.config.js",
   "tailwind.config.js",
   ".eslintrc.js",
