@@ -462,9 +462,12 @@ BUILD_ID="$(read_build_id)"
 
 # The Next.js test harness parses these markers from the logs script output
 # (see next-deploy.ts parseIdsFromCliOuput). All three are required.
+# v16.2.x uses IMMUTABLE_ASSET_TOKEN; canary renamed it to
+# NEXT_SUPPORTS_IMMUTABLE_ASSETS. Emit both for cross-version compat.
 {
   echo "BUILD_ID: ${BUILD_ID}"
   echo "DEPLOYMENT_ID: ${DEPLOYMENT_ID}"
+  echo "IMMUTABLE_ASSET_TOKEN: undefined"
   echo "NEXT_SUPPORTS_IMMUTABLE_ASSETS: 0"
 } >> "${BUILD_LOG}"
 
