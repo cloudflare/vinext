@@ -15,7 +15,7 @@ type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
 const NEXT_ENV_FILE_CONTENT = `/// <reference types="next" />
 /// <reference types="next/image-types/global" />
-import "./.next/types/routes.d.ts";
+/// <reference path="./.next/types/routes.d.ts" />
 
 // NOTE: This file should not be edited
 // see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
@@ -330,7 +330,19 @@ function addRoute(
     seen.add(route);
     routes.push(route);
   }
+  const existingParamShape = params.get(route);
+  if (existingParamShape && !paramShapesEqual(existingParamShape, paramShape)) {
+    throw new Error(`[vinext] Conflicting route param shapes generated for ${route}`);
+  }
   params.set(route, paramShape);
+}
+
+function paramShapesEqual(left: ParamShape, right: ParamShape): boolean {
+  if (left.size !== right.size) return false;
+  for (const [name, kind] of left) {
+    if (right.get(name) !== kind) return false;
+  }
+  return true;
 }
 
 function uniqueSorted(values: readonly string[]): string[] {

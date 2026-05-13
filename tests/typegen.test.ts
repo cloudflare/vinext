@@ -142,7 +142,8 @@ describe("generateRouteTypes", () => {
 
       expect(generated).toContain('/// <reference types="next" />');
       expect(generated).toContain('/// <reference types="next/image-types/global" />');
-      expect(generated).toContain('import "./.next/types/routes.d.ts";');
+      expect(generated).toContain('/// <reference path="./.next/types/routes.d.ts" />');
+      expect(generated).not.toContain('import "./.next/types/routes.d.ts";');
     });
   });
 
