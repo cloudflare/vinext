@@ -10,6 +10,9 @@ concurrency:
   group: benchmarks
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     name: Run Benchmarks
