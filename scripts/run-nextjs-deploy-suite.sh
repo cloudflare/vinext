@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
+# Convenience wrapper for running the Next.js deploy test suite locally.
+# Handles building vinext, preparing the Next.js checkout, and invoking
+# run-tests.js with the correct environment variables.
+#
+# Usage:
+#   ./scripts/run-nextjs-deploy-suite.sh /path/to/next.js [run-tests args...]
+#
+# Environment variables:
+#   VINEXT_BUILD=0     Skip building vinext (if already built)
+#   NEXTJS_PREPARE=1   Install + build Next.js and Playwright
+#   NEXTJS_PREPARE_ONLY=1  Prepare Next.js and exit (don't run tests)
+#   NEXT_TEST_GROUP    Shard group (e.g. "1/16")
+#   NEXT_TEST_CONCURRENCY  Parallel test count (default 2)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-if [ "${1:-}" != "" ] && [[ "${1}" != -* ]]; then
+if [ "${1:-}" != "" ] && [ "${1}" = "${1#-}" ]; then
   NEXTJS_DIR="${NEXTJS_DIR:-$1}"
   shift
 else

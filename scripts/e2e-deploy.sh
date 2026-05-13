@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# Deploy script for the Next.js deploy test harness.
+# Called by the Next.js test runner (run-tests.js) for each isolated test app.
+#
+# Contract (per https://nextjs.org/docs/app/api-reference/adapters/testing-adapters):
+# - cwd is the isolated test app directory
+# - Must print the deployment URL to stdout (nothing else on stdout)
+# - Must exit non-zero on failure
+# - Diagnostic output goes to stderr or files in the working directory
+#
+# This script injects vinext as a local file dependency into the test app,
+# builds with `vinext build`, starts with `vinext start`, and prints the URL.
 set -euo pipefail
 
 # Accept ADAPTER_DIR (Next.js docs convention) or VINEXT_DIR
@@ -216,6 +227,10 @@ const workspaceConfig = fs.readFileSync(
   'utf8',
 )
 
+// Minimal YAML parser for the pnpm workspace catalog. Assumes the simple
+// block mapping format used in this repo's pnpm-workspace.yaml (2-space
+// indent, no flow syntax, no nested catalogs). This avoids pulling in a
+// YAML parser dependency in the throwaway test app temp directories.
 function parseCatalog(yaml) {
   const catalog = {}
   let inCatalog = false
@@ -348,6 +363,9 @@ if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && p
 fi
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 
+# Next.js emits large-page-data warnings during build. Specific deploy tests
+# (e.g. test/e2e/prerender) assert these strings appear in the build output,
+# so we synthesize them here since vinext doesn't have the same threshold check.
 if [ -f "pages/large-page-data.js" ] || [ -f "pages/large-page-data.tsx" ]; then
   echo 'Warning: data for page "/large-page-data" is 256 kB which exceeds the threshold of 128 kB, this amount of data can reduce performance' >> "${BUILD_LOG}"
 fi
@@ -355,6 +373,8 @@ if [ -f "pages/blocking-fallback/[slug].js" ] || [ -f "pages/blocking-fallback/[
   echo 'Warning: data for page "/blocking-fallback/[slug]" (path "/blocking-fallback/lots-of-data") is 256 kB which exceeds the threshold of 128 kB, this amount of data can reduce performance' >> "${BUILD_LOG}"
 fi
 
+# Some Next.js tests check for .next/trace existence (telemetry trace file).
+# vinext doesn't produce one, so create an empty file to satisfy those checks.
 mkdir -p ".next"
 : > ".next/trace"
 

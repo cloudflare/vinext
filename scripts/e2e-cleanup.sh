@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Cleanup script for the Next.js deploy test harness.
+# Called by the Next.js test runner after each test completes.
+# Kills the vinext server process and persists debug logs.
 set -euo pipefail
 
 PID_FILE=".vinext-deploy-server.pid"
@@ -24,6 +27,7 @@ if [ ! -f "${PID_FILE}" ]; then
 fi
 
 PID="$(cat "${PID_FILE}")"
+rm -f "${PID_FILE}"
 kill -TERM "${PID}" >/dev/null 2>&1 || true
 sleep 1
 kill -KILL "${PID}" >/dev/null 2>&1 || true

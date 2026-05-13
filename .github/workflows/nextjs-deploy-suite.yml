@@ -2,7 +2,7 @@ name: Next.js Deploy Suite
 
 on:
   schedule:
-    # Nightly at 06:00 UTC against main
+    # Nightly at 02:00 UTC against main
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
@@ -84,8 +84,11 @@ jobs:
       - name: Save build artifacts
         uses: actions/cache/save@v5
         with:
+          # The test job needs: vinext built dist + workspace metadata (for
+          # e2e-deploy.sh dependency injection), the scripts, the prepared
+          # Next.js checkout, Playwright browsers, and the filtered manifest.
+          # next.js/ is under $GITHUB_WORKSPACE so it's included in ".".
           path: |
-            next.js
             .
             ~/.cache/ms-playwright
             nextjs-deploy-manifest.json
@@ -124,7 +127,6 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: |
-            next.js
             .
             ~/.cache/ms-playwright
             nextjs-deploy-manifest.json
@@ -153,6 +155,8 @@ jobs:
           NEXT_EXTERNAL_TESTS_FILTERS: ${{ github.workspace }}/nextjs-deploy-manifest.json
           VINEXT_DIR: ${{ github.workspace }}
           ADAPTER_DIR: ${{ github.workspace }}
+          # Required by the Next.js deploy test manifest — tests are keyed to
+          # the turbopack variant, so this must be set even though vinext uses Vite.
           IS_TURBOPACK_TEST: "1"
           NEXT_TEST_JOB: "1"
           NEXT_TELEMETRY_DISABLED: "1"
@@ -161,13 +165,156 @@ jobs:
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
         run: node run-tests.js --timings -g ${{ matrix.group }} -c ${{ inputs.test-concurrency || '2' }} --type e2e
 
-      - name: Upload deploy debug artifacts
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ strategy.job-index }}
+          path: next.js/test/**/*.results.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload deploy debug logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: nextjs-deploy-debug-${{ strategy.job-index }}
-          path: |
-            reports/nextjs-deploy-debug/
-            next.js/test/**/*.results.json
+          name: deploy-debug-${{ strategy.job-index }}
+          path: reports/nextjs-deploy-debug/
           if-no-files-found: ignore
           retention-days: 7
+
+  report:
+    name: Test report
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: test-results-*
+          path: results
+          merge-multiple: true
+
+      - name: Generate report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+
+            function findResultFiles(dir) {
+              const files = [];
+              if (!fs.existsSync(dir)) return files;
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  files.push(...findResultFiles(full));
+                } else if (entry.name.endsWith('.results.json')) {
+                  files.push(full);
+                }
+              }
+              return files;
+            }
+
+            const resultFiles = findResultFiles('results');
+            if (resultFiles.length === 0) {
+              core.summary.addHeading('Next.js Deploy Suite', 2);
+              core.summary.addRaw('No test result files found. All shards may have been skipped or produced no output.');
+              await core.summary.write();
+              return;
+            }
+
+            const passed = [];
+            const failed = [];
+            const skipped = [];
+
+            for (const file of resultFiles) {
+              try {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                for (const suite of data.testResults || []) {
+                  const suiteName = suite.testFilePath
+                    ? suite.testFilePath.replace(/^.*?test\//, 'test/')
+                    : path.basename(file, '.results.json');
+
+                  for (const tc of suite.assertionResults || []) {
+                    const testName = tc.ancestorTitles
+                      ? [...tc.ancestorTitles, tc.title].join(' > ')
+                      : tc.fullName || tc.title;
+
+                    if (tc.status === 'passed') {
+                      passed.push({ suite: suiteName, test: testName });
+                    } else if (tc.status === 'failed') {
+                      const msg = (tc.failureMessages || []).join('\n').slice(0, 500);
+                      failed.push({ suite: suiteName, test: testName, message: msg });
+                    } else {
+                      skipped.push({ suite: suiteName, test: testName });
+                    }
+                  }
+                }
+              } catch (e) {
+                core.warning(`Failed to parse ${file}: ${e.message}`);
+              }
+            }
+
+            const total = passed.length + failed.length + skipped.length;
+
+            // Job summary
+            core.summary.addHeading('Next.js Deploy Suite', 2);
+            core.summary.addRaw(
+              `**${passed.length}** passed, **${failed.length}** failed, **${skipped.length}** skipped (${total} total)\n\n`
+            );
+
+            if (failed.length > 0) {
+              core.summary.addHeading('Failed tests', 3);
+              const rows = [
+                [{data: 'Suite', header: true}, {data: 'Test', header: true}, {data: 'Error', header: true}],
+                ...failed.slice(0, 100).map(f => [
+                  f.suite,
+                  f.test,
+                  f.message ? `<details><summary>Details</summary>\n\n\`\`\`\n${f.message}\n\`\`\`\n</details>` : ''
+                ])
+              ];
+              core.summary.addTable(rows);
+
+              if (failed.length > 100) {
+                core.summary.addRaw(`\n_...and ${failed.length - 100} more failures. Download the test-results artifacts for full details._\n`);
+              }
+            }
+
+            if (passed.length > 0) {
+              const suites = [...new Set(passed.map(p => p.suite))].sort();
+              core.summary.addHeading('Passed suites', 3);
+              core.summary.addDetails(
+                `${suites.length} suites (click to expand)`,
+                suites.map(s => `- \`${s}\``).join('\n')
+              );
+            }
+
+            await core.summary.write();
+
+            // Also write a JSON report as an artifact
+            const report = {
+              timestamp: new Date().toISOString(),
+              vinextRef: '${{ inputs.vinext-ref || github.ref }}',
+              nextRef: '${{ inputs.next-ref || 'v16.2.6' }}',
+              suiteFilter: '${{ inputs.suite-filter || 'app' }}',
+              summary: { total, passed: passed.length, failed: failed.length, skipped: skipped.length },
+              failed: failed.map(f => ({ suite: f.suite, test: f.test })),
+              passed: passed.map(p => ({ suite: p.suite, test: p.test })),
+            };
+            fs.mkdirSync('report', { recursive: true });
+            fs.writeFileSync('report/deploy-suite-report.json', JSON.stringify(report, null, 2) + '\n');
+
+            if (failed.length > 0) {
+              core.setFailed(`${failed.length} test(s) failed`);
+            }
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-suite-report
+          path: report/deploy-suite-report.json
+          retention-days: 90
