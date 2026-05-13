@@ -3,7 +3,7 @@ name: Next.js Deploy Suite
 on:
   schedule:
     # Nightly at 06:00 UTC against main
-    - cron: "0 6 * * *"
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       vinext-ref:
@@ -14,7 +14,7 @@ on:
       next-ref:
         description: Next.js ref to test against
         required: false
-        default: v16.2.4
+        default: v16.2.6
         type: string
       suite-filter:
         description: Which suites to run (pages, app, or all)
@@ -35,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.4' }}-${{ inputs.suite-filter || 'app' }}
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'app' }}
   cancel-in-progress: false
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: vercel/next.js
-          ref: ${{ inputs.next-ref || 'v16.2.4' }}
+          ref: ${{ inputs.next-ref || 'v16.2.6' }}
           path: next.js
 
       - name: Build vinext
