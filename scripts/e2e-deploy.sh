@@ -403,17 +403,43 @@ export HOST="127.0.0.1"
 export PORT="${PORT}"
 
 ensure_python_command_for_native_builds
-run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile >> "${BUILD_LOG}" 2>&1
+
+# pnpm 10+ exits non-zero when dependencies have unapproved build scripts
+# (ERR_PNPM_IGNORED_BUILDS). The install still completes — packages are
+# written to node_modules — but the exit code is 1. Tolerate this by
+# verifying that the vinext local package was linked into node_modules.
+run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile >> "${BUILD_LOG}" 2>&1 || true
+if [ ! -d "node_modules/vinext" ]; then
+  echo "pnpm install failed: node_modules/vinext not found" >&2
+  exit 1
+fi
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
   run_pnpm run setup >> "${BUILD_LOG}" 2>&1
 fi
 
 # Run vinext init to set up the project for vinext: adds "type": "module",
-# renames CJS configs (e.g. next.config.js → .cjs), and generates vite.config.ts.
+# renames CJS configs to .cjs, and generates vite.config.ts.
 # --skip-check avoids the interactive compat report, --force overwrites any
 # existing vite.config.ts. Dep installation is a no-op since we already injected
 # them above.
 run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
+
+# After vinext init adds "type": "module", any CJS next.config.js will fail
+# because Node.js treats .js as ESM. We can't rename to .cjs (Next.js doesn't
+# support it), so convert CJS syntax to ESM in-place. vinext init handles
+# other config files (postcss, tailwind, etc.) by renaming to .cjs.
+if [ -f "next.config.js" ]; then
+  node -e '
+    const fs = require("node:fs");
+    let c = fs.readFileSync("next.config.js", "utf8");
+    if (/\bmodule\.exports\b/.test(c) || /\brequire\s*\(/.test(c)) {
+      c = c.replace(/\bmodule\.exports\s*=\s*/, "export default ");
+      c = c.replace(/\bconst\s+(\w+)\s*=\s*require\s*\(\s*(["\x27][^"\x27]+["\x27])\s*\)/g, "import $1 from $2");
+      fs.writeFileSync("next.config.js", c);
+      console.log("Converted next.config.js from CJS to ESM");
+    }
+  ' >> "${BUILD_LOG}" 2>&1
+fi
 
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 
