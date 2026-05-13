@@ -19,11 +19,11 @@ on:
       suite-filter:
         description: Which suites to run (pages, app, or all)
         required: false
-        default: pages
+        default: app
         type: choice
         options:
-          - pages
           - app
+          - pages
           - all
       test-concurrency:
         description: Per-shard Next.js test concurrency
@@ -35,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.4' }}-${{ inputs.suite-filter || 'pages' }}
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.4' }}-${{ inputs.suite-filter || 'app' }}
   cancel-in-progress: false
 
 jobs:
@@ -79,7 +79,7 @@ jobs:
           node scripts/nextjs-deploy-manifest.mjs
           "$GITHUB_WORKSPACE/next.js"
           "$GITHUB_WORKSPACE/nextjs-deploy-manifest.json"
-          --filter ${{ inputs.suite-filter || 'pages' }}
+          --filter ${{ inputs.suite-filter || 'app' }}
 
       - name: Save build artifacts
         uses: actions/cache/save@v5
