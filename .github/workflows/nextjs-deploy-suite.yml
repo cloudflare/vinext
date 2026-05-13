@@ -1,0 +1,173 @@
+name: Next.js Deploy Suite
+
+on:
+  schedule:
+    # Nightly at 06:00 UTC against main
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      vinext-ref:
+        description: vinext branch/ref to test
+        required: false
+        default: main
+        type: string
+      next-ref:
+        description: Next.js ref to test against
+        required: false
+        default: v16.2.4
+        type: string
+      suite-filter:
+        description: Which suites to run (pages, app, or all)
+        required: false
+        default: pages
+        type: choice
+        options:
+          - pages
+          - app
+          - all
+      test-concurrency:
+        description: Per-shard Next.js test concurrency
+        required: false
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.4' }}-${{ inputs.suite-filter || 'pages' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build vinext + Next.js
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout vinext
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.vinext-ref || github.ref }}
+
+      - uses: ./.github/actions/setup
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm shim for Next.js scripts
+        run: corepack enable pnpm
+
+      - name: Checkout Next.js
+        uses: actions/checkout@v6
+        with:
+          repository: vercel/next.js
+          ref: ${{ inputs.next-ref || 'v16.2.4' }}
+          path: next.js
+
+      - name: Build vinext
+        run: vp run vinext#build
+
+      - name: Prepare Next.js checkout
+        run: bash scripts/run-nextjs-deploy-suite.sh "$GITHUB_WORKSPACE/next.js"
+        env:
+          CI: true
+          VINEXT_BUILD: "0"
+          NEXTJS_PREPARE: "1"
+          NEXTJS_PREPARE_ONLY: "1"
+
+      - name: Generate deploy manifest
+        run: >-
+          node scripts/nextjs-deploy-manifest.mjs
+          "$GITHUB_WORKSPACE/next.js"
+          "$GITHUB_WORKSPACE/nextjs-deploy-manifest.json"
+          --filter ${{ inputs.suite-filter || 'pages' }}
+
+      - name: Save build artifacts
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            next.js
+            .
+            ~/.cache/ms-playwright
+            nextjs-deploy-manifest.json
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}
+
+  test:
+    name: Deploy suite (${{ matrix.group }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          [
+            1/16,
+            2/16,
+            3/16,
+            4/16,
+            5/16,
+            6/16,
+            7/16,
+            8/16,
+            9/16,
+            10/16,
+            11/16,
+            12/16,
+            13/16,
+            14/16,
+            15/16,
+            16/16,
+          ]
+
+    steps:
+      - name: Restore build artifacts
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            next.js
+            .
+            ~/.cache/ms-playwright
+            nextjs-deploy-manifest.json
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}
+
+      - uses: ./.github/actions/setup
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm shim for Next.js scripts
+        run: corepack enable pnpm
+
+      - name: Ensure Playwright browsers
+        working-directory: next.js
+        run: corepack pnpm playwright install chromium chromium-headless-shell
+
+      - name: Make scripts executable
+        run: chmod +x scripts/e2e-deploy.sh scripts/e2e-logs.sh scripts/e2e-cleanup.sh
+
+      - name: Run deploy shard
+        working-directory: next.js
+        env:
+          CI: true
+          NEXT_TEST_MODE: deploy
+          NEXT_E2E_TEST_TIMEOUT: "240000"
+          NEXT_EXTERNAL_TESTS_FILTERS: ${{ github.workspace }}/nextjs-deploy-manifest.json
+          VINEXT_DIR: ${{ github.workspace }}
+          ADAPTER_DIR: ${{ github.workspace }}
+          IS_TURBOPACK_TEST: "1"
+          NEXT_TEST_JOB: "1"
+          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-deploy.sh
+          NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-logs.sh
+          NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
+        run: node run-tests.js --timings -g ${{ matrix.group }} -c ${{ inputs.test-concurrency || '2' }} --type e2e
+
+      - name: Upload deploy debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextjs-deploy-debug-${{ strategy.job-index }}
+          path: |
+            reports/nextjs-deploy-debug/
+            next.js/test/**/*.results.json
+          if-no-files-found: ignore
+          retention-days: 7

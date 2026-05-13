@@ -63,15 +63,16 @@ if [ "${NEXTJS_PREPARE_ONLY:-0}" = "1" ]; then
 fi
 
 export VINEXT_DIR="${VINEXT_DIR:-${REPO_DIR}}"
+export ADAPTER_DIR="${ADAPTER_DIR:-${REPO_DIR}}"
 export NEXT_TEST_MODE="${NEXT_TEST_MODE:-deploy}"
 export NEXT_E2E_TEST_TIMEOUT="${NEXT_E2E_TEST_TIMEOUT:-240000}"
 export NEXT_EXTERNAL_TESTS_FILTERS="${NEXT_EXTERNAL_TESTS_FILTERS:-test/deploy-tests-manifest.json}"
 export NEXT_TEST_JOB="${NEXT_TEST_JOB:-1}"
 export NEXT_TELEMETRY_DISABLED="${NEXT_TELEMETRY_DISABLED:-1}"
 export IS_TURBOPACK_TEST="${IS_TURBOPACK_TEST:-1}"
-export NEXT_TEST_DEPLOY_SCRIPT_PATH="${REPO_DIR}/scripts/nextjs-deploy-suite-deploy.sh"
-export NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH="${REPO_DIR}/scripts/nextjs-deploy-suite-logs.sh"
-export NEXT_TEST_CLEANUP_SCRIPT_PATH="${REPO_DIR}/scripts/nextjs-deploy-suite-cleanup.sh"
+export NEXT_TEST_DEPLOY_SCRIPT_PATH="${REPO_DIR}/scripts/e2e-deploy.sh"
+export NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH="${REPO_DIR}/scripts/e2e-logs.sh"
+export NEXT_TEST_CLEANUP_SCRIPT_PATH="${REPO_DIR}/scripts/e2e-cleanup.sh"
 
 RUN_ARGS=(--timings --type e2e)
 

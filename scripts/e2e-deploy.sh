@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VINEXT_DIR="${VINEXT_DIR:?VINEXT_DIR is required}"
+# Accept ADAPTER_DIR (Next.js docs convention) or VINEXT_DIR
+VINEXT_DIR="${VINEXT_DIR:-${ADAPTER_DIR:-}}"
+if [ -z "${VINEXT_DIR}" ]; then
+  echo "Either VINEXT_DIR or ADAPTER_DIR must be set" >&2
+  exit 1
+fi
 VINEXT_DIR="$(cd "${VINEXT_DIR}" && pwd)"
 VINEXT_PKG_DIR="${VINEXT_PKG_DIR:-${VINEXT_DIR}/packages/vinext}"
 VINEXT_PKG_DIR="$(cd "${VINEXT_PKG_DIR}" && pwd)"
