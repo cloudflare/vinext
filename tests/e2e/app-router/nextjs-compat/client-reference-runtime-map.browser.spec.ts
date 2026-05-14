@@ -236,8 +236,9 @@ export default defineConfig({
   };
 }
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- Playwright fixture `use`, not a React hook */
 const test = base.extend<{ productionApp: ProductionApp }>({
-  // oxlint-disable-next-line eslint-plugin-react-hooks/rules-of-hooks, eslint/no-empty-pattern
+  // oxlint-disable-next-line eslint/no-empty-pattern
   productionApp: async ({}, use) => {
     const { fixtureRoot, server, app } = await buildAndServeProductionFixture();
 
@@ -249,6 +250,7 @@ const test = base.extend<{ productionApp: ProductionApp }>({
     }
   },
 });
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
 test.setTimeout(60_000);
 
