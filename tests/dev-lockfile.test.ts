@@ -44,10 +44,10 @@ function baseInfo(overrides: Partial<DevServerInfo> = {}): DevServerInfo {
 }
 
 describe("getLockfilePath", () => {
-  it("places the lock file under node_modules/.cache/vinext/", () => {
+  it("places the lock file under .vinext/dev/", () => {
     const root = "/projects/my-app";
     expect(getLockfilePath(root)).toBe(
-      path.join("/projects/my-app", "node_modules", ".cache", "vinext", "dev-lock.json"),
+      path.join("/projects/my-app", ".vinext", "dev", "lock.json"),
     );
   });
 });
@@ -331,7 +331,7 @@ describe("formatAlreadyRunningError", () => {
     const msg = formatAlreadyRunningError({
       existing,
       cwd: "/path/to/project",
-      lockfilePath: "/path/to/project/node_modules/.cache/vinext/dev-lock.json",
+      lockfilePath: "/path/to/project/.vinext/dev/lock.json",
     });
     expect(msg).toContain("Another vinext dev server is already running");
     expect(msg).toContain("- Local:        http://localhost:3000");
@@ -350,9 +350,9 @@ describe("formatAlreadyRunningError", () => {
     const msg = formatAlreadyRunningError({
       existing: undefined,
       cwd: "/path/to/project",
-      lockfilePath: "/path/to/project/node_modules/.cache/vinext/dev-lock.json",
+      lockfilePath: "/path/to/project/.vinext/dev/lock.json",
     });
     expect(msg).toContain("Stale lock file");
-    expect(msg).toContain("node_modules/.cache/vinext/dev-lock.json");
+    expect(msg).toContain(".vinext/dev/lock.json");
   });
 });

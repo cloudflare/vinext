@@ -2,10 +2,9 @@
  * Dev server lock file.
  *
  * Writes the running dev server's PID, port, and URL into a lock file at
- * `node_modules/.cache/vinext/dev-lock.json`. When a second `vinext dev`
- * process starts in the same project directory, it reads the lock file and
- * either fails with an actionable error or, if the previous process is dead,
- * takes over the lock.
+ * `<root>/.vinext/dev/lock.json`. When a second `vinext dev` process starts in
+ * the same project directory, it reads the lock file and either fails with an
+ * actionable error or, if the previous process is dead, takes over the lock.
  *
  * This is especially useful for AI coding agents, which frequently attempt to
  * start `vinext dev` without knowing a server is already running.
@@ -19,15 +18,17 @@
  *   (`process.kill(pid, 0)`), which is good enough for the dev-server
  *   "another server is running" use case. Race conditions on lock acquisition
  *   are tolerated: at worst, two dev servers race and one fails to bind a port.
- * - Lock file lives in `node_modules/.cache/vinext/` instead of `.next/dev/`,
- *   matching vinext's existing convention of not maintaining a `.next` dir.
+ * - Lock file lives in `<root>/.vinext/dev/lock.json` (mirroring Next.js'
+ *   `.next/dev/lock` layout). `.vinext/` is already used by the fonts plugin
+ *   to cache self-hosted Google Fonts, so this re-uses the same project-local
+ *   state directory rather than polluting `node_modules`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
-const LOCK_DIR_RELATIVE = path.join("node_modules", ".cache", "vinext");
-const LOCK_FILE_NAME = "dev-lock.json";
+const LOCK_DIR_RELATIVE = path.join(".vinext", "dev");
+const LOCK_FILE_NAME = "lock.json";
 
 /**
  * Information about a running dev server, stored inside the lock file itself.
@@ -169,7 +170,7 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
 }
 
 type AcquireOptions = {
-  /** Project root. Lock file goes in `<root>/node_modules/.cache/vinext/`. */
+  /** Project root. Lock file goes in `<root>/.vinext/dev/lock.json`. */
   root: string;
   /** Initial server info to write. Port/URL may be updated later via `update()`. */
   info: DevServerInfo;
