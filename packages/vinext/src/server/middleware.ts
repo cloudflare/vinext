@@ -70,6 +70,18 @@ const MIDDLEWARE_LOCATIONS = ["", "src/"];
  * Find the proxy or middleware file in the project root.
  * Checks for proxy.ts (Next.js 16) first, then falls back to middleware.ts.
  * If middleware.ts is found, logs a deprecation warning.
+ *
+ * Note on log noise: this function is called from Vite's `config` hook, which
+ * fires once per build environment (RSC, SSR, client, …). That means a project
+ * still using `middleware.ts` will see this warning emitted 2–3 times per
+ * build. The warning is benign — it does not abort the build. Next.js itself
+ * emits the same message via `Log.warnOnce`; matching that parity would
+ * require either a per-root deduplication map or hoisting the warning out of
+ * this function (e.g. into the plugin's `configResolved` hook). Tracked as a
+ * follow-up; see the deploy-suite investigation in run 25870737355.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+ *   (search for "MIDDLEWARE_FILENAME" + "file convention is deprecated")
  */
 export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher): string | null {
   // Check proxy.ts first (Next.js 16 replacement for middleware.ts)
@@ -82,7 +94,9 @@ export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher):
     }
   }
 
-  // Fall back to middleware.ts (deprecated in Next.js 16)
+  // Fall back to middleware.ts (deprecated in Next.js 16).
+  // This is a warning, not an error: middleware.ts is still fully supported
+  // by both Next.js 16 and vinext. Do not change to `throw` or `process.exit`.
   for (const dir of MIDDLEWARE_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
       const fullPath = path.join(root, dir, `middleware${ext}`);
