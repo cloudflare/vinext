@@ -1614,13 +1614,31 @@ type _RedirectErrorShape = Error & { digest: string };
 /**
  * Check whether an error was produced by `redirect()` or `permanentRedirect()`.
  *
- * vinext emits 3-part (`NEXT_REDIRECT;{type};{encoded-url}`) and 4-part
- * (`NEXT_REDIRECT;{type};{encoded-url};308`) digests; we match permissively so
- * either format counts. Mirrors the lenient check already used by
- * `shims/error-boundary.tsx`.
- *
- * Ported from Next.js:
+ * **Divergence from Next.js:** Next.js's `isRedirectError` performs full
+ * 4-segment validation — it splits the digest on `;`, checks `type` ∈
+ * {push, replace}, requires a non-empty destination, and validates the
+ * status code (303, 307, 308). See:
  *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/redirect-error.ts
+ *
+ * vinext instead uses a simple prefix check (`startsWith("NEXT_REDIRECT;")`).
+ * Reasons:
+ *   1. vinext emits two digest shapes — 3-part for `redirect()`
+ *      (`NEXT_REDIRECT;{type};{encoded-url}`) and 4-part for
+ *      `permanentRedirect()` (`NEXT_REDIRECT;{type};{encoded-url};308`).
+ *      Strict validation would have to special-case both, and Next.js's
+ *      validator (tuned to its 5-part canary digests) rejects them.
+ *   2. The `type` field is sometimes empty in vinext's redirect digests
+ *      (context-dependent resolution; see `redirect()` above), which the
+ *      strict check disallows.
+ *
+ * **Consequence:** A malformed digest such as `"NEXT_REDIRECT;garbage"`
+ * returns `true` here, whereas Next.js would return `false`. In practice,
+ * the only callers of this predicate are vinext-internal code paths
+ * (`unstable_rethrow`, `unstable_catchError`, the redirect error boundary)
+ * that see digests vinext itself emits — so the divergence does not surface
+ * in normal use. Maintainers extending the prefix logic should keep this
+ * predicate in lockstep with the corresponding `decode*` helpers in
+ * `shims/error-boundary.tsx`.
  */
 export function isRedirectError(error: unknown): error is _RedirectErrorShape {
   if (

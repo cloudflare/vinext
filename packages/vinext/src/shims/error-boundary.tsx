@@ -3,8 +3,8 @@
 import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
-import { usePathname, useRouter } from "./navigation.js";
-import { getErrorDigest, isNavigationSignalError } from "../utils/navigation-signal.js";
+import { isRedirectError, usePathname, useRouter } from "./navigation.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
@@ -69,10 +69,6 @@ function shouldResetBoundary(
   }
 
   return nextResetState.previousPathname !== previousResetState.previousPathname;
-}
-
-function isRedirectError(error: unknown): error is RedirectError {
-  return getErrorDigest(error)?.startsWith("NEXT_REDIRECT;") ?? false;
 }
 
 function decodeRedirectTarget(target: string): string {
@@ -144,6 +140,13 @@ export class RedirectErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
     if (isRedirectError(error)) {
+      // The public `isRedirectError` narrows to `Error & { digest: string }`.
+      // Cast to the local `RedirectError` (which also carries the optional
+      // `handled` field) so the parity logic below compiles. The cast is
+      // safe because every error that matches the prefix predicate is — by
+      // construction — produced by vinext's `redirect()` /
+      // `permanentRedirect()` helpers, which yield `Error` instances.
+      const redirectError = error as RedirectError;
       // Next.js parity: an outer RedirectBoundary that has already started
       // handling a redirect marks the error as `handled` so that, if React
       // re-throws the same error during a retry render, an inner boundary
@@ -151,14 +154,14 @@ export class RedirectErrorBoundary extends React.Component<
       // currently emit `handled` itself (we never assign it on the error
       // object), but we keep the branch so behavior matches Next.js if a
       // host or future change ever does.
-      if (error.handled) {
+      if (redirectError.handled) {
         return {
           redirect: null,
           redirectType: null,
         };
       }
 
-      const url = getURLFromRedirectError(error);
+      const url = getURLFromRedirectError(redirectError);
       if (url === null) {
         // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
         // segment). The server-side parser at next-error-digest.ts:51 also
@@ -169,7 +172,7 @@ export class RedirectErrorBoundary extends React.Component<
 
       return {
         redirect: url,
-        redirectType: getRedirectTypeFromError(error),
+        redirectType: getRedirectTypeFromError(redirectError),
       };
     }
 
