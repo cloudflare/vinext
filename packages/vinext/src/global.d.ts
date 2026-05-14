@@ -385,6 +385,15 @@ declare global {
        * are allowed (`next.config.js` → `images.dangerouslyAllowLocalIP`).
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP?: string;
+
+      /**
+       * Next.js-compatible version string. vinext mirrors Next.js's
+       * `process.env.__NEXT_VERSION` define (from
+       * `packages/next/src/client/next.ts` line 5) so library code that
+       * reads it works unmodified. Value is the vinext package version,
+       * injected by the plugin at build time.
+       */
+      __NEXT_VERSION?: string;
     }
   }
 }

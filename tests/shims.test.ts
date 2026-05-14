@@ -801,12 +801,12 @@ describe("window.next debug global", () => {
 
     try {
       vi.resetModules();
-      const { installWindowNext, getWindowNext } =
-        await import("../packages/vinext/src/client/window-next.js");
+      const { installWindowNext } = await import("../packages/vinext/src/client/window-next.js");
 
-      // Does not throw and does not attempt to create a global.
-      installWindowNext({ version: "x", appDir: true });
-      expect(getWindowNext()).toBeNull();
+      // Does not throw and does not attempt to create a global. We cannot
+      // observe a non-existent window, so the assertion is structural: the
+      // call returns without error and there is no global to inspect.
+      expect(() => installWindowNext({ version: "x", appDir: true })).not.toThrow();
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;

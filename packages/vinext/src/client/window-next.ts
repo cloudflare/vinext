@@ -45,7 +45,7 @@
  * presence (`typeof router.hmrRefresh === "function"`) will skip the
  * branch, matching what they would do on a production Next.js build.
  */
-export type AppRouterPublicInstance = {
+type AppRouterPublicInstance = {
   push: (href: string, options?: { scroll?: boolean }) => void;
   replace: (href: string, options?: { scroll?: boolean }) => void;
   back: () => void;
@@ -60,11 +60,10 @@ export type AppRouterPublicInstance = {
  * Pages Router singleton surface — matches `NextRouter` from
  * `packages/next/src/shared/lib/router/router.ts` (line 372).
  *
- * Typed loosely here because the helper is consumed by both the pages
- * router shim (which exports the strict `NextRouter` type) and tests that
- * only care about the runtime shape. The structural fields below are the
- * subset that downstream callers (Next.js tests, third-party libs) read
- * synchronously off `window.next.router`.
+ * Exported because `shims/router.ts` casts its strict `NextRouter` value
+ * to this looser type at the install call site (Pages Router methods take
+ * narrow `UrlObject | string` arguments, which are not contravariantly
+ * assignable to the `unknown[]` surface this global exposes).
  */
 export type PagesRouterPublicInstance = {
   push: (...args: unknown[]) => unknown;
@@ -82,8 +81,9 @@ export type PagesRouterPublicInstance = {
 
 // Declare the `next` property on Window here, alongside the type, so this
 // module type-checks standalone without depending on the global.d.ts
-// augmentation (which itself imports WindowNext from this file). Matches the
-// pattern Next.js uses in `packages/next/src/client/next.ts` lines 7-11:
+// augmentation (which itself would have to import WindowNext from here).
+// Matches the pattern Next.js uses in `packages/next/src/client/next.ts`
+// lines 7-11:
 //   declare global { interface Window { next: any } }
 declare global {
   // oxlint-disable-next-line typescript/consistent-type-definitions
@@ -96,8 +96,12 @@ declare global {
  * The shape of `window.next`. Only includes fields vinext actually
  * implements. App Router additionally writes `__internal_src_page` and
  * `__pendingUrl` at runtime; they start undefined.
+ *
+ * Not exported because all use is internal to this module — callers read
+ * the shape off `window.next` directly, which inherits the augmentation
+ * above without a named type import.
  */
-export type WindowNext = {
+type WindowNext = {
   /**
    * Version string, mirroring Next.js's `process.env.__NEXT_VERSION` set
    * from `packages/next/src/client/next.ts` (line 5). vinext substitutes
@@ -132,30 +136,38 @@ export type WindowNext = {
   __internal_src_page?: string;
 };
 
-const FALLBACK_VERSION = "vinext";
-
-let installedNext: WindowNext | null = null;
+/**
+ * Build-time replacement for the vinext package version, injected by the
+ * Vite plugin via `define` (see `index.ts` — `process.env.__NEXT_VERSION`
+ * is mirrored from `packages/vinext/package.json#version` so library
+ * callers that read `process.env.__NEXT_VERSION` see a real value).
+ *
+ * In environments where the define did not run (standalone unit tests
+ * that import this module without going through the plugin), the
+ * `?? "vinext"` fallback prevents a literal `undefined` from landing on
+ * `window.next.version`.
+ */
+const VINEXT_VERSION: string = process.env.__NEXT_VERSION ?? "vinext";
 
 /**
  * Install `window.next` if it has not already been installed in this
- * document. Subsequent calls return the existing object so both the
- * Pages and App Router entries can call this without clobbering each
- * other (e.g. in app/(pages-and-app)/ hybrid setups).
+ * document. Subsequent calls update fields in place so both the Pages
+ * Router and the App Router bootstraps can call this without clobbering
+ * each other (e.g. for hybrid `pages/` + `app/` setups).
  *
- * Updates existing fields when called a second time so that whichever
- * router bootstraps last (typically App Router for hybrid setups) wins
- * for `router` and `appDir`. This mirrors Next.js's order: when both
- * routers are present, the App Router's `app-bootstrap.ts` runs after
- * `next.ts` and overwrites `window.next.router`.
+ * When called a second time, `router` and `appDir` overwrite the previous
+ * values. This mirrors Next.js's load order: in a hybrid app the App
+ * Router's `app-bootstrap.ts` runs after Pages Router's `next.ts` and the
+ * App Router instance wins.
+ *
+ * No module-level cache: we read and write through `window.next` directly
+ * so that a test (or userland code) that deletes `window.next` cleanly
+ * resets state.
  */
-export function installWindowNext(fields: Partial<WindowNext>): WindowNext {
-  if (typeof window === "undefined") {
-    // SSR: nothing to do. Returning an empty object keeps the call signature
-    // total without requiring callers to wrap each call in `if (window)`.
-    return { version: fields.version ?? FALLBACK_VERSION, ...fields };
-  }
+export function installWindowNext(fields: Partial<WindowNext>): void {
+  if (typeof window === "undefined") return;
 
-  const existing = window.next ?? installedNext;
+  const existing = window.next;
   if (existing) {
     if (fields.version !== undefined) existing.version = fields.version;
     if (fields.appDir !== undefined) existing.appDir = fields.appDir;
@@ -164,26 +176,11 @@ export function installWindowNext(fields: Partial<WindowNext>): WindowNext {
     if (fields.__internal_src_page !== undefined) {
       existing.__internal_src_page = fields.__internal_src_page;
     }
-    window.next = existing;
-    installedNext = existing;
-    return existing;
+    return;
   }
 
-  const next: WindowNext = {
-    version: fields.version ?? FALLBACK_VERSION,
+  window.next = {
+    version: fields.version ?? VINEXT_VERSION,
     ...fields,
   };
-  window.next = next;
-  installedNext = next;
-  return next;
-}
-
-/**
- * Read `window.next`, returning null when the document is server-rendered
- * or hydration has not yet installed it. Exposed for tests and for the App
- * Router's per-navigation writes to `__pendingUrl` / `__internal_src_page`.
- */
-export function getWindowNext(): WindowNext | null {
-  if (typeof window === "undefined") return null;
-  return window.next ?? null;
 }

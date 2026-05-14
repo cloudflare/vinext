@@ -343,6 +343,28 @@ function getViteMajorVersion(): number {
   }
 }
 
+/**
+ * Read the vinext package version once at plugin load. Surfaced via
+ * `process.env.__NEXT_VERSION` define so `window.next.version` lands a
+ * real string instead of the `"vinext"` fallback. Resolved relative to
+ * this module's own `package.json`, not the project root.
+ *
+ * Defaults to `"vinext"` on read failure so a malformed install never
+ * breaks the build — only the diagnostic global loses fidelity.
+ */
+let _vinextVersionCache: string | null = null;
+function getVinextVersion(): string {
+  if (_vinextVersionCache !== null) return _vinextVersionCache;
+  try {
+    const pkgUrl = new URL("../package.json", import.meta.url);
+    const pkg = JSON.parse(fs.readFileSync(pkgUrl, "utf-8")) as { version?: unknown };
+    _vinextVersionCache = typeof pkg.version === "string" ? pkg.version : "vinext";
+  } catch {
+    _vinextVersionCache = "vinext";
+  }
+  return _vinextVersionCache;
+}
+
 type UserResolveConfigWithTsconfigPaths = NonNullable<UserConfig["resolve"]> & {
   tsconfigPaths?: boolean;
 };
@@ -969,6 +991,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_DEPLOYMENT_ID"] = JSON.stringify(
           nextConfig.deploymentId ?? "",
         );
+        // Next.js version compat — mirrors Next.js' `process.env.__NEXT_VERSION`,
+        // which is substituted by their webpack DefinePlugin at build time
+        // (see `packages/next/src/client/next.ts` line 5 and
+        // `packages/next/src/client/app-bootstrap.ts` line 11). Userland code
+        // and third-party libraries occasionally branch on this value, and
+        // it's the source for `window.next.version` (set in
+        // `client/window-next.ts`). We report the vinext package version
+        // because vinext is the runtime — there is no underlying Next.js
+        // version to surface.
+        defines["process.env.__NEXT_VERSION"] = JSON.stringify(getVinextVersion());
 
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
