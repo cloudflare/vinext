@@ -948,10 +948,17 @@ export function withRouter<P extends WithRouterProps>(
 ): ComponentType<ExcludeRouterProps<P>> {
   function WithRouterWrapper(props: ExcludeRouterProps<P>): ReactElement {
     const router = useRouter();
-    return createElement(ComposedComponent, {
-      ...(props as unknown as P),
-      router,
-    });
+    // Match Next.js spread order:
+    // `<ComposedComponent router={useRouter()} {...props} />`
+    // The injected `router` is placed first, and `{...props}` is spread
+    // after, so a user-passed `router` prop overrides the HOC-injected
+    // one (last-spread wins). Mirrors
+    // packages/next/src/client/with-router.tsx. At the type level
+    // `props: ExcludeRouterProps<P>` has no `router` key, but TS still
+    // sees `P` as `WithRouterProps`-extending when checking the literal,
+    // so we widen to a `Record` for the final prop bag.
+    const merged: Record<string, unknown> = { router, ...(props as Record<string, unknown>) };
+    return createElement(ComposedComponent, merged as unknown as P);
   }
 
   // Forward getInitialProps so class-component pages that define it keep
