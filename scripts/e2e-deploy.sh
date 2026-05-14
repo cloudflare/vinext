@@ -391,6 +391,12 @@ fs.writeFileSync(
 pkg.devDependencies = pkg.devDependencies || {}
 pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
+// Catalog-tracked deps: spec sourced from vinext or workspace root package.json.
+// Includes the Vite/RSC peers that vinext consumers must install, plus runtime
+// deps of vinext that pnpm doesn't hoist into the test app's top-level
+// node_modules (vinext is installed via a `file:` symlink, so its transitive
+// deps live under `.vinext-local-package/node_modules`, which Node's ESM
+// resolver can't see from `<test-app>/dist/...`).
 for (const dep of [
   'vite',
   '@vitejs/plugin-react',
@@ -398,6 +404,7 @@ for (const dep of [
   'react-server-dom-webpack',
   '@mdx-js/rollup',
   '@mdx-js/react',
+  'ipaddr.js',
 ]) {
   if (!pkg.devDependencies[dep] && !pkg.dependencies?.[dep]) {
     pkg.devDependencies[dep] = dependencySpecFor(dep)
@@ -441,6 +448,21 @@ function bumpSassDep(name, minSpec) {
 
 bumpSassDep('sass', '^1.70.0')
 bumpSassDep('sass-embedded', '^1.70.0')
+
+// Pinned harness-only deps that aren't tracked by the vinext workspace but
+// are referenced by Next.js test fixtures. `webpack` is imported at module
+// scope by test/e2e/app-dir/next-config/next.config.js (top-level
+// `require('webpack').sources.RawSource`) — Next.js's own test harness gets
+// it transitively via `next`, but the test fixture's package.json doesn't
+// declare it, so vinext's build fails to resolve it after the CJS→ESM rewrite.
+for (const [dep, spec] of [
+  ['webpack', '^5.99.0'],
+]) {
+  if (!pkg.devDependencies[dep] && !pkg.dependencies?.[dep]) {
+    pkg.devDependencies[dep] = spec
+  }
+}
+
 
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')

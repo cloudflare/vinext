@@ -15,13 +15,20 @@
 // The converter handles:
 //   module.exports = X              → export default X
 //   const X = require('mod')        → import X from 'mod'
-//   const X = require('mod')(args)  → import _X from 'mod'; const X = _X(args)
+//   const X = require('mod')(args)  → const X = (await import('mod')).default(args)
 //   const { a, b } = require('mod') → import { a, b } from 'mod'
 //   require('mod') in expressions   → (await import('mod')).default
 //
+// `require('mod')(args)` is rewritten to an *inline* dynamic import (rather
+// than a hoisted static import) so that conditionally-gated requires keep
+// their CJS lazy semantics. Several Next.js deploy fixtures wrap optional
+// plugins in `if (process.env.ANALYZE) { const x = require('@next/bundle-analyzer')({...}) }`
+// — hoisting the import to the top of the module would unconditionally try
+// to resolve the package and fail the build, even when ANALYZE is unset.
+//
 // Limitations: doesn't handle dynamic require with variables, require.resolve,
-// or conditional require. Covers the common next.config.js patterns in the
-// deploy suite.
+// or `require('mod').foo()`-style member access. Covers the common
+// next.config.js patterns in the deploy suite.
 
 import fs from "node:fs";
 
@@ -39,16 +46,17 @@ if (!/\bmodule\.exports\b/.test(code) && !/\brequire\s*\(/.test(code)) {
 }
 
 const imports = [];
-let counter = 0;
 
-// 1. const X = require("mod")(args) → import + const X = _mod(args)
+// 1. const X = require("mod")(args) → const X = (await import("mod")).default(args)
+//
+// Inline dynamic import preserves CJS lazy semantics. The previous static-
+// import variant unconditionally resolved the module at the top of
+// next.config.js, which broke fixtures like
+// test/e2e/app-dir/metadata-font/next.config.js (gates @next/bundle-analyzer
+// on `if (process.env.ANALYZE)`).
 code = code.replace(
   /\b(const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*(["'][^"']+["'])\s*\)\s*(\([^)]*\))/g,
-  (_, decl, name, mod, call) => {
-    const alias = `_cjsImport${counter++}`;
-    imports.push(`import ${alias} from ${mod};`);
-    return `${decl} ${name} = ${alias}${call}`;
-  },
+  (_, decl, name, mod, call) => `${decl} ${name} = (await import(${mod})).default${call}`,
 );
 
 // 2. const X = require("mod") → import X from "mod"
