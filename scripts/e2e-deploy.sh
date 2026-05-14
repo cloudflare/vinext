@@ -247,6 +247,15 @@ cleanup_on_error() {
 
 trap cleanup_on_error EXIT
 
+# Some Next.js tests check for .next/trace existence (telemetry trace file)
+# during the test harness's destroy() cleanup. vinext doesn't produce one, so
+# create an empty file to satisfy those checks. Do this BEFORE any step that
+# can fail (dep install, vinext init, vinext build) so the file exists even
+# on failure — otherwise the test harness logs ENOENT noise (303 lines per
+# deploy-suite run before this fix).
+mkdir -p ".next"
+: > ".next/trace"
+
 if [ ! -f "${VINEXT_PKG_DIR}/dist/cli.js" ]; then
   echo "vinext dist/cli.js not found at ${VINEXT_PKG_DIR}/dist/cli.js" >&2
   echo "Build vinext first: corepack pnpm build" >&2
@@ -514,11 +523,6 @@ fi
 if [ -f "pages/blocking-fallback/[slug].js" ] || [ -f "pages/blocking-fallback/[slug].tsx" ]; then
   echo 'Warning: data for page "/blocking-fallback/[slug]" (path "/blocking-fallback/lots-of-data") is 256 kB which exceeds the threshold of 128 kB, this amount of data can reduce performance' >> "${BUILD_LOG}"
 fi
-
-# Some Next.js tests check for .next/trace existence (telemetry trace file).
-# vinext doesn't produce one, so create an empty file to satisfy those checks.
-mkdir -p ".next"
-: > ".next/trace"
 
 BUILD_ID="$(read_build_id)"
 
