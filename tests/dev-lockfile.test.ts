@@ -192,6 +192,32 @@ describe("tryAcquireLockfile", () => {
     result.lockfile.release();
   });
 
+  it("update() preserves startedAt when callers pass the original value", () => {
+    // Documents the CLI contract: `startedAt` is meant to reflect when the
+    // process started, not when the URL was resolved. The dev() command in
+    // cli.ts captures startedAt at acquire time and passes the same value
+    // into update() so the lock file's startedAt stays stable across the
+    // pre-listen → post-listen rewrite.
+    const startedAt = Date.now() - 60_000; // pretend the process started a minute ago
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root, port: 3000, startedAt }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    result.lockfile.update(
+      baseInfo({
+        cwd: root,
+        port: 5173,
+        appUrl: "http://localhost:5173",
+        startedAt, // caller's responsibility to thread this through
+      }),
+    );
+    expect(readLockfile(getLockfilePath(root))?.startedAt).toBe(startedAt);
+    result.lockfile.release();
+  });
+
   it("release() is idempotent", () => {
     const result = tryAcquireLockfile({
       root,

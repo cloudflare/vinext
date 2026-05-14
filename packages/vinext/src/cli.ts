@@ -311,6 +311,10 @@ async function dev() {
   //
   // Disabled when VINEXT_NO_DEV_LOCK is set (escape hatch for unusual setups).
   let lockfile: DevLockfile | undefined;
+  // Capture the acquisition timestamp so we can preserve it across the
+  // post-listen update(). `startedAt` is meant to reflect when this process
+  // started, not when the URL was resolved.
+  const startedAt = Date.now();
   if (process.env.VINEXT_NO_DEV_LOCK !== "1") {
     const root = process.cwd();
     // Substitute "localhost" for wildcard binds so the URL is actually
@@ -324,7 +328,7 @@ async function dev() {
         port,
         hostname: host,
         appUrl: `http://${initialDisplayHost}:${port}`,
-        startedAt: Date.now(),
+        startedAt,
         cwd: root,
       },
     });
@@ -349,8 +353,19 @@ async function dev() {
     server: { port, host },
   });
 
-  const server = await vite.createServer(config);
-  await server.listen();
+  // If anything between here and the first successful listen() throws (e.g.
+  // strictPort and the port is taken), release the lock immediately so we
+  // don't leave a misleading "server running" entry behind in the brief
+  // window before the exit handler runs. The exit handler still serves as
+  // a safety net for unexpected exit paths.
+  let server;
+  try {
+    server = await vite.createServer(config);
+    await server.listen();
+  } catch (err) {
+    lockfile?.release();
+    throw err;
+  }
   server.printUrls();
 
   // Once the server is actually listening, the port may have changed (e.g.
@@ -383,7 +398,9 @@ async function dev() {
       port: actualPort,
       hostname: host,
       appUrl,
-      startedAt: Date.now(),
+      // Preserve the original acquire-time startedAt rather than resetting
+      // to "now". startedAt represents when the process started.
+      startedAt,
       cwd: process.cwd(),
     });
   }
