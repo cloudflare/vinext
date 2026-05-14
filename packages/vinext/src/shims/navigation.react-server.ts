@@ -35,6 +35,19 @@ export {
   forbidden,
   unauthorized,
 
+  // Internal-error predicates and rethrow.
+  //
+  // These are environment-agnostic (no React hooks, no browser globals), so
+  // we re-export the canonical implementation from `./navigation.js` to keep
+  // a single source of truth across the react-server and client conditions.
+  //
+  // Ported from Next.js:
+  //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/navigation.react-server.ts
+  // where `unstable_rethrow` is also re-exported in the react-server build.
+  isRedirectError,
+  isNextRouterError,
+  unstable_rethrow,
+
   // Utilities
   ReadonlyURLSearchParams,
 } from "./navigation.js";
@@ -70,4 +83,16 @@ export function useSelectedLayoutSegments(): never {
 
 export function useServerInsertedHTML(): never {
   throwClientHookError("useServerInsertedHTML()");
+}
+
+// `unstable_isUnrecognizedActionError` is client-only: server actions cannot
+// fail with "unrecognized action" inside the React-server render path because
+// they execute synchronously against the action manifest. Calling this from a
+// Server Component is always a programming error.
+//
+// Ported from Next.js:
+//   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/navigation.react-server.ts
+// which throws the same diagnostic message from the react-server condition.
+export function unstable_isUnrecognizedActionError(): boolean {
+  throw new Error("`unstable_isUnrecognizedActionError` can only be used on the client.");
 }

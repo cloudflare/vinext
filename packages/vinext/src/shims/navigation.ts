@@ -1588,6 +1588,139 @@ export function unauthorized(): never {
 }
 
 // ---------------------------------------------------------------------------
+// Internal-error predicates and rethrow
+//
+// `unstable_rethrow` is part of Next.js's public API. User code in try/catch
+// wrappers calls it to let Next.js's control-flow signals (redirect, notFound,
+// forbidden, unauthorized, …) propagate up to the framework instead of being
+// swallowed.
+//
+// Ported from Next.js:
+//   - packages/next/src/client/components/unstable-rethrow.ts (dispatcher)
+//   - packages/next/src/client/components/unstable-rethrow.browser.ts
+//   - packages/next/src/client/components/unstable-rethrow.server.ts
+//   - packages/next/src/client/components/is-next-router-error.ts
+//   - packages/next/src/client/components/redirect-error.ts
+//
+// vinext does not yet implement every Next.js internal-error category
+// (BailoutToCSRError, DynamicServerError, prerender postpone errors, …) so we
+// only check the ones we actually emit:
+//   - redirect / permanentRedirect → digest starts with "NEXT_REDIRECT;"
+//   - notFound / forbidden / unauthorized → covered by isHTTPAccessFallbackError
+// ---------------------------------------------------------------------------
+
+type _RedirectErrorShape = Error & { digest: string };
+
+/**
+ * Check whether an error was produced by `redirect()` or `permanentRedirect()`.
+ *
+ * vinext emits 3-part (`NEXT_REDIRECT;{type};{encoded-url}`) and 4-part
+ * (`NEXT_REDIRECT;{type};{encoded-url};308`) digests; we match permissively so
+ * either format counts. Mirrors the lenient check already used by
+ * `shims/error-boundary.tsx`.
+ *
+ * Ported from Next.js:
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/redirect-error.ts
+ */
+export function isRedirectError(error: unknown): error is _RedirectErrorShape {
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("digest" in error) ||
+    typeof (error as { digest: unknown }).digest !== "string"
+  ) {
+    return false;
+  }
+  return (error as { digest: string }).digest.startsWith("NEXT_REDIRECT;");
+}
+
+/**
+ * Returns true if the error is a Next.js navigation signal — either a redirect
+ * or an HTTP access fallback (notFound / forbidden / unauthorized).
+ *
+ * Ported from Next.js:
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/is-next-router-error.ts
+ */
+export function isNextRouterError(error: unknown): boolean {
+  return isRedirectError(error) || isHTTPAccessFallbackError(error);
+}
+
+/**
+ * Rethrow internal Next.js errors so they're handled by the framework.
+ *
+ * When wrapping an API that uses errors for control flow (redirect, notFound,
+ * etc.), call this inside `catch` blocks before doing your own error handling.
+ * If the error is a Next.js internal error, it's rethrown; otherwise this is a
+ * no-op (apart from recursing through `error.cause`).
+ *
+ * Fresh implementation that follows Next.js's dispatcher pattern, but
+ * specialized to the internal-error categories vinext actually emits. The
+ * single function intentionally covers both server and browser contexts —
+ * Next.js splits these into `.server.ts` / `.browser.ts` files only because
+ * the server build pulls in additional checks (`isPostpone`,
+ * `isHangingPromiseRejectionError`, …) that vinext does not yet implement.
+ *
+ * Ported from Next.js:
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unstable-rethrow.ts
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unstable-rethrow.server.ts
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unstable-rethrow.browser.ts
+ */
+export function unstable_rethrow(error: unknown): void {
+  if (isNextRouterError(error)) {
+    throw error;
+  }
+
+  if (error instanceof Error && "cause" in error) {
+    unstable_rethrow((error as Error & { cause: unknown }).cause);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unrecognized server-action errors
+//
+// `unstable_isUnrecognizedActionError` lets client code detect when a server
+// action call failed because the server didn't recognize the action id — this
+// typically means the client bundle and the server are from different
+// deployments and a hard reload is required.
+//
+// Ported from Next.js:
+//   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unrecognized-action-error.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * Error class for unrecognized server-action calls. Thrown by the App Router
+ * server-action handler when the requested action id is not present in the
+ * current build's action manifest.
+ *
+ * vinext does not yet construct this error from its server-action dispatcher
+ * — it's exposed primarily so user code can use the predicate below
+ * (`unstable_isUnrecognizedActionError`) as a stable `instanceof` check.
+ * Ported as a 1:1 alias of Next.js's class so deployments that throw it
+ * directly (or third-party action wrappers) interoperate.
+ */
+export class UnrecognizedActionError extends Error {
+  constructor(...args: ConstructorParameters<typeof Error>) {
+    super(...args);
+    this.name = "UnrecognizedActionError";
+  }
+}
+
+/**
+ * Returns true if the error came from a server action whose id was not
+ * recognized by the server. Useful inside `catch` blocks that surround
+ * `await myAction(...)` calls; reloading the page generally fixes the
+ * underlying client/server deployment mismatch.
+ *
+ * Ported from Next.js:
+ *   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unrecognized-action-error.ts
+ */
+export function unstable_isUnrecognizedActionError(
+  error: unknown,
+): error is UnrecognizedActionError {
+  return !!(error && typeof error === "object" && error instanceof UnrecognizedActionError);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

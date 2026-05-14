@@ -634,6 +634,324 @@ describe("next/navigation shim", () => {
 
     expect(html).toContain("[]");
   });
+
+  // -------------------------------------------------------------------------
+  // unstable_rethrow + unstable_isUnrecognizedActionError
+  //
+  // Ported from Next.js:
+  //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unstable-rethrow.ts
+  //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/unrecognized-action-error.ts
+  // -------------------------------------------------------------------------
+  it("exports unstable_rethrow and unstable_isUnrecognizedActionError", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+    expect(typeof nav.unstable_rethrow).toBe("function");
+    expect(typeof nav.unstable_isUnrecognizedActionError).toBe("function");
+    expect(typeof nav.isRedirectError).toBe("function");
+    expect(typeof nav.isNextRouterError).toBe("function");
+    expect(typeof nav.UnrecognizedActionError).toBe("function");
+  });
+
+  it("unstable_rethrow re-throws redirect errors", async () => {
+    const { redirect, unstable_rethrow } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    let captured: unknown = null;
+    try {
+      redirect("/login");
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).not.toBeNull();
+
+    expect(() => unstable_rethrow(captured)).toThrow();
+    try {
+      unstable_rethrow(captured);
+    } catch (rethrown) {
+      // Identity-preserving rethrow — must be the same error reference
+      expect(rethrown).toBe(captured);
+    }
+  });
+
+  it("unstable_rethrow re-throws notFound/forbidden/unauthorized errors", async () => {
+    const { notFound, forbidden, unauthorized, unstable_rethrow } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    for (const trigger of [notFound, forbidden, unauthorized]) {
+      let captured: unknown = null;
+      try {
+        trigger();
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).not.toBeNull();
+      expect(() => unstable_rethrow(captured)).toThrow();
+    }
+  });
+
+  it("unstable_rethrow is a no-op for unrelated errors", async () => {
+    const { unstable_rethrow } = await import("../packages/vinext/src/shims/navigation.js");
+    // Plain Error: no digest, no cause
+    expect(() => unstable_rethrow(new Error("plain"))).not.toThrow();
+    expect(() => unstable_rethrow("string error")).not.toThrow();
+    expect(() => unstable_rethrow(null)).not.toThrow();
+    expect(() => unstable_rethrow(undefined)).not.toThrow();
+    expect(() => unstable_rethrow({ digest: "not-a-next-error" })).not.toThrow();
+  });
+
+  it("unstable_rethrow recurses through error.cause to rethrow wrapped Next.js errors", async () => {
+    const { redirect, unstable_rethrow } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    let inner: unknown = null;
+    try {
+      redirect("/login");
+    } catch (e) {
+      inner = e;
+    }
+    const wrapped = new Error("user wrapped this", { cause: inner });
+
+    expect(() => unstable_rethrow(wrapped)).toThrow();
+    try {
+      unstable_rethrow(wrapped);
+    } catch (rethrown) {
+      // The recursion should rethrow the original Next.js error, not the wrapper
+      expect(rethrown).toBe(inner);
+    }
+  });
+
+  it("unstable_isUnrecognizedActionError returns true for UnrecognizedActionError instances", async () => {
+    const { UnrecognizedActionError, unstable_isUnrecognizedActionError } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const err = new UnrecognizedActionError("missing action 'abc'");
+    expect(err.name).toBe("UnrecognizedActionError");
+    expect(unstable_isUnrecognizedActionError(err)).toBe(true);
+  });
+
+  it("unstable_isUnrecognizedActionError returns false for other errors", async () => {
+    const { unstable_isUnrecognizedActionError } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    expect(unstable_isUnrecognizedActionError(new Error("other"))).toBe(false);
+    expect(unstable_isUnrecognizedActionError(null)).toBe(false);
+    expect(unstable_isUnrecognizedActionError(undefined)).toBe(false);
+    expect(unstable_isUnrecognizedActionError("string")).toBe(false);
+    expect(unstable_isUnrecognizedActionError({ name: "UnrecognizedActionError" })).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // react-server re-exports
+  // -------------------------------------------------------------------------
+  it("navigation.react-server re-exports unstable_rethrow and stubs unstable_isUnrecognizedActionError", async () => {
+    const rsc = await import("../packages/vinext/src/shims/navigation.react-server.js");
+    expect(typeof rsc.unstable_rethrow).toBe("function");
+    expect(typeof rsc.unstable_isUnrecognizedActionError).toBe("function");
+
+    // The RSC stub should throw a clear "client-only" error, matching Next.js.
+    expect(() => rsc.unstable_isUnrecognizedActionError()).toThrow(/client/i);
+
+    // unstable_rethrow itself is environment-agnostic — re-exported from
+    // ./navigation.js — and should behave identically to the client export.
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    let captured: unknown = null;
+    try {
+      redirect("/login");
+    } catch (e) {
+      captured = e;
+    }
+    expect(() => rsc.unstable_rethrow(captured)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// next/error shim — unstable_catchError
+//
+// Ported from Next.js:
+//   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/catch-error.tsx
+//   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/catch-error/
+// ---------------------------------------------------------------------------
+describe("next/error shim — unstable_catchError", () => {
+  it("exports unstable_catchError as a function", async () => {
+    const mod = await import("../packages/vinext/src/shims/error.js");
+    expect(typeof mod.unstable_catchError).toBe("function");
+  });
+
+  it("returns a Component that renders children when no error occurs", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback(_props: { title: string }) {
+      return React.createElement("p", null, "should not render");
+    }
+
+    const Boundary = unstable_catchError<{ title: string }>(Fallback);
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Boundary,
+        { title: "ignored" },
+        React.createElement("span", { id: "ok" }, "hello"),
+      ),
+    );
+
+    expect(html).toContain('id="ok"');
+    expect(html).toContain("hello");
+  });
+
+  it("class-component lifecycle catches non-router errors and renders the fallback", async () => {
+    // React 19's renderToStaticMarkup does NOT invoke error boundaries during
+    // SSR — errors propagate up by design (boundaries only run during client
+    // commit). To validate behavior without spinning up a real browser, we
+    // exercise the lifecycle hooks directly: `getDerivedStateFromError` is
+    // the canonical predicate driving the class component's behavior, and
+    // its return value is the only thing the React runtime feeds into the
+    // next render.
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    const seenErrors: unknown[] = [];
+    function Fallback(
+      props: { title: string },
+      info: { error: unknown; reset: () => void; unstable_retry: () => void },
+    ) {
+      seenErrors.push(info.error);
+      const message = info.error instanceof Error ? info.error.message : String(info.error);
+      return React.createElement(
+        "div",
+        null,
+        React.createElement("p", { id: "title" }, props.title),
+        React.createElement("p", { id: "msg" }, message),
+      );
+    }
+
+    const Boundary = unstable_catchError<{ title: string }>(Fallback);
+
+    // Locate the inner class component by inspecting what the HOC renders.
+    // The wrapper function returns `React.createElement(_CatchError, ...)`.
+    const wrapperResult = (
+      Boundary as unknown as (props: {
+        title: string;
+        children?: React.ReactNode;
+      }) => React.ReactElement
+    )({
+      title: "hello-title",
+      children: React.createElement("span", null, "child"),
+    });
+    const InnerCatchError = wrapperResult.type as unknown as React.ComponentClass<{
+      fallback: typeof Fallback;
+      forwardedProps: { title: string };
+      children?: React.ReactNode;
+    }>;
+
+    const props = {
+      fallback: Fallback,
+      forwardedProps: { title: "hello-title" },
+      children: React.createElement("span", null, "child"),
+    };
+    // Cast through unknown to instantiate without engaging React's renderer.
+    const instance = new (InnerCatchError as unknown as new (p: typeof props) => InstanceType<
+      typeof InnerCatchError
+    > & {
+      state: { error: { thrownValue: unknown } | null };
+      render(): React.ReactNode;
+    })(props);
+    instance.state = { error: null };
+
+    // 1. No error → renders children.
+    const childrenOutput = renderToStaticMarkup(instance.render() as React.ReactElement);
+    expect(childrenOutput).toContain("child");
+
+    // 2. After getDerivedStateFromError, renders the fallback with ErrorInfo.
+    const thrown = new Error("boom");
+    const derived = (
+      InnerCatchError as unknown as {
+        getDerivedStateFromError(e: unknown): { error: { thrownValue: unknown } | null };
+      }
+    ).getDerivedStateFromError(thrown);
+    expect(derived).toEqual({ error: { thrownValue: thrown } });
+    instance.state = derived;
+    const fallbackOutput = renderToStaticMarkup(instance.render() as React.ReactElement);
+    expect(fallbackOutput).toContain('id="msg"');
+    expect(fallbackOutput).toContain("boom");
+    expect(fallbackOutput).toContain("hello-title");
+    expect(seenErrors[seenErrors.length - 1]).toBe(thrown);
+  });
+
+  it("class-component getDerivedStateFromError re-throws Next.js router errors", async () => {
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+
+    // Probe the inner class through the wrapper.
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as {
+      getDerivedStateFromError(e: unknown): unknown;
+    };
+
+    let captured: unknown = null;
+    try {
+      redirect("/login");
+    } catch (e) {
+      captured = e;
+    }
+    expect(() => InnerCatchError.getDerivedStateFromError(captured)).toThrow();
+    try {
+      InnerCatchError.getDerivedStateFromError(captured);
+    } catch (rethrown) {
+      // Identity-preserving rethrow.
+      expect(rethrown).toBe(captured);
+    }
+  });
+
+  it("rethrows Next.js navigation signals (redirect, notFound) instead of catching them", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+
+    function RedirectThrower(): React.ReactElement {
+      redirect("/login");
+      // Unreachable: `redirect()` throws. Annotated explicitly to satisfy
+      // the `ReactElement` return-type contract.
+      return React.createElement("span", null);
+    }
+
+    function Fallback() {
+      return React.createElement("p", null, "should not be reached");
+    }
+
+    const Boundary = unstable_catchError(Fallback);
+
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // The boundary must let the redirect propagate up — renderToStaticMarkup
+      // should throw with the redirect digest.
+      let captured: unknown = null;
+      try {
+        renderToStaticMarkup(
+          React.createElement(Boundary, null, React.createElement(RedirectThrower)),
+        );
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).not.toBeNull();
+      expect((captured as { digest?: string }).digest).toContain("NEXT_REDIRECT");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("exposes the displayName matching Next.js (`unstable_catchError(...)`)", async () => {
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+    const Fallback = function MyFallback() {
+      return null;
+    };
+    const Boundary = unstable_catchError(Fallback);
+    // Wrapper component carries the user fallback name for DevTools.
+    expect(Boundary.displayName).toBe("unstable_catchError(MyFallback)");
+  });
 });
 
 // ---------------------------------------------------------------------------
