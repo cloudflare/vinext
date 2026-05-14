@@ -13,6 +13,7 @@ import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
+  appRouterInstance,
   commitClientNavigationState,
   consumePrefetchResponse,
   createClientNavigationRenderSnapshot,
@@ -32,6 +33,7 @@ import {
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
 } from "vinext/shims/navigation";
+import { installWindowNext } from "../client/window-next.js";
 import {
   chunksToReadableStream,
   createProgressiveRscStream,
@@ -1349,6 +1351,15 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 }
 
 if (typeof document !== "undefined") {
+  // Install `window.next` as early as possible so any client component that
+  // synchronously dereferences it during hydration (or any third-party
+  // library script tag that loads before the React tree mounts) sees the
+  // expected shape. Mirrors Next.js's app-bootstrap.ts (line 13) which sets
+  // `window.next = { version, appDir: true }` before the React runtime
+  // initializes, and `app-router-instance.ts` (line 510) which assigns
+  // `router: publicAppRouterInstance` at module load.
+  installWindowNext({ appDir: true, router: appRouterInstance });
+
   window.addEventListener("pagehide", () => {
     isPageUnloading = true;
   });

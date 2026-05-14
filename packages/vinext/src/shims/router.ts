@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, useMemo, createElement, type ReactEle
 import { RouterContext } from "./internal/router-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
+import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import {
   isHashOnlyBrowserUrlChange,
   toBrowserNavigationHref,
@@ -1020,5 +1021,25 @@ const Router = {
   },
   events: routerEvents,
 };
+
+// Expose `window.next.router` for Next.js parity. Pages Router test suites,
+// userland scripts, and third-party libraries reach for this global directly
+// (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`).
+// Without this assignment, those callers crash with
+// `TypeError: Cannot read properties of undefined (reading 'router')`.
+//
+// Ported from Next.js: `packages/next/src/client/next.ts` (line 13). We do
+// NOT use a live-binding getter like Next.js does because vinext's Router
+// singleton is constructed synchronously here, so by the time this module
+// finishes loading the value is final.
+if (typeof window !== "undefined") {
+  // Cast: `NextRouter.push`/`replace` are typed with narrow parameters
+  // (UrlObject | string) while `PagesRouterPublicInstance` accepts unknown
+  // args. The two are structurally compatible at runtime; TypeScript flags
+  // the narrowing of contravariant function params, which is benign here
+  // because callers reading off `window.next.router` are tests/userland
+  // and treat the surface as opaque.
+  installWindowNext({ router: Router as unknown as PagesRouterPublicInstance });
+}
 
 export default Router;

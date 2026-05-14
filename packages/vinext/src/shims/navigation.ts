@@ -1234,6 +1234,15 @@ export async function navigateClientSide(
 // useEffect dependency arrays, React.memo bailouts).
 // ---------------------------------------------------------------------------
 
+/**
+ * App Router public router instance. Mirrors Next.js's
+ * `publicAppRouterInstance` from
+ * `packages/next/src/client/components/app-router-instance.ts`.
+ *
+ * Exported so the App Router browser entry can install it on
+ * `window.next.router` for Next.js parity (see `client/window-next.ts`).
+ * Internal callers in this file continue to use `_appRouter` for brevity.
+ */
 const _appRouter = {
   bfcacheId: "0",
   push(href: string, options?: { scroll?: boolean }): void {
@@ -1323,6 +1332,15 @@ const _appRouter = {
     });
   },
 };
+
+/**
+ * Public App Router instance, exposed for the browser entry so it can wire
+ * `window.next.router` to the same singleton returned from `useRouter()`.
+ *
+ * Mirrors `publicAppRouterInstance` from Next.js's
+ * `packages/next/src/client/components/app-router-instance.ts` (line 392).
+ */
+export const appRouterInstance = _appRouter;
 
 /**
  * App Router's useRouter — returns push/replace/back/forward/refresh.

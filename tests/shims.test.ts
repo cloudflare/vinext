@@ -636,6 +636,188 @@ describe("next/navigation shim", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// window.next debug/diagnostic global
+//
+// Next.js exposes a `window.next` object from both the Pages Router client
+// bootstrap (packages/next/src/client/next.ts) and the App Router bootstrap
+// (packages/next/src/client/app-bootstrap.ts). Pages Router test suites,
+// userland code, and third-party libraries reach into it directly — most
+// commonly `window.next.router.push(...)` and
+// `window.next.router.events.on(...)`. Without this global, the Next.js
+// deploy test suite reports ~422 console errors and 30+ runtime failures
+// against vinext, with `TypeError: Cannot read properties of undefined
+// (reading 'router')` the most cited.
+//
+// The installer helper lives in packages/vinext/src/client/window-next.ts
+// and is invoked from both router bootstraps. The Pages Router shim
+// (shims/router.ts) installs it as a top-level side effect, and the App
+// Router browser entry (server/app-browser-entry.ts) installs it before
+// hydration starts.
+// ---------------------------------------------------------------------------
+describe("window.next debug global", () => {
+  it("installWindowNext sets version, router, and appDir fields on window.next", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {};
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { installWindowNext } = await import("../packages/vinext/src/client/window-next.js");
+
+      const routerStub = {
+        push() {},
+        replace() {},
+        back() {},
+        forward() {},
+        refresh() {},
+        prefetch() {},
+      };
+      installWindowNext({ version: "test-version", appDir: true, router: routerStub });
+
+      expect(win.next).toBeDefined();
+      expect(win.next.version).toBe("test-version");
+      expect(win.next.appDir).toBe(true);
+      expect(win.next.router).toBe(routerStub);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("installWindowNext merges subsequent calls without clobbering existing fields", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {};
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { installWindowNext } = await import("../packages/vinext/src/client/window-next.js");
+
+      const pagesRouter = { kind: "pages" } as any;
+      const appRouter = { kind: "app" } as any;
+
+      installWindowNext({ version: "v1", router: pagesRouter });
+      installWindowNext({ appDir: true, router: appRouter });
+
+      // Whichever installer ran last (in real-world hybrid setups, App
+      // Router) wins for `router` — mirrors Next.js's load order where
+      // app-bootstrap.ts runs after next.ts.
+      expect(win.next.router).toBe(appRouter);
+      expect(win.next.appDir).toBe(true);
+      // Fields not overridden are preserved.
+      expect(win.next.version).toBe("v1");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("Pages Router shim installs window.next.router with the expected NextRouter surface", async () => {
+    // Build a minimal fake window so importing shims/router.ts (which
+    // touches window at module load to attach popstate) does not crash.
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      // Side-effecting import: installs window.next.router at module load.
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      expect(win.next).toBeDefined();
+      expect(win.next.router).toBe(Router);
+
+      // Ported from Next.js: NextRouter type in
+      // packages/next/src/shared/lib/router/router.ts (line 372).
+      const router = win.next.router;
+      expect(typeof router.push).toBe("function");
+      expect(typeof router.replace).toBe("function");
+      expect(typeof router.back).toBe("function");
+      expect(typeof router.reload).toBe("function");
+      expect(typeof router.prefetch).toBe("function");
+      expect(typeof router.beforePopState).toBe("function");
+      expect(router.events).toBeDefined();
+      expect(typeof router.events.on).toBe("function");
+      expect(typeof router.events.off).toBe("function");
+      expect(typeof router.events.emit).toBe("function");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: tests that rely on `window.next.router.events.on(...)`
+  // — e.g. test/development/pages-dir/client-navigation/index.test.ts:457
+  // (`window.next.router.events.on('routeChangeError', ...)`).
+  it("window.next.router.events forwards Pages Router events", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const fired: unknown[] = [];
+      win.next.router.events.on("routeChangeStart", (url: unknown) => {
+        fired.push(url);
+      });
+      win.next.router.events.emit("routeChangeStart", "/next-page");
+      expect(fired).toEqual(["/next-page"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("appRouterInstance exported from the navigation shim has the public router surface", async () => {
+    vi.resetModules();
+    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+
+    // Ported from Next.js: publicAppRouterInstance shape in
+    // packages/next/src/client/components/app-router-instance.ts (line 392).
+    expect(typeof appRouterInstance.push).toBe("function");
+    expect(typeof appRouterInstance.replace).toBe("function");
+    expect(typeof appRouterInstance.back).toBe("function");
+    expect(typeof appRouterInstance.forward).toBe("function");
+    expect(typeof appRouterInstance.refresh).toBe("function");
+    expect(typeof appRouterInstance.prefetch).toBe("function");
+    expect(appRouterInstance.bfcacheId).toBe("0");
+  });
+
+  it("installWindowNext is a no-op on the server (typeof window === 'undefined')", async () => {
+    const previousWindow = (globalThis as any).window;
+    delete (globalThis as any).window;
+
+    try {
+      vi.resetModules();
+      const { installWindowNext, getWindowNext } =
+        await import("../packages/vinext/src/client/window-next.js");
+
+      // Does not throw and does not attempt to create a global.
+      installWindowNext({ version: "x", appDir: true });
+      expect(getWindowNext()).toBeNull();
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      vi.resetModules();
+    }
+  });
+});
+
 describe("next/headers shim", () => {
   it("exports cookies, headers, draftMode", async () => {
     const mod = await import("../packages/vinext/src/shims/headers.js");
