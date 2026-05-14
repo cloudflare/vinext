@@ -12120,6 +12120,84 @@ describe("next/error shim", () => {
   });
 });
 
+// next/app default export
+//
+// Ported from Next.js: packages/next/src/pages/_app.tsx
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_app.tsx
+//
+// Pages Router fixtures very commonly do:
+//   import App from "next/app";
+//   export default class MyApp extends App { ... }
+// or call App.getInitialProps(appContext) from a custom getInitialProps.
+// Without a runtime default export, every such fixture fails to build with
+// "[MISSING_EXPORT] 'default' is not exported by ...shims/app.js".
+describe("next/app shim", () => {
+  it("exports a React class component as default", async () => {
+    const React = await import("react");
+    const AppDefault = (await import("../packages/vinext/src/shims/app.js")).default;
+    expect(typeof AppDefault).toBe("function");
+    // Class component: prototype must have a render method, instances must
+    // be instances of React.Component.
+    expect(typeof AppDefault.prototype.render).toBe("function");
+    const instance = new AppDefault({ Component: () => null, pageProps: {} });
+    expect(instance).toBeInstanceOf(React.Component);
+  });
+
+  it("default App.render() returns <Component {...pageProps} />", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const AppDefault = (await import("../packages/vinext/src/shims/app.js")).default;
+
+    function Page(props: { greeting: string }) {
+      return React.createElement("p", null, props.greeting);
+    }
+
+    // Use explicit generics so React.createElement's prop type inference
+    // lines up with `AppProps<{ greeting: string }>`.
+    const html = renderToStaticMarkup(
+      React.createElement(AppDefault<unknown, { greeting: string }>, {
+        Component: Page,
+        pageProps: { greeting: "hello world" },
+      }),
+    );
+    expect(html).toBe("<p>hello world</p>");
+  });
+
+  it("App.getInitialProps is a function and forwards Component.getInitialProps result as pageProps", async () => {
+    const AppDefault = (await import("../packages/vinext/src/shims/app.js")).default;
+    expect(typeof AppDefault.getInitialProps).toBe("function");
+    // origGetInitialProps is preserved for userland code that introspects it.
+    expect(typeof AppDefault.origGetInitialProps).toBe("function");
+
+    const pageCtx = { req: { url: "/test" } };
+    const Component = Object.assign(() => null, {
+      getInitialProps: async (ctx: unknown) => {
+        expect(ctx).toBe(pageCtx);
+        return { foo: "bar" };
+      },
+    });
+
+    const result = await AppDefault.getInitialProps({
+      Component,
+      AppTree: () => null,
+      ctx: pageCtx,
+      router: {},
+    });
+    expect(result).toEqual({ pageProps: { foo: "bar" } });
+  });
+
+  it("App.getInitialProps returns { pageProps: {} } when Component has no getInitialProps", async () => {
+    const AppDefault = (await import("../packages/vinext/src/shims/app.js")).default;
+    const result = await AppDefault.getInitialProps({
+      Component: () => null,
+      AppTree: () => null,
+      ctx: {},
+      router: {},
+    });
+    expect(result).toEqual({ pageProps: {} });
+  });
+});
+
 describe("next/constants shim", () => {
   it("exports all phase constants", async () => {
     const constants = await import("../packages/vinext/src/shims/constants.js");
