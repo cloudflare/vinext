@@ -22,8 +22,14 @@ declare module "next" {
 }
 
 declare module "next/router" {
+  import { ComponentType } from "react";
   export function useRouter(): any;
   export function setSSRContext(ctx: any): void;
+  export type WithRouterProps = { router: any };
+  export type ExcludeRouterProps<P> = Pick<P, Exclude<keyof P, keyof WithRouterProps>>;
+  export function withRouter<P extends WithRouterProps>(
+    ComposedComponent: ComponentType<P>,
+  ): ComponentType<ExcludeRouterProps<P>>;
   const Router: {
     push(url: string | object): Promise<boolean>;
     replace(url: string | object): Promise<boolean>;

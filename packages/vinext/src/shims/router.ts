@@ -5,7 +5,15 @@
  * Backed by the browser History API. Supports client-side navigation
  * by fetching new page data and re-rendering the React root.
  */
-import { useState, useEffect, useCallback, useMemo, createElement, type ReactElement } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  createElement,
+  type ReactElement,
+  type ComponentType,
+} from "react";
 import { RouterContext } from "./internal/router-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
@@ -897,6 +905,76 @@ export function wrapWithRouterContext(element: ReactElement): ReactElement {
 
   return createElement(RouterContext.Provider, { value: routerValue }, element) as ReactElement;
 }
+
+/**
+ * Props injected by `withRouter` into the wrapped component.
+ *
+ * Ported from Next.js: packages/next/src/client/with-router.tsx
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/with-router.tsx
+ */
+export type WithRouterProps = {
+  router: NextRouter;
+};
+
+/**
+ * Pick<P, Exclude<keyof P, keyof WithRouterProps>> — the props of the
+ * composed component minus the `router` prop that `withRouter` injects.
+ *
+ * Ported from Next.js: packages/next/src/client/with-router.tsx
+ */
+export type ExcludeRouterProps<P> = Pick<P, Exclude<keyof P, keyof WithRouterProps>>;
+
+/**
+ * Higher-order component that injects the Pages Router `router` instance as
+ * a `router` prop into a wrapped component. Primarily used by class
+ * components (which cannot call hooks) to access the router. The wrapped
+ * component receives the same props as the original, minus `router`, which
+ * is filled in by the HOC.
+ *
+ * Ported from Next.js: packages/next/src/client/with-router.tsx
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/with-router.tsx
+ *
+ * Differences from Next.js:
+ * - We type the composed component as `ComponentType<P>` instead of
+ *   `NextComponentType<C, any, P>` because vinext does not expose
+ *   `NextComponentType` from this shim. The runtime shape (and the props
+ *   the wrapper forwards) is identical.
+ * - We forward `getInitialProps` and `origGetInitialProps` from the
+ *   composed component so `_app` parity holds for class components that
+ *   define `getInitialProps`.
+ */
+export function withRouter<P extends WithRouterProps>(
+  ComposedComponent: ComponentType<P>,
+): ComponentType<ExcludeRouterProps<P>> {
+  function WithRouterWrapper(props: ExcludeRouterProps<P>): ReactElement {
+    const router = useRouter();
+    return createElement(ComposedComponent, {
+      ...(props as unknown as P),
+      router,
+    });
+  }
+
+  // Forward getInitialProps so class-component pages that define it keep
+  // working when wrapped. Mirrors Next.js's with-router.tsx.
+  const composed = ComposedComponent as ComponentType<P> & {
+    getInitialProps?: unknown;
+    origGetInitialProps?: unknown;
+  };
+  (WithRouterWrapper as unknown as { getInitialProps?: unknown }).getInitialProps =
+    composed.getInitialProps;
+  (WithRouterWrapper as unknown as { origGetInitialProps?: unknown }).origGetInitialProps =
+    composed.origGetInitialProps;
+
+  if (process.env.NODE_ENV !== "production") {
+    const name = composed.displayName || composed.name || "Unknown";
+    WithRouterWrapper.displayName = `withRouter(${name})`;
+  }
+
+  return WithRouterWrapper;
+}
+
+// Note: `withRouter` is exposed only as a named export from `next/router`.
+// The default export of that module is the Router singleton declared below.
 
 // Also export a default Router singleton for `import Router from 'next/router'`
 const Router = {

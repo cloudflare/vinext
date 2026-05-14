@@ -818,6 +818,143 @@ describe("window.next debug global", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// next/router withRouter HOC
+//
+// withRouter is a higher-order component that injects the Pages Router
+// `router` instance as a prop into class components (which cannot call
+// hooks). Real Next.js apps and the Next.js deploy test suite depend on
+// this export — without it, bundlers fail with
+// `[MISSING_EXPORT] "withRouter" is not exported by ".../shims/router.js"`.
+//
+// Ported from Next.js: packages/next/src/client/with-router.tsx
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/with-router.tsx
+//
+// Reference Next.js e2e fixture (class component using withRouter):
+// .nextjs-ref/test/e2e/with-router/pages/a.js
+// ---------------------------------------------------------------------------
+describe("next/router withRouter HOC", () => {
+  it("exports withRouter as a named function", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { withRouter } = await import("../packages/vinext/src/shims/router.js");
+      expect(typeof withRouter).toBe("function");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("withRouter wraps a component and forwards static props", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { withRouter } = await import("../packages/vinext/src/shims/router.js");
+      const React = await import("react");
+
+      const Inner: React.ComponentType<{ router: any; label: string }> = ({ label }) =>
+        React.createElement("span", null, label);
+
+      const Wrapped = withRouter(Inner);
+      expect(typeof Wrapped).toBe("function");
+      // displayName is set in dev to `withRouter(<Inner>)`.
+      if (process.env.NODE_ENV !== "production") {
+        expect(Wrapped.displayName).toContain("withRouter");
+      }
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("withRouter injects a router prop into the wrapped component", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { withRouter } = await import("../packages/vinext/src/shims/router.js");
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+
+      let receivedRouter: any = null;
+      let receivedLabel: string | undefined;
+      const Inner: React.ComponentType<{ router: any; label: string }> = (props) => {
+        receivedRouter = props.router;
+        receivedLabel = props.label;
+        return React.createElement("span", null, "ok");
+      };
+
+      const Wrapped = withRouter(Inner);
+      const html = renderToStaticMarkup(React.createElement(Wrapped as any, { label: "hi" }));
+      expect(html).toBe("<span>ok</span>");
+      expect(receivedLabel).toBe("hi");
+      // router must be the NextRouter shape (push/replace/back/...).
+      expect(receivedRouter).toBeTruthy();
+      expect(typeof receivedRouter.push).toBe("function");
+      expect(typeof receivedRouter.replace).toBe("function");
+      expect(typeof receivedRouter.back).toBe("function");
+      expect(typeof receivedRouter.reload).toBe("function");
+      expect(typeof receivedRouter.prefetch).toBe("function");
+      expect(receivedRouter.events).toBeDefined();
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("withRouter forwards getInitialProps from the composed component", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/", search: "", hash: "", href: "http://localhost/" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { withRouter } = await import("../packages/vinext/src/shims/router.js");
+
+      type InnerType = ((props: { router: any }) => null) & {
+        getInitialProps?: () => unknown;
+        origGetInitialProps?: () => unknown;
+      };
+      const Inner: InnerType = (() => null) as InnerType;
+      const gip = () => ({ foo: "bar" });
+      Inner.getInitialProps = gip;
+      Inner.origGetInitialProps = gip;
+
+      const Wrapped = withRouter(Inner) as typeof Inner;
+      expect(Wrapped.getInitialProps).toBe(gip);
+      expect(Wrapped.origGetInitialProps).toBe(gip);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+});
+
 describe("next/headers shim", () => {
   it("exports cookies, headers, draftMode", async () => {
     const mod = await import("../packages/vinext/src/shims/headers.js");
