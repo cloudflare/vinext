@@ -442,6 +442,47 @@ function bumpSassDep(name, minSpec) {
 bumpSassDep('sass', '^1.70.0')
 bumpSassDep('sass-embedded', '^1.70.0')
 
+// Detect TypeScript config files. Vite's PostCSS/Tailwind/etc. config loaders
+// require either `jiti` or `tsx` to load `*.config.{ts,mts,cts}` (and dotfile
+// `.postcssrc.ts` variants). Next.js used to auto-install one of these into
+// the test app at build time; once vinext takes over, the test app's
+// package.json no longer lists either, so the build fails with:
+//
+//   'tsx' or 'jiti' is required for the TypeScript configuration files.
+//   Make sure it is installed
+//   Cannot find package 'jiti' imported from .../vite/dist/node/chunks/node.js
+//
+// jiti is the lighter of the two (no native deps) and matches what Vite's
+// internal config loader prefers, so inject jiti when any TS-flavoured config
+// file is present at the test app root.
+const tsConfigFilePatterns = [
+  /^next\.config\.(?:ts|mts|cts)$/,
+  /^postcss\.config\.(?:ts|mts|cts)$/,
+  /^tailwind\.config\.(?:ts|mts|cts)$/,
+  /^vite\.config\.(?:ts|mts|cts)$/,
+  /^\.postcssrc\.(?:ts|mts|cts)$/,
+]
+let hasTsConfig = false
+try {
+  const entries = fs.readdirSync(process.cwd(), { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    if (tsConfigFilePatterns.some((rx) => rx.test(entry.name))) {
+      hasTsConfig = true
+      break
+    }
+  }
+} catch {
+  // ignore — fall back to not injecting jiti
+}
+
+if (hasTsConfig && !pkg.devDependencies.jiti && !pkg.dependencies?.jiti) {
+  // Pin matches the version already resolved transitively in the vinext
+  // workspace (via @tailwindcss/node). postcss-load-config and Vite both
+  // require jiti >=1.21.0; ^2.6.1 satisfies that.
+  pkg.devDependencies.jiti = '^2.6.1'
+}
+
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')
 EOF
