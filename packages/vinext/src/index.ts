@@ -1,5 +1,5 @@
 import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
-import { loadEnv, parseAst } from "vite";
+import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -764,6 +764,50 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
+    // Enable JSX in plain .js files. Next.js allows JSX in .js files
+    // (Babel/SWC handle it transparently), but Vite 8's built-in `vite:oxc`
+    // plugin excludes .js files by default (`exclude: /\.js$/`) AND infers
+    // `lang: "js"` from the extension (which disables JSX parsing).
+    //
+    // We can't fix both issues via config alone:
+    //  - Setting `oxc.exclude: []` bypasses the filter, but `lang` is still
+    //    inferred as "js" from the extension, causing parse errors.
+    //  - Setting `oxc.lang: "jsx"` globally breaks TypeScript files (OXC
+    //    can't parse TS type annotations with `lang: "jsx"`).
+    //
+    // Additionally, `@vitejs/plugin-react` sets `jsxRefreshInclude` which
+    // matches `.js` files, pulling them into `vite:oxc`'s transform even
+    // when the main filter excludes them.
+    //
+    // Solution: use `enforce: "pre"` so this plugin's transform runs before
+    // `vite:oxc`. We transform `.js` files with `lang: "jsx"` using Vite's
+    // exported `transformWithOxc`. When `vite:oxc` later processes the
+    // output, the JSX has already been compiled to createElement calls.
+    ...(viteMajorVersion >= 8
+      ? [
+          {
+            name: "vinext:jsx-in-js",
+            enforce: "pre" as const,
+            async transform(code: string, id: string) {
+              // Only handle .js/.mjs files outside node_modules.
+              // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
+              const cleanId = id.split("?")[0];
+              if (!/\.(m?js)$/.test(cleanId)) return;
+              if (cleanId.includes("/node_modules/")) return;
+
+              const result = await transformWithOxc(code, id, {
+                lang: "jsx",
+                jsx: { runtime: "automatic" as const },
+                sourcemap: true,
+              });
+              return {
+                code: result.code,
+                map: result.map,
+              };
+            },
+          } satisfies Plugin,
+        ]
+      : []),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -1249,8 +1293,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // NOTE: top-level optimizeDeps is now set below (after capturing
           // incoming values from earlier plugins) so both Pages Router and
           // App Router builds merge correctly.
-          // Enable JSX in .tsx/.jsx files
-          // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
+          // Enable JSX in .js files. Next.js allows JSX in plain .js
+          // files (Babel/SWC handle it transparently), but Vite 8's OXC
+          // transform defaults exclude .js files (both via the filter
+          // `exclude: /\.js$/` and by inferring `lang: "js"` from the
+          // extension, which disables JSX parsing).
+          //
+          // We leave the OXC filter defaults alone (letting `.js` files be
+          // excluded from `vite:oxc`) and instead handle `.js` files in a
+          // separate `vinext:jsx-in-js` plugin that runs before `vite:oxc`.
+          // That plugin transforms `.js` files with OXC using `lang: "jsx"`
+          // so JSX syntax is parsed correctly, while TypeScript files
+          // continue to use `vite:oxc`'s default `lang` inference.
+          //
+          // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`.
           ...(viteMajorVersion >= 8
             ? { oxc: { jsx: { runtime: "automatic" } } }
             : { esbuild: { jsx: "automatic" } }),
