@@ -424,22 +424,25 @@ fi
 # them above.
 run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
 
-# After vinext init adds "type": "module", any CJS next.config.js will fail
-# because Node.js treats .js as ESM. We can't rename to .cjs (Next.js doesn't
-# support it), so convert CJS syntax to ESM in-place. vinext init handles
-# other config files (postcss, tailwind, etc.) by renaming to .cjs.
-if [ -f "next.config.js" ]; then
-  node -e '
-    const fs = require("node:fs");
-    let c = fs.readFileSync("next.config.js", "utf8");
-    if (/\bmodule\.exports\b/.test(c) || /\brequire\s*\(/.test(c)) {
-      c = c.replace(/\bmodule\.exports\s*=\s*/, "export default ");
-      c = c.replace(/\bconst\s+(\w+)\s*=\s*require\s*\(\s*(["\x27][^"\x27]+["\x27])\s*\)/g, "import $1 from $2");
-      fs.writeFileSync("next.config.js", c);
-      console.log("Converted next.config.js from CJS to ESM");
-    }
-  ' >> "${BUILD_LOG}" 2>&1
-fi
+# After vinext init adds "type": "module", any CJS next.config.{js,ts} will
+# fail because Node.js treats .js as ESM. We can't rename to .cjs (Next.js
+# doesn't support it), so convert CJS syntax to ESM in-place. vinext init
+# handles other config files (postcss, tailwind, etc.) by renaming to .cjs.
+for config_file in next.config.js next.config.ts; do
+  if [ -f "${config_file}" ]; then
+    node -e '
+      const fs = require("node:fs");
+      const f = process.argv[1];
+      let c = fs.readFileSync(f, "utf8");
+      if (/\bmodule\.exports\b/.test(c) || /\brequire\s*\(/.test(c)) {
+        c = c.replace(/\bmodule\.exports\s*=\s*/, "export default ");
+        c = c.replace(/\bconst\s+(\w+)\s*=\s*require\s*\(\s*(["\x27][^"\x27]+["\x27])\s*\)/g, "import $1 from $2");
+        fs.writeFileSync(f, c);
+        console.log("Converted " + f + " from CJS to ESM");
+      }
+    ' "${config_file}" >> "${BUILD_LOG}" 2>&1
+  fi
+done
 
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 
