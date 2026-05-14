@@ -1791,8 +1791,10 @@ export function isDynamicServerError(error: unknown): error is DynamicServerErro
   if (!error || typeof error !== "object" || !("digest" in error)) {
     return false;
   }
-  const digest = (error as { digest: unknown }).digest;
-  return typeof digest === "string" && digest === _DYNAMIC_SERVER_USAGE_DIGEST;
+  // `===` against a string literal already requires the operand to be a
+  // string, so no separate `typeof digest === "string"` check is needed.
+  // Matches `isBailoutToCSRError` above for stylistic consistency.
+  return (error as { digest: unknown }).digest === _DYNAMIC_SERVER_USAGE_DIGEST;
 }
 
 /**
