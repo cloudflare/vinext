@@ -696,6 +696,103 @@ describe("next/navigation shim", () => {
     expect(() => unstable_rethrow({ digest: "not-a-next-error" })).not.toThrow();
   });
 
+  // -------------------------------------------------------------------------
+  // BailoutToCSRError + DynamicServerError parity
+  //
+  // Ported from Next.js:
+  //   https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/bailout-to-csr.ts
+  //   https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/hooks-server-context.ts
+  // -------------------------------------------------------------------------
+  it("exports BailoutToCSRError + isBailoutToCSRError with the canonical digest", async () => {
+    const { BailoutToCSRError, isBailoutToCSRError } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const err = new BailoutToCSRError("test-reason");
+    expect(err.digest).toBe("BAILOUT_TO_CLIENT_SIDE_RENDERING");
+    expect(err.reason).toBe("test-reason");
+    expect(err.message).toBe("Bail out to client-side rendering: test-reason");
+    expect(isBailoutToCSRError(err)).toBe(true);
+    // Predicate matches by digest, not by instanceof — a foreign object with
+    // the canonical digest should also be detected (Next.js parity).
+    expect(isBailoutToCSRError({ digest: "BAILOUT_TO_CLIENT_SIDE_RENDERING" })).toBe(true);
+    // Negative cases.
+    expect(isBailoutToCSRError(new Error("plain"))).toBe(false);
+    expect(isBailoutToCSRError({ digest: "OTHER" })).toBe(false);
+    expect(isBailoutToCSRError(null)).toBe(false);
+    expect(isBailoutToCSRError(undefined)).toBe(false);
+  });
+
+  it("exports DynamicServerError + isDynamicServerError with the canonical digest", async () => {
+    const { DynamicServerError, isDynamicServerError } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const err = new DynamicServerError("cookies()");
+    expect(err.digest).toBe("DYNAMIC_SERVER_USAGE");
+    expect(err.description).toBe("cookies()");
+    expect(err.message).toBe("Dynamic server usage: cookies()");
+    expect(isDynamicServerError(err)).toBe(true);
+    // Predicate matches by digest — Next.js parity.
+    expect(isDynamicServerError({ digest: "DYNAMIC_SERVER_USAGE" })).toBe(true);
+    // Negative cases.
+    expect(isDynamicServerError(new Error("plain"))).toBe(false);
+    expect(isDynamicServerError({ digest: "OTHER" })).toBe(false);
+    expect(isDynamicServerError(null)).toBe(false);
+    expect(isDynamicServerError(undefined)).toBe(false);
+  });
+
+  // Mirrors the Next.js fixture
+  //   .nextjs-ref/test/e2e/app-dir/unstable-rethrow/app/dynamic-error/page.tsx
+  // where `cookies()` throws a DynamicServerError inside a try/catch and
+  // unstable_rethrow must propagate it.
+  it("unstable_rethrow re-throws BailoutToCSRError (next/dynamic ssr:false bailout)", async () => {
+    const { BailoutToCSRError, unstable_rethrow } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const err = new BailoutToCSRError("Lazy(): No ssr");
+    expect(() => unstable_rethrow(err)).toThrow();
+    try {
+      unstable_rethrow(err);
+    } catch (rethrown) {
+      expect(rethrown).toBe(err);
+    }
+  });
+
+  it("unstable_rethrow re-throws DynamicServerError (cookies()/headers() in static render)", async () => {
+    const { DynamicServerError, unstable_rethrow } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const err = new DynamicServerError("Route used cookies()");
+    expect(() => unstable_rethrow(err)).toThrow();
+    try {
+      unstable_rethrow(err);
+    } catch (rethrown) {
+      expect(rethrown).toBe(err);
+    }
+  });
+
+  it("unstable_rethrow does NOT match the four server-only categories vinext does not implement", async () => {
+    // These categories (isDynamicPostpone, isPostpone,
+    // isHangingPromiseRejectionError, isPrerenderInterruptedError) are
+    // server-only Next.js internals tied to PPR / prerender-controller
+    // machinery vinext does not implement. They are deferred as follow-ups
+    // (see the JSDoc on unstable_rethrow). This test pins that intentional
+    // gap so the omission is visible to future maintainers.
+    const { unstable_rethrow } = await import("../packages/vinext/src/shims/navigation.js");
+
+    const postpone = { $$typeof: Symbol.for("react.postpone") };
+    expect(() => unstable_rethrow(postpone)).not.toThrow();
+
+    const hanging = Object.assign(new Error("hanging"), { digest: "HANGING_PROMISE_REJECTION" });
+    expect(() => unstable_rethrow(hanging)).not.toThrow();
+
+    const interrupted = Object.assign(new Error("interrupt"), {
+      digest: "NEXT_PRERENDER_INTERRUPTED",
+    });
+    expect(() => unstable_rethrow(interrupted)).not.toThrow();
+
+    // No fixed digest — message-shape based detection. We don't try to
+    // construct a faithful payload here; just confirm an arbitrary message
+    // doesn't match.
+    const dynamicPostpone = new Error("some random message");
+    expect(() => unstable_rethrow(dynamicPostpone)).not.toThrow();
+  });
+
   it("unstable_rethrow recurses through error.cause to rethrow wrapped Next.js errors", async () => {
     const { redirect, unstable_rethrow } =
       await import("../packages/vinext/src/shims/navigation.js");
@@ -951,6 +1048,164 @@ describe("next/error shim — unstable_catchError", () => {
     const Boundary = unstable_catchError(Fallback);
     // Wrapper component carries the user fallback name for DevTools.
     expect(Boundary.displayName).toBe("unstable_catchError(MyFallback)");
+  });
+
+  // Ported from Next.js:
+  //   .nextjs-ref/test/e2e/app-dir/catch-error/catch-error.test.ts
+  //   "should render fallback when null is thrown from a Client Component"
+  //   "should render fallback when undefined is thrown from a Client Component"
+  //
+  // The boundary must accept null/undefined as `thrownValue` (not just Error
+  // instances) and route them to the fallback. Crucially, the rethrow guard
+  // (`isNextRouterError`) must not crash on null/undefined inputs.
+  it("class-component getDerivedStateFromError accepts null thrown values", async () => {
+    const React = (await import("react")).default;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as {
+      getDerivedStateFromError(e: unknown): { error: { thrownValue: unknown } | null };
+    };
+
+    const derivedNull = InnerCatchError.getDerivedStateFromError(null);
+    expect(derivedNull).toEqual({ error: { thrownValue: null } });
+
+    const derivedUndefined = InnerCatchError.getDerivedStateFromError(undefined);
+    expect(derivedUndefined).toEqual({ error: { thrownValue: undefined } });
+
+    // Exhaustive non-error primitives (strings, numbers, booleans) should
+    // also flow through to the fallback without throwing.
+    void React; // keep import for module side-effects parity with other tests
+    expect(InnerCatchError.getDerivedStateFromError("string")).toEqual({
+      error: { thrownValue: "string" },
+    });
+    expect(InnerCatchError.getDerivedStateFromError(0)).toEqual({
+      error: { thrownValue: 0 },
+    });
+  });
+
+  // unstable_retry behavior parity. Next.js refreshes the App Router segment
+  // and resets the boundary. vinext does the same on the client; on the
+  // server we throw (refresh is meaningless during SSR setup).
+  it("unstable_retry throws on the server (where refresh is meaningless)", async () => {
+    const React = (await import("react")).default;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback(
+      _props: Record<string, never>,
+      info: { error: unknown; reset: () => void; unstable_retry: () => void },
+    ) {
+      return React.createElement("button", { onClick: info.unstable_retry }, "retry");
+    }
+    const Boundary = unstable_catchError(Fallback);
+    // Probe the inner class for its instance shape.
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as new (props: object) => {
+      state: { error: { thrownValue: unknown } | null };
+      unstable_retry: () => void;
+    };
+    const instance = new InnerCatchError({
+      fallback: Fallback,
+      forwardedProps: {},
+    });
+    instance.state = { error: { thrownValue: new Error("boom") } };
+
+    // typeof window === "undefined" in this Node test environment, so
+    // unstable_retry should throw a clear "client only" error.
+    expect(() => instance.unstable_retry()).toThrow(/client/i);
+  });
+
+  it("unstable_retry on the client calls appRouterInstance.refresh and resets the boundary", async () => {
+    // Stub `window` with the minimum surface navigation.ts needs at
+    // module-load time (location, history, addEventListener). This must be
+    // installed BEFORE re-importing the shims, otherwise navigation.ts will
+    // initialize its client navigation state against a bare `{}` and crash.
+    // Mutable view over globalThis that allows assigning/deleting `window`.
+    // We avoid `as Window & typeof globalThis` because the stub doesn't have
+    // the full DOM surface — just the bits navigation.ts touches at
+    // module-load.
+    const globalAny = globalThis as unknown as { window?: unknown };
+    const previousWindow = globalAny.window;
+    const stubWindow = {
+      location: {
+        search: "",
+        pathname: "/",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: {
+        pushState: () => {},
+        replaceState: () => {},
+        back: () => {},
+        forward: () => {},
+        state: null,
+      },
+      addEventListener: () => {},
+      scrollTo: () => {},
+    };
+    globalAny.window = stubWindow;
+
+    try {
+      vi.resetModules();
+
+      const React = (await import("react")).default;
+      const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+
+      const refreshSpy = vi
+        .spyOn(navigation.appRouterInstance, "refresh")
+        .mockImplementation(() => {});
+
+      function Fallback() {
+        return null;
+      }
+      const Boundary = unstable_catchError(Fallback);
+      const wrapperResult = (
+        Boundary as unknown as (p: Record<string, never>) => { type: unknown }
+      )({});
+      const InnerCatchError = wrapperResult.type as unknown as new (props: object) => {
+        state: { error: { thrownValue: unknown } | null };
+        unstable_retry: () => void;
+      };
+      const instance = new InnerCatchError({
+        fallback: Fallback,
+        forwardedProps: {},
+      });
+
+      // Seed an error so reset has something to clear, and replace setState
+      // with a spy so we can confirm the boundary self-resets.
+      instance.state = { error: { thrownValue: new Error("boom") } };
+      const setStateCalls: Array<{ error: { thrownValue: unknown } | null }> = [];
+      (instance as unknown as { setState: (partial: object) => void }).setState = (partial) => {
+        setStateCalls.push(partial as { error: { thrownValue: unknown } | null });
+        instance.state = { ...instance.state, ...(partial as object) } as typeof instance.state;
+      };
+
+      // startTransition runs synchronously here because there's no
+      // concurrent renderer in the test environment.
+      void React.startTransition;
+      instance.unstable_retry();
+
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      expect(setStateCalls).toEqual([{ error: null }]);
+
+      refreshSpy.mockRestore();
+    } finally {
+      if (previousWindow === undefined) {
+        delete globalAny.window;
+      } else {
+        globalAny.window = previousWindow;
+      }
+      vi.resetModules();
+    }
   });
 });
 

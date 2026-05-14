@@ -163,6 +163,18 @@ declare module "next/navigation" {
   export function getAccessFallbackHTTPStatus(error: unknown): number;
   export function isRedirectError(error: unknown): error is Error & { digest: string };
   export function isNextRouterError(error: unknown): boolean;
+  export class BailoutToCSRError extends Error {
+    readonly digest: "BAILOUT_TO_CLIENT_SIDE_RENDERING";
+    readonly reason: string;
+    constructor(reason: string);
+  }
+  export function isBailoutToCSRError(error: unknown): error is BailoutToCSRError;
+  export class DynamicServerError extends Error {
+    readonly digest: "DYNAMIC_SERVER_USAGE";
+    readonly description: string;
+    constructor(description: string);
+  }
+  export function isDynamicServerError(error: unknown): error is DynamicServerError;
   export function unstable_rethrow(error: unknown): void;
   export class UnrecognizedActionError extends Error {}
   export function unstable_isUnrecognizedActionError(

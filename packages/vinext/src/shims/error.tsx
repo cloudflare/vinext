@@ -10,7 +10,7 @@
  * `next/error`'s public surface.
  */
 import React from "react";
-import { isNextRouterError } from "./navigation.js";
+import { appRouterInstance, isNextRouterError } from "./navigation.js";
 
 type ErrorProps = {
   statusCode: number;
@@ -94,10 +94,18 @@ export default ErrorComponent;
 //   https://github.com/vercel/next.js/blob/canary/packages/next/src/api/error.react-server.ts
 //
 // Differences from Next.js:
-//   - We do not implement `unstable_retry` (requires the App Router instance
-//     context, which vinext doesn't currently thread through error boundaries).
-//     It is exposed on `ErrorInfo` as a no-op that throws a clear error so
-//     misuse fails loudly rather than silently. Tracked as a follow-up.
+//   - `unstable_retry()` matches Next.js's App Router behavior on the
+//     client — it calls `appRouterInstance.refresh()` inside a
+//     React.startTransition and then resets the boundary. On the server it
+//     throws (consistent with React class components only running on the
+//     server during SSR setup, where retry isn't meaningful). The
+//     Pages-Router-only error message Next.js throws
+//     (`unstable_retry()` can only be used in the App Router. Use
+//     `reset()` in the Pages Router.) is not currently dispatched because
+//     vinext's boundary doesn't read `PagesRouterContext`. Calling retry
+//     under Pages Router will trigger an App Router refresh, which is a
+//     no-op in that environment — the error remains visible until
+//     `reset()` is called. Tracked as a parity follow-up.
 //   - Bot-user-agent graceful-degradation, `handleHardNavError`, and
 //     `handleISRError` are not yet supported. Errors always render the
 //     fallback in non-bot contexts.
@@ -148,13 +156,26 @@ class _CatchError<P extends _UserProps> extends React.Component<
   };
 
   unstable_retry = (): void => {
-    // vinext does not yet expose a refresh handle through this boundary.
-    // Throwing a clear error is better than a silent no-op; tracked as a
-    // follow-up so users discover the gap immediately.
-    throw new Error(
-      "`unstable_retry()` is not yet implemented by vinext's `unstable_catchError`. " +
-        "Use `reset()` for now.",
-    );
+    // Matches Next.js's App Router branch in
+    // packages/next/src/client/components/catch-error.tsx — refresh the
+    // current route, then clear the error so children re-render. Wrapped in
+    // startTransition so the in-flight refresh and the reset commit
+    // together (no flash of the children rendering with stale data).
+    //
+    // On the server, refresh is meaningless and `appRouterInstance.refresh`
+    // is a no-op; throw a clear error so callers don't silently swallow a
+    // retry attempt during SSR setup. Matches the spirit of Next.js's
+    // server-side throw (which lives in error-boundary.tsx, not here).
+    if (typeof window === "undefined") {
+      throw new Error(
+        "`unstable_retry()` can only be used on the client. Call it from a user " +
+          "interaction handler inside the error fallback.",
+      );
+    }
+    React.startTransition(() => {
+      appRouterInstance.refresh();
+      this.reset();
+    });
   };
 
   render(): React.ReactNode {

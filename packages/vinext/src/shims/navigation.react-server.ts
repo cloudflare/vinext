@@ -46,6 +46,10 @@ export {
   // where `unstable_rethrow` is also re-exported in the react-server build.
   isRedirectError,
   isNextRouterError,
+  isBailoutToCSRError,
+  isDynamicServerError,
+  BailoutToCSRError,
+  DynamicServerError,
   unstable_rethrow,
 
   // Utilities
