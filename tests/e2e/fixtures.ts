@@ -30,6 +30,7 @@ function shouldIgnoreError(message: string): boolean {
  * Extended test fixture that collects console errors and fails if any occur.
  */
 export const test = base.extend<{ consoleErrors: string[] }>({
+  // oxlint-disable-next-line react-hooks/rules-of-hooks -- `use` is a Playwright fixture API, not a React hook
   consoleErrors: async ({ page }, use) => {
     const errors: string[] = [];
 
@@ -52,7 +53,6 @@ export const test = base.extend<{ consoleErrors: string[] }>({
     });
 
     // Run the test
-    // oxlint-disable-next-line react-hooks/rules-of-hooks
     await use(errors);
 
     // After the test, fail if there were any console errors
