@@ -2516,6 +2516,54 @@ describe("next/cache shim", () => {
     expect(() => cacheTag("tag1", "tag2", "tag3")).not.toThrow();
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components-errors/cache-components-unstable-deprecations.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-errors/cache-components-unstable-deprecations.test.ts
+  it("unstable_cacheLife is exported as a deprecation alias for cacheLife", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.unstable_cacheLife).toBe("function");
+
+    // Matches the cacheLife signature: accepts a profile name or an inline config.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => mod.unstable_cacheLife("hours")).not.toThrow();
+      expect(() =>
+        mod.unstable_cacheLife({ stale: 60, revalidate: 300, expire: 3600 }),
+      ).not.toThrow();
+
+      // Next.js asserts CLI output contains "Error: `unstable_cacheLife` was recently stabilized".
+      // That string comes from console.error(new Error(...)) — match the same surface here.
+      const warned = error.mock.calls.some((args) => {
+        const msg = args[0];
+        const text = msg instanceof Error ? msg.message : String(msg ?? "");
+        return text.includes("`unstable_cacheLife` was recently stabilized");
+      });
+      expect(warned).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("unstable_cacheTag is exported as a deprecation alias for cacheTag", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.unstable_cacheTag).toBe("function");
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Matches the cacheTag signature: variadic string tags. Outside a "use cache"
+      // scope this is a no-op (same as cacheTag).
+      expect(() => mod.unstable_cacheTag("tag1", "tag2", "tag3")).not.toThrow();
+
+      const warned = error.mock.calls.some((args) => {
+        const msg = args[0];
+        const text = msg instanceof Error ? msg.message : String(msg ?? "");
+        return text.includes("`unstable_cacheTag` was recently stabilized");
+      });
+      expect(warned).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("unstable_cache re-fetches when entry is stale (time-expired)", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
