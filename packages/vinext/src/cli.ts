@@ -313,13 +313,17 @@ async function dev() {
   let lockfile: DevLockfile | undefined;
   if (process.env.VINEXT_NO_DEV_LOCK !== "1") {
     const root = process.cwd();
+    // Substitute "localhost" for wildcard binds so the URL is actually
+    // clickable when surfaced in the lock file before server.listen() has
+    // had a chance to resolve the real URL.
+    const initialDisplayHost = host === "0.0.0.0" ? "localhost" : host;
     const acquired = tryAcquireLockfile({
       root,
       info: {
         pid: process.pid,
         port,
         hostname: host,
-        appUrl: `http://${host}:${port}`,
+        appUrl: `http://${initialDisplayHost}:${port}`,
         startedAt: Date.now(),
         cwd: root,
       },
@@ -352,15 +356,33 @@ async function dev() {
   // Once the server is actually listening, the port may have changed (e.g.
   // Vite picked a free port if the requested one was in use). Update the
   // lock file so other tools see the right port/URL.
+  //
+  // Prefer Vite's resolvedUrls.local[0] because it handles wildcard binds
+  // (e.g. host "0.0.0.0") by substituting "localhost" so the URL is
+  // actually clickable. Fall back to httpServer.address() if Vite didn't
+  // populate resolvedUrls for some reason.
   if (lockfile) {
-    const address = server.httpServer?.address();
-    const actualPort = typeof address === "object" && address ? address.port : port;
-    const actualHost = host;
+    const resolved = server.resolvedUrls?.local[0];
+    let actualPort = port;
+    let appUrl: string;
+    if (resolved) {
+      appUrl = resolved.replace(/\/$/, "");
+      try {
+        const parsed = new URL(appUrl);
+        actualPort = parsed.port ? Number.parseInt(parsed.port, 10) : actualPort;
+      } catch {
+        // ignore — keep requested port
+      }
+    } else {
+      const address = server.httpServer?.address();
+      actualPort = typeof address === "object" && address ? address.port : port;
+      appUrl = `http://${host === "0.0.0.0" ? "localhost" : host}:${actualPort}`;
+    }
     lockfile.update({
       pid: process.pid,
       port: actualPort,
-      hostname: actualHost,
-      appUrl: `http://${actualHost}:${actualPort}`,
+      hostname: host,
+      appUrl,
       startedAt: Date.now(),
       cwd: process.cwd(),
     });

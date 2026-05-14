@@ -110,10 +110,15 @@ export function isPidAlive(pid: number): boolean {
 /**
  * Writes the lock file with the given content. Creates the parent directory
  * if it doesn't exist.
+ *
+ * Mode `0o600` because the lock file contains a PID that, in principle, lets
+ * other users on the machine send signals to this user's dev server.
+ * Restricting reads is defense-in-depth: the PID is also discoverable via
+ * `ps` and the port via `netstat`/`ss`, so this isn't load-bearing.
  */
 function writeLockfile(lockfilePath: string, info: DevServerInfo): void {
   fs.mkdirSync(path.dirname(lockfilePath), { recursive: true });
-  fs.writeFileSync(lockfilePath, JSON.stringify(info, null, 2));
+  fs.writeFileSync(lockfilePath, JSON.stringify(info, null, 2), { mode: 0o600 });
 }
 
 type FormatErrorOptions = {
@@ -130,11 +135,16 @@ type FormatErrorOptions = {
  *
  * Matches Next.js' error layout so AI agents and CLIs can parse the same
  * `- PID: ` / `- Local: ` lines.
+ *
+ * The `existing: undefined` branch below is defensive — `tryAcquireLockfile`
+ * currently only returns `ok: false` with a defined `existing`, but the
+ * formatter is exported and unit-tested separately, so it handles both shapes.
  */
 export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
   const { existing, cwd, lockfilePath } = opts;
 
   if (!existing) {
+    // Defensive fallback. Not reachable from tryAcquireLockfile today.
     return [
       "Another vinext dev server appears to be running in this directory.",
       "",
@@ -213,7 +223,20 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
     // Existing entry is stale (dead PID). Fall through and overwrite.
   }
 
+  // NB: there is a small TOCTOU window between readLockfile() above and
+  // writeLockfile() here. Two processes starting simultaneously can both
+  // pass the check and both write the lock file. This is intentionally
+  // tolerated — the loser will fail to bind its port, producing a clear
+  // error. A native flock() (the approach Next.js takes via Rust bindings)
+  // would close the window, but it's not worth the complexity for a
+  // dev-ergonomics feature.
   writeLockfile(lockfilePath, info);
+
+  // Capture the owner PID once so release() always asks "is the file still
+  // mine?" against the same identity, regardless of what update() writes
+  // later. In practice the PID never changes between acquire and release,
+  // but this makes the intent explicit and decouples release from update.
+  const ownerPid = info.pid;
 
   let released = false;
   const release = () => {
@@ -223,7 +246,7 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
       // Only delete if the file still points at us. If another process took
       // over the lock (e.g. after a crash), don't delete their entry.
       const current = readLockfile(lockfilePath);
-      if (current && current.pid === info.pid) {
+      if (current && current.pid === ownerPid) {
         fs.unlinkSync(lockfilePath);
       }
     } catch {
@@ -231,6 +254,15 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
     }
   };
 
+  // The "exit" event fires once Node.js is about to exit — either gracefully
+  // (event loop drained, explicit process.exit(), or after the default
+  // SIGINT/SIGTERM handlers terminate the process). It does NOT fire on
+  // uncaught exceptions or hard crashes (SIGKILL), which is fine: the next
+  // `vinext dev` will detect the dead PID and take over the stale lock.
+  //
+  // If a future caller installs a custom signal handler that swallows
+  // SIGINT/SIGTERM without exiting, the lock would leak — also fine, same
+  // recovery path applies.
   let exitListener: NodeJS.ExitListener | undefined;
   if (unlockOnExit) {
     exitListener = () => release();

@@ -221,6 +221,77 @@ describe("tryAcquireLockfile", () => {
     result.lockfile.release();
     expect(fs.existsSync(lockPath)).toBe(true);
   });
+
+  it("release() ignores stale ownerPid even after update() rewrites with different info", () => {
+    // Acquire with current PID, then update() with a different PID in the
+    // payload. release() must still check against the *original* ownerPid
+    // (the acquire-time PID), not the update-time PID. Without that guarantee
+    // a malicious or buggy caller could trick release() into deleting another
+    // process's lock by passing a fake PID through update().
+    const lockPath = getLockfilePath(root);
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root, pid: process.pid }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Pretend update() was called with a different PID (simulating a future
+    // bug or hostile caller). The lock file now claims to be owned by some
+    // other PID.
+    const otherPid = process.pid + 99999;
+    result.lockfile.update(baseInfo({ cwd: root, pid: otherPid }));
+    expect(readLockfile(lockPath)?.pid).toBe(otherPid);
+
+    // release() must NOT delete the file, because ownerPid (captured at
+    // acquire) doesn't match what's on disk.
+    result.lockfile.release();
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it("registers an exit listener when unlockOnExit is true and removes it on release()", () => {
+    const before = process.listenerCount("exit");
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      unlockOnExit: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(process.listenerCount("exit")).toBe(before + 1);
+    result.lockfile.release();
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+
+  it("registers no exit listener when unlockOnExit is false", () => {
+    const before = process.listenerCount("exit");
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(process.listenerCount("exit")).toBe(before);
+    result.lockfile.release();
+  });
+
+  it("write sets restrictive file permissions on POSIX", () => {
+    // mode bits aren't meaningfully enforced on Windows, skip there.
+    if (process.platform === "win32") return;
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stat = fs.statSync(getLockfilePath(root));
+    // Only the user permission bits should be set; group/other should be 0.
+    expect(stat.mode & 0o077).toBe(0);
+    result.lockfile.release();
+  });
 });
 
 describe("formatAlreadyRunningError", () => {
