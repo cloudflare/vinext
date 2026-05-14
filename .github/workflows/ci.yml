@@ -25,9 +25,6 @@ jobs:
         run: vp run build
       - run: vp run check
       - run: vp run knip
-      # Catch bash syntax errors in CI-critical shell scripts. The deploy-suite
-      # harness (scripts/e2e-deploy.sh) once shipped with a syntax error that
-      # caused 2480 deploy-suite failures before anyone noticed — see #1189.
       - name: Bash syntax check
         run: |
           for f in scripts/*.sh; do
