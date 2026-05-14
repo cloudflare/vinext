@@ -30,6 +30,11 @@ import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./con
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
+import {
+  type DevLockfile,
+  formatAlreadyRunningError,
+  tryAcquireLockfile,
+} from "./server/dev-lockfile.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -299,6 +304,41 @@ async function dev() {
   const port = parsed.port ?? 3000;
   const host = parsed.hostname ?? "localhost";
 
+  // Acquire the dev lock file. If another live `vinext dev` is running in this
+  // directory, print an actionable error (PID + URL) and exit. This is
+  // especially useful for AI coding agents, which frequently attempt to start
+  // a dev server without knowing one is already running.
+  //
+  // Disabled when VINEXT_NO_DEV_LOCK is set (escape hatch for unusual setups).
+  let lockfile: DevLockfile | undefined;
+  if (process.env.VINEXT_NO_DEV_LOCK !== "1") {
+    const root = process.cwd();
+    const acquired = tryAcquireLockfile({
+      root,
+      info: {
+        pid: process.pid,
+        port,
+        hostname: host,
+        appUrl: `http://${host}:${port}`,
+        startedAt: Date.now(),
+        cwd: root,
+      },
+    });
+    if (!acquired.ok) {
+      console.error(
+        "\n  " +
+          formatAlreadyRunningError({
+            existing: acquired.existing,
+            cwd: root,
+            lockfilePath: acquired.lockfilePath,
+          }).replace(/\n/g, "\n  ") +
+          "\n",
+      );
+      process.exit(1);
+    }
+    lockfile = acquired.lockfile;
+  }
+
   console.log(`\n  vinext dev  (Vite ${getViteVersion()})\n`);
 
   const config = buildViteConfig({
@@ -308,6 +348,23 @@ async function dev() {
   const server = await vite.createServer(config);
   await server.listen();
   server.printUrls();
+
+  // Once the server is actually listening, the port may have changed (e.g.
+  // Vite picked a free port if the requested one was in use). Update the
+  // lock file so other tools see the right port/URL.
+  if (lockfile) {
+    const address = server.httpServer?.address();
+    const actualPort = typeof address === "object" && address ? address.port : port;
+    const actualHost = host;
+    lockfile.update({
+      pid: process.pid,
+      port: actualPort,
+      hostname: actualHost,
+      appUrl: `http://${actualHost}:${actualPort}`,
+      startedAt: Date.now(),
+      cwd: process.cwd(),
+    });
+  }
 }
 
 async function buildApp() {
