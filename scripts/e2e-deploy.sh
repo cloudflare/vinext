@@ -442,73 +442,13 @@ run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
 # doesn't support it), so convert CJS syntax to ESM in-place. vinext init
 # handles other config files (postcss, tailwind, etc.) by renaming to .cjs.
 #
-# The converter handles:
-#   module.exports = X              → export default X
-#   const X = require('mod')        → import X from 'mod'
-#   const X = require('mod')(args)  → import _X from 'mod'; const X = _X(args)
-#   require('mod') in expressions   → (await import('mod')).default
+# The converter lives in scripts/cjs-to-esm-config.mjs. It used to be inlined
+# here via `node -e '…'`, but the JS body contained enough `'"'"'`-style
+# quote-escape sequences that a single unquoted `(` in a comment caused bash
+# to fail to parse the whole script.
 for config_file in next.config.js next.config.ts; do
   if [ -f "${config_file}" ]; then
-    node -e '
-      const fs = require("node:fs");
-      const f = process.argv[1];
-      let c = fs.readFileSync(f, "utf8");
-      if (!/\bmodule\.exports\b/.test(c) && !/\brequire\s*\(/.test(c)) process.exit(0);
-
-      const imports = [];
-      let counter = 0;
-
-      // 1. const X = require("mod")(args) → import + const X = _mod(args)
-      c = c.replace(
-        /\b(const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)\s*(\([^)]*\))/g,
-        (_, decl, name, mod, call) => {
-          const alias = `_cjsImport${counter++}`;
-          imports.push(`import ${alias} from ${mod};`);
-          return `${decl} ${name} = ${alias}${call}`;
-        }
-      );
-
-      // 2. const X = require("mod") → import X from "mod"
-      c = c.replace(
-        /\b(const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)/g,
-        (_, _decl, name, mod) => {
-          imports.push(`import ${name} from ${mod};`);
-          return "";
-        }
-      );
-
-      // 2b. const { a, b } = require("mod") → import { a, b } from "mod"
-      c = c.replace(
-        /\b(const|let|var)\s+(\{[^}]+\})\s*=\s*require\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)/g,
-        (_, _decl, destructured, mod) => {
-          imports.push(`import ${destructured} from ${mod};`);
-          return "";
-        }
-      );
-
-      // 3. Remaining require("mod") in expressions → (await import("mod")).default
-      // TODO: This doesn't perfectly handle all CJS patterns (e.g. dynamic
-      // require with variables, require.resolve, conditional require). For the
-      // deploy suite this covers the common next.config.js patterns.
-      c = c.replace(
-        /\brequire\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)/g,
-        (_, mod) => `(await import(${mod})).default`
-      );
-
-      // 4. module.exports = → export default
-      c = c.replace(/\bmodule\.exports\s*=\s*/, "export default ");
-
-      // Prepend collected imports
-      if (imports.length > 0) {
-        c = imports.join("\n") + "\n" + c;
-      }
-
-      // Clean up empty lines from removed const declarations
-      c = c.replace(/\n{3,}/g, "\n\n");
-
-      fs.writeFileSync(f, c);
-      console.log("Converted " + f + " from CJS to ESM");
-    ' "${config_file}" >> "${BUILD_LOG}" 2>&1
+    node "${VINEXT_DIR}/scripts/cjs-to-esm-config.mjs" "${config_file}" >> "${BUILD_LOG}" 2>&1
   fi
 done
 
