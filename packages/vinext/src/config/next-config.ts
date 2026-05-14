@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
+import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -413,6 +414,13 @@ export async function loadNextConfig(
 
   const filename = path.basename(configPath);
 
+  // Mirror Next.js: read `compilerOptions.paths` from the project's
+  // tsconfig.json so aliased imports inside next.config.ts (e.g.
+  // `import { foo } from '@/foo'`) resolve at config-load time. Next.js
+  // passes these to SWC; we pass them to Vite's resolver as `resolve.alias`.
+  // See packages/next/src/build/next-config-ts/transpile-config.ts.
+  const tsconfigAliases = loadTsconfigPathAliasesForRoot(root);
+
   try {
     // Load config via Vite's module runner (TS + extensionless import support)
     const { runnerImport } = await import("vite");
@@ -420,6 +428,9 @@ export async function loadNextConfig(
       root,
       logLevel: "error",
       clearScreen: false,
+      resolve: {
+        alias: tsconfigAliases,
+      },
     });
     return await unwrapConfig(mod, phase);
   } catch (e) {
