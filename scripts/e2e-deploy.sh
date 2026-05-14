@@ -213,9 +213,13 @@ cleanup_on_error() {
   fi
 
   # Kill any process still listening on the allocated port (handles orphaned children).
+  # Read from PORT_FILE rather than $PORT since the variable may not be set if
+  # the script failed before port allocation.
   if [ -f "${PORT_FILE}" ]; then
+    local cleanup_port
+    cleanup_port="$(cat "${PORT_FILE}")"
     local listener_pid
-    listener_pid="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    listener_pid="$(lsof -ti "tcp:${cleanup_port}" 2>/dev/null || true)"
     if [ -n "${listener_pid}" ]; then
       kill -TERM ${listener_pid} >/dev/null 2>&1 || true
       sleep 1
@@ -464,7 +468,19 @@ for config_file in next.config.js next.config.ts; do
         }
       );
 
+      // 2b. const { a, b } = require("mod") → import { a, b } from "mod"
+      c = c.replace(
+        /\b(const|let|var)\s+(\{[^}]+\})\s*=\s*require\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)/g,
+        (_, _decl, destructured, mod) => {
+          imports.push(`import ${destructured} from ${mod};`);
+          return "";
+        }
+      );
+
       // 3. Remaining require("mod") in expressions → (await import("mod")).default
+      // TODO: This doesn't perfectly handle all CJS patterns (e.g. dynamic
+      // require with variables, require.resolve, conditional require). For the
+      // deploy suite this covers the common next.config.js patterns.
       c = c.replace(
         /\brequire\s*\(\s*(["'"'"'][^"'"'"']+["'"'"'])\s*\)/g,
         (_, mod) => `(await import(${mod})).default`
