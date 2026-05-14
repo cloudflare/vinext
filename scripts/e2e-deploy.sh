@@ -404,6 +404,44 @@ for (const dep of [
   }
 }
 
+// Some Next.js scss test fixtures pin sass to an old version (e.g. 1.54.0)
+// that predates `sass.initAsyncCompiler`. Vite 8's built-in vite:css preprocessor
+// calls that API and declares `sass@^1.70.0` / `sass-embedded@^1.70.0` as peers.
+// If the test app pins a sass/sass-embedded version below the Vite 8 peer range,
+// bump it so the SCSS preprocessor can initialise. This is the minimum bump that
+// keeps the test app's intent (use sass) while making Vite happy. Without it,
+// every test/e2e/app-dir/scss/* and test/e2e/app-dir/scss-modules/* suite fails
+// at build time with: TypeError: [sass] sass.initAsyncCompiler is not a function.
+//
+// Parses the leading `major.minor` out of pinned specs like "1.54.0", "^1.70.0",
+// "~1.75.0", ">=1.70.0". Falls through (no rewrite) for git/file/workspace/tag
+// specs, which never come from the Next.js test fixtures we're patching here.
+function parseMajorMinor(spec) {
+  const match = /^[\^~>=<\s]*(\d+)\.(\d+)/.exec(spec)
+  if (!match) return null
+  return { major: Number(match[1]), minor: Number(match[2]) }
+}
+
+function bumpSassDep(name, minSpec) {
+  for (const bucket of ['dependencies', 'devDependencies', 'peerDependencies']) {
+    const deps = pkg[bucket]
+    if (!deps || !deps[name]) continue
+    const current = deps[name]
+    const version = parseMajorMinor(current)
+    if (!version) continue
+    if (version.major > 1 || (version.major === 1 && version.minor >= 70)) {
+      continue
+    }
+    deps[name] = minSpec
+    console.log(
+      `Bumped ${bucket}.${name} from ${current} to ${minSpec} for Vite 8 compatibility`,
+    )
+  }
+}
+
+bumpSassDep('sass', '^1.70.0')
+bumpSassDep('sass-embedded', '^1.70.0')
+
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')
 EOF
