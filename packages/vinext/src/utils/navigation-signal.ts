@@ -10,7 +10,7 @@
 // Previously duplicated between shims/error-boundary.tsx and
 // server/dev-error-overlay.tsx; consolidated here so they cannot drift.
 
-export function getErrorDigest(error: unknown): string | null {
+function getErrorDigest(error: unknown): string | null {
   if (!error || typeof error !== "object" || !("digest" in error)) {
     return null;
   }
