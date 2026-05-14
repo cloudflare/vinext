@@ -26,9 +26,14 @@
 // — hoisting the import to the top of the module would unconditionally try
 // to resolve the package and fail the build, even when ANALYZE is unset.
 //
-// Limitations: doesn't handle dynamic require with variables, require.resolve,
-// or `require('mod').foo()`-style member access. Covers the common
-// next.config.js patterns in the deploy suite.
+// Catch-all prelude (only injected when actually referenced):
+//   __dirname / __filename → ESM equivalents via fileURLToPath
+//   require.resolve / leftover require → createRequire(import.meta.url)
+//
+// Limitations: doesn't handle module.exports.foo = X (named exports), or
+// `require('mod').foo()`-style member access. The next.config fixtures in
+// the deploy suite don't use those patterns; if they start appearing we'll
+// add a regex for it.
 
 import fs from "node:fs";
 
@@ -40,7 +45,11 @@ if (!file) {
 
 let code = fs.readFileSync(file, "utf8");
 
-if (!/\bmodule\.exports\b/.test(code) && !/\brequire\s*\(/.test(code)) {
+if (
+  !/\bmodule\.exports\b/.test(code) &&
+  !/\brequire\b/.test(code) &&
+  !/\b__(dirname|filename)\b/.test(code)
+) {
   // Nothing to convert.
   process.exit(0);
 }
@@ -77,7 +86,9 @@ code = code.replace(
   },
 );
 
-// 3. Remaining require("mod") in expressions → (await import("mod")).default
+// 3. Remaining bare require("mod") in expressions → (await import("mod")).default
+// Note: this only matches require("…") — require.resolve(…), require.cache, etc.
+// are intentionally left alone and handled by the createRequire prelude below.
 code = code.replace(
   /\brequire\s*\(\s*(["'][^"']+["'])\s*\)/g,
   (_, mod) => `(await import(${mod})).default`,
@@ -86,9 +97,45 @@ code = code.replace(
 // 4. module.exports = → export default
 code = code.replace(/\bmodule\.exports\s*=\s*/, "export default ");
 
-// Prepend collected imports
-if (imports.length > 0) {
-  code = imports.join("\n") + "\n" + code;
+// 5. Catch-all CJS prelude — injected only when the (post-transform) source
+// still references CJS-only globals. This covers patterns the regex pipeline
+// above doesn't rewrite (require.resolve, __dirname/__filename in the config
+// body, dynamic require calls, etc.) without needing a regex for each one.
+const prelude = [];
+const needsDirname = /\b__dirname\b/.test(code);
+const needsFilename = /\b__filename\b/.test(code);
+// After the rewrites in steps 1–3 the only remaining `require` references are
+// things like `require.resolve(…)` or `require.cache` that we deliberately
+// leave alone. Detect them with a lookahead so we don't trigger on the rare
+// case where someone wrote a bare identifier named "require_something".
+const needsRequire = /\brequire\s*[(.[]/.test(code);
+
+if (needsDirname || needsFilename) {
+  prelude.push(`import { fileURLToPath as __vinext_fileURLToPath } from "node:url";`);
+}
+if (needsDirname) {
+  prelude.push(`import { dirname as __vinext_dirname } from "node:path";`);
+}
+if (needsFilename) {
+  prelude.push(`const __filename = __vinext_fileURLToPath(import.meta.url);`);
+}
+if (needsDirname) {
+  // If we already defined __filename above, reuse it; otherwise compute it inline.
+  if (needsFilename) {
+    prelude.push(`const __dirname = __vinext_dirname(__filename);`);
+  } else {
+    prelude.push(`const __dirname = __vinext_dirname(__vinext_fileURLToPath(import.meta.url));`);
+  }
+}
+if (needsRequire) {
+  prelude.push(`import { createRequire as __vinext_createRequire } from "node:module";`);
+  prelude.push(`const require = __vinext_createRequire(import.meta.url);`);
+}
+
+// Prepend (prelude first, then transformed imports, then body)
+const header = [...prelude, ...imports].join("\n");
+if (header.length > 0) {
+  code = header + "\n" + code;
 }
 
 // Clean up empty lines from removed const declarations
