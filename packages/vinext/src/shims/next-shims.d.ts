@@ -504,11 +504,46 @@ declare module "next/font/local" {
 }
 
 declare module "next/app" {
-  import { ComponentType } from "react";
-  export type AppProps = {
-    Component: ComponentType<any>;
-    pageProps: Record<string, unknown>;
+  import * as React from "react";
+  import type { ComponentType } from "react";
+
+  export type AppProps<P = any> = {
+    Component: ComponentType<P> & {
+      getInitialProps?: (ctx: any) => any;
+    };
+    pageProps: P;
+    router?: any;
+    __N_SSG?: boolean;
+    __N_SSP?: boolean;
   };
+
+  export type AppContext = {
+    Component: ComponentType<any> & {
+      getInitialProps?: (ctx: any) => any;
+    };
+    AppTree: ComponentType<any>;
+    ctx: any;
+    router: any;
+  };
+
+  export type AppInitialProps<PageProps = any> = {
+    pageProps: PageProps;
+  };
+
+  /**
+   * Default `App` class component used by Pages Router `_app.js`. Mirrors
+   * Next.js's `packages/next/src/pages/_app.tsx` so userland code can
+   * `import App from "next/app"` and either subclass or call
+   * `App.getInitialProps(appContext)` directly.
+   */
+  export default class App<P = any, CP = any, S = any> extends React.Component<
+    P & AppProps<CP>,
+    S
+  > {
+    static origGetInitialProps: (ctx: AppContext) => Promise<AppInitialProps>;
+    static getInitialProps: (ctx: AppContext) => Promise<AppInitialProps>;
+    render(): React.ReactNode;
+  }
 }
 
 declare module "next/cache" {

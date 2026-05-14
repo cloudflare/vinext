@@ -68,6 +68,22 @@ async function appGetInitialProps({ Component, ctx }: AppContext): Promise<AppIn
   let pageProps: any = {};
   if (typeof Component.getInitialProps === "function") {
     pageProps = await Component.getInitialProps(ctx);
+    // Divergence from Next.js (intentional, current scope):
+    //
+    // Next.js's `loadGetInitialProps` throws when a page's getInitialProps
+    // resolves to null/undefined:
+    //
+    //   "<DisplayName>.getInitialProps() should resolve to an object.
+    //    But found "null"/"undefined" instead."
+    //
+    // See: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils.ts
+    //
+    // vinext currently coerces the missing value to `{}` so that fixtures
+    // and userland code that accidentally return nothing still render
+    // (just with empty pageProps) instead of crashing the page. If you're
+    // debugging a Pages Router page that renders with mysteriously empty
+    // props, suspect a `getInitialProps` that returns undefined — Next.js
+    // would have surfaced that as a thrown error at this point.
     if (pageProps == null) {
       pageProps = {};
     }
