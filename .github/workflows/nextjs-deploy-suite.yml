@@ -261,11 +261,20 @@ jobs:
             }
 
             const total = passed.length + failed.length + skipped.length;
+            const passRate = total > 0 ? ((passed.length / total) * 100).toFixed(1) : '0.0';
+            const statsLine = `${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped (${total} total, ${passRate}% pass rate)`;
+
+            // Top-level annotation visible on the workflow run page
+            if (failed.length > 0) {
+              core.warning(`Next.js Deploy Suite: ${statsLine}`, { title: 'Next.js Deploy Suite results' });
+            } else {
+              core.notice(`Next.js Deploy Suite: ${statsLine}`, { title: 'Next.js Deploy Suite results' });
+            }
 
             // Job summary
             core.summary.addHeading('Next.js Deploy Suite', 2);
             core.summary.addRaw(
-              `**${passed.length}** passed, **${failed.length}** failed, **${skipped.length}** skipped (${total} total)\n\n`
+              `**${passed.length}** passed, **${failed.length}** failed, **${skipped.length}** skipped (${total} total, ${passRate}% pass rate)\n\n`
             );
 
             if (failed.length > 0) {
