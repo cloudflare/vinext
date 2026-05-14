@@ -317,10 +317,17 @@ describe("Link App Router navigation scheduling", () => {
       scrollTo: vi.fn(),
     });
 
-    const [{ default: IsolatedLink }, React] = await Promise.all([
-      import("../packages/vinext/src/shims/link.js"),
-      vi.importActual<typeof import("react")>("react"),
-    ]);
+    // Load link.js BEFORE importActual("react"). Earlier these two imports ran
+    // in parallel via Promise.all, but that race made the mock occasionally not
+    // intercept link.tsx's transitive `import React from "react"` — when
+    // importActual won the race, "react" landed in the module cache as the
+    // actual module first, and link.tsx's import then resolved to that cached
+    // entry instead of the doMock factory. That caused React.startTransition
+    // inside Link to be the real implementation rather than the spy, so the
+    // assertion on `toHaveBeenCalledTimes(1)` would flake to 0.
+    // Sequencing the imports guarantees the doMock factory runs first.
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+    const React = await vi.importActual<typeof import("react")>("react");
 
     ReactDOMServer.renderToString(
       React.createElement(IsolatedLink, { href: "/target", prefetch: false }, "target"),
