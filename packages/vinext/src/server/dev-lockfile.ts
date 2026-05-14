@@ -116,7 +116,7 @@ function writeLockfile(lockfilePath: string, info: DevServerInfo): void {
   fs.writeFileSync(lockfilePath, JSON.stringify(info, null, 2));
 }
 
-export type FormatErrorOptions = {
+type FormatErrorOptions = {
   /** Existing server info from the lock file, if readable. */
   existing: DevServerInfo | undefined;
   /** Project directory the new (failing) process is trying to run in. */
@@ -158,7 +158,7 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
   ].join("\n");
 }
 
-export type AcquireOptions = {
+type AcquireOptions = {
   /** Project root. Lock file goes in `<root>/node_modules/.cache/vinext/`. */
   root: string;
   /** Initial server info to write. Port/URL may be updated later via `update()`. */
@@ -172,12 +172,12 @@ export type AcquireOptions = {
   unlockOnExit?: boolean;
 };
 
-export type AcquireSuccess = {
+type AcquireSuccess = {
   ok: true;
   lockfile: DevLockfile;
 };
 
-export type AcquireFailure = {
+type AcquireFailure = {
   ok: false;
   /** The server info from the existing lock file, if readable. */
   existing: DevServerInfo | undefined;
@@ -185,7 +185,7 @@ export type AcquireFailure = {
   lockfilePath: string;
 };
 
-export type AcquireResult = AcquireSuccess | AcquireFailure;
+type AcquireResult = AcquireSuccess | AcquireFailure;
 
 /**
  * Try to acquire the dev lock file for the given project root.
