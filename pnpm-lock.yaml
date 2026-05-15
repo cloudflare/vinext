@@ -333,6 +333,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+      postcss:
+        specifier: 'catalog:'
+        version: 8.5.10
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
