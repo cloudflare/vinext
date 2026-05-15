@@ -1489,9 +1489,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // via Node's resolver instead, sharing one instance with the
                 // renderer and any 'use client' module SSR'd through it. See
                 // https://github.com/cloudflare/vinext/issues/1103.
+                //
+                // `ipaddr.js` is imported by the next/image client shim for
+                // server-side private-IP validation. We externalize it on Node
+                // SSR via resolve.external above; excluding it from the dep
+                // optimizer prevents Vite from pre-bundling it on first request
+                // (and the resulting "new dependencies optimized" full reload).
+                // On bundled runtimes (Cloudflare/Nitro) the runtime build
+                // bundles it anyway, so excluding it from the dev optimizer
+                // is still correct — it just defers handling to the runtime
+                // resolver instead of the SSR pre-bundle step.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  ["ipaddr.js"],
                   userSsrExternal === true ? SSR_EXTERNAL_REACT_ENTRIES : [],
                 ),
                 entries: optimizeEntries,
@@ -1609,6 +1620,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               resolve: {
                 external: ["react", "react-dom", "react-dom/server", "ipaddr.js"],
                 noExternal: true as const,
+              },
+              optimizeDeps: {
+                // `ipaddr.js` is imported by the next/image shim for
+                // private-IP validation and is externalized via
+                // resolve.external above. Excluding it from the SSR dep
+                // optimizer avoids the "new dependencies optimized" full
+                // reload the first time a Pages Router page renders an
+                // <Image>.
+                exclude: ["ipaddr.js"],
               },
               build: {
                 outDir: "dist/server",

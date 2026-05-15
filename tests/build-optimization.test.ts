@@ -452,6 +452,100 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  // Regression: `ipaddr.js` is imported by the next/image client shim for
+  // server-side private-IP validation. It's already in ssr.resolve.external,
+  // but the SSR dep optimizer would still pre-bundle it on first request,
+  // producing a `(ssr) ✨ new dependencies optimized: ipaddr.js` log and the
+  // accompanying full reload. Excluding it from the SSR optimizer avoids the
+  // reload; runtime resolution still works via resolve.external (Node) or the
+  // worker bundle (Cloudflare/Nitro).
+  it("excludes ipaddr.js from the SSR optimizer (App Router)", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-ipaddr-app-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      expect(ssrExclude).toContain("ipaddr.js");
+
+      // The client environment must NOT exclude ipaddr.js — next/image is a
+      // 'use client' component and the browser optimizer still needs to
+      // pre-bundle the CJS module into ESM for client-side validation.
+      const clientExclude = result.environments.client.optimizeDeps?.exclude ?? [];
+      expect(clientExclude).not.toContain("ipaddr.js");
+
+      // RSC env doesn't render the client image shim, so we leave its
+      // optimizer alone — ipaddr.js shouldn't appear in either direction.
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      expect(rscExclude).not.toContain("ipaddr.js");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("excludes ipaddr.js from the SSR optimizer (Pages Router on Node)", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-optdeps-ipaddr-pages-"),
+    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const ssrExclude = result.environments?.ssr?.optimizeDeps?.exclude ?? [];
+      expect(ssrExclude).toContain("ipaddr.js");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────
