@@ -141,3 +141,100 @@ export function matchRoutePattern(
   decodeMatchedParams(params);
   return params;
 }
+
+/**
+ * A single entry from `getStaticPaths().paths`.
+ *
+ * Next.js allows both shapes:
+ *   - a raw string path, e.g. `"/blog/hello"`
+ *   - an object `{ params, locale? }`
+ *
+ * See:
+ *   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
+ *   .nextjs-ref/packages/next/src/build/static-paths/pages.ts (the
+ *     `typeof entry === 'string'` branch around line 89, and the object
+ *     branch around line 132)
+ */
+export type StaticPathsEntry =
+  | string
+  | { params?: RoutePatternParams; locale?: string }
+  | null
+  | undefined;
+
+/**
+ * Result of {@link normalizeStaticPathsEntry}: either a params object, or a
+ * descriptive error string the caller can surface as a per-route error result.
+ */
+export type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: string };
+
+/**
+ * Strip query string and a single trailing slash from a pathname.
+ *
+ * Mirrors the Next.js `removeTrailingSlash` helper used in
+ * `.nextjs-ref/packages/next/src/build/static-paths/pages.ts`. Kept here so
+ * both the build-time prerender and the request-time matchers normalize the
+ * same way.
+ */
+export function normalizeStaticPathname(pathname: string): string {
+  const noQuery = pathname.split("?")[0];
+  return noQuery === "/" ? "/" : noQuery.replace(/\/$/, "");
+}
+
+/**
+ * Normalize a single `getStaticPaths` entry into a `{ params }` object.
+ *
+ * Handles both Next.js-supported shapes:
+ *   - For a string entry, match it against `routePattern` to extract params,
+ *     mirroring `_routeMatcher(cleanedEntry)` in
+ *     `.nextjs-ref/packages/next/src/build/static-paths/pages.ts`. If the
+ *     string does not match the pattern, Next.js throws; we return an
+ *     `{ error }` result so the caller can record a per-route error instead
+ *     of crashing the build.
+ *   - For an object entry, require a `params` key (Next.js raises
+ *     "A required parameter (X) was not provided..." otherwise).
+ *
+ * Note: this intentionally does NOT strip a locale prefix. The build pipeline
+ * currently passes empty `locales` to `getStaticPaths`, so locale-prefixed
+ * string entries are not produced. If/when i18n is wired through prerender,
+ * locale handling should be added here, not duplicated at call sites.
+ */
+export function normalizeStaticPathsEntry(
+  entry: StaticPathsEntry,
+  routePattern: string,
+): NormalizedStaticPathsEntry {
+  if (entry === null || entry === undefined) {
+    return {
+      error: `getStaticPaths returned a ${entry === null ? "null" : "undefined"} entry`,
+    };
+  }
+
+  if (typeof entry === "string") {
+    const trimmed = normalizeStaticPathname(entry);
+    const urlParts = trimmed.split("/").filter(Boolean);
+    const patternParts = routePattern.split("/").filter(Boolean);
+    const matched = matchRoutePattern(urlParts, patternParts);
+    if (!matched) {
+      return {
+        error: `The provided path \`${entry}\` from getStaticPaths does not match the route pattern \`${routePattern}\`.`,
+      };
+    }
+    return { params: matched };
+  }
+
+  if (typeof entry !== "object") {
+    return {
+      error: `getStaticPaths entry must be a string or an object, got ${typeof entry}`,
+    };
+  }
+
+  const { params } = entry;
+  if (params === undefined || params === null) {
+    return {
+      error:
+        `getStaticPaths entry is missing the \`params\` key for pattern \`${routePattern}\`. ` +
+        `Return either a string path or { params: { ... } }.`,
+    };
+  }
+
+  return { params };
+}

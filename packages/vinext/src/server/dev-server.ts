@@ -2,6 +2,7 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
+import { normalizeStaticPathname, type StaticPathsEntry } from "../routing/route-pattern.js";
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
@@ -404,22 +405,17 @@ export function createSSRHandler(
           const fallback = pathsResult?.fallback ?? false;
 
           if (fallback === false) {
-            // Only allow paths explicitly listed in getStaticPaths.
-            // Next.js accepts `paths` as Array<string | { params, locale? }>:
-            //   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
-            //   .nextjs-ref/packages/next/src/build/static-paths/pages.ts
-            type StaticPathsItem =
-              | string
-              | { params?: Record<string, string | string[]>; locale?: string };
-            const paths: Array<StaticPathsItem> = pathsResult?.paths ?? [];
-            const normalizePathname = (p: string): string => {
-              const noQuery = p.split("?")[0];
-              return noQuery === "/" ? "/" : noQuery.replace(/\/$/, "");
-            };
-            const currentPathname = normalizePathname(url);
-            const isValidPath = paths.some((p: StaticPathsItem) => {
+            // Only allow paths explicitly listed in getStaticPaths. Next.js
+            // accepts `paths` as Array<string | { params, locale? }>; the
+            // shared `StaticPathsEntry` type and `normalizeStaticPathname`
+            // helper in `../routing/route-pattern.ts` reference the upstream
+            // implementation.
+            type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
+            const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
+            const currentPathname = normalizeStaticPathname(url);
+            const isValidPath = paths.some((p) => {
               if (typeof p === "string") {
-                return normalizePathname(p) === currentPathname;
+                return normalizeStaticPathname(p) === currentPathname;
               }
               const entryParams = p.params;
               if (entryParams === undefined || entryParams === null) {

@@ -32,7 +32,7 @@ import {
 } from "vinext/shims/cache";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
+import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -342,57 +342,6 @@ function buildUrlFromParams(
 }
 
 /**
- * Convert a Pages-Router `getStaticPaths` entry into a params object.
- *
- * Next.js accepts either a string path or `{ params, locale? }`. See:
- *   .nextjs-ref/packages/next/src/build/static-paths/pages.ts (lines 86-129)
- *   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
- *
- * For a string entry, match it against the route pattern to extract params,
- * mirroring `_routeMatcher(cleanedEntry)` in the Next.js source. If the string
- * doesn't match the pattern, Next.js throws — we return `null` and let the
- * caller record a per-route error result instead of crashing the build.
- */
-function normalizeStaticPathsItem(
-  pattern: string,
-  item: string | { params?: Record<string, string | string[]>; locale?: string } | null | undefined,
-): { params: Record<string, string | string[]> } | { error: string } {
-  if (item === null || item === undefined) {
-    return { error: `getStaticPaths returned a ${item === null ? "null" : "undefined"} entry` };
-  }
-
-  if (typeof item === "string") {
-    // Strip query string and trailing slash (mirrors Next.js removeTrailingSlash).
-    const pathOnly = item.split("?")[0];
-    const trimmed = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-    const urlParts = trimmed.split("/").filter(Boolean);
-    const patternParts = pattern.split("/").filter(Boolean);
-    const matched = matchRoutePattern(urlParts, patternParts);
-    if (!matched) {
-      return {
-        error: `The provided path \`${item}\` from getStaticPaths does not match the route pattern \`${pattern}\`.`,
-      };
-    }
-    return { params: matched };
-  }
-
-  if (typeof item !== "object") {
-    return { error: `getStaticPaths entry must be a string or an object, got ${typeof item}` };
-  }
-
-  const { params } = item;
-  if (params === undefined || params === null) {
-    return {
-      error:
-        `getStaticPaths entry is missing the \`params\` key for pattern \`${pattern}\`. ` +
-        `Return either a string path or { params: { ... } }.`,
-    };
-  }
-
-  return { params };
-}
-
-/**
  * Determine the HTML output file path for a URL.
  * Respects trailingSlash config.
  */
@@ -576,17 +525,16 @@ export async function prerenderPages({
       : {};
 
     // Next.js allows `paths` to be either a list of strings or a list of
-    // { params, locale? } objects. See
-    //   .nextjs-ref/packages/next/src/build/static-paths/pages.ts
-    //   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
-    type StaticPathsItem = string | { params?: Record<string, string | string[]>; locale?: string };
+    // { params, locale? } objects. The `StaticPathsEntry` type and the
+    // `normalizeStaticPathsEntry` helper live in `../routing/route-pattern.ts`
+    // — see that file's doc comments for the Next.js references.
     type BundleRoute = {
       pattern: string;
       isDynamic: boolean;
       params: Record<string, string>;
       module: {
         getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<{
-          paths: Array<StaticPathsItem>;
+          paths: Array<StaticPathsEntry>;
           fallback: unknown;
         }>;
         getStaticProps?: unknown;
@@ -625,7 +573,7 @@ export async function prerenderPages({
               }
               if (text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
-                paths: Array<StaticPathsItem>;
+                paths: Array<StaticPathsEntry>;
                 fallback: unknown;
               };
             }
@@ -706,14 +654,14 @@ export async function prerenderPages({
           continue;
         }
 
-        // `paths` may be `Array<string | { params, locale? }>` — see the
-        // Next.js implementation referenced on StaticPathsItem above. Normalize
-        // each entry into a params object, surfacing any per-entry problem as
-        // a per-route error result instead of crashing the whole prerender.
-        const paths: Array<StaticPathsItem> = pathsResult?.paths ?? [];
+        // `paths` may be `Array<string | { params, locale? }>` — normalize
+        // each entry into a params object via the shared helper, surfacing any
+        // per-entry problem as a per-route error result instead of crashing
+        // the whole prerender.
+        const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
         for (const item of paths) {
-          const normalized = normalizeStaticPathsItem(route.pattern, item);
+          const normalized = normalizeStaticPathsEntry(item, route.pattern);
           if ("error" in normalized) {
             entryError = normalized.error;
             break;
