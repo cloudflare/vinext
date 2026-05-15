@@ -23,8 +23,7 @@ const STATS = [
   {
     value: "Up to 4×",
     label: "faster production builds",
-    detail:
-      "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
+    detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
     value: "~50%",
@@ -111,8 +110,7 @@ const EXAMPLES = [
   },
 ] as const;
 
-const CARD =
-  "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
+const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
 
 export default function Home() {
   return (
@@ -121,9 +119,7 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
             <RocketLaunchIcon size={20} className="text-kumo-default" />
-            <span className="font-semibold tracking-tight text-kumo-default">
-              vinext
-            </span>
+            <span className="font-semibold tracking-tight text-kumo-default">vinext</span>
             <Badge variant="beta" className="ml-2">
               Experimental
             </Badge>
@@ -159,13 +155,11 @@ export default function Home() {
           Run your Next.js app on Vite. Deploy anywhere.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-kumo-subtle">
-          Vinext is a Vite plugin that re-implements the Next.js API from
-          scratch. Keep your{" "}
+          Vinext is a Vite plugin that re-implements the Next.js API from scratch. Keep your{" "}
           <code className="font-mono text-kumo-default">app/</code>,{" "}
           <code className="font-mono text-kumo-default">pages/</code>, and{" "}
-          <code className="font-mono text-kumo-default">next.config.js</code> as
-          they are. Get a faster dev loop, smaller bundles, and a clean path to
-          deploy on any host.
+          <code className="font-mono text-kumo-default">next.config.js</code> as they are. Get a
+          faster dev loop, smaller bundles, and a clean path to deploy on any host.
         </p>
 
         <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row">
@@ -194,21 +188,14 @@ export default function Home() {
         <Grid variant="1-3up" gap="base">
           {STATS.map(({ value, label, detail }) => (
             <div key={label} className={CARD}>
-              <div className="text-5xl font-semibold tracking-tight text-kumo-default">
-                {value}
-              </div>
-              <div className="text-base font-medium text-kumo-default">
-                {label}
-              </div>
-              <p className="text-sm leading-relaxed text-kumo-subtle">
-                {detail}
-              </p>
+              <div className="text-5xl font-semibold tracking-tight text-kumo-default">{value}</div>
+              <div className="text-base font-medium text-kumo-default">{label}</div>
+              <p className="text-sm leading-relaxed text-kumo-subtle">{detail}</p>
             </div>
           ))}
         </Grid>
         <p className="mt-4 text-center text-sm text-kumo-subtle">
-          Benchmarks are directional, not definitive. See the launch numbers
-          and methodology in the{" "}
+          Benchmarks are directional, not definitive. See the launch numbers and methodology in the{" "}
           <KumoLink
             href="https://blog.cloudflare.com/vinext/"
             variant="inline"
@@ -227,9 +214,8 @@ export default function Home() {
             The same framework, on a different foundation
           </Text>
           <p className="mt-3 max-w-2xl text-kumo-subtle">
-            Vinext re-implements Next.js as a Vite plugin instead of wrapping its
-            build output. That single decision unlocks a faster toolchain and a
-            much wider set of deployment targets.
+            Vinext re-implements Next.js as a Vite plugin instead of wrapping its build output. That
+            single decision unlocks a faster toolchain and a much wider set of deployment targets.
           </p>
         </div>
 
@@ -240,9 +226,7 @@ export default function Home() {
               <Text variant="heading3" as="h3">
                 {title}
               </Text>
-              <p className="text-sm leading-relaxed text-kumo-subtle">
-                {description}
-              </p>
+              <p className="text-sm leading-relaxed text-kumo-subtle">{description}</p>
             </div>
           ))}
         </Grid>
@@ -254,9 +238,8 @@ export default function Home() {
             Production features, ready to go
           </Text>
           <p className="mt-3 max-w-2xl text-kumo-subtle">
-            Caching, bindings, image optimization, and pre-rendering all work
-            out of the box on Cloudflare Workers, with sensible defaults you
-            can swap out when you need to.
+            Caching, bindings, image optimization, and pre-rendering all work out of the box on
+            Cloudflare Workers, with sensible defaults you can swap out when you need to.
           </p>
         </div>
 
@@ -274,9 +257,7 @@ export default function Home() {
                   </Badge>
                 ) : null}
               </div>
-              <p className="text-sm leading-relaxed text-kumo-subtle">
-                {description}
-              </p>
+              <p className="text-sm leading-relaxed text-kumo-subtle">{description}</p>
             </div>
           ))}
         </Grid>
@@ -288,8 +269,8 @@ export default function Home() {
             See it running
           </Text>
           <p className="mt-3 max-w-2xl text-kumo-subtle">
-            Real Next.js apps, rebuilt on every push to main and deployed to
-            Cloudflare Workers. Source is on{" "}
+            Real Next.js apps, rebuilt on every push to main and deployed to Cloudflare Workers.
+            Source is on{" "}
             <KumoLink
               href="https://github.com/cloudflare/vinext/tree/main/examples"
               variant="inline"
@@ -320,9 +301,7 @@ export default function Home() {
                   className="text-kumo-subtle transition-colors group-hover:text-kumo-default"
                 />
               </div>
-              <p className="text-sm leading-relaxed text-kumo-subtle">
-                {description}
-              </p>
+              <p className="text-sm leading-relaxed text-kumo-subtle">{description}</p>
             </a>
           ))}
         </Grid>
@@ -334,12 +313,10 @@ export default function Home() {
             Migrate in one command
           </Text>
           <p className="max-w-xl text-kumo-subtle">
-            <code className="font-mono text-kumo-default">npx vinext init</code>{" "}
-            scans your project for compatibility issues, installs the right
-            dependencies, generates a Vite config, and adds vinext scripts
-            alongside your existing Next.js setup. It&apos;s non-destructive —{" "}
-            <code className="font-mono text-kumo-default">next dev</code>{" "}
-            keeps working.
+            <code className="font-mono text-kumo-default">npx vinext init</code> scans your project
+            for compatibility issues, installs the right dependencies, generates a Vite config, and
+            adds vinext scripts alongside your existing Next.js setup. It&apos;s non-destructive —{" "}
+            <code className="font-mono text-kumo-default">next dev</code> keeps working.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <LinkButton
