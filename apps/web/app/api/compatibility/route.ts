@@ -5,7 +5,9 @@
  * GitHub Actions workflow (and any future compat suites).
  *
  * Auth: requires `X-Compat-Secret` header matching the `COMPAT_INGEST_SECRET`
- * worker secret (set via `wrangler secret put COMPAT_INGEST_SECRET`).
+ * worker secret (set via `wrangler secret put COMPAT_INGEST_SECRET`). The
+ * comparison is constant-time to avoid leaking timing information about
+ * the secret's prefix on a low-latency edge runtime.
  *
  * Body:
  *   {
@@ -28,7 +30,7 @@
  */
 import { getDb, getIngestSecret } from "@/app/lib/db/client";
 import { compatRuns, compatFileResults, type FileStatus } from "@/app/lib/db/schema";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 type SubmitFile = {
   suite: string;
@@ -47,6 +49,13 @@ type SubmitBody = {
   files: SubmitFile[];
 };
 
+/**
+ * Upper bound on files per submission. The full Next.js deploy suite has
+ * ~800 files today; 2000 leaves headroom for growth and prevents a malicious
+ * or buggy client from issuing tens of thousands of sequential D1 inserts.
+ */
+const MAX_FILES = 2000;
+
 function deriveStatus(f: SubmitFile): FileStatus {
   if (f.failed > 0 && f.passed > 0) return "partial";
   if (f.failed > 0) return "fail";
@@ -60,6 +69,7 @@ function isValidBody(body: unknown): body is SubmitBody {
   if (typeof b.kind !== "string" || b.kind.length === 0) return false;
   if (typeof b.runKey !== "string" || b.runKey.length === 0) return false;
   if (!Array.isArray(b.files)) return false;
+  if (b.files.length > MAX_FILES) return false;
   for (const f of b.files) {
     if (!f || typeof f !== "object") return false;
     const fr = f as Record<string, unknown>;
@@ -72,6 +82,29 @@ function isValidBody(body: unknown): body is SubmitBody {
   return true;
 }
 
+/**
+ * Constant-time string comparison. Avoids leaking secret length / prefix
+ * via timing differences in `!==`. Workers expose `crypto.subtle` but not
+ * Node's `crypto.timingSafeEqual`, so we hand-roll a fixed-cost compare.
+ *
+ * Inputs are first run through SHA-256 to normalise length (otherwise an
+ * attacker could distinguish "wrong-length" from "wrong-content" via the
+ * fast-path check). HMAC isn't necessary here because both sides go
+ * through the same hash with no key.
+ */
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const ua = new Uint8Array(ha);
+  const ub = new Uint8Array(hb);
+  let diff = 0;
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+  return diff === 0;
+}
+
 export async function POST(request: Request): Promise<Response> {
   const expected = getIngestSecret();
   if (!expected) {
@@ -81,8 +114,8 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const provided = request.headers.get("x-compat-secret");
-  if (provided !== expected) {
+  const provided = request.headers.get("x-compat-secret") ?? "";
+  if (!(await safeEqual(provided, expected))) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -97,6 +130,16 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid body shape" }, { status: 400 });
   }
 
+  try {
+    return await writeRun(body);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[/api/compatibility] write failed:", message);
+    return Response.json({ error: "Failed to persist run", detail: message }, { status: 500 });
+  }
+}
+
+async function writeRun(body: SubmitBody): Promise<Response> {
   const db = getDb();
   const now = Date.now();
 
@@ -112,50 +155,44 @@ export async function POST(request: Request): Promise<Response> {
     skipped += f.skipped;
   }
 
-  // Upsert the run by (kind, runKey). If a run with this key already exists,
-  // we delete its previous file_results and re-insert (lets a retried CI run
-  // overwrite stale data cleanly).
-  const existing = await db
-    .select({ id: compatRuns.id })
-    .from(compatRuns)
-    .where(and(eq(compatRuns.kind, body.kind), eq(compatRuns.runKey, body.runKey)))
-    .limit(1);
+  // Atomic upsert by (kind, runKey). Drizzle compiles this to a single
+  // INSERT ... ON CONFLICT(kind, run_key) DO UPDATE SET ... — no race
+  // window between SELECT and INSERT for concurrent retried CI runs.
+  const upserted = await db
+    .insert(compatRuns)
+    .values({
+      kind: body.kind,
+      runKey: body.runKey,
+      vinextRef: body.vinextRef ?? null,
+      nextRef: body.nextRef ?? null,
+      commitSha: body.commitSha ?? null,
+      createdAt: now,
+      total,
+      passed,
+      failed,
+      skipped,
+    })
+    .onConflictDoUpdate({
+      target: [compatRuns.kind, compatRuns.runKey],
+      set: {
+        vinextRef: body.vinextRef ?? null,
+        nextRef: body.nextRef ?? null,
+        commitSha: body.commitSha ?? null,
+        createdAt: now,
+        total,
+        passed,
+        failed,
+        skipped,
+      },
+    })
+    .returning({ id: compatRuns.id });
 
-  let runId: number;
-  if (existing.length > 0) {
-    runId = existing[0].id;
-    await db
-      .update(compatRuns)
-      .set({
-        vinextRef: body.vinextRef ?? null,
-        nextRef: body.nextRef ?? null,
-        commitSha: body.commitSha ?? null,
-        createdAt: now,
-        total,
-        passed,
-        failed,
-        skipped,
-      })
-      .where(eq(compatRuns.id, runId));
-    await db.delete(compatFileResults).where(eq(compatFileResults.runId, runId));
-  } else {
-    const inserted = await db
-      .insert(compatRuns)
-      .values({
-        kind: body.kind,
-        runKey: body.runKey,
-        vinextRef: body.vinextRef ?? null,
-        nextRef: body.nextRef ?? null,
-        commitSha: body.commitSha ?? null,
-        createdAt: now,
-        total,
-        passed,
-        failed,
-        skipped,
-      })
-      .returning({ id: compatRuns.id });
-    runId = inserted[0].id;
-  }
+  const runId = upserted[0].id;
+
+  // Drop old file results for this run (if any) before re-inserting. The
+  // upsert above may have updated an existing row, in which case its file
+  // results need to be cleared so we don't accumulate duplicates.
+  await db.delete(compatFileResults).where(eq(compatFileResults.runId, runId));
 
   // Bulk insert file results. D1 enforces SQLite's 100-variable cap per
   // statement. Each row binds 8 columns (runId, kind, suite, status, total,

@@ -20,6 +20,16 @@
       "migrations_dir": "./migrations",
     },
   ],
+  // KV namespace used as the backing store for vinext's ISR CacheHandler.
+  // Pages opt into ISR with `export const revalidate = <seconds>`, and the
+  // rendered output (RSC + HTML) is cached here keyed by route + searchParams.
+  // Created via: wrangler kv namespace create vinext-web-cache
+  "kv_namespaces": [
+    {
+      "binding": "VINEXT_CACHE",
+      "id": "08075d24ec854a19a52c13f031723def",
+    },
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

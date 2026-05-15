@@ -18,6 +18,12 @@ import {
   SparkleIcon,
 } from "@phosphor-icons/react/dist/ssr";
 
+// ISR: 5-minute revalidate. The home page is fully static so the cached
+// output is effectively reused indefinitely between deploys; the revalidate
+// window just bounds how long any change takes to roll out to viewers after
+// a redeploy.
+export const revalidate = 300;
+
 const STATS = [
   {
     value: "Up to 4×",

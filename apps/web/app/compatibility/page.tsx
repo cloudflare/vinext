@@ -18,7 +18,10 @@ import { compatRuns, compatFileResults } from "@/app/lib/db/schema";
 import { ContributionGrid, type GridCell } from "./contribution-grid";
 import { CompatibilityLineChart, type LineSeriesPoint } from "./compatibility-line-chart";
 
-export const dynamic = "force-dynamic";
+// ISR: rebuild this page at most every 5 minutes. Compat data only changes
+// when a nightly deploy-suite run lands, so 5 minutes of staleness is fine
+// and keeps the page snappy without re-querying D1 on every request.
+export const revalidate = 300;
 
 const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
 
@@ -77,12 +80,32 @@ async function runQueries(
   latestFiles: GridCell[];
   trend: LineSeriesPoint[];
 }> {
-  const latestRows = await db
-    .select()
-    .from(compatRuns)
-    .where(eq(compatRuns.kind, kind))
-    .orderBy(desc(compatRuns.createdAt))
-    .limit(1);
+  // The "latest run" and "last 90 runs trend" queries are independent —
+  // issue them in parallel to save one D1 round-trip on every page load.
+  // The file-results query depends on the latest run id, so that stays
+  // sequential.
+  const [latestRows, trendRowsDesc] = await Promise.all([
+    db
+      .select()
+      .from(compatRuns)
+      .where(eq(compatRuns.kind, kind))
+      .orderBy(desc(compatRuns.createdAt))
+      .limit(1),
+    // Trend: cap to last 90 runs to keep the page snappy. The result is
+    // newest-first; we reverse below to plot oldest → newest.
+    db
+      .select({
+        createdAt: compatRuns.createdAt,
+        total: compatRuns.total,
+        passed: compatRuns.passed,
+        failed: compatRuns.failed,
+        skipped: compatRuns.skipped,
+      })
+      .from(compatRuns)
+      .where(eq(compatRuns.kind, kind))
+      .orderBy(desc(compatRuns.createdAt))
+      .limit(90),
+  ]);
 
   const latestRun = latestRows[0] ?? null;
 
@@ -109,20 +132,6 @@ async function runQueries(
         skipped: r.skipped,
       }))
     : [];
-
-  // Trend: oldest → newest. Cap to last 90 runs to keep the page snappy.
-  const trendRowsDesc = await db
-    .select({
-      createdAt: compatRuns.createdAt,
-      total: compatRuns.total,
-      passed: compatRuns.passed,
-      failed: compatRuns.failed,
-      skipped: compatRuns.skipped,
-    })
-    .from(compatRuns)
-    .where(eq(compatRuns.kind, kind))
-    .orderBy(desc(compatRuns.createdAt))
-    .limit(90);
 
   // Pass rate excludes skipped tests: skipped → "not relevant", not "failure".
   // Denominator is passed + failed (the tests that actually ran a verdict).
