@@ -393,7 +393,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: deploy-suite-report
-          path: report/deploy-suite-report.json
+          # Include both files: the human-readable report and the
+          # /compatibility ingest payload. Keeping the ingest payload
+          # archived lets us manually re-POST a run if the live ingest
+          # step fails (network blip, bad URL, expired secret, etc.)
+          # without re-running the 40-minute suite.
+          path: |
+            report/deploy-suite-report.json
+            report/compat-ingest.json
           retention-days: 90
 
       # Submit per-file results to the /compatibility page's ingest endpoint.
