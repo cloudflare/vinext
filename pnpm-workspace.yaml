@@ -5,6 +5,7 @@ blockExoticSubdeps: true
 minimumReleaseAge: 1440
 
 packages:
+  - apps/*
   - packages/*
   - examples/*
   - tests/fixtures/*
@@ -12,14 +13,14 @@ packages:
   - benchmarks/vinext
 
 catalog:
-  "@cloudflare/kumo": ^1.6.0
-  "@mdx-js/loader": 3.1.0
+  "@cloudflare/kumo": ^2.2.0
   "@cloudflare/vite-plugin": ^1.31.0
   "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
+  "@mdx-js/loader": 3.1.0
   "@mdx-js/react": ^3.1.1
   "@mdx-js/rollup": ^3.1.1
-  "@phosphor-icons/react": ^2.1.7
+  "@phosphor-icons/react": ^2.1.10
   "@playwright/test": ^1.58.2
   "@radix-ui/react-dialog": ^1.1.14
   "@radix-ui/react-dropdown-menu": ^2.1.15
