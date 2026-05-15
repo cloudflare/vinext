@@ -13,6 +13,7 @@ packages:
 
 catalog:
   "@cloudflare/kumo": ^1.6.0
+  "@mdx-js/loader": 3.1.0
   "@cloudflare/vite-plugin": ^1.31.0
   "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
@@ -37,6 +38,9 @@ catalog:
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
+  "@next/mdx": 16.2.6
+  recma-codehike: 0.0.1
+  remark-codehike: 0.0.1
   "@vitejs/plugin-rsc": ^0.5.23
   "@vitest/coverage-istanbul": ^4.1.5
   better-auth: ^1.5.6
@@ -98,6 +102,17 @@ peerDependencyRules:
     - next
     - webpack
     - rollup
+
+packageExtensions:
+  # codehike@1.0.7 lists zod only as a devDependency, so pnpm doesn't nest zod
+  # next to it. TS then resolves `zod` from inside codehike's .d.ts files to
+  # whichever zod happens to be hoisted (zod@4.3.6 in this monorepo, pulled in
+  # by better-auth/fumadocs), which is incompatible with codehike's zod v3
+  # types. Declare zod as a peerDependency on codehike so pnpm pulls the
+  # correct version (zod@3.24.3 from the catalog) into codehike's scope.
+  codehike@1.0.7:
+    peerDependencies:
+      zod: 3.24.3
 
 allowBuilds:
   better-sqlite3: true

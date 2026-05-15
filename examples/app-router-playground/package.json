@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@heroicons/react": "catalog:",
+    "@mdx-js/loader": "catalog:",
+    "@next/mdx": "catalog:",
     "@types/mdx": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "clsx": "catalog:",
@@ -17,9 +19,11 @@
     "ms": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "recma-codehike": "catalog:",
+    "remark-codehike": "catalog:",
     "use-count-up": "catalog:",
     "vinext": "workspace:*",
-    "react-server-dom-webpack": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -36,7 +40,7 @@
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "wrangler": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
   }
 }

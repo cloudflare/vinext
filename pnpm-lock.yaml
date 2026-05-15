@@ -18,12 +18,18 @@ catalogs:
     '@heroicons/react':
       specifier: 2.2.0
       version: 2.2.0
+    '@mdx-js/loader':
+      specifier: 3.1.0
+      version: 3.1.0
     '@mdx-js/react':
       specifier: ^3.1.1
       version: 3.1.1
     '@mdx-js/rollup':
       specifier: ^3.1.1
       version: 3.1.1
+    '@next/mdx':
+      specifier: 16.2.6
+      version: 16.2.6
     '@phosphor-icons/react':
       specifier: ^2.1.7
       version: 2.1.10
@@ -165,6 +171,12 @@ catalogs:
     react-server-dom-webpack:
       specifier: ^19.2.6
       version: 19.2.6
+    recma-codehike:
+      specifier: 0.0.1
+      version: 0.0.1
+    remark-codehike:
+      specifier: 0.0.1
+      version: 0.0.1
     sanitize-html:
       specifier: ^2.17.3
       version: 2.17.3
@@ -213,6 +225,8 @@ overrides:
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.21
   picomatch: '>=2.3.2'
   srvx: '>=0.11.13'
+
+packageExtensionsChecksum: sha256-DELwn26pds5KeVDWtpKSByRpbPdf/D1CYmAVTGs16Cc=
 
 importers:
 
@@ -369,6 +383,12 @@ importers:
       '@heroicons/react':
         specifier: 'catalog:'
         version: 2.2.0(react@19.2.6)
+      '@mdx-js/loader':
+        specifier: 'catalog:'
+        version: 3.1.0
+      '@next/mdx':
+        specifier: 'catalog:'
+        version: 16.2.6(@mdx-js/loader@3.1.0)(@mdx-js/react@3.1.1(@types/react@19.2.14)(react@19.2.6))
       '@types/mdx':
         specifier: 'catalog:'
         version: 2.0.13
@@ -380,7 +400,7 @@ importers:
         version: 2.1.1
       codehike:
         specifier: 'catalog:'
-        version: 1.0.7
+        version: 1.0.7(zod@3.24.3)
       date-fns:
         specifier: 'catalog:'
         version: 4.1.0
@@ -396,6 +416,12 @@ importers:
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      recma-codehike:
+        specifier: 'catalog:'
+        version: 0.0.1(zod@3.24.3)
+      remark-codehike:
+        specifier: 'catalog:'
+        version: 0.0.1(zod@3.24.3)
       use-count-up:
         specifier: 'catalog:'
         version: 3.0.1(react@19.2.6)
@@ -963,7 +989,7 @@ importers:
         version: 0.5.23(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       better-auth:
         specifier: 'catalog:'
-        version: 1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.5)(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@5.9.3)(yaml@2.8.3)
+        version: 1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.5(@voidzero-dev/vite-plus-test@0.1.21))(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@5.9.3)(yaml@2.8.3)
       better-sqlite3:
         specifier: 'catalog:'
         version: 12.6.2
@@ -1894,6 +1920,14 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
+  '@mdx-js/loader@3.1.0':
+    resolution: {integrity: sha512-xU/lwKdOyfXtQGqn3VnJjlDrmKXEvMi1mgYxVmukEUtVycIz1nh7oQ40bKTd4cA7rLStqu0740pnhGYxGoqsCg==}
+    peerDependencies:
+      webpack: '>=5'
+    peerDependenciesMeta:
+      webpack:
+        optional: true
+
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
 
@@ -1916,6 +1950,17 @@ packages:
 
   '@next/env@16.2.6':
     resolution: {integrity: sha512-gd8HoHN4ufj73WmR3JmVolrpJR47ILK6LouP5xElPglaVxir6e1a7VzvTvDWkOoPXT9rkkTzyCxBu4yeZfZwcw==}
+
+  '@next/mdx@16.2.6':
+    resolution: {integrity: sha512-0hdoSkzRbyud1dNRRDiyqD9FrxR2wwdiW+ffhYx+n+fXrFOJ7Nwpi8o7nUz2LiiM44BB9M0eIO1Evy3BBrS50A==}
+    peerDependencies:
+      '@mdx-js/loader': '>=0.15.0'
+      '@mdx-js/react': '>=0.15.0'
+    peerDependenciesMeta:
+      '@mdx-js/loader':
+        optional: true
+      '@mdx-js/react':
+        optional: true
 
   '@next/swc-darwin-arm64@16.2.6':
     resolution: {integrity: sha512-ZJGkkcNfYgrrMkqOdZ7zoLa1TOy0qpcMfk/z4Mh/FKUz40gVO+HNQWqmLxf67Z5WB64DRp0dhEbyHfel+6sJUg==}
@@ -4004,6 +4049,8 @@ packages:
 
   codehike@1.0.7:
     resolution: {integrity: sha512-m4YOQv1l06qoGBLCgXRNT45MKAudXjir9v+WTs7Xb0gfze6LN3ZiUp08+WRA1N/QGT1SHbzvck8txvPq+C2EPg==}
+    peerDependencies:
+      zod: 3.24.3
 
   collapse-white-space@2.1.0:
     resolution: {integrity: sha512-loKTxY1zCOuG4j9f6EPnuyyYkf58RnhhWTvRoZEokgB+WbdXehfjFviyOVYkqzEWz1Q5kRiZdBYS5SwxbQYwzw==}
@@ -5385,6 +5432,9 @@ packages:
   recma-build-jsx@1.0.0:
     resolution: {integrity: sha512-8GtdyqaBcDfva+GUKDr3nev3VpKAhup1+RvkMvUxURHpW7QyIvk9F5wz7Vzo06CEMSilw6uArgRqhpiUcWp8ew==}
 
+  recma-codehike@0.0.1:
+    resolution: {integrity: sha512-iqNcdOxwSLP+cSFm/d8hav3fDisEBAPEjwZvL0aQEYTWTm87kbVrHVpIAKYn9O2OB/kfZwqCMsbI29NTLhX0Qw==}
+
   recma-jsx@1.0.1:
     resolution: {integrity: sha512-huSIy7VU2Z5OLv6oFLosQGGDqPqdO1iq6bWNAdhzMxSJP7RAso4fCZ1cKu8j9YHCZf3TPrq4dw3okhrylgcd7w==}
     peerDependencies:
@@ -5410,6 +5460,9 @@ packages:
 
   rehype-recma@1.0.0:
     resolution: {integrity: sha512-lqA4rGUf1JmacCNWWZx0Wv1dHqMwxzsDWYMTowuplHF3xH0N/MmrZ/G3BDZnzAkRmxDadujCjaKM2hqYdCBOGw==}
+
+  remark-codehike@0.0.1:
+    resolution: {integrity: sha512-hSsh43HqQkxpqOvvrBuNT9U/fBevjYjXM5Q7lxpWmZrBKV3hSBubYd8nvq7+FPRSloIEQrYfiqbrnr9Ewl+MTA==}
 
   remark-gfm@4.0.1:
     resolution: {integrity: sha512-1quofZ2RQ9EWdeN34S79+KExV1764+wCUGop5CPL1WGdD0ocPpu91lzPGbwWMECpEpd42kJGQwzRfyov9j4yNg==}
@@ -6482,6 +6535,13 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
+  '@mdx-js/loader@3.1.0':
+    dependencies:
+      '@mdx-js/mdx': 3.1.1
+      source-map: 0.7.6
+    transitivePeerDependencies:
+      - supports-color
+
   '@mdx-js/mdx@3.1.1':
     dependencies:
       '@types/estree': 1.0.8
@@ -6542,6 +6602,13 @@ snapshots:
     optional: true
 
   '@next/env@16.2.6': {}
+
+  '@next/mdx@16.2.6(@mdx-js/loader@3.1.0)(@mdx-js/react@3.1.1(@types/react@19.2.14)(react@19.2.6))':
+    dependencies:
+      source-map: 0.7.6
+    optionalDependencies:
+      '@mdx-js/loader': 3.1.0
+      '@mdx-js/react': 3.1.1(@types/react@19.2.14)(react@19.2.6)
 
   '@next/swc-darwin-arm64@16.2.6':
     optional: true
@@ -7963,7 +8030,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.25: {}
 
-  better-auth@1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.5)(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@5.9.3)(yaml@2.8.3):
+  better-auth@1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.5(@voidzero-dev/vite-plus-test@0.1.21))(@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)(yaml@2.8.3))(better-sqlite3@12.6.2)(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@5.9.3)(yaml@2.8.3):
     dependencies:
       '@better-auth/core': 1.5.6(@better-auth/utils@0.3.1)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(better-call@1.3.2(zod@4.3.6))(jose@6.1.3)(kysely@0.28.15)(nanostores@1.2.0)
       '@better-auth/drizzle-adapter': 1.5.6(@better-auth/core@1.5.6(@better-auth/utils@0.3.1)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(better-call@1.3.2(zod@4.3.6))(jose@6.1.3)(kysely@0.28.15)(nanostores@1.2.0))(@better-auth/utils@0.3.1)
@@ -8091,13 +8158,14 @@ snapshots:
 
   clsx@2.1.1: {}
 
-  codehike@1.0.7:
+  codehike@1.0.7(zod@3.24.3):
     dependencies:
       '@code-hike/lighter': 1.0.1
       diff: 5.2.2
       estree-util-visit: 2.0.0
       mdast-util-mdx-jsx: 3.2.0
       unist-util-visit: 5.1.0
+      zod: 3.24.3
     transitivePeerDependencies:
       - supports-color
 
@@ -9790,6 +9858,13 @@ snapshots:
       estree-util-build-jsx: 3.0.1
       vfile: 6.0.3
 
+  recma-codehike@0.0.1(zod@3.24.3):
+    dependencies:
+      codehike: 1.0.7(zod@3.24.3)
+    transitivePeerDependencies:
+      - supports-color
+      - zod
+
   recma-jsx@1.0.1(acorn@8.15.0):
     dependencies:
       acorn: 8.15.0
@@ -9836,6 +9911,13 @@ snapshots:
       hast-util-to-estree: 3.1.3
     transitivePeerDependencies:
       - supports-color
+
+  remark-codehike@0.0.1(zod@3.24.3):
+    dependencies:
+      codehike: 1.0.7(zod@3.24.3)
+    transitivePeerDependencies:
+      - supports-color
+      - zod
 
   remark-gfm@4.0.1:
     dependencies:
