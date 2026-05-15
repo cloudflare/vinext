@@ -420,7 +420,7 @@ jobs:
           )
           && hashFiles('report/compat-ingest.json') != ''
         env:
-          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.cloudflare.workers.dev/api/compatibility' }}
+          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
           COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
         run: |
           if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
