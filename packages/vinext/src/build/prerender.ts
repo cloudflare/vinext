@@ -32,6 +32,7 @@ import {
 } from "vinext/shims/cache";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -292,8 +293,24 @@ async function runWithConcurrency<T, R>(
  * Build a URL path from a route pattern and params.
  * "/posts/:id" + { id: "42" } → "/posts/42"
  * "/docs/:slug+" + { slug: ["a", "b"] } → "/docs/a/b"
+ *
+ * Throws a descriptive error rather than a cryptic `Cannot read properties of
+ * undefined` if `params` itself is missing or required keys are absent — the
+ * caller (prerenderPages / prerenderApp) catches this and surfaces it as a
+ * per-route error result.
  */
-function buildUrlFromParams(pattern: string, params: Record<string, string | string[]>): string {
+function buildUrlFromParams(
+  pattern: string,
+  params: Record<string, string | string[]> | undefined | null,
+): string {
+  if (params === undefined || params === null) {
+    throw new Error(
+      `[vinext] buildUrlFromParams: params is ${params === null ? "null" : "undefined"} for pattern "${pattern}". ` +
+        `Check that getStaticPaths / generateStaticParams returned an object with a "params" key, ` +
+        `or pass a string path (see https://nextjs.org/docs/pages/api-reference/functions/get-static-paths).`,
+    );
+  }
+
   const parts = pattern.split("/").filter(Boolean);
   const result: string[] = [];
 
@@ -322,6 +339,57 @@ function buildUrlFromParams(pattern: string, params: Record<string, string | str
   }
 
   return "/" + result.join("/");
+}
+
+/**
+ * Convert a Pages-Router `getStaticPaths` entry into a params object.
+ *
+ * Next.js accepts either a string path or `{ params, locale? }`. See:
+ *   .nextjs-ref/packages/next/src/build/static-paths/pages.ts (lines 86-129)
+ *   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
+ *
+ * For a string entry, match it against the route pattern to extract params,
+ * mirroring `_routeMatcher(cleanedEntry)` in the Next.js source. If the string
+ * doesn't match the pattern, Next.js throws — we return `null` and let the
+ * caller record a per-route error result instead of crashing the build.
+ */
+function normalizeStaticPathsItem(
+  pattern: string,
+  item: string | { params?: Record<string, string | string[]>; locale?: string } | null | undefined,
+): { params: Record<string, string | string[]> } | { error: string } {
+  if (item === null || item === undefined) {
+    return { error: `getStaticPaths returned a ${item === null ? "null" : "undefined"} entry` };
+  }
+
+  if (typeof item === "string") {
+    // Strip query string and trailing slash (mirrors Next.js removeTrailingSlash).
+    const pathOnly = item.split("?")[0];
+    const trimmed = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+    const urlParts = trimmed.split("/").filter(Boolean);
+    const patternParts = pattern.split("/").filter(Boolean);
+    const matched = matchRoutePattern(urlParts, patternParts);
+    if (!matched) {
+      return {
+        error: `The provided path \`${item}\` from getStaticPaths does not match the route pattern \`${pattern}\`.`,
+      };
+    }
+    return { params: matched };
+  }
+
+  if (typeof item !== "object") {
+    return { error: `getStaticPaths entry must be a string or an object, got ${typeof item}` };
+  }
+
+  const { params } = item;
+  if (params === undefined || params === null) {
+    return {
+      error:
+        `getStaticPaths entry is missing the \`params\` key for pattern \`${pattern}\`. ` +
+        `Return either a string path or { params: { ... } }.`,
+    };
+  }
+
+  return { params };
 }
 
 /**
@@ -507,13 +575,18 @@ export async function prerenderPages({
       ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
+    // Next.js allows `paths` to be either a list of strings or a list of
+    // { params, locale? } objects. See
+    //   .nextjs-ref/packages/next/src/build/static-paths/pages.ts
+    //   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
+    type StaticPathsItem = string | { params?: Record<string, string | string[]>; locale?: string };
     type BundleRoute = {
       pattern: string;
       isDynamic: boolean;
       params: Record<string, string>;
       module: {
         getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<{
-          paths: Array<{ params: Record<string, string | string[]> }>;
+          paths: Array<StaticPathsItem>;
           fallback: unknown;
         }>;
         getStaticProps?: unknown;
@@ -552,7 +625,7 @@ export async function prerenderPages({
               }
               if (text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
-                paths: Array<{ params: Record<string, string | string[]> }>;
+                paths: Array<StaticPathsItem>;
                 fallback: unknown;
               };
             }
@@ -633,11 +706,30 @@ export async function prerenderPages({
           continue;
         }
 
-        const paths: Array<{ params: Record<string, string | string[]> }> =
-          pathsResult?.paths ?? [];
-        for (const { params } of paths) {
-          const urlPath = buildUrlFromParams(route.pattern, params);
-          pagesToRender.push({ route, urlPath, params, revalidate });
+        // `paths` may be `Array<string | { params, locale? }>` — see the
+        // Next.js implementation referenced on StaticPathsItem above. Normalize
+        // each entry into a params object, surfacing any per-entry problem as
+        // a per-route error result instead of crashing the whole prerender.
+        const paths: Array<StaticPathsItem> = pathsResult?.paths ?? [];
+        let entryError: string | null = null;
+        for (const item of paths) {
+          const normalized = normalizeStaticPathsItem(route.pattern, item);
+          if ("error" in normalized) {
+            entryError = normalized.error;
+            break;
+          }
+          const { params } = normalized;
+          try {
+            const urlPath = buildUrlFromParams(route.pattern, params);
+            pagesToRender.push({ route, urlPath, params, revalidate });
+          } catch (e) {
+            entryError = (e as Error).message;
+            break;
+          }
+        }
+        if (entryError) {
+          results.push({ route: route.pattern, status: "error", error: entryError });
+          continue;
         }
       } else {
         pagesToRender.push({ route, urlPath: route.pattern, params: {}, revalidate });
@@ -1040,6 +1132,17 @@ export async function prerenderApp({
           }
 
           for (const params of paramSets) {
+            // Defensively guard against a generateStaticParams() that returns
+            // entries with no params object. Next.js's app static-paths code
+            // validates each required key per repeat/optional (see
+            // .nextjs-ref/packages/next/src/build/static-paths/app.ts around
+            // line 383) and throws a clear error; mirror that here instead of
+            // bubbling up a TypeError from buildUrlFromParams.
+            if (params === null || params === undefined) {
+              throw new Error(
+                `generateStaticParams() for ${route.pattern} returned an entry with no params object.`,
+              );
+            }
             const urlPath = buildUrlFromParams(route.pattern, params);
             urlsToRender.push({
               urlPath,

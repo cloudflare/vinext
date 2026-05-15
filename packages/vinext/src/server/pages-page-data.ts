@@ -16,9 +16,11 @@ type PagesRedirectResult = {
   statusCode?: number;
 };
 
-type PagesStaticPathsEntry = {
-  params: Record<string, unknown>;
-};
+// Next.js allows `paths` entries to be either an object with a `params` key
+// or a raw string path. See:
+//   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
+//   .nextjs-ref/packages/next/src/build/static-paths/pages.ts (`typeof entry === 'string'` branch)
+type PagesStaticPathsEntry = string | { params?: Record<string, unknown>; locale?: string };
 
 type PagesStaticPathsResult = {
   fallback?: boolean | "blocking";
@@ -144,11 +146,36 @@ function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
 }
 
+/**
+ * Compare a `getStaticPaths` entry against the actual request params.
+ *
+ * Handles both shapes Next.js allows:
+ *   - { params: { ... } }
+ *   - "string-path"
+ *
+ * For a string entry, compare the entry (with the route pattern's prefix
+ * already stripped by the caller via `routeUrl`) against the actual URL by
+ * checking that the entry path equals the current `routeUrl`. We strip query
+ * string and trailing slash to mirror the Next.js logic in
+ *   .nextjs-ref/packages/next/src/build/static-paths/pages.ts
+ */
 function matchesPagesStaticPath(
   pathEntry: PagesStaticPathsEntry,
   params: Record<string, unknown>,
+  routeUrl: string,
 ): boolean {
-  return Object.entries(pathEntry.params).every(([key, value]) => {
+  if (typeof pathEntry === "string") {
+    const normalize = (p: string): string => {
+      const noQuery = p.split("?")[0];
+      return noQuery === "/" ? "/" : noQuery.replace(/\/$/, "");
+    };
+    return normalize(pathEntry) === normalize(routeUrl);
+  }
+  const entryParams = pathEntry.params;
+  if (entryParams === undefined || entryParams === null) {
+    return false;
+  }
+  return Object.entries(entryParams).every(([key, value]) => {
     const actual = params[key];
     if (Array.isArray(value)) {
       return Array.isArray(actual) && value.join("/") === actual.join("/");
@@ -253,7 +280,7 @@ export async function resolvePagesPageData(
     if (fallback === false) {
       const paths = pathsResult?.paths ?? [];
       const isValidPath = paths.some((pathEntry) =>
-        matchesPagesStaticPath(pathEntry, options.params),
+        matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
       );
 
       if (!isValidPath) {

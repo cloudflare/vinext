@@ -404,18 +404,35 @@ export function createSSRHandler(
           const fallback = pathsResult?.fallback ?? false;
 
           if (fallback === false) {
-            // Only allow paths explicitly listed in getStaticPaths
-            const paths: Array<{ params: Record<string, string | string[]> }> =
-              pathsResult?.paths ?? [];
-            const isValidPath = paths.some((p: { params: Record<string, string | string[]> }) =>
-              Object.entries(p.params).every(([key, val]) => {
+            // Only allow paths explicitly listed in getStaticPaths.
+            // Next.js accepts `paths` as Array<string | { params, locale? }>:
+            //   https://nextjs.org/docs/pages/api-reference/functions/get-static-paths
+            //   .nextjs-ref/packages/next/src/build/static-paths/pages.ts
+            type StaticPathsItem =
+              | string
+              | { params?: Record<string, string | string[]>; locale?: string };
+            const paths: Array<StaticPathsItem> = pathsResult?.paths ?? [];
+            const normalizePathname = (p: string): string => {
+              const noQuery = p.split("?")[0];
+              return noQuery === "/" ? "/" : noQuery.replace(/\/$/, "");
+            };
+            const currentPathname = normalizePathname(url);
+            const isValidPath = paths.some((p: StaticPathsItem) => {
+              if (typeof p === "string") {
+                return normalizePathname(p) === currentPathname;
+              }
+              const entryParams = p.params;
+              if (entryParams === undefined || entryParams === null) {
+                return false;
+              }
+              return Object.entries(entryParams).every(([key, val]) => {
                 const actual = params[key];
                 if (Array.isArray(val)) {
                   return Array.isArray(actual) && val.join("/") === actual.join("/");
                 }
                 return String(val) === String(actual);
-              }),
-            );
+              });
+            });
 
             if (!isValidPath) {
               await renderErrorPage(

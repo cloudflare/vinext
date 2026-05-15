@@ -460,6 +460,42 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     }
   });
 
+  // Next.js accepts both `paths: Array<{ params }>` and `paths: Array<string>`
+  // from getStaticPaths. The string-path variant is documented at
+  // https://nextjs.org/docs/pages/api-reference/functions/get-static-paths and
+  // implemented in .nextjs-ref/packages/next/src/build/static-paths/pages.ts
+  // (the `typeof entry === 'string'` branch around line 89).
+  it("renders dynamic routes from getStaticPaths with string paths", () => {
+    const slugs = ["hello-world", "another-one"];
+    for (const slug of slugs) {
+      const r = findRoute(results, `/string-paths/${slug}`);
+      expect(r).toMatchObject({
+        route: "/string-paths/:slug",
+        path: `/string-paths/${slug}`,
+        status: "rendered",
+        revalidate: false,
+      });
+      if (r?.status === "rendered") {
+        expect(r.outputFiles).toContain(`string-paths/${slug}.html`);
+      }
+    }
+  });
+
+  // Next.js rejects entries with a missing `params` key — see
+  //   .nextjs-ref/packages/next/src/build/static-paths/pages.ts (around line 169)
+  //   "A required parameter (X) was not provided as a string received undefined"
+  // We must NOT crash the whole prerender phase on this; surface it as a
+  // per-route error result, the same shape we use elsewhere.
+  it("surfaces missing-params entries as a per-route error (does not crash)", () => {
+    const errored = results.find(
+      (r) => r.route === "/missing-params/:slug" && r.status === "error",
+    );
+    expect(errored).toBeDefined();
+    if (errored && errored.status === "error") {
+      expect(errored.error).toMatch(/missing the `params` key|params is undefined/);
+    }
+  });
+
   // ── ISR page ───────────────────────────────────────────────────────────────
 
   it("renders ISR page with correct revalidate interval", () => {
