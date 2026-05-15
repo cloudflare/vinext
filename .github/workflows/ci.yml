@@ -207,20 +207,77 @@ jobs:
       - name: Build plugin
         run: vp run build
 
+      # Resolve the exact Playwright version from the lockfile so the cache key
+      # only changes when Playwright itself is bumped, not on unrelated lockfile
+      # churn. Falls back to a hash of pnpm-lock.yaml if parsing fails.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          set -euo pipefail
+          version=$(grep -E "^\s+playwright:\s+[0-9]" pnpm-lock.yaml | head -n1 | awk '{print $2}' || true)
+          if [ -z "$version" ]; then
+            version="unknown-${{ hashFiles('pnpm-lock.yaml') }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved Playwright version: $version"
+
       - name: Cache Playwright browsers
+        id: playwright-cache
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-v${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-
 
-      - run: vp exec playwright install chromium
-        if: ${{ matrix.project != 'app-router-webkit-browser-specific' }}
-
-      # WebKit requires Linux system dependencies. Keep this scoped to the
-      # WebKit matrix job so Chromium jobs use the lighter browser-only install.
-      - name: Install Playwright WebKit with system dependencies
+      # Cache the apt download cache for WebKit's system dependencies.
+      # `playwright install-deps webkit` always runs `apt-get install`, but with
+      # the package archives cached we skip the (slow) download step on hits.
+      - name: Cache apt archives (WebKit deps)
         if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
-        run: vp exec playwright install --with-deps webkit
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/apt-archives
+          key: apt-webkit-${{ runner.os }}-v${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            apt-webkit-${{ runner.os }}-
+
+      # Install Chromium browser binaries. Skip when the cache is fully hit —
+      # `playwright install` is a no-op for already-installed browsers but the
+      # CLI startup itself adds a few seconds per job.
+      - name: Install Playwright Chromium
+        if: ${{ matrix.project != 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: vp exec playwright install chromium
+
+      # Install WebKit browser binaries only on cache miss. System deps are
+      # installed in a separate step below so we can cache them independently.
+      - name: Install Playwright WebKit (browser only)
+        if: ${{ matrix.project == 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: vp exec playwright install webkit
+
+      # Install WebKit system dependencies. This always runs because apt
+      # packages are root-level and not part of ~/.cache/ms-playwright. The
+      # apt archive cache above keeps this fast on hits by avoiding re-downloads.
+      # `playwright install-deps` invokes apt-get under sudo internally.
+      - name: Install Playwright WebKit system dependencies
+        if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/apt-archives
+          sudo mkdir -p /var/cache/apt/archives
+          # Seed apt's archive dir from our cache so apt skips re-downloading
+          # .deb files it already has from a previous run.
+          if [ -n "$(ls -A ~/.cache/apt-archives 2>/dev/null)" ]; then
+            sudo cp -rn ~/.cache/apt-archives/. /var/cache/apt/archives/ || true
+          fi
+          # Tell apt not to delete .deb files after install so they survive
+          # for our post-step cache copy.
+          echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/01keep-debs >/dev/null
+          vp exec playwright install-deps webkit
+          # Persist newly downloaded archives back to our cache directory.
+          sudo find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -n {} ~/.cache/apt-archives/ \;
+          sudo chown -R "$(id -u):$(id -g)" ~/.cache/apt-archives
 
       - run: vp run test:e2e
         env:
