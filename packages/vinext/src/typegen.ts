@@ -331,8 +331,11 @@ function addRoute(
     routes.push(route);
   }
   const existingParamShape = params.get(route);
-  if (existingParamShape && !paramShapesEqual(existingParamShape, paramShape)) {
-    throw new Error(`[vinext] Conflicting route param shapes generated for ${route}`);
+  if (existingParamShape) {
+    if (!paramShapesEqual(existingParamShape, paramShape)) {
+      throw new Error(`[vinext] Conflicting route param shapes generated for ${route}`);
+    }
+    return;
   }
   params.set(route, paramShape);
 }
