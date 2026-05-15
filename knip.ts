@@ -91,6 +91,11 @@ export default {
     // probed via require.resolve
     "next-intl",
 
+    // Optional peer dep used by Vite's built-in SCSS preprocessor when the
+    // user installs it. `tests/scss.test.ts` dynamically imports it to skip
+    // the SCSS suite when sass is absent, so we never list it as a hard dep.
+    "sass",
+
     // vitest reporter used outside CI
     ...(process.env.CI ? [] : ["agent"]),
 

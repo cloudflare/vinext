@@ -68,6 +68,13 @@ export async function generateServerEntry(
   // Check for _app and _document
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  // Embed the resolved _app path (or null) so the runtime can look it up
+  // in the SSR manifest and include any CSS/JS chunks `_app` brings in
+  // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
+  // own assets. Without this, `_app`-imported CSS is emitted by Vite but
+  // never `<link>`ed from the rendered HTML — see LHF-5 cluster.
+  const appAssetPathJson =
+    appFilePath !== null ? JSON.stringify(normalizePathSeparators(appFilePath)) : "null";
   const appImportCode =
     appFilePath !== null
       ? `import { default as AppComponent } from ${JSON.stringify(normalizePathSeparators(appFilePath))};`
@@ -215,6 +222,11 @@ const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+// Path to the user's pages/_app file (or null). Used to look up the
+// _app's CSS/JS chunks in the SSR manifest so any global styles imported
+// by _app are included in every page's <link rel="stylesheet"> set.
+const _appAssetPath = ${appAssetPathJson};
 
 function isrGet(key) {
   return __sharedIsrGet(key);
@@ -584,7 +596,16 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
 
-      const pageModuleIds = route.filePath ? [route.filePath] : [];
+      // Include both the matched page module and the global _app module
+      // (if present). _app is wrapped around every page in Pages Router,
+      // and any CSS/JS it imports must be linked from the rendered HTML
+      // so the browser actually loads it. Without _app in this list, a
+      // global stylesheet imported via import "./globals.scss" in
+      // _app.tsx never reaches the page, producing the LHF-5 symptom
+      // where styled elements render with the browser default colour.
+      const pageModuleIds = [];
+      if (route.filePath) pageModuleIds.push(route.filePath);
+      if (_appAssetPath) pageModuleIds.push(_appAssetPath);
       const assetTags = collectAssetTags(manifest, pageModuleIds, scriptNonce);
 
       return __renderPagesPageResponse({
