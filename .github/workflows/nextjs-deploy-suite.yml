@@ -202,6 +202,15 @@ jobs:
       - name: Generate report
         id: report
         uses: actions/github-script@v7
+        env:
+          # Resolve the GitHub Actions expressions to env vars once, instead
+          # of splicing `${{ ... }}` into JS string literals further down.
+          # The latter is fragile — a single quote in an input value would
+          # break the generated JS — and not exploitable in practice but
+          # cleaner this way.
+          VINEXT_REF: ${{ inputs.vinext-ref || github.ref }}
+          NEXT_REF: ${{ inputs.next-ref || 'v16.2.6' }}
+          SUITE_FILTER: ${{ inputs.suite-filter || 'all' }}
         with:
           script: |
             const fs = require('node:fs');
@@ -307,8 +316,8 @@ jobs:
                 {
                   kind: 'deploy',
                   runKey: String(context.runId),
-                  vinextRef: '${{ inputs.vinext-ref || github.ref }}',
-                  nextRef: '${{ inputs.next-ref || 'v16.2.6' }}',
+                  vinextRef: process.env.VINEXT_REF,
+                  nextRef: process.env.NEXT_REF,
                   commitSha: context.sha,
                   files: Array.from(fileCounts.values()),
                 },
@@ -365,9 +374,9 @@ jobs:
             // Also write a JSON report as an artifact
             const report = {
               timestamp: new Date().toISOString(),
-              vinextRef: '${{ inputs.vinext-ref || github.ref }}',
-              nextRef: '${{ inputs.next-ref || 'v16.2.6' }}',
-              suiteFilter: '${{ inputs.suite-filter || 'all' }}',
+              vinextRef: process.env.VINEXT_REF,
+              nextRef: process.env.NEXT_REF,
+              suiteFilter: process.env.SUITE_FILTER,
               summary: { total, passed: passed.length, failed: failed.length, skipped: skipped.length },
               failed: failed.map(f => ({ suite: f.suite, test: f.test })),
               passed: passed.map(p => ({ suite: p.suite, test: p.test })),

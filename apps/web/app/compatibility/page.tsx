@@ -23,6 +23,14 @@ import { CompatibilityLineChart, type LineSeriesPoint } from "./compatibility-li
 // and keeps the page snappy without re-querying D1 on every request.
 export const revalidate = 300;
 
+/**
+ * The `kind` discriminator on stored runs. The schema is designed to support
+ * multiple kinds in the future (e.g. ecosystem, vitest), but for now the
+ * page hardcodes "deploy". When a second kind is added, prefer a dedicated
+ * route over a query param so the URL is explicit and ISR caching keys cleanly.
+ */
+const KIND = "deploy" as const;
+
 const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
 
 // Pinned-locale date formatter so the dashboard renders identically regardless
@@ -37,10 +45,6 @@ const FULL_DATETIME = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
   timeZoneName: "short",
 });
-
-type PageProps = {
-  searchParams?: Promise<{ kind?: string }>;
-};
 
 async function loadData(kind: string): Promise<{
   latestRun: typeof compatRuns.$inferSelect | null;
@@ -153,11 +157,8 @@ async function runQueries(
   return { latestRun, latestFiles, trend };
 }
 
-export default async function CompatibilityPage({ searchParams }: PageProps) {
-  const sp = (await searchParams) ?? {};
-  const kind = sp.kind && sp.kind.length > 0 ? sp.kind : "deploy";
-
-  const { latestRun, latestFiles, trend, error } = await loadData(kind);
+export default async function CompatibilityPage() {
+  const { latestRun, latestFiles, trend, error } = await loadData(KIND);
 
   const fileCounts = latestFiles.reduce(
     (acc, f) => {

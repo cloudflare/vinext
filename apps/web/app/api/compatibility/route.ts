@@ -189,32 +189,39 @@ async function writeRun(body: SubmitBody): Promise<Response> {
 
   const runId = upserted[0].id;
 
-  // Drop old file results for this run (if any) before re-inserting. The
-  // upsert above may have updated an existing row, in which case its file
-  // results need to be cleared so we don't accumulate duplicates.
-  await db.delete(compatFileResults).where(eq(compatFileResults.runId, runId));
+  // Atomically replace this run's file results: DELETE old rows then
+  // bulk INSERT the new ones. We use D1's `batch()` so all statements
+  // execute inside a single transaction — if any insert fails, the DELETE
+  // and earlier inserts roll back too. Without batch the worker could
+  // crash between DELETE and the first INSERT, leaving a run with zero
+  // files (visible as an empty grid until the next successful ingest).
+  //
+  // D1 enforces SQLite's 100-variable cap per statement; each row binds
+  // 8 columns (runId, kind, suite, status, total, passed, failed,
+  // skipped), so we can fit at most 12 rows per INSERT.
+  const COLUMNS_PER_ROW = 8;
+  const MAX_VARS = 100;
+  const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
 
-  // Bulk insert file results. D1 enforces SQLite's 100-variable cap per
-  // statement. Each row binds 8 columns (runId, kind, suite, status, total,
-  // passed, failed, skipped), so we can fit at most 12 rows per insert.
-  if (body.files.length > 0) {
-    const rows = body.files.map((f) => ({
-      runId,
-      kind: body.kind,
-      suite: f.suite,
-      status: deriveStatus(f),
-      total: f.total,
-      passed: f.passed,
-      failed: f.failed,
-      skipped: f.skipped,
-    }));
-    const COLUMNS_PER_ROW = 8;
-    const MAX_VARS = 100;
-    const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      await db.insert(compatFileResults).values(rows.slice(i, i + CHUNK));
-    }
+  const rows = body.files.map((f) => ({
+    runId,
+    kind: body.kind,
+    suite: f.suite,
+    status: deriveStatus(f),
+    total: f.total,
+    passed: f.passed,
+    failed: f.failed,
+    skipped: f.skipped,
+  }));
+
+  // drizzle's batch() is typed as a non-empty readonly tuple — we know the
+  // DELETE is always the first statement, so we cast through `unknown` at
+  // the call site rather than fighting the variadic-tuple types.
+  const stmts: unknown[] = [db.delete(compatFileResults).where(eq(compatFileResults.runId, runId))];
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    stmts.push(db.insert(compatFileResults).values(rows.slice(i, i + CHUNK)));
   }
+  await db.batch(stmts as unknown as Parameters<typeof db.batch>[0]);
 
   return Response.json({ ok: true, runId, total, passed, failed, skipped });
 }
