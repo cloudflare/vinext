@@ -784,17 +784,15 @@ describe("onLoad / onError handler attachment (SSR)", () => {
 // https://github.com/vercel/next.js/blob/canary/test/unit/image-optimizer/fetch-external-image.test.ts
 
 describe("dangerouslyAllowLocalIP private-IP guard", () => {
-  const previousNodeEnv = process.env.NODE_ENV;
-
   afterEach(() => {
-    process.env.NODE_ENV = previousNodeEnv;
+    vi.unstubAllEnvs();
     delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
     delete process.env.__VINEXT_IMAGE_DOMAINS;
     delete process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP;
   });
 
   it("blocks private-IP remote URLs in production (Image returns null)", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
@@ -816,7 +814,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
   });
 
   it("blocks private-IP remote URLs in production (getImageProps returns empty src)", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
@@ -834,7 +832,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
   });
 
   it("allows private-IP remote URLs when dangerouslyAllowLocalIP = true", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "true";
 
@@ -856,7 +854,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
   });
 
   it("allows public-IP remote URLs regardless of dangerouslyAllowLocalIP", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
@@ -878,7 +876,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
   });
 
   it("warns but does not block private-IP remote URLs in development", async () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 

@@ -364,15 +364,10 @@ async function renderIsolatedLink(options: {
 }) {
   vi.resetModules();
 
-  const previousNodeEnv = process.env.NODE_ENV;
   const restoreNodeEnv = () => {
-    if (previousNodeEnv === undefined) {
-      delete process.env.NODE_ENV;
-    } else {
-      process.env.NODE_ENV = previousNodeEnv;
-    }
+    vi.unstubAllEnvs();
   };
-  process.env.NODE_ENV = options.nodeEnv;
+  vi.stubEnv("NODE_ENV", options.nodeEnv);
 
   const effects: CapturedEffect[] = [];
   let capturedAnchorProps: CapturedAnchorProps | undefined;

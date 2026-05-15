@@ -113,8 +113,7 @@ describe("app RSC error primitives", () => {
   });
 
   it("uses process.env.NODE_ENV when no explicit environment is provided", () => {
-    const previousNodeEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
 
     try {
       const onError = createRscOnErrorHandler({
@@ -127,7 +126,7 @@ describe("app RSC error primitives", () => {
 
       expect(onError(error)).toBe(errorDigest("from env"));
     } finally {
-      process.env.NODE_ENV = previousNodeEnv;
+      vi.unstubAllEnvs();
     }
   });
 });

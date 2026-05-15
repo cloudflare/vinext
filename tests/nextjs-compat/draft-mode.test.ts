@@ -15,7 +15,7 @@
  * - fixtures/app-basic/app/nextjs-compat/api/draft-status/
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchJson, fetchHtml } from "../helpers.js";
 
@@ -84,8 +84,7 @@ describe("Next.js compat: draft-mode", () => {
       headersContextFromRequest,
     } = await import("../../packages/vinext/src/shims/headers.js");
 
-    const origEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     try {
       const ctx = headersContextFromRequest(new Request("http://localhost/test"));
       await runWithHeadersContext(ctx, async () => {
@@ -96,7 +95,7 @@ describe("Next.js compat: draft-mode", () => {
         expect(cookieHeader).toMatch(/;\s*Secure/i);
       });
     } finally {
-      process.env.NODE_ENV = origEnv;
+      vi.unstubAllEnvs();
     }
   });
 
@@ -108,8 +107,7 @@ describe("Next.js compat: draft-mode", () => {
       headersContextFromRequest,
     } = await import("../../packages/vinext/src/shims/headers.js");
 
-    const origEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     try {
       const ctx = headersContextFromRequest(new Request("https://preview.example.com/test"));
       await runWithHeadersContext(ctx, async () => {
@@ -121,7 +119,7 @@ describe("Next.js compat: draft-mode", () => {
         expect(cookieHeader).toMatch(/;\s*Secure/i);
       });
     } finally {
-      process.env.NODE_ENV = origEnv;
+      vi.unstubAllEnvs();
     }
   });
 
@@ -133,8 +131,7 @@ describe("Next.js compat: draft-mode", () => {
       headersContextFromRequest,
     } = await import("../../packages/vinext/src/shims/headers.js");
 
-    const origEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     try {
       const ctx = headersContextFromRequest(new Request("https://preview.example.com/test"));
       await runWithHeadersContext(ctx, async () => {
@@ -148,7 +145,7 @@ describe("Next.js compat: draft-mode", () => {
         expect(cookieHeader).not.toMatch(/;\s*Max-Age=0/i);
       });
     } finally {
-      process.env.NODE_ENV = origEnv;
+      vi.unstubAllEnvs();
     }
   });
 

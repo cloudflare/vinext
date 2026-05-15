@@ -61,8 +61,7 @@ describe("createAppRscOnErrorHandler", () => {
   });
 
   it("produces a production digest for non-digest errors in production env", () => {
-    const previousNodeEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     try {
       const onError = createAppRscOnErrorHandler(() => {}, makeReq(), "/feed", "/feed");
       const error = new Error("secret");
@@ -70,7 +69,7 @@ describe("createAppRscOnErrorHandler", () => {
 
       expect(onError(error)).toBe(errorDigest("secretsecret-stack"));
     } finally {
-      process.env.NODE_ENV = previousNodeEnv;
+      vi.unstubAllEnvs();
     }
   });
 

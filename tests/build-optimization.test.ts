@@ -27,6 +27,11 @@ const clientManualChunks = createClientManualChunks("/vinext/shims/");
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
 // pollute each other — this affects optimizeDeps, treeshake, and NODE_ENV tests.
+//
+// We write through Reflect rather than direct assignment because Next.js's
+// global.d.ts augments NodeJS.ProcessEnv to make NODE_ENV readonly at the type
+// level. Node itself has no such restriction at runtime — the production code
+// under test relies on being able to set NODE_ENV directly.
 let originalNodeEnv: string | undefined;
 
 beforeEach(() => {
@@ -35,9 +40,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (originalNodeEnv === undefined) {
-    delete process.env.NODE_ENV;
+    Reflect.deleteProperty(process.env, "NODE_ENV");
   } else {
-    process.env.NODE_ENV = originalNodeEnv;
+    Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
   }
 });
 

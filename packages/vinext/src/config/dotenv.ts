@@ -4,10 +4,21 @@ import { parseEnv } from "node:util";
 
 type VinextEnvMode = "development" | "production" | "test";
 
+/**
+ * Environment-variable bag accepted by {@link loadDotenv}.
+ *
+ * Intentionally a plain string→string|undefined dictionary rather than
+ * `NodeJS.ProcessEnv`. `NodeJS.ProcessEnv` is augmented by `@types/node` (and
+ * by Next.js, when it's anywhere in the workspace) to make `NODE_ENV` a
+ * required, readonly property, which doesn't reflect Node's real runtime
+ * behaviour and breaks tests that pass throwaway dictionaries here.
+ */
+type EnvBag = Record<string, string | undefined>;
+
 type LoadDotenvOptions = {
   root: string;
   mode: VinextEnvMode;
-  processEnv?: NodeJS.ProcessEnv;
+  processEnv?: EnvBag;
 };
 
 type LoadDotenvResult = {
@@ -80,10 +91,7 @@ export function loadDotenv({
 
 const ENV_REF_RE = /(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
 
-function expandEnv(
-  parsed: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv,
-): Record<string, string> {
+function expandEnv(parsed: Record<string, string>, processEnv: EnvBag): Record<string, string> {
   const expanded: Record<string, string> = {};
   const resolving = new Set<string>();
   const context: Record<string, string | undefined> = {
