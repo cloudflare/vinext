@@ -990,7 +990,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // below and would otherwise reach the trailing-slash redirect emitter.
     if (isOpenRedirectShaped(rawPathname)) {
       res.writeHead(404);
-      res.end("404 Not Found");
+      res.end("This page could not be found");
       return;
     }
 
@@ -1284,7 +1284,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // below and would otherwise reach the trailing-slash redirect emitter.
     if (isOpenRedirectShaped(rawPagesPathnameBeforeNormalize)) {
       res.writeHead(404);
-      res.end("404 Not Found");
+      res.end("This page could not be found");
       return;
     }
 
@@ -1726,7 +1726,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       if (!response) {
         res.writeHead(404);
-        res.end("404 - Not found");
+        res.end("This page could not be found");
         return;
       }
 

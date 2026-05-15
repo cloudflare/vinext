@@ -544,7 +544,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/docs/missing"), null);
 
     expect(response.status).toBe(404);
-    expect(await response.text()).toBe("Not Found");
+    expect(await response.text()).toBe("This page could not be found");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 });

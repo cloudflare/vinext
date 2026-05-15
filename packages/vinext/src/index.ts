@@ -2498,7 +2498,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // and would otherwise reach trailing-slash redirect emitters.
               if (isOpenRedirectShaped(pathname)) {
                 res.writeHead(404);
-                res.end("404 Not Found");
+                res.end("This page could not be found");
                 return;
               }
               pathname = pathname.replaceAll("\\", "/");

@@ -605,7 +605,7 @@ export default {
       // Location headers, so an encoded backslash in a downstream 308 redirect
       // would also navigate to the attacker's origin.
       if (isOpenRedirectShaped(pathname)) {
-        return new Response("404 Not Found", { status: 404 });
+        return new Response("This page could not be found", { status: 404 });
       }
 
       // Strip internal headers from inbound requests so they cannot be
@@ -836,7 +836,7 @@ export default {
       }
 
       if (!response) {
-        return new Response("404 - Not found", { status: 404 });
+        return new Response("This page could not be found", { status: 404 });
       }
 
       return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);

@@ -42,12 +42,25 @@ export function forbiddenResponse(): Response {
 /**
  * Build a 404 Not Found plain-text response.
  *
+ * The body matches Next.js's plain-text 404 response exactly. Next.js writes
+ * `res.end('This page could not be found')` (no trailing period) for the
+ * fallback 404 path; see in `.nextjs-ref`:
+ *   - packages/next/src/server/route-modules/pages/pages-handler.ts L121, L535
+ *   - packages/next/src/build/templates/app-route.ts L170, L349
+ *   - packages/next/src/build/templates/app-page.ts L701, L1043
+ * (The React-rendered not-found component in `packages/next/src/client/components/builtin/not-found.tsx`
+ * uses the same text with a trailing period — that variant is rendered as HTML,
+ * not returned as the plain-text body.)
+ *
  * The `headers` option lets call sites merge middleware response headers into
  * the 404, matching the pattern used by `app-rsc-handler` after a route match
  * fails but middleware has already contributed headers.
  */
 export function notFoundResponse(init?: ErrorResponseInit): Response {
-  return new Response("Not Found", { status: 404, headers: init?.headers });
+  return new Response("This page could not be found", {
+    status: 404,
+    headers: init?.headers,
+  });
 }
 
 /**

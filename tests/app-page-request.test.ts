@@ -24,7 +24,7 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("Not Found");
+    await expect(response?.text()).resolves.toBe("This page could not be found");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
@@ -40,7 +40,7 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("Not Found");
+    await expect(response?.text()).resolves.toBe("This page could not be found");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 

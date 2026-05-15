@@ -33,7 +33,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(response?.status).toBe(404);
-    await expect(response?.text()).resolves.toBe("Not Found");
+    await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
   it("calls generateStaticParams with object parent params and serializes the result", async () => {
