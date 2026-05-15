@@ -212,6 +212,21 @@ describe("App Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  // Next.js sets the RSC response Content-Type to exactly "text/x-component"
+  // (no charset). Several Next.js tests use strict equality:
+  //   .nextjs-ref/test/e2e/app-dir/app/index.test.ts L362, L371
+  //   .nextjs-ref/test/e2e/app-dir/segment-cache/deployment-skew/deployment-skew.test.ts L80
+  // Source constant:
+  //   .nextjs-ref/packages/next/src/client/components/app-router-headers.ts L17
+  //   export const RSC_CONTENT_TYPE_HEADER = 'text/x-component' as const
+  it("uses text/x-component for the RSC Content-Type with no charset suffix", async () => {
+    const res = await fetch(`${baseUrl}/about.rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/x-component");
+  });
+
   // Dual-router coexistence: the app-basic fixture has both app/ and pages/
   // (pages/old-school.tsx activates hasPagesDir). This verifies the Pages Router
   // still renders its own pages correctly when both routers are active — the

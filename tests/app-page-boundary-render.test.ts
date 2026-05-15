@@ -306,7 +306,7 @@ describe("app page boundary render helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component");
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
     expect(payload.__route).toBe("route:/posts/missing");
@@ -548,7 +548,7 @@ describe("app page boundary render helpers", () => {
     });
 
     expect(response?.status).toBe(200);
-    expect(response?.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component");
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
     expect(payload.__route).toBe("route:/posts/missing");

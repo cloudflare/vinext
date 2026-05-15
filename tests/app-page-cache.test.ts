@@ -82,7 +82,7 @@ describe("app page cache helpers", () => {
         revalidateSeconds: 60,
       }),
     );
-    expect(rscResponse?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(rscResponse?.headers.get("content-type")).toBe("text/x-component");
     expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
@@ -810,7 +810,7 @@ describe("app page cache helpers", () => {
     const response = finalizeAppPageRscCacheResponse(
       new Response("flight", {
         headers: {
-          "Content-Type": "text/x-component; charset=utf-8",
+          "Content-Type": "text/x-component",
           "Cache-Control": "s-maxage=60, stale-while-revalidate",
           "X-Vinext-Cache": "MISS",
         },

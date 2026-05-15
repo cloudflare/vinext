@@ -378,7 +378,7 @@ describe("app page response helpers", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"slug":"test"}'));
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");

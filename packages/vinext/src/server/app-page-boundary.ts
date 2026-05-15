@@ -1,6 +1,10 @@
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { VINEXT_RSC_VARY_HEADER, applyRscCompatibilityIdHeader } from "./app-rsc-cache-busting.js";
+import {
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+  applyRscCompatibilityIdHeader,
+} from "./app-rsc-cache-busting.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 export type AppPageParams = Record<string, string | string[]>;
@@ -235,7 +239,7 @@ export async function renderAppPageBoundaryResponse<TElement>(
     // by the client, so headers()/cookies() and async server components still need
     // their ALS-backed state while the stream is being read.
     const headers = new Headers({
-      "Content-Type": "text/x-component; charset=utf-8",
+      "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);

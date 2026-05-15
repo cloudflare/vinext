@@ -186,7 +186,7 @@ describe("prefetch cache eviction", () => {
   it("preserves RSC metadata when replaying cached responses", async () => {
     const response = new Response("flight", {
       headers: {
-        "content-type": "text/x-component; charset=utf-8",
+        "content-type": "text/x-component",
         [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "compat-a",
         "x-vinext-params": encodeURIComponent('{"id":"2"}'),
       },
@@ -195,7 +195,7 @@ describe("prefetch cache eviction", () => {
     const snapshot = await snapshotRscResponse(response);
     const restored = restoreRscResponse(snapshot);
 
-    expect(restored.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(restored.headers.get("content-type")).toBe("text/x-component");
     expect(restored.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
     await expect(restored.text()).resolves.toBe("flight");

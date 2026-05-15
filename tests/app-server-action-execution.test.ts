@@ -629,7 +629,7 @@ describe("app server action execution helpers", () => {
     );
 
     expect(response?.status).toBe(200);
-    expect(response?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response?.headers.get("content-type")).toBe("text/x-component");
     expect(response?.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response?.headers.get("x-middleware")).toBe("present");
     expect(response?.headers.getSetCookie()).toEqual(["action=1; Path=/", "draft=1; Path=/"]);
@@ -660,7 +660,7 @@ describe("app server action execution helpers", () => {
       );
 
       expect(response?.status).toBe(200);
-      expect(response?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+      expect(response?.headers.get("content-type")).toBe("text/x-component");
       expect(response?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-action");
       expect(response?.headers.get("x-action-revalidated")).toBeNull();
       expect(buildPageElement).not.toHaveBeenCalled();

@@ -294,7 +294,7 @@ describe("app browser entry navigation scheduling", () => {
     const snapshot = navigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
-          "content-type": "text/x-component; charset=utf-8",
+          "content-type": "text/x-component",
           [VINEXT_MOUNTED_SLOTS_HEADER]: "children",
           [VINEXT_PARAMS_HEADER]: "%7B%22slug%22%3A%22target%22%7D",
           [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "compat-a",

@@ -8,7 +8,11 @@ import {
   ACTION_REDIRECT_TYPE_HEADER,
   ACTION_REVALIDATED_HEADER,
 } from "./headers.js";
-import { VINEXT_RSC_VARY_HEADER, applyRscCompatibilityIdHeader } from "./app-rsc-cache-busting.js";
+import {
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+  applyRscCompatibilityIdHeader,
+} from "./app-rsc-cache-busting.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
@@ -628,7 +632,7 @@ export async function handleServerActionRscRequest<
       );
       options.clearRequestContext();
       const redirectHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
+        "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
@@ -665,7 +669,7 @@ export async function handleServerActionRscRequest<
       options.clearRequestContext();
 
       const actionHeaders = new Headers({
-        "Content-Type": "text/x-component; charset=utf-8",
+        "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
@@ -729,7 +733,7 @@ export async function handleServerActionRscRequest<
     );
 
     const actionHeaders = new Headers({
-      "Content-Type": "text/x-component; charset=utf-8",
+      "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);

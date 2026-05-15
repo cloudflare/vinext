@@ -202,7 +202,7 @@ describe("app page boundary helpers", () => {
     });
 
     expect(response.status).toBe(404);
-    expect(response.headers.get("Content-Type")).toBe("text/x-component; charset=utf-8");
+    expect(response.headers.get("Content-Type")).toBe("text/x-component");
     expect(createHtmlResponse).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("RSC boundary");
   });

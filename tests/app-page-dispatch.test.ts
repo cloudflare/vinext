@@ -347,7 +347,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
-    await expect(response.text()).resolves.toBe("Not Found");
+    await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
   it("serves intercepted RSC source-route payloads with middleware response state", async () => {
@@ -389,7 +389,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
   });

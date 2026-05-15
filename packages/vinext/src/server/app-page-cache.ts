@@ -1,5 +1,9 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
-import { VINEXT_RSC_VARY_HEADER, applyRscCompatibilityIdHeader } from "./app-rsc-cache-busting.js";
+import {
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+  applyRscCompatibilityIdHeader,
+} from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { VINEXT_CACHE_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
@@ -235,7 +239,7 @@ export function buildAppPageCachedResponse(
     const rscHeaders = buildAppPageCachedHeaders({
       cacheControl,
       cacheState: options.cacheState,
-      contentType: "text/x-component; charset=utf-8",
+      contentType: VINEXT_RSC_CONTENT_TYPE,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
