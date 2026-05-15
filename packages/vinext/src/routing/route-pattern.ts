@@ -165,7 +165,7 @@ export type StaticPathsEntry =
  * Result of {@link normalizeStaticPathsEntry}: either a params object, or a
  * descriptive error string the caller can surface as a per-route error result.
  */
-export type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: string };
+type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: string };
 
 /**
  * Strip query string and a single trailing slash from a pathname.
