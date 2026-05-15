@@ -12,4 +12,26 @@
   "images": {
     "binding": "IMAGES",
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vinext-metrics",
+      "database_id": "63e7cd24-9d47-4f17-a41d-b5806babc406",
+      "migrations_dir": "./migrations",
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+    },
+  },
+  "secrets": {
+    "required": ["COMPAT_INGEST_SECRET"],
+  },
 }

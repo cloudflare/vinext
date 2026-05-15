@@ -200,6 +200,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate report
+        id: report
         uses: actions/github-script@v7
         with:
           script: |
@@ -231,15 +232,50 @@ jobs:
             const passed = [];
             const failed = [];
             const skipped = [];
+            // Per-test-file counts for the /compatibility page ingest.
+            const fileCounts = new Map();
+            function bumpFile(suite, key) {
+              let cur = fileCounts.get(suite);
+              if (!cur) {
+                cur = { suite, total: 0, passed: 0, failed: 0, skipped: 0 };
+                fileCounts.set(suite, cur);
+              }
+              cur.total++;
+              cur[key]++;
+            }
+
+            // Derive a canonical Next.js test path from the result-file path.
+            //
+            // Next.js's run-tests.js does NOT populate testResults[].testFilePath
+            // in the JSON, so we have to recover it from where the file lives in
+            // the artifact tree. Each shard uploads files at their relative path
+            // inside next.js/test/, e.g. `e2e/app-dir/foo/foo.test.ts.results.json`.
+            //
+            // The report job uses `merge-multiple: true`, which flattens the
+            // contents of every artifact into `results/`. We also defensively
+            // strip a leading `test-results-N/` segment in case that ever
+            // changes and shards get nested under their artifact names.
+            // Result: a canonical path of the form `test/e2e/app-dir/foo/foo.test.ts`.
+            function deriveSuiteName(file) {
+              let rel = path.relative('results', file);
+              // Defensive: strip a leading `test-results-<n>/` shard prefix if
+              // the download layout ever changes.
+              rel = rel.replace(/^test-results-[^/]+\//, '');
+              const stripped = rel.replace(/\.results\.json$/, '');
+              if (stripped && stripped.includes('/')) {
+                return `test/${stripped}`;
+              }
+              // Fallback: file sits at the top level of results/ (shouldn't
+              // happen in practice). Use the basename so we don't break ingest.
+              return path.basename(file, '.results.json');
+            }
 
             for (const file of resultFiles) {
               try {
                 const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-                for (const suite of data.testResults || []) {
-                  const suiteName = suite.testFilePath
-                    ? suite.testFilePath.replace(/^.*?test\//, 'test/')
-                    : path.basename(file, '.results.json');
+                const suiteName = deriveSuiteName(file);
 
+                for (const suite of data.testResults || []) {
                   for (const tc of suite.assertionResults || []) {
                     const testName = tc.ancestorTitles
                       ? [...tc.ancestorTitles, tc.title].join(' > ')
@@ -247,11 +283,14 @@ jobs:
 
                     if (tc.status === 'passed') {
                       passed.push({ suite: suiteName, test: testName });
+                      bumpFile(suiteName, 'passed');
                     } else if (tc.status === 'failed') {
                       const msg = (tc.failureMessages || []).join('\n').slice(0, 500);
                       failed.push({ suite: suiteName, test: testName, message: msg });
+                      bumpFile(suiteName, 'failed');
                     } else {
                       skipped.push({ suite: suiteName, test: testName });
+                      bumpFile(suiteName, 'skipped');
                     }
                   }
                 }
@@ -259,6 +298,24 @@ jobs:
                 core.warning(`Failed to parse ${file}: ${e.message}`);
               }
             }
+
+            // Persist the per-file counts for the next step to submit to D1.
+            fs.mkdirSync('report', { recursive: true });
+            fs.writeFileSync(
+              'report/compat-ingest.json',
+              JSON.stringify(
+                {
+                  kind: 'deploy',
+                  runKey: String(context.runId),
+                  vinextRef: '${{ inputs.vinext-ref || github.ref }}',
+                  nextRef: '${{ inputs.next-ref || 'v16.2.6' }}',
+                  commitSha: context.sha,
+                  files: Array.from(fileCounts.values()),
+                },
+                null,
+                2,
+              ) + '\n',
+            );
 
             const total = passed.length + failed.length + skipped.length;
             const passRate = total > 0 ? ((passed.length / total) * 100).toFixed(1) : '0.0';
@@ -329,3 +386,46 @@ jobs:
           name: deploy-suite-report
           path: report/deploy-suite-report.json
           retention-days: 90
+
+      # Submit per-file results to the /compatibility page's ingest endpoint.
+      # Requires the COMPAT_INGEST_SECRET repo secret (matched against the
+      # worker's COMPAT_INGEST_SECRET set via `wrangler secret put`).
+      # No-op if the secret or ingest URL aren't configured.
+      #
+      # Guardrails:
+      #   - Only the full suite (suite-filter=all). Filtered runs (just `app`
+      #     or just `pages`) would publish a misleading partial snapshot that
+      #     drags the historical pass-rate trend off-course.
+      #   - Only when running against main. Scheduled runs always test main
+      #     (github.ref == refs/heads/main). For manual workflow_dispatch we
+      #     check that `inputs.vinext-ref` resolves to main (its default).
+      #     Branch / PR runs are useful for spot-checks but should not pollute
+      #     the historical record.
+      - name: Submit results to /compatibility ingest
+        if: |
+          always()
+          && (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
+          && (
+            (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
+            || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
+          )
+          && hashFiles('report/compat-ingest.json') != ''
+        env:
+          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.cloudflare.workers.dev/api/compatibility' }}
+          COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
+        run: |
+          if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
+            echo "COMPAT_INGEST_SECRET not configured; skipping ingest submission."
+            exit 0
+          fi
+          echo "Submitting compat results to ${COMPAT_INGEST_URL}"
+          # --fail-with-body keeps stdout/stderr but exits non-zero on HTTP errors.
+          # We still don't want the report job to fail if ingest hiccups, so trap
+          # the exit and just log.
+          if ! curl --silent --show-error --fail-with-body \
+            -X POST "${COMPAT_INGEST_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \
+            --data-binary @report/compat-ingest.json; then
+            echo "::warning::Compatibility ingest POST failed (non-fatal)."
+          fi

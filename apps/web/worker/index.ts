@@ -21,6 +21,8 @@ type Env = {
       };
     };
   };
+  DB: D1Database;
+  COMPAT_INGEST_SECRET?: string;
 };
 
 type ExecutionContext = {

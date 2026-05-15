@@ -101,6 +101,11 @@ export default {
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",
+
+    // Cloudflare Workers runtime virtual module — provides `env` for
+    // accessing wrangler bindings. Not an npm package. Knip strips the
+    // `cloudflare:workers` specifier down to the bare scheme.
+    "cloudflare",
   ],
   ignoreBinaries: [
     // workspace's own bin, invoked in CI

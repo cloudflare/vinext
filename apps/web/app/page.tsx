@@ -15,7 +15,6 @@ import {
   NewspaperIcon,
   PackageIcon,
   PlugsIcon,
-  RocketLaunchIcon,
   SparkleIcon,
 } from "@phosphor-icons/react/dist/ssr";
 
@@ -114,39 +113,7 @@ const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-k
 
 export default function Home() {
   return (
-    <div className="flex flex-1 flex-col bg-kumo-canvas">
-      <header className="w-full border-b border-kumo-hairline">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <RocketLaunchIcon size={20} className="text-kumo-default" />
-            <span className="font-semibold tracking-tight text-kumo-default">vinext</span>
-            <Badge variant="beta" className="ml-2">
-              Experimental
-            </Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <LinkButton
-              variant="ghost"
-              size="sm"
-              icon={<NewspaperIcon />}
-              href="https://blog.cloudflare.com/vinext/"
-              external
-            >
-              Announcement
-            </LinkButton>
-            <LinkButton
-              variant="ghost"
-              size="sm"
-              icon={<GithubLogoIcon />}
-              href="https://github.com/cloudflare/vinext"
-              external
-            >
-              GitHub
-            </LinkButton>
-          </div>
-        </div>
-      </header>
-
+    <>
       <section className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 pb-20 pt-24 text-center">
         <Badge variant="outline" className="mb-6">
           The Next.js API surface, re-implemented on Vite
@@ -338,24 +305,6 @@ export default function Home() {
           </div>
         </div>
       </section>
-
-      <footer className="mt-auto border-t border-kumo-hairline">
-        <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-3 px-6 py-6 sm:flex-row">
-          <Text variant="secondary" size="sm">
-            vinext is open source and experimental. Issues and PRs are welcome.
-          </Text>
-          <div className="flex items-center gap-4">
-            <KumoLink
-              href="https://github.com/cloudflare/vinext"
-              variant="plain"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              GitHub
-            </KumoLink>
-          </div>
-        </div>
-      </footer>
-    </div>
+    </>
   );
 }

@@ -9,11 +9,15 @@
     "start": "next start",
     "dev:vinext": "vinext dev --port 3001",
     "build:vinext": "vinext build",
-    "start:vinext": "vinext start"
+    "start:vinext": "vinext start",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply vinext-metrics --local",
+    "db:migrate:remote": "wrangler d1 migrations apply vinext-metrics --remote"
   },
   "dependencies": {
     "@cloudflare/kumo": "catalog:",
     "@phosphor-icons/react": "catalog:",
+    "drizzle-orm": "catalog:",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -28,6 +32,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "drizzle-kit": "catalog:",
     "postcss": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "tailwindcss": "catalog:",
