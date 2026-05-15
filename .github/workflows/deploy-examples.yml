@@ -25,24 +25,35 @@ jobs:
         example:
           - name: app-router-cloudflare
             project: app-router-cloudflare
+            working_directory: examples/app-router-cloudflare
             wrangler_config: dist/server/wrangler.json
           - name: pages-router-cloudflare
             project: pages-router-cloudflare
+            working_directory: examples/pages-router-cloudflare
             wrangler_config: dist/pages_router_cloudflare/wrangler.json
           - name: app-router-playground
             project: app-router-playground
+            working_directory: examples/app-router-playground
             wrangler_config: dist/server/wrangler.json
           - name: realworld-api-rest
             project: realworld-api-rest
+            working_directory: examples/realworld-api-rest
             wrangler_config: dist/realworld_api_rest/wrangler.json
           - name: nextra-docs-template
             project: nextra-docs-template
+            working_directory: examples/nextra-docs-template
             wrangler_config: dist/server/wrangler.json
           - name: benchmarks
             project: benchmarks
+            working_directory: examples/benchmarks
             wrangler_config: dist/server/wrangler.json
           - name: hackernews
             project: hackernews
+            working_directory: examples/hackernews
+            wrangler_config: dist/server/wrangler.json
+          - name: web
+            project: vinext-web
+            working_directory: apps/web
             wrangler_config: dist/server/wrangler.json
     steps:
       - uses: actions/checkout@v6
@@ -53,7 +64,7 @@ jobs:
 
       - name: Build example
         run: vp build
-        working-directory: examples/${{ matrix.example.name }}
+        working-directory: ${{ matrix.example.working_directory }}
 
       - name: Apply D1 migrations (benchmarks only)
         if: matrix.example.name == 'benchmarks' && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -70,7 +81,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: examples/${{ matrix.example.name }}
+          workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
 
       - name: Deploy Preview Version
@@ -79,7 +90,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: examples/${{ matrix.example.name }}
+          workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
   smoke-test:
@@ -120,6 +131,7 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
+              { name: 'web', project: 'vinext-web' },
             ];
 
             const { data: comments } = await github.rest.issues.listComments({

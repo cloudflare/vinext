@@ -1,11 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vinext-dev",
+  "name": "vinext-web",
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
+  "preview_urls": true,
   "assets": {
-    "directory": "dist/client",
     "not_found_handling": "none",
     "binding": "ASSETS",
   },

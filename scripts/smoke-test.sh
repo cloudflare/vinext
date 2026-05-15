@@ -41,6 +41,7 @@ CHECKS=(
   "nextra-docs-template          /about  About"
   "benchmarks                    /       Benchmark"
   "hackernews                    /       Hacker News"
+  "vinext-web                    /       Run your Next.js app on Vite"
 )
 
 # Content-correctness checks for dynamic routes.
