@@ -29,7 +29,10 @@ import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shi
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithPreviousNextUrl,
+  createInitialBfcacheIdMap,
+  createNextBfcacheIdMap,
   createPendingNavigationCommit,
+  readHistoryStateBfcacheIds,
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
@@ -70,6 +73,7 @@ function createResolvedElements(
 
 function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
   return {
+    bfcacheIds: {},
     elements: createResolvedElements("route:/initial", "/"),
     layoutIds: [AppElementsWire.encodeLayoutId("/")],
     layoutFlags: {},
@@ -2575,6 +2579,147 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
 
     expect(Object.hasOwn(nextState.elements, "slot:modal:/feed")).toBe(false);
+  });
+});
+
+describe("app browser entry bfcacheId helpers", () => {
+  const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+  const groupLayoutId = AppElementsWire.encodeLayoutId("/[group]");
+  const nestedGroupLayoutId = AppElementsWire.encodeLayoutId(
+    "/nextjs-compat/use-router-bfcache-id/[group]",
+  );
+  const pageX1Id = AppElementsWire.encodePageId("/x/1", null);
+  const pageX2Id = AppElementsWire.encodePageId("/x/2", null);
+  const pageY1Id = AppElementsWire.encodePageId("/y/1", null);
+
+  function createBfcacheElements(pageId: string): AppElements {
+    return createResolvedElements(
+      `route:${pageId.slice("page:".length)}`,
+      "/",
+      null,
+      {
+        [rootLayoutId]: React.createElement("div", null),
+        [groupLayoutId]: React.createElement("div", null),
+        [pageId]: React.createElement("main", null),
+      },
+      [rootLayoutId, groupLayoutId],
+    );
+  }
+
+  it("initializes every visible segment with the hydration placeholder", () => {
+    expect(createInitialBfcacheIdMap(createBfcacheElements(pageX1Id))).toEqual({
+      [rootLayoutId]: "0",
+      [groupLayoutId]: "0",
+      [pageX1Id]: "0",
+    });
+  });
+
+  it("preserves shared segment ids and mints ids for fresh segments", () => {
+    const current = {
+      [rootLayoutId]: "0",
+      [groupLayoutId]: "_b_4_",
+      [pageX1Id]: "_b_5_",
+    };
+
+    const next = createNextBfcacheIdMap({
+      current,
+      currentPathname: "/x/1",
+      elements: createBfcacheElements(pageX2Id),
+      nextPathname: "/x/2",
+    });
+
+    expect(next[rootLayoutId]).toBe("0");
+    expect(next[groupLayoutId]).toBe("_b_4_");
+    expect(next[pageX1Id]).toBeUndefined();
+    expect(next[pageX2Id]).toMatch(/^_b_\d+_$/);
+    expect(next[pageX2Id]).not.toBe("_b_5_");
+  });
+
+  it("mints a fresh layout id when a dynamic layout segment changes", () => {
+    const current = {
+      [rootLayoutId]: "0",
+      [groupLayoutId]: "_b_4_",
+      [pageX1Id]: "_b_5_",
+    };
+
+    const next = createNextBfcacheIdMap({
+      current,
+      currentPathname: "/x/1",
+      elements: createBfcacheElements(pageY1Id),
+      nextPathname: "/y/1",
+    });
+
+    expect(next[rootLayoutId]).toBe("0");
+    expect(next[groupLayoutId]).toMatch(/^_b_\d+_$/);
+    expect(next[groupLayoutId]).not.toBe("_b_4_");
+  });
+
+  it("mints a fresh nested layout id when a dynamic layout segment changes", () => {
+    const current = {
+      [rootLayoutId]: "0",
+      [nestedGroupLayoutId]: "0",
+      [pageX1Id]: "0",
+    };
+
+    const next = createNextBfcacheIdMap({
+      current,
+      currentPathname: "/nextjs-compat/use-router-bfcache-id/x/1",
+      elements: createResolvedElements(
+        "route:/nextjs-compat/use-router-bfcache-id/y/1",
+        "/",
+        null,
+        {
+          [pageY1Id]: React.createElement("main", null),
+        },
+        [rootLayoutId, nestedGroupLayoutId],
+      ),
+      nextPathname: "/nextjs-compat/use-router-bfcache-id/y/1",
+    });
+
+    expect(next[nestedGroupLayoutId]).toMatch(/^_b_\d+_$/);
+    expect(next[nestedGroupLayoutId]).not.toBe("0");
+  });
+
+  it("serializes and restores bfcache ids through history state", () => {
+    const state = createHistoryStateWithPreviousNextUrl({ __vinext_scrollY: 120 }, "/feed", {
+      [pageX1Id]: "_b_9_",
+    });
+
+    expect(state).toEqual({
+      __vinext_bfcacheIds: { [pageX1Id]: "_b_9_" },
+      __vinext_previousNextUrl: "/feed",
+      __vinext_scrollY: 120,
+    });
+    expect(readHistoryStateBfcacheIds(state)).toEqual({ [pageX1Id]: "_b_9_" });
+  });
+
+  it("uses restored history bfcache ids for traversal commits", async () => {
+    const currentState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+        [groupLayoutId]: "_b_4_",
+        [pageX2Id]: "_b_8_",
+      },
+      elements: createBfcacheElements(pageX2Id),
+      layoutIds: [rootLayoutId, groupLayoutId],
+      routeId: "route:/x/2",
+    });
+
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      nextElements: Promise.resolve(createBfcacheElements(pageX1Id)),
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/x/1", {}),
+      operationLane: "traverse",
+      renderId: 1,
+      restoredBfcacheIds: {
+        [rootLayoutId]: "0",
+        [groupLayoutId]: "_b_4_",
+        [pageX1Id]: "_b_5_",
+      },
+      type: "traverse",
+    });
+
+    expect(pending.action.bfcacheIds[pageX1Id]).toBe("_b_5_");
   });
 });
 

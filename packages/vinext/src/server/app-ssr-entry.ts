@@ -10,6 +10,7 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import {
   ServerInsertedHTMLContext,
   clearServerInsertedHTML,
+  getBfcacheIdMapContext,
   renderServerInsertedHTML,
   setNavigationContext,
   useServerInsertedHTML,
@@ -30,6 +31,9 @@ import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+import { createInitialBfcacheIdMap } from "./app-browser-state.js";
+
+const BfcacheIdMapContext = getBfcacheIdMapContext();
 
 export type FontPreload = {
   href: string;
@@ -215,11 +219,18 @@ export async function handleSsr(
         const wireElements = use(flightRoot);
         const elements = AppElementsWire.decode(wireElements);
         const metadata = AppElementsWire.readMetadata(elements);
-        return createReactElement(
+        const routeTree = createReactElement(
           ElementsContext.Provider,
           { value: elements },
           createReactElement(Slot, { id: metadata.routeId }),
         );
+        return BfcacheIdMapContext
+          ? createReactElement(
+              BfcacheIdMapContext.Provider,
+              { value: createInitialBfcacheIdMap(elements) },
+              routeTree,
+            )
+          : routeTree;
       }
 
       const root = createReactElement(VinextFlightRoot);

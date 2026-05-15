@@ -17,6 +17,7 @@ import {
   commitClientNavigationState,
   consumePrefetchResponse,
   createClientNavigationRenderSnapshot,
+  getBfcacheIdMapContext,
   getCurrentNextUrl,
   getCurrentInterceptionContext,
   getClientNavigationRenderContext,
@@ -64,6 +65,8 @@ import {
 } from "./app-elements.js";
 import {
   createHistoryStateWithPreviousNextUrl,
+  createInitialBfcacheIdMap,
+  readHistoryStateBfcacheIds,
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
@@ -138,6 +141,7 @@ const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 const browserNavigationController = createAppBrowserNavigationController();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
+const BfcacheIdMapContext = getBfcacheIdMapContext();
 
 // Parses a URI-encoded JSON value carried in a response header (e.g.
 // `X-Vinext-Params`). Returns `null` on missing or malformed input so callers
@@ -219,13 +223,14 @@ function clearClientNavigationCaches(): void {
 }
 
 function createNavigationCommitEffect(options: {
+  bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
   navId: number;
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
 }): () => void {
-  const { href, historyUpdateMode, navId, params, previousNextUrl } = options;
+  const { bfcacheIds, href, historyUpdateMode, navId, params, previousNextUrl } = options;
 
   return () => {
     // Only update URL if this is still the active navigation.
@@ -243,12 +248,17 @@ function createNavigationCommitEffect(options: {
     const historyState = createHistoryStateWithPreviousNextUrl(
       preserveExistingState ? window.history.state : null,
       previousNextUrl,
+      bfcacheIds,
     );
 
     if (historyUpdateMode === "replace" && window.location.href !== targetHref) {
       replaceHistoryStateWithoutNotify(historyState, "", href);
     } else if (historyUpdateMode === "push" && window.location.href !== targetHref) {
       pushHistoryStateWithoutNotify(historyState, "", href);
+    } else if (historyUpdateMode === undefined) {
+      // Traversal and refresh commits don't change the URL, but still persist
+      // the latest bfcache id map so future history entries can restore it.
+      replaceHistoryStateWithoutNotify(historyState, "", window.location.href);
     }
 
     // URL has been updated; the recovery hard-nav target is no longer needed.
@@ -268,6 +278,7 @@ async function renderNavigationPayload(
   pendingRouterState: PendingBrowserRouterState | null,
   actionType: "navigate" | "replace" | "traverse" = "navigate",
   operationLane: OperationLane = "navigation",
+  restoredBfcacheIds?: Readonly<Record<string, string>> | null,
 ): Promise<NavigationPayloadOutcome> {
   try {
     return await browserNavigationController.renderNavigationPayload({
@@ -283,6 +294,7 @@ async function renderNavigationPayload(
       params,
       pendingRouterState,
       previousNextUrl,
+      restoredBfcacheIds,
       targetHref,
       navId,
     });
@@ -463,6 +475,7 @@ function BrowserRoot({
   const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
   const [treeStateValue, setTreeStateValue] = useState<AppRouterState | Promise<AppRouterState>>({
     activeOperation: null,
+    bfcacheIds: createInitialBfcacheIdMap(resolvedElements),
     elements: resolvedElements,
     interceptionContext: initialMetadata.interceptionContext,
     layoutIds: initialMetadata.layoutIds,
@@ -512,13 +525,17 @@ function BrowserRoot({
     }
 
     replaceHistoryStateWithoutNotify(
-      createHistoryStateWithPreviousNextUrl(window.history.state, treeState.previousNextUrl),
+      createHistoryStateWithPreviousNextUrl(
+        window.history.state,
+        treeState.previousNextUrl,
+        treeState.bfcacheIds,
+      ),
       "",
       window.location.href,
     );
-  }, [treeState.previousNextUrl, treeState.renderId]);
+  }, [treeState.bfcacheIds, treeState.previousNextUrl, treeState.renderId]);
 
-  const innerTree = createElement(
+  const routeTree = createElement(
     RedirectBoundary,
     null,
     createElement(
@@ -531,6 +548,10 @@ function BrowserRoot({
       ),
     ),
   );
+
+  const innerTree = BfcacheIdMapContext
+    ? createElement(BfcacheIdMapContext.Provider, { value: treeState.bfcacheIds }, routeTree)
+    : routeTree;
 
   // In dev, wrap the route tree in a top-level recovery boundary. A render
   // error (e.g. a slot's RSC reference rejects) is caught here instead of
@@ -915,7 +936,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     latestClientParams,
   );
   replaceHistoryStateWithoutNotify(
-    createHistoryStateWithPreviousNextUrl(window.history.state, null),
+    createHistoryStateWithPreviousNextUrl(window.history.state, null, null),
     "",
     window.location.href,
   );
@@ -1001,6 +1022,8 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         const requestState = getRequestState(navigationKind, currentPrevNextUrl);
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
+        const restoredBfcacheIds =
+          navigationKind === "traverse" ? readHistoryStateBfcacheIds(window.history.state) : null;
 
         // Set this navigation as the pending pathname, overwriting any previous.
         // Pass navId so only this navigation (or a newer one) can clear it later.
@@ -1058,6 +1081,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             pendingRouterState,
             toActionType(navigationKind),
             toOperationLane(navigationKind),
+            restoredBfcacheIds,
           );
           return;
         }
@@ -1212,6 +1236,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           pendingRouterState,
           toActionType(navigationKind),
           toOperationLane(navigationKind),
+          restoredBfcacheIds,
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during

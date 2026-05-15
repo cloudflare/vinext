@@ -30,6 +30,7 @@ export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigat
 type HardNavigationMode = "assign" | "replace";
 
 type BrowserNavigationCommitEffectFactory = (options: {
+  bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
   navId: number;
@@ -68,6 +69,7 @@ type BrowserNavigationController = {
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
     targetHref: string;
     navId: number;
   }): Promise<NavigationPayloadOutcome>;
@@ -462,6 +464,7 @@ export function createAppBrowserNavigationController(
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
     targetHref: string;
     navId: number;
   }): Promise<NavigationPayloadOutcome> {
@@ -482,6 +485,7 @@ export function createAppBrowserNavigationController(
         operationLane: options.operationLane,
         previousNextUrl: options.previousNextUrl,
         renderId,
+        restoredBfcacheIds: options.restoredBfcacheIds,
         type: options.actionType,
       });
 
@@ -515,6 +519,7 @@ export function createAppBrowserNavigationController(
         renderId,
         options.createNavigationCommitEffect({
           href: options.targetHref,
+          bfcacheIds: approvedCommit.action.bfcacheIds,
           historyUpdateMode: options.historyUpdateMode,
           navId: options.navId,
           params: options.params,

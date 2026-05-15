@@ -30,12 +30,15 @@ import {
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
+const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 
 type HistoryStateRecord = {
   [key: string]: unknown;
 };
 
 export type { OperationLane } from "./navigation-planner.js";
+
+export type BfcacheIdMap = Readonly<Record<string, string>>;
 
 type OperationRecordBase = {
   id: number;
@@ -56,6 +59,7 @@ export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
 
 export type AppRouterState = {
   activeOperation: OperationRecord | null;
+  bfcacheIds: BfcacheIdMap;
   elements: AppElements;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
@@ -69,6 +73,7 @@ export type AppRouterState = {
 };
 
 export type AppRouterAction = {
+  bfcacheIds: BfcacheIdMap;
   elements: AppElements;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
@@ -106,6 +111,9 @@ type PendingNavigationCommitDispositionDecision =
   | DispatchPendingNavigationCommitDispositionDecision
   | NonDispatchPendingNavigationCommitDispositionDecision;
 
+let nextBfcacheId = 0;
+const INITIAL_BFCACHE_ID = "0";
+
 function cloneHistoryState(state: unknown): HistoryStateRecord {
   if (!state || typeof state !== "object") {
     return {};
@@ -121,6 +129,7 @@ function cloneHistoryState(state: unknown): HistoryStateRecord {
 export function createHistoryStateWithPreviousNextUrl(
   state: unknown,
   previousNextUrl: string | null,
+  bfcacheIds?: BfcacheIdMap | null,
 ): HistoryStateRecord | null {
   const nextState = cloneHistoryState(state);
 
@@ -130,12 +139,140 @@ export function createHistoryStateWithPreviousNextUrl(
     nextState[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY] = previousNextUrl;
   }
 
+  if (bfcacheIds !== undefined) {
+    if (bfcacheIds === null || Object.keys(bfcacheIds).length === 0) {
+      delete nextState[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY];
+    } else {
+      nextState[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY] = { ...bfcacheIds };
+    }
+  }
+
   return Object.keys(nextState).length > 0 ? nextState : null;
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
   const value = cloneHistoryState(state)[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
   return typeof value === "string" ? value : null;
+}
+
+function rememberBfcacheId(value: string): void {
+  const match = /^_b_(\d+)_$/.exec(value);
+  if (!match) return;
+  nextBfcacheId = Math.max(nextBfcacheId, Number(match[1]));
+}
+
+function mintBfcacheId(): string {
+  nextBfcacheId += 1;
+  return `_b_${nextBfcacheId}_`;
+}
+
+function isBfcacheSegmentId(id: string): boolean {
+  const parsed = AppElementsWire.parseElementKey(id);
+  return (
+    parsed?.kind === "layout" ||
+    parsed?.kind === "page" ||
+    parsed?.kind === "slot" ||
+    parsed?.kind === "template"
+  );
+}
+
+function getPathSegments(pathname: string): string[] {
+  return pathname.split("/").filter(Boolean);
+}
+
+function getVisibleTreePathSegments(treePath: string): string[] {
+  return treePath
+    .split("/")
+    .filter(Boolean)
+    .filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+}
+
+function getPathPrefix(pathname: string, segmentCount: number): string {
+  if (segmentCount === 0) return "/";
+  const segments = getPathSegments(pathname).slice(0, segmentCount);
+  return `/${segments.join("/")}`;
+}
+
+function createBfcacheSegmentIdentity(id: string, pathname: string): string | null {
+  const parsed = AppElementsWire.parseElementKey(id);
+  if (!parsed) return null;
+
+  if (parsed.kind === "page") {
+    return `${id}@${pathname}`;
+  }
+
+  if (parsed.kind === "layout" || parsed.kind === "slot" || parsed.kind === "template") {
+    const segmentCount = getVisibleTreePathSegments(parsed.treePath).length;
+    return `${id}@${getPathPrefix(pathname, segmentCount)}`;
+  }
+
+  return null;
+}
+
+function collectBfcacheSegmentIds(elements: AppElements): string[] {
+  const ids = new Set(Object.keys(elements));
+  try {
+    for (const layoutId of AppElementsWire.readMetadata(elements).layoutIds) {
+      ids.add(layoutId);
+    }
+  } catch {
+    // Some low-level tests pass partial element maps without metadata.
+  }
+
+  return Array.from(ids).filter(isBfcacheSegmentId);
+}
+
+export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
+  const ids: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIds(elements)) {
+    ids[id] = INITIAL_BFCACHE_ID;
+  }
+  return ids;
+}
+
+export function readHistoryStateBfcacheIds(state: unknown): BfcacheIdMap | null {
+  const value = cloneHistoryState(state)[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const ids: Record<string, string> = {};
+  for (const [key, id] of Object.entries(value)) {
+    if (!isBfcacheSegmentId(key) || typeof id !== "string") {
+      return null;
+    }
+    ids[key] = id;
+    rememberBfcacheId(id);
+  }
+  return ids;
+}
+
+export function createNextBfcacheIdMap(options: {
+  current: BfcacheIdMap;
+  currentPathname: string;
+  elements: AppElements;
+  nextPathname: string;
+  restored?: BfcacheIdMap | null;
+}): BfcacheIdMap {
+  for (const value of Object.values(options.current)) {
+    rememberBfcacheId(value);
+  }
+  for (const value of Object.values(options.restored ?? {})) {
+    rememberBfcacheId(value);
+  }
+
+  const ids: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIds(options.elements)) {
+    const currentIdentity = createBfcacheSegmentIdentity(id, options.currentPathname);
+    const nextIdentity = createBfcacheSegmentIdentity(id, options.nextPathname);
+    const currentValue = currentIdentity === nextIdentity ? options.current[id] : undefined;
+    // History traversals restore persisted ids first, matching segments keep
+    // their current id, and newly-created segments mint a fresh opaque id.
+    const value = options.restored?.[id] ?? currentValue ?? mintBfcacheId();
+    ids[id] = value;
+    rememberBfcacheId(value);
+  }
+  return ids;
 }
 
 function createOperationRecord(options: {
@@ -398,6 +535,7 @@ export async function createPendingNavigationCommit(options: {
   operationLane: OperationLane;
   previousNextUrl?: string | null;
   renderId: number;
+  restoredBfcacheIds?: BfcacheIdMap | null;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
@@ -409,6 +547,13 @@ export async function createPendingNavigationCommit(options: {
 
   return {
     action: {
+      bfcacheIds: createNextBfcacheIdMap({
+        current: options.currentState.bfcacheIds,
+        currentPathname: options.currentState.navigationSnapshot.pathname,
+        elements,
+        nextPathname: options.navigationSnapshot.pathname,
+        restored: options.restoredBfcacheIds,
+      }),
       elements,
       interceptionContext: metadata.interceptionContext,
       layoutIds: metadata.layoutIds,

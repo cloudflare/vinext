@@ -34,6 +34,12 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 // still line up if Vite loads this shim through multiple resolved module IDs.
 const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
 const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+const _BFCACHE_ID_MAP_CTX_KEY = Symbol.for("vinext.bfcacheIdMapContext");
+const _BFCACHE_SEGMENT_ID_CTX_KEY = Symbol.for("vinext.bfcacheSegmentIdContext");
+const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
+const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
+const VINEXT_SCROLL_X_HISTORY_STATE_KEY = "__vinext_scrollX";
+const VINEXT_SCROLL_Y_HISTORY_STATE_KEY = "__vinext_scrollY";
 
 /**
  * Map of parallel route key → child segments below the current layout.
@@ -46,6 +52,8 @@ const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLConte
 export type SegmentMap = Readonly<Record<string, string[]>> & { readonly children: string[] };
 
 type _LayoutSegmentGlobal = typeof globalThis & {
+  [_BFCACHE_ID_MAP_CTX_KEY]?: React.Context<Readonly<Record<string, string>> | null> | null;
+  [_BFCACHE_SEGMENT_ID_CTX_KEY]?: React.Context<string | null> | null;
   [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<SegmentMap> | null;
   [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
     ((callback: () => unknown) => void) | null
@@ -84,6 +92,32 @@ function getServerInsertedHTMLContext(): React.Context<
 export const ServerInsertedHTMLContext: React.Context<
   ((callback: () => unknown) => void) | null
 > | null = getServerInsertedHTMLContext();
+
+export function getBfcacheIdMapContext(): React.Context<Readonly<
+  Record<string, string>
+> | null> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_BFCACHE_ID_MAP_CTX_KEY]) {
+    globalState[_BFCACHE_ID_MAP_CTX_KEY] = React.createContext<Readonly<
+      Record<string, string>
+    > | null>(null);
+  }
+
+  return globalState[_BFCACHE_ID_MAP_CTX_KEY] ?? null;
+}
+
+export function getBfcacheSegmentIdContext(): React.Context<string | null> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_BFCACHE_SEGMENT_ID_CTX_KEY]) {
+    globalState[_BFCACHE_SEGMENT_ID_CTX_KEY] = React.createContext<string | null>(null);
+  }
+
+  return globalState[_BFCACHE_SEGMENT_ID_CTX_KEY] ?? null;
+}
 
 /**
  * Get or create the layout segment context.
@@ -977,10 +1011,24 @@ function scrollToHash(hash: string): void {
     window.scrollTo(0, 0);
     return;
   }
-  const id = hash.slice(1);
-  const element = document.getElementById(id);
+  const encodedId = hash.startsWith("#") ? hash.slice(1) : hash;
+  let id = encodedId;
+  try {
+    id = decodeURIComponent(encodedId);
+  } catch {
+    // Match browser resilience for malformed hashes: fall back to the raw fragment.
+  }
+
+  if (id === "top") {
+    window.scrollTo(0, 0);
+    return;
+  }
+
+  const element = document.getElementById(id) ?? document.getElementsByName(id)[0];
   if (element) {
     element.scrollIntoView({ behavior: "auto" });
+  } else {
+    window.scrollTo(0, 0);
   }
 }
 
@@ -1085,9 +1133,28 @@ export function replaceHistoryStateWithoutNotify(
 function saveScrollPosition(): void {
   const state = window.history.state ?? {};
   replaceHistoryStateWithoutNotify(
-    { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
+    {
+      ...state,
+      [VINEXT_SCROLL_X_HISTORY_STATE_KEY]: window.scrollX,
+      [VINEXT_SCROLL_Y_HISTORY_STATE_KEY]: window.scrollY,
+    },
     "",
   );
+}
+
+function createHashOnlyHistoryState(state: unknown): unknown {
+  if (!state || typeof state !== "object") return null;
+
+  const current = state as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  if (VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY in current) {
+    next[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY] =
+      current[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
+  }
+  if (VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY in current) {
+    next[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY] = current[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY];
+  }
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 /**
@@ -1173,10 +1240,11 @@ export async function navigateClientSide(
   // Hash-only change: update URL and scroll to target, skip RSC fetch
   if (isHashOnlyChange(fullHref)) {
     const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
+    const historyState = createHashOnlyHistoryState(window.history.state);
     if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
+      replaceHistoryStateWithoutNotify(historyState, "", fullHref);
     } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
+      pushHistoryStateWithoutNotify(historyState, "", fullHref);
     }
     commitClientNavigationState();
     if (scroll) {
@@ -1225,13 +1293,11 @@ export async function navigateClientSide(
 }
 
 // ---------------------------------------------------------------------------
-// App Router router singleton
+// App Router router method singleton.
 //
-// All methods close over module-level state (navigateClientSide, withBasePath, etc.)
-// and carry no per-render data, so the object can be created once and reused.
-// Next.js returns the same router reference on every call to useRouter(), which
-// matters for components that rely on referential equality (e.g. useMemo /
-// useEffect dependency arrays, React.memo bailouts).
+// Methods close over module-level state (navigateClientSide, withBasePath,
+// etc.) and carry no per-render data, so the method surface can be reused.
+// useRouter() may wrap this object to attach the current segment's bfcacheId.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1333,6 +1399,48 @@ const _appRouter = {
   },
 };
 
+const _appRouterByBfcacheId = new Map<string, typeof _appRouter>();
+const MAX_APP_ROUTER_BFCACHE_ID_CACHE_SIZE = 64;
+
+function createAppRouterForBfcacheId(bfcacheId: string): typeof _appRouter {
+  if (bfcacheId === _appRouter.bfcacheId) return _appRouter;
+
+  const cached = _appRouterByBfcacheId.get(bfcacheId);
+  if (cached) {
+    _appRouterByBfcacheId.delete(bfcacheId);
+    _appRouterByBfcacheId.set(bfcacheId, cached);
+    return cached;
+  }
+
+  const router = { ..._appRouter, bfcacheId };
+  _appRouterByBfcacheId.set(bfcacheId, router);
+  if (_appRouterByBfcacheId.size > MAX_APP_ROUTER_BFCACHE_ID_CACHE_SIZE) {
+    const oldest = _appRouterByBfcacheId.keys().next().value;
+    if (oldest !== undefined) {
+      _appRouterByBfcacheId.delete(oldest);
+    }
+  }
+  return router;
+}
+
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
+function readBfcacheIdFromContext(): string {
+  const segmentContext = getBfcacheSegmentIdContext();
+  const idMapContext = getBfcacheIdMapContext();
+  if (!segmentContext || !idMapContext) return "0";
+
+  try {
+    const segmentId = React.useContext(segmentContext);
+    const idMap = React.useContext(idMapContext);
+    if (!segmentId) return "0";
+    return idMap?.[segmentId] ?? "0";
+  } catch {
+    // Low-level tests and direct module calls can hit this outside render.
+    return "0";
+  }
+}
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
+
 /**
  * Public App Router instance, exposed for the browser entry so it can wire
  * `window.next.router` to the same singleton returned from `useRouter()`.
@@ -1346,12 +1454,12 @@ export const appRouterInstance = _appRouter;
  * App Router's useRouter — returns push/replace/back/forward/refresh.
  * Different from Pages Router's useRouter (next/router).
  *
- * Returns a stable singleton: the same object reference on every call,
- * matching Next.js behavior so components using referential equality
- * (e.g. useMemo / useEffect deps, React.memo) don't re-render unnecessarily.
+ * bfcacheId is contextual: layouts read their layout segment id and pages read
+ * their page segment id. Outside the App Router tree it falls back to "0".
  */
 export function useRouter() {
-  return _appRouter;
+  const bfcacheId = readBfcacheIdFromContext();
+  return createAppRouterForBfcacheId(bfcacheId);
 }
 
 /**

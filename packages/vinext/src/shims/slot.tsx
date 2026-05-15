@@ -7,7 +7,7 @@ import {
   type AppElementValue,
   type AppElements,
 } from "../server/app-elements.js";
-import { notFound } from "./navigation.js";
+import { getBfcacheSegmentIdContext, notFound } from "./navigation.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
 const warnedMissingEntryIds = new Set<string>();
@@ -26,6 +26,7 @@ export const ChildrenContext = React.createContext<React.ReactNode>(null);
 export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
+const BfcacheSegmentIdContext = getBfcacheSegmentIdContext();
 
 type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
@@ -112,10 +113,16 @@ export function Slot({
     notFound();
   }
 
-  return (
+  const content = (
     <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
       <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
     </ParallelSlotsContext.Provider>
+  );
+
+  return BfcacheSegmentIdContext ? (
+    <BfcacheSegmentIdContext.Provider value={id}>{content}</BfcacheSegmentIdContext.Provider>
+  ) : (
+    content
   );
 }
 

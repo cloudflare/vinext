@@ -115,6 +115,7 @@ function reduceApprovedVisibleCommitState(
       return commitVisibleRouterState(
         state,
         {
+          bfcacheIds: action.bfcacheIds,
           elements: mergeElements(state.elements, action.elements, {
             clearAbsentSlots: action.type === "traverse",
             preserveAbsentSlots: commit.decision.preserveAbsentSlots,
@@ -139,6 +140,7 @@ function reduceApprovedVisibleCommitState(
       return commitVisibleRouterState(
         state,
         {
+          bfcacheIds: action.bfcacheIds,
           elements: action.elements,
           interceptionContext: action.interceptionContext,
           layoutFlags: action.layoutFlags,
