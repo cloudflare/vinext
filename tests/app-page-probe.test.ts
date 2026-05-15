@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { probeAppPageBeforeRender } from "../packages/vinext/src/server/app-page-probe.js";
+import {
+  probeAppPage,
+  probeAppPageBeforeRender,
+} from "../packages/vinext/src/server/app-page-probe.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -387,5 +390,90 @@ describe("app page probe helpers", () => {
     expect(probePage).not.toHaveBeenCalled();
     expect(renderPageSpecialError).not.toHaveBeenCalled();
     expect(result.response).toBeNull();
+  });
+});
+
+// Regression coverage for https://github.com/cloudflare/vinext/issues/1235.
+//
+// The generated RSC entry originally hand-rolled the probePage() body and read
+// a non-existent key off collectAppPageSearchParams's return value, so the
+// page component received `undefined` for searchParams and any
+// `await searchParams` threw TypeError during probing. probeAppPage()
+// encapsulates that wiring so the entry can delegate to a single typed call
+// and the behaviour is unit-testable in isolation.
+describe("probeAppPage", () => {
+  it("invokes the page with thenable params and resolved searchParams", async () => {
+    const calls: { params: unknown; searchParams: unknown }[] = [];
+    function Page(props: {
+      params: Promise<Record<string, string>>;
+      searchParams: Promise<Record<string, string | string[]>>;
+    }) {
+      calls.push({ params: props.params, searchParams: props.searchParams });
+      return "rendered";
+    }
+
+    const asyncRouteParams = makeThenableParams({ slug: "intro" });
+    const result = probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams,
+      searchParams: new URLSearchParams("id=abc&tag=hello&tag=world"),
+    });
+
+    expect(result).toBe("rendered");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.params).toBe(asyncRouteParams);
+
+    const sp = (await calls[0]?.searchParams) as Record<string, string | string[]>;
+    expect(sp.id).toBe("abc");
+    expect(sp.tag).toEqual(["hello", "world"]);
+  });
+
+  it("returns null when the page has no default export to render", () => {
+    expect(
+      probeAppPage({
+        pageComponent: undefined,
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: new URLSearchParams("id=abc"),
+      }),
+    ).toBeNull();
+    expect(
+      probeAppPage({
+        pageComponent: null,
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("passes an empty searchParams object when the request has no query string", async () => {
+    let received: Record<string, unknown> | undefined;
+    async function Page(props: { searchParams: Promise<Record<string, unknown>> }) {
+      received = await props.searchParams;
+    }
+
+    await probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+    });
+
+    expect(received).toBeDefined();
+    expect(Object.keys(received ?? {})).toEqual([]);
+  });
+
+  it("lets redirect()/notFound() throws propagate so the probe lifecycle can catch them", async () => {
+    const REDIRECT = new Error("NEXT_REDIRECT");
+    async function Page(props: { searchParams: Promise<{ dest?: string }> }) {
+      const { dest } = await props.searchParams;
+      if (dest) throw REDIRECT;
+    }
+
+    const result = probeAppPage({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("dest=/about"),
+    }) as Promise<unknown>;
+
+    await expect(result).rejects.toBe(REDIRECT);
   });
 });
