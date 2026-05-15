@@ -45,3 +45,4 @@ result-*
 .corepack/
 
 .vinext
+next-env.d.ts
