@@ -21,8 +21,10 @@
  *
  * @see https://vite.dev/config/shared-options.html#css-preprocessoroptions
  */
-export type VitePreprocessorOptions = {
-  additionalData?: string;
+type AdditionalData = string | ((source: string, filename: string) => string | Promise<string>);
+
+type VitePreprocessorOptions = {
+  additionalData?: AdditionalData;
   loadPaths?: string[];
   // oxlint-disable-next-line typescript/no-explicit-any
   [key: string]: any;
@@ -44,12 +46,15 @@ export function buildSassPreprocessorOptions(
 
   const out: VitePreprocessorOptions = { ...rest };
 
-  // Next.js forwards `prependData || additionalData` to sass-loader's
-  // `additionalData`. Match that precedence so users migrating from
-  // Next.js 12 (`prependData`) continue to work.
-  const data = typeof prependData === "string" ? prependData : additionalData;
+  // Next.js forwards `sassPrependData || sassAdditionalData` to sass-loader's
+  // `additionalData` (truthy-OR, see
+  // .nextjs-ref/packages/next/src/build/webpack/config/blocks/css/index.ts:178),
+  // so falsy values like `prependData: ""` fall through to `additionalData`.
+  // Mirror that precedence exactly so users migrating from Next.js 12
+  // (`prependData`) continue to work.
+  const data = prependData || additionalData;
   if (typeof data === "string" || typeof data === "function") {
-    out.additionalData = data as string;
+    out.additionalData = data as AdditionalData;
   }
 
   // Merge legacy `includePaths` into modern `loadPaths`. Modern Sass dropped

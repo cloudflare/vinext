@@ -69,6 +69,25 @@ describe("buildSassPreprocessorOptions", () => {
     expect(result?.additionalData).toBe("$legacy: red;");
   });
 
+  it("falls through to additionalData when prependData is empty (matches Next.js truthy-OR)", () => {
+    // Next.js: `sassPrependData || sassAdditionalData` — falsy prependData
+    // (empty string) yields to additionalData, rather than overriding it.
+    const result = buildSassPreprocessorOptions({
+      prependData: "",
+      additionalData: "$modern: blue;",
+    });
+    expect(result?.additionalData).toBe("$modern: blue;");
+  });
+
+  it("forwards function-form additionalData through", () => {
+    // Vite accepts `additionalData` as `(source, filename) => string | Promise<string>`.
+    // sass-loader accepts the same shape. The passthrough should keep
+    // function values intact (not stringify them or coerce to a string).
+    const fn = (source: string) => `$injected: red;\n${source}`;
+    const result = buildSassPreprocessorOptions({ additionalData: fn });
+    expect(result?.additionalData).toBe(fn);
+  });
+
   it("forwards loadPaths verbatim", () => {
     const result = buildSassPreprocessorOptions({ loadPaths: ["./styles"] });
     expect(result?.loadPaths).toEqual(["./styles"]);
