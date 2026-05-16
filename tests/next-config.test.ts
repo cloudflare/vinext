@@ -6,6 +6,7 @@ import {
   detectNextIntlConfig,
   loadNextConfig,
   parseBodySizeLimit,
+  reassignsModuleExports,
   referencesCjsGlobals,
   resolveNextConfig,
   type ResolvedNextConfig,
@@ -276,6 +277,90 @@ describe("referencesCjsGlobals", () => {
     // worst case, never a correctness bug.
     expect(referencesCjsGlobals(`// __dirname is shimmed`)).toBe(true);
     expect(referencesCjsGlobals(`const s = "module.exports = 1";`)).toBe(true);
+  });
+});
+
+describe("reassignsModuleExports", () => {
+  it("returns true for direct module.exports reassignment", () => {
+    expect(reassignsModuleExports(`module.exports = { foo: 1 };`)).toBe(true);
+    expect(reassignsModuleExports(`module . exports = X;`)).toBe(true);
+  });
+
+  it("returns true for property mutation", () => {
+    expect(reassignsModuleExports(`module.exports.foo = 1;`)).toBe(true);
+    expect(reassignsModuleExports(`module.exports["foo"] = 1;`)).toBe(true);
+    expect(reassignsModuleExports(`module.exports[name] = 1;`)).toBe(true);
+  });
+
+  it("returns false for pure-ESM source", () => {
+    expect(reassignsModuleExports(`export default { foo: 1 };`)).toBe(false);
+    expect(reassignsModuleExports(`const x = module;`)).toBe(false);
+    expect(reassignsModuleExports(`import x from "node:module";`)).toBe(false);
+  });
+
+  it("does not match comparisons or reads", () => {
+    expect(reassignsModuleExports(`if (module.exports === foo) {}`)).toBe(false);
+    expect(reassignsModuleExports(`const x = module.exports;`)).toBe(false);
+    expect(reassignsModuleExports(`const x = module.exports.foo;`)).toBe(false);
+  });
+});
+
+describe("loadNextConfig CJS vs ESM unwrap", () => {
+  // Exercises the static reassignsModuleExports detection end-to-end:
+  // pure-ESM configs go through the ESM `default` path, configs that
+  // reassign module.exports get unwrapped from the injected wrapper.
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns ESM default for a pure-ESM config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `export default { env: { SHAPE: "esm-default" } };\n`,
+    );
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.SHAPE).toBe("esm-default");
+  });
+
+  it("returns module.exports = X for a config that reassigns module.exports", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `module.exports = { env: { SHAPE: "reassigned" } };\n`,
+    );
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.SHAPE).toBe("reassigned");
+  });
+
+  it("accumulates module.exports.foo = ... assignments", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `module.exports.env = { SHAPE: "mutated" };\nmodule.exports.basePath = "/m";\n`,
+    );
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.SHAPE).toBe("mutated");
+    expect(config?.basePath).toBe("/m");
+  });
+
+  it("falls back to ESM default when module.exports reference is only a false positive", async () => {
+    // Ports the heuristic-false-positive case: the substring matcher
+    // could see `module.exports = ` inside a string and decide to emit
+    // the wrapper. The unwrap path checks identity against the initial
+    // empty exports object and falls back to the ESM default.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `const doc = "module.exports = legacy";\nexport default { env: { SHAPE: "fallback", DOC: doc } };\n`,
+    );
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.SHAPE).toBe("fallback");
+    expect(config?.env?.DOC).toBe("module.exports = legacy");
   });
 });
 

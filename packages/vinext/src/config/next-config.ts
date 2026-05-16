@@ -380,13 +380,23 @@ async function resolveConfigValue(
 }
 
 /**
- * Sentinel marker placed on the injected `module.exports` initial object so we
- * can detect whether a config file reassigned `module.exports = {...}` (CJS
- * style) versus only using `export default` (ESM style). See
- * `cjsGlobalsInjectorPlugin` for how the marker gets attached.
+ * Named export attached by `cjsGlobalsInjectorPlugin` when the source
+ * statically looks like it assigns to `module.exports`. Holds the wrapper
+ * `module` object so {@link unwrapConfig} can read back the user's CJS-style
+ * export. Pure-ESM configs skip the wrapper entirely and rely on the ESM
+ * `default` export instead.
  */
 const VINEXT_CJS_EXPORTS_KEY = "__vinext_cjs_exports";
-const VINEXT_CJS_INITIAL_MARKER = Symbol.for("vinext:cjs-initial");
+
+/**
+ * Companion named export pointing at the initial empty `{}` that the wrapper
+ * is constructed with. Lets {@link unwrapConfig} distinguish "user reassigned
+ * or mutated module.exports" from "module.exports is still the untouched
+ * empty wrapper" — the latter happens when {@link reassignsModuleExports}
+ * matches inside a string or comment (a harmless false positive that should
+ * still fall through to the ESM `default` export).
+ */
+const VINEXT_CJS_INITIAL_KEY = "__vinext_cjs_initial_exports";
 
 /**
  * Unwrap the config value from a loaded module namespace.
@@ -395,26 +405,29 @@ const VINEXT_CJS_INITIAL_MARKER = Symbol.for("vinext:cjs-initial");
  * otherwise falls back to `default`/the namespace itself. Mirrors Next.js's
  * behaviour, where the config is loaded through `Module._compile` and CJS
  * assignments override any ESM-style exports.
+ *
+ * The presence of the `__vinext_cjs_exports` named export is the static
+ * signal (set by `cjsGlobalsInjectorPlugin` when `reassignsModuleExports`
+ * matched) that this file might use CJS-style exports. We then disambiguate
+ * "user actually touched module.exports" from "static heuristic was a false
+ * positive" by comparing identity against the initial empty wrapper: if
+ * `module.exports` is still the original `{}`, fall back to ESM `default`.
  */
 async function unwrapConfig(
   // oxlint-disable-next-line typescript/no-explicit-any
   mod: any,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig> {
-  // The CJS-globals injector plugin exports the wrapper `module` object
-  // (with an `.exports` property) so that `module.exports = ...` reassignments
-  // inside the config file are observable here. The wrapper's initial
-  // `exports` value is tagged with VINEXT_CJS_INITIAL_MARKER; if that marker
-  // is still present, the file did not use CJS-style exports and we fall
-  // through to the ESM `default` export.
   const cjsModule = mod?.[VINEXT_CJS_EXPORTS_KEY];
   const cjsExports = cjsModule?.exports;
-  if (
+  const cjsInitial = mod?.[VINEXT_CJS_INITIAL_KEY];
+  const userTouchedExports =
     cjsExports !== undefined &&
     cjsExports !== null &&
-    typeof cjsExports === "object" &&
-    !(VINEXT_CJS_INITIAL_MARKER in cjsExports)
-  ) {
+    // Either reassigned outright, or mutated keys on the initial object.
+    (cjsExports !== cjsInitial ||
+      (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0));
+  if (userTouchedExports) {
     return await resolveConfigValue(cjsExports, phase);
   }
   return await resolveConfigValue(mod.default ?? mod, phase);
@@ -449,6 +462,29 @@ function safeRealpath(p: string): string {
  */
 export function referencesCjsGlobals(source: string): boolean {
   return /\b(?:__filename|__dirname|require|module|exports)\b/.test(source);
+}
+
+/**
+ * Static heuristic: returns true when the source appears to assign to
+ * `module.exports` — either via `module.exports = …`, `module.exports.foo = …`,
+ * or `module.exports[…] = …`. Used to decide whether the injector plugin
+ * needs to wire up the wrapper `module` object so {@link unwrapConfig} can
+ * read back the user's CJS-style export.
+ *
+ * Pure-ESM configs skip the wrapper entirely, which means a faster transform
+ * (no extra `export const` line) and a simpler unwrap path (no need to
+ * disambiguate "initial empty object" from "user reassigned to {}").
+ *
+ * Like {@link referencesCjsGlobals}, false positives are harmless: at worst
+ * we emit an unused `__vinext_cjs_exports` named export, and `unwrapConfig`
+ * still prefers it (it points at an empty object, which then gets treated
+ * as the config — equivalent to today's sentinel logic for pure-ESM files
+ * that happen to mention `module.exports` only in a string).
+ */
+export function reassignsModuleExports(source: string): boolean {
+  // Match `module.exports` followed by `=` (not `==` / `===`), `.identifier =`,
+  // or `[...] =`. Whitespace allowed around the dot.
+  return /\bmodule\s*\.\s*exports\b\s*(?:=(?!=)|\.\s*[A-Za-z_$][\w$]*\s*=(?!=)|\[)/.test(source);
 }
 
 /**
@@ -505,6 +541,19 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const dirnameLiteral = JSON.stringify(dirname);
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
 
+      // Only wire up the wrapper `module` object — and the corresponding
+      // named export read by unwrapConfig — when the source statically looks
+      // like it assigns to module.exports. Pure-ESM configs avoid the extra
+      // export and the unwrap-by-wrapper code path.
+      const needsModuleWrapper = reassignsModuleExports(code);
+      const moduleLines = needsModuleWrapper
+        ? `const __vinextInitialExports = {};\n` +
+          `const module = { exports: __vinextInitialExports };\n` +
+          `const exports = module.exports;\n` +
+          `export const ${VINEXT_CJS_EXPORTS_KEY} = module;\n` +
+          `export const ${VINEXT_CJS_INITIAL_KEY} = __vinextInitialExports;\n`
+        : "";
+
       // Preamble runs after ESM imports are hoisted; the const bindings shadow
       // any global lookups the source would otherwise perform.
       const preamble =
@@ -512,14 +561,8 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
         `const __filename = ${filenameLiteral};\n` +
         `const __dirname = ${dirnameLiteral};\n` +
         `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
-        `const module = { exports: {} };\n` +
-        `module.exports[Symbol.for("vinext:cjs-initial")] = true;\n` +
-        `const exports = module.exports;\n` +
-        `export const ${VINEXT_CJS_EXPORTS_KEY} = module;\n`;
+        moduleLines;
 
-      // Export the wrapper object (not `module.exports` directly) so that
-      // `module.exports = {...}` reassignments inside the user's source are
-      // visible to {@link unwrapConfig} via the wrapper's mutated `.exports`.
       return {
         code: preamble + code,
         map: null,
