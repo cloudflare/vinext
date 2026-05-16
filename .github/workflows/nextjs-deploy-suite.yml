@@ -25,6 +25,11 @@ on:
           - app
           - pages
           - all
+      test-path:
+        description: Optional path filter — comma-separated, e.g. `test/e2e/edge-async-local-storage`. Empty = all.
+        required: false
+        default: ""
+        type: string
       test-concurrency:
         description: Per-shard Next.js test concurrency
         required: false
@@ -35,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -75,11 +80,18 @@ jobs:
           NEXTJS_PREPARE_ONLY: "1"
 
       - name: Generate deploy manifest
-        run: >-
-          node scripts/nextjs-deploy-manifest.mjs
-          "$GITHUB_WORKSPACE/next.js"
-          "$GITHUB_WORKSPACE/nextjs-deploy-manifest.json"
-          --filter ${{ inputs.suite-filter || 'all' }}
+        env:
+          TEST_PATH: ${{ inputs.test-path }}
+        run: |
+          args=(
+            "$GITHUB_WORKSPACE/next.js"
+            "$GITHUB_WORKSPACE/nextjs-deploy-manifest.json"
+            --filter "${{ inputs.suite-filter || 'all' }}"
+          )
+          if [ -n "${TEST_PATH:-}" ]; then
+            args+=(--match "${TEST_PATH}")
+          fi
+          node scripts/nextjs-deploy-manifest.mjs "${args[@]}"
 
       - name: Save build artifacts
         uses: actions/cache/save@v5
@@ -409,9 +421,10 @@ jobs:
       # No-op if the secret or ingest URL aren't configured.
       #
       # Guardrails:
-      #   - Only the full suite (suite-filter=all). Filtered runs (just `app`
-      #     or just `pages`) would publish a misleading partial snapshot that
-      #     drags the historical pass-rate trend off-course.
+      #   - Only the full suite (suite-filter=all, no test-path). Filtered
+      #     runs (`app`/`pages` only, or a path-narrowed run) would publish a
+      #     misleading partial snapshot that drags the historical pass-rate
+      #     trend off-course.
       #   - Only when running against main. Scheduled runs always test main
       #     (github.ref == refs/heads/main). For manual workflow_dispatch we
       #     check that `inputs.vinext-ref` resolves to main (its default).
@@ -421,6 +434,7 @@ jobs:
         if: |
           always()
           && (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
+          && (inputs.test-path == '' || github.event_name == 'schedule')
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
