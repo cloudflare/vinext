@@ -433,6 +433,25 @@ function safeRealpath(p: string): string {
 }
 
 /**
+ * Whole-word substring check for any of the CJS-style globals that the
+ * injector plugin would shim. Used to skip the transform entirely for the
+ * common case where the config is pure ESM (no `__filename`, `__dirname`,
+ * `require`, `module`, or `exports` references).
+ *
+ * False positives are harmless: a comment, string literal, or unrelated
+ * identifier like `node:module` will trigger the transform unnecessarily,
+ * but the resulting injection is idempotent and the loaded config is
+ * unaffected. False negatives would be a correctness bug, so we err on the
+ * side of matching too eagerly.
+ *
+ * Note: `\bexports\b` does not match `export default` (different word
+ * boundaries), and `\brequire\b` does not match `requireSomething`.
+ */
+export function referencesCjsGlobals(source: string): boolean {
+  return /\b(?:__filename|__dirname|require|module|exports)\b/.test(source);
+}
+
+/**
  * Vite plugin that prepends CJS-style globals (`__filename`, `__dirname`,
  * `module`, `exports`, `require`) to the next.config.* source before
  * Vite's module runner evaluates it.
@@ -445,6 +464,10 @@ function safeRealpath(p: string): string {
  * `fs.readFileSync(path.join(__dirname, 'foo.txt'), 'utf8')`. vinext loads
  * configs through Vite's ESM-only module runner, so we inject the same
  * globals as plain `const` declarations.
+ *
+ * For configs that don't reference any CJS global (the common case — every
+ * upstream `next-config-ts` fixture except `node-api-cjs` is pure ESM) we
+ * skip the transform entirely; see {@link referencesCjsGlobals}.
  *
  * `module.exports` reassignment is preserved by exposing the injected
  * `module` object as a named export (see {@link VINEXT_CJS_EXPORTS_KEY}) and
@@ -469,6 +492,12 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
       const resolvedId = safeRealpath(path.resolve(idPath));
       if (resolvedId !== normalizedTarget) return null;
+
+      // Fast path: skip the transform when the source contains no bareword
+      // reference to any of the shimmed globals. The vast majority of
+      // `next.config.ts` files are pure ESM (`export default { ... }`) and
+      // pay no cost from this plugin.
+      if (!referencesCjsGlobals(code)) return null;
 
       const dirname = path.dirname(normalizedTarget);
       // JSON.stringify produces safe JS string literals for paths.

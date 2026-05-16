@@ -6,6 +6,7 @@ import {
   detectNextIntlConfig,
   loadNextConfig,
   parseBodySizeLimit,
+  referencesCjsGlobals,
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../packages/vinext/src/config/next-config.js";
@@ -224,6 +225,57 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
 
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.VIA).toBe("module.exports");
+  });
+
+  it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
+    // No __filename / __dirname / require / module / exports references —
+    // the injector transform should short-circuit. We only assert
+    // functional behaviour: the export const that the transform would add
+    // (__vinext_cjs_exports) is invisible to user code anyway, so the
+    // observable contract is just "ESM config loads correctly".
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `export default { env: { PURE: "esm" } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.PURE).toBe("esm");
+  });
+});
+
+describe("referencesCjsGlobals", () => {
+  it("returns false for pure-ESM source", () => {
+    expect(referencesCjsGlobals(`export default { env: { FOO: "bar" } };\n`)).toBe(false);
+    expect(
+      referencesCjsGlobals(
+        `import type { NextConfig } from "next";\nconst nextConfig: NextConfig = {};\nexport default nextConfig;\n`,
+      ),
+    ).toBe(false);
+    expect(referencesCjsGlobals(`export { nextConfig as default };\n`)).toBe(false);
+  });
+
+  it("returns true when any CJS global is referenced", () => {
+    expect(referencesCjsGlobals(`const x = __filename;`)).toBe(true);
+    expect(referencesCjsGlobals(`const x = __dirname;`)).toBe(true);
+    expect(referencesCjsGlobals(`const x = require("./foo");`)).toBe(true);
+    expect(referencesCjsGlobals(`module.exports = { a: 1 };`)).toBe(true);
+    expect(referencesCjsGlobals(`exports.foo = 1;`)).toBe(true);
+  });
+
+  it("does not match identifiers that merely contain a global as a substring", () => {
+    expect(referencesCjsGlobals(`const requireSomething = 1;`)).toBe(false);
+    expect(referencesCjsGlobals(`const myModule = 1;`)).toBe(false);
+    expect(referencesCjsGlobals(`const exporter = 1;`)).toBe(false);
+    // `export default` is a different word boundary from `exports`.
+    expect(referencesCjsGlobals(`export default {};`)).toBe(false);
+  });
+
+  it("matches inside strings and comments (acceptable false positive)", () => {
+    // Substring match is intentionally loose: a wasted transform is the
+    // worst case, never a correctness bug.
+    expect(referencesCjsGlobals(`// __dirname is shimmed`)).toBe(true);
+    expect(referencesCjsGlobals(`const s = "module.exports = 1";`)).toBe(true);
   });
 });
 
