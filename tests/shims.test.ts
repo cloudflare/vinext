@@ -2711,19 +2711,18 @@ describe("next/server shim", () => {
     await expect(result).resolves.toBeUndefined();
   });
 
-  it("URLPattern is exported and available in Node 20+", async () => {
+  it("URLPattern is exported as a constructible class", async () => {
     const { URLPattern } = await import("../packages/vinext/src/shims/server.js");
-    // Node 22+ has URLPattern globally; if available, test it works
-    if (globalThis.URLPattern) {
-      expect(URLPattern).toBe(globalThis.URLPattern);
-      const pattern = new URLPattern({ pathname: "/blog/:slug" });
-      const match = pattern.exec({ pathname: "/blog/hello-world" });
-      expect(match).toBeTruthy();
-      expect(match!.pathname.groups.slug).toBe("hello-world");
-    } else {
-      // URLPattern not available — our export should be a fallback that throws
-      expect(typeof URLPattern).toBe("function");
-    }
+    expect(typeof URLPattern).toBe("function");
+
+    // Must be constructible — Next.js middleware fixtures (e.g. middleware-general,
+    // middleware-trailing-slash) call `new URLPattern(...)` directly at module
+    // scope, so a plain arrow-function fallback would throw
+    // "URLPattern is not a constructor" on Node 22 where the global is absent.
+    const pattern = new URLPattern({ pathname: "/blog/:slug" });
+    const match = pattern.exec({ pathname: "/blog/hello-world" });
+    expect(match).toBeTruthy();
+    expect(match!.pathname.groups.slug).toBe("hello-world");
   });
 });
 

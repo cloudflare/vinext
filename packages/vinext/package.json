@@ -69,6 +69,7 @@
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
+    "urlpattern-polyfill": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:",
     "web-vitals": "catalog:"

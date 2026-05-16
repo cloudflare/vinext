@@ -201,6 +201,9 @@ catalogs:
     typescript:
       specifier: ^5.7.0
       version: 5.9.3
+    urlpattern-polyfill:
+      specifier: ^10.1.0
+      version: 10.1.0
     use-count-up:
       specifier: 3.0.1
       version: 3.0.1
@@ -902,6 +905,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      urlpattern-polyfill:
+        specifier: 'catalog:'
+        version: 10.1.0
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.21
         version: '@voidzero-dev/vite-plus-core@0.1.21(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)'
@@ -6337,6 +6343,9 @@ packages:
     peerDependencies:
       browserslist: '>= 4.21.0'
 
+  urlpattern-polyfill@10.1.0:
+    resolution: {integrity: sha512-IGjKp/o0NL3Bso1PymYURCJxMPNAf/ILOpendP9f5B6e1rTJgdgiOvgfoT8VxCAdY+Wisb9uhGaJJf3yZ2V9nw==}
+
   use-callback-ref@1.3.3:
     resolution: {integrity: sha512-jQL3lRnocaFtu3V00JToYz/4QkNWswxijDaCVNZRiRTO3HQDLsdu1ZtmIUvV4yPp+rvWm5j0y0TG/S61cuijTg==}
     engines: {node: '>=10'}
@@ -11040,6 +11049,8 @@ snapshots:
       browserslist: 4.28.2
       escalade: 3.2.0
       picocolors: 1.1.1
+
+  urlpattern-polyfill@10.1.0: {}
 
   use-callback-ref@1.3.3(@types/react@19.2.14)(react@19.2.6):
     dependencies:

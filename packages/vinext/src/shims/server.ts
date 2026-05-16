@@ -9,6 +9,7 @@
  * rather than bug-for-bug parity with Next.js internals.
  */
 
+import { URLPattern as URLPatternPolyfill } from "urlpattern-polyfill/urlpattern";
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
@@ -932,14 +933,32 @@ export async function connection(): Promise<void> {
 
 /**
  * URLPattern re-export — used in middleware for route matching.
- * Available natively in Node 20+, Cloudflare Workers, Deno.
- * Falls back to urlpattern-polyfill if the global is not available.
+ *
+ * Available natively in Cloudflare Workers, Deno, modern browsers, and Node 24+.
+ * Node 22 (vinext's minimum supported version) does NOT expose URLPattern
+ * globally yet — it ships under `--experimental-url-pattern` only — so we fall
+ * back to `urlpattern-polyfill`'s implementation for the Node-based dev server
+ * and the production server (`vinext start`).
+ *
+ * We also install the polyfilled class onto `globalThis.URLPattern` so user
+ * middleware that references the bare `URLPattern` global (e.g. Next.js's
+ * middleware-general / middleware-trailing-slash test fixtures, which import
+ * `URLPattern` from `next/server` and then call `new URLPattern(...)`) works
+ * without each call site re-importing the shim.
+ *
+ * Next.js's own `next/server` re-export does not polyfill — it relies on the
+ * edge runtime providing URLPattern. vinext runs middleware on the host
+ * JS runtime (Node or Workers), so we have to polyfill ourselves when the
+ * host lacks it.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/url-pattern.ts
  */
-export const URLPattern: typeof globalThis.URLPattern =
-  globalThis.URLPattern ??
-  (() => {
-    throw new Error(
-      "URLPattern is not available in this runtime. " +
-        "Install the `urlpattern-polyfill` package or upgrade to Node 20+.",
-    );
-  });
+type URLPatternConstructor = typeof globalThis.URLPattern;
+const _globalForURLPattern = globalThis as unknown as { URLPattern?: URLPatternConstructor };
+
+export const URLPattern: URLPatternConstructor =
+  _globalForURLPattern.URLPattern ?? (URLPatternPolyfill as unknown as URLPatternConstructor);
+
+if (typeof _globalForURLPattern.URLPattern === "undefined") {
+  _globalForURLPattern.URLPattern = URLPattern;
+}

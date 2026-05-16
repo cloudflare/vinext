@@ -1979,6 +1979,94 @@ export const config = { matcher: ["/protected"] };
     }
   });
 
+  // Reproduces the failure mode from the Next.js deploy suite, where the
+  // middleware-general / middleware-trailing-slash fixtures import URLPattern
+  // from `next/server` and call `new URLPattern(...)` at module scope. On Node
+  // 22 (which CI uses for the deploy suite), `globalThis.URLPattern` is
+  // undefined, so the shim must fall back to a constructible polyfill rather
+  // than a plain arrow function that throws "URLPattern is not a constructor".
+  //
+  // Ported from Next.js:
+  //   test/e2e/middleware-general/app/middleware.js
+  //   test/e2e/middleware-trailing-slash/app/middleware.js
+  it("middleware that constructs URLPattern at module scope builds and runs", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-mw-urlpattern-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "middleware.js"),
+        `import { NextResponse, URLPattern } from "next/server";
+
+const PATTERNS = [
+  [
+    new URLPattern({ pathname: "/:locale/:id" }),
+    ({ pathname }) => ({ pathname: "/:locale/:id", params: pathname.groups }),
+  ],
+  [
+    new URLPattern({ pathname: "/:id" }),
+    ({ pathname }) => ({ pathname: "/:id", params: pathname.groups }),
+  ],
+];
+
+function params(url) {
+  for (const [pattern, handler] of PATTERNS) {
+    const match = pattern.exec(url);
+    if (match) return handler(match);
+  }
+  return { pathname: null, params: {} };
+}
+
+export function middleware(request) {
+  const result = params(request.url);
+  const response = NextResponse.next();
+  response.headers.set("x-matched-pattern", result.pathname ?? "none");
+  response.headers.set("x-matched-id", result.params.id ?? "");
+  return response;
+}
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      // Importing the built entry evaluates the middleware module, which
+      // constructs URLPattern at the top level. Before the fix, this threw
+      // synchronously with "URLPattern is not a constructor" on Node 22.
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const result = await entryModule.runMiddleware(new Request("http://localhost/en/42"));
+
+      expect(result.continue).toBe(true);
+      expect(result.responseHeaders?.get("x-matched-pattern")).toBe("/:locale/:id");
+      expect(result.responseHeaders?.get("x-matched-id")).toBe("42");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("produces client bundle with page chunks and SSR manifest", async () => {
     // Build the client bundle
     await build({
