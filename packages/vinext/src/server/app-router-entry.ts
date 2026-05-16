@@ -12,6 +12,10 @@
  *   cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
  */
 
+// Install edge-runtime globals (e.g. AsyncLocalStorage) so user route handlers
+// and middleware can reference them without an explicit import, matching
+// Next.js behavior.
+import "./edge-globals.js";
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";

@@ -1,3 +1,7 @@
+// Install edge-runtime globals (e.g. AsyncLocalStorage) so user API handlers
+// configured with `runtime: 'edge'` can reference them without an explicit
+// import, matching Next.js behavior.
+import "./edge-globals.js";
 import type { Route } from "../routing/pages-router.js";
 import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
 import {

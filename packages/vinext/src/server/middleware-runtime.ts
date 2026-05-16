@@ -1,3 +1,6 @@
+// Install edge-runtime globals (e.g. AsyncLocalStorage) so user middleware
+// can reference them without an explicit import, matching Next.js behavior.
+import "./edge-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
