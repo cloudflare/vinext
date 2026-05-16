@@ -94,7 +94,7 @@ function removeRouteTrailingSlash(route: string): string {
  * - Idempotent: already-canonical paths round-trip unchanged.
  */
 export function normalizePathTrailingSlash(path: string, trailingSlash: boolean): string {
-  if (!path.startsWith("/")) {
+  if (!path.startsWith("/") || path.startsWith("//")) {
     return path;
   }
 
