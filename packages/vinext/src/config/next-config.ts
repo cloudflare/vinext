@@ -380,14 +380,123 @@ async function resolveConfigValue(
 }
 
 /**
+ * Sentinel marker placed on the injected `module.exports` initial object so we
+ * can detect whether a config file reassigned `module.exports = {...}` (CJS
+ * style) versus only using `export default` (ESM style). See
+ * `cjsGlobalsInjectorPlugin` for how the marker gets attached.
+ */
+const VINEXT_CJS_EXPORTS_KEY = "__vinext_cjs_exports";
+const VINEXT_CJS_INITIAL_MARKER = Symbol.for("vinext:cjs-initial");
+
+/**
  * Unwrap the config value from a loaded module namespace.
+ *
+ * Prefers `module.exports` (CJS style) when the config file reassigned it,
+ * otherwise falls back to `default`/the namespace itself. Mirrors Next.js's
+ * behaviour, where the config is loaded through `Module._compile` and CJS
+ * assignments override any ESM-style exports.
  */
 async function unwrapConfig(
   // oxlint-disable-next-line typescript/no-explicit-any
   mod: any,
   phase: string = PHASE_DEVELOPMENT_SERVER,
 ): Promise<NextConfig> {
+  // The CJS-globals injector plugin exports the wrapper `module` object
+  // (with an `.exports` property) so that `module.exports = ...` reassignments
+  // inside the config file are observable here. The wrapper's initial
+  // `exports` value is tagged with VINEXT_CJS_INITIAL_MARKER; if that marker
+  // is still present, the file did not use CJS-style exports and we fall
+  // through to the ESM `default` export.
+  const cjsModule = mod?.[VINEXT_CJS_EXPORTS_KEY];
+  const cjsExports = cjsModule?.exports;
+  if (
+    cjsExports !== undefined &&
+    cjsExports !== null &&
+    typeof cjsExports === "object" &&
+    !(VINEXT_CJS_INITIAL_MARKER in cjsExports)
+  ) {
+    return await resolveConfigValue(cjsExports, phase);
+  }
   return await resolveConfigValue(mod.default ?? mod, phase);
+}
+
+/**
+ * Resolve a path through filesystem symlinks, falling back to the original
+ * path when the file does not exist (e.g. virtual ids, query-suffixed ids).
+ */
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Vite plugin that prepends CJS-style globals (`__filename`, `__dirname`,
+ * `module`, `exports`, `require`) to the next.config.* source before
+ * Vite's module runner evaluates it.
+ *
+ * Next.js's `next.config.ts` loader (packages/next/src/build/next-config-ts/
+ * transpile-config.ts → require-hook.ts) feeds the file through Node's
+ * `Module._compile`, which provides these CJS globals even when the source
+ * uses ESM syntax. Upstream test fixtures in `test/e2e/app-dir/next-config-ts*`
+ * rely on that, e.g. `node-api-cjs/next.config.ts` reads
+ * `fs.readFileSync(path.join(__dirname, 'foo.txt'), 'utf8')`. vinext loads
+ * configs through Vite's ESM-only module runner, so we inject the same
+ * globals as plain `const` declarations.
+ *
+ * `module.exports` reassignment is preserved by exposing the injected
+ * `module` object as a named export (see {@link VINEXT_CJS_EXPORTS_KEY}) and
+ * reading it back in {@link unwrapConfig}.
+ */
+function cjsGlobalsInjectorPlugin(configPath: string): {
+  name: string;
+  enforce: "pre";
+  // oxlint-disable-next-line typescript/no-explicit-any
+  transform(this: unknown, code: string, id: string): any;
+} {
+  // Resolve symlinks once so we can compare against the (possibly
+  // symlink-resolved) id Vite passes to `transform`. On macOS, `/var/folders`
+  // is a symlink to `/private/var/folders`, so the temp-dir path in tests
+  // would otherwise mismatch.
+  const normalizedTarget = safeRealpath(path.resolve(configPath));
+  return {
+    name: "vinext:next-config-cjs-globals",
+    enforce: "pre",
+    transform(code: string, id: string) {
+      // Vite may pass an id with a query suffix (?v=...) or as a file URL.
+      const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
+      const resolvedId = safeRealpath(path.resolve(idPath));
+      if (resolvedId !== normalizedTarget) return null;
+
+      const dirname = path.dirname(normalizedTarget);
+      // JSON.stringify produces safe JS string literals for paths.
+      const filenameLiteral = JSON.stringify(normalizedTarget);
+      const dirnameLiteral = JSON.stringify(dirname);
+      const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
+
+      // Preamble runs after ESM imports are hoisted; the const bindings shadow
+      // any global lookups the source would otherwise perform.
+      const preamble =
+        `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
+        `const __filename = ${filenameLiteral};\n` +
+        `const __dirname = ${dirnameLiteral};\n` +
+        `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
+        `const module = { exports: {} };\n` +
+        `module.exports[Symbol.for("vinext:cjs-initial")] = true;\n` +
+        `const exports = module.exports;\n` +
+        `export const ${VINEXT_CJS_EXPORTS_KEY} = module;\n`;
+
+      // Export the wrapper object (not `module.exports` directly) so that
+      // `module.exports = {...}` reassignments inside the user's source are
+      // visible to {@link unwrapConfig} via the wrapper's mutated `.exports`.
+      return {
+        code: preamble + code,
+        map: null,
+      };
+    },
+  };
 }
 
 export function findNextConfigPath(root: string): string | null {
@@ -491,6 +600,12 @@ export async function loadNextConfig(
       resolve: {
         alias: tsconfigAliases,
       },
+      // Only inject CJS globals for TypeScript config flavours. Next.js
+      // applies its `Module._compile` / SWC pipeline (which exposes the
+      // CJS globals) exclusively to `.ts`/`.mts`/`.cts`; legacy `.js`/`.cjs`
+      // configs are loaded through Node and already have `require`/`module`,
+      // and `.mjs` configs are explicitly ESM-only.
+      plugins: /\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : [],
     });
     return await unwrapConfig(mod, phase);
   } catch (e) {

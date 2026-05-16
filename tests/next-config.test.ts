@@ -161,6 +161,72 @@ describe("loadNextConfig phase argument", () => {
   });
 });
 
+describe("loadNextConfig with CJS globals in next.config.ts", () => {
+  // Ported from Next.js: test/e2e/app-dir/next-config-ts/node-api-cjs/
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/node-api-cjs/next.config.ts
+  // and test/e2e/app-dir/next-config-ts/import-js-extensions-cjs/.
+  // Next.js's transpile-config.ts transforms next.config.ts to CommonJS via SWC
+  // and evaluates it through Node's `Module._compile`, which exposes the CJS
+  // globals (`__filename`, `__dirname`, `module`, `require`, `exports`) even
+  // when the source uses ESM syntax. vinext mirrors that behaviour so that
+  // upstream fixtures referencing these globals continue to load.
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes __dirname inside next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "foo.txt"), "foo");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import fs from "node:fs";\nimport path from "node:path";\nconst foo = fs.readFileSync(path.join(__dirname, "foo.txt"), "utf8");\nexport default { env: { FOO: foo } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.FOO).toBe("foo");
+  });
+
+  it("exposes __filename inside next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `export default { env: { NAME: __filename } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const name = config?.env?.NAME;
+    expect(typeof name).toBe("string");
+    expect((name as string).endsWith("next.config.ts")).toBe(true);
+  });
+
+  it("exposes a working require() inside next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "data.json"), `{"value":"json-data"}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `const data = require("./data.json");\nexport default { env: { VAL: data.value } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VAL).toBe("json-data");
+  });
+
+  it("exposes a CommonJS module/exports object inside next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `module.exports = { env: { VIA: "module.exports" } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VIA).toBe("module.exports");
+  });
+});
+
 describe("loadNextConfig with tsconfig path aliases", () => {
   // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-alias-paths-only/
