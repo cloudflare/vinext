@@ -30,6 +30,7 @@ import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
 
 import {
+  normalizePathTrailingSlash,
   resolveRelativeHref,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -790,5 +791,141 @@ describe("toSameOriginAppPath", () => {
         (globalThis as any).window = originalWindow;
       }
     }
+  });
+});
+
+// ─── normalizePathTrailingSlash ─────────────────────────────────────────
+//
+// Ports the behaviour of Next.js's client `normalizePathTrailingSlash`:
+//   packages/next/src/client/normalize-trailing-slash.ts
+// Validates Link `href` rewriting expectations from upstream e2e:
+//   test/e2e/trailing-slashes/with-trailing-slash.test.ts
+//   test/e2e/trailing-slashes/without-trailing-slash.test.ts
+
+describe("normalizePathTrailingSlash", () => {
+  describe("trailingSlash: true", () => {
+    it("adds a trailing slash to a path without one", () => {
+      expect(normalizePathTrailingSlash("/about", true)).toBe("/about/");
+    });
+
+    it("is idempotent for already-canonical paths", () => {
+      expect(normalizePathTrailingSlash("/about/", true)).toBe("/about/");
+    });
+
+    it("leaves the bare root unchanged", () => {
+      expect(normalizePathTrailingSlash("/", true)).toBe("/");
+    });
+
+    it("preserves query strings", () => {
+      expect(normalizePathTrailingSlash("/about?hello=world", true)).toBe("/about/?hello=world");
+      expect(normalizePathTrailingSlash("/about/?hello=world", true)).toBe("/about/?hello=world");
+    });
+
+    it("preserves hash fragments", () => {
+      expect(normalizePathTrailingSlash("/about#section", true)).toBe("/about/#section");
+      expect(normalizePathTrailingSlash("/about/#section", true)).toBe("/about/#section");
+    });
+
+    it("preserves query + hash", () => {
+      expect(normalizePathTrailingSlash("/about?x=1#y", true)).toBe("/about/?x=1#y");
+    });
+
+    it("strips trailing slash from filename-looking paths", () => {
+      // Matches Next.js's routes-manifest rule: paths ending in `.ext` are
+      // treated as files and keep the no-trailing-slash form.
+      expect(normalizePathTrailingSlash("/catch-all/hello.world/", true)).toBe(
+        "/catch-all/hello.world",
+      );
+      expect(normalizePathTrailingSlash("/catch-all/hello.world", true)).toBe(
+        "/catch-all/hello.world",
+      );
+    });
+
+    it("returns absolute URLs unchanged", () => {
+      // Only paths that start with `/` are touched; absolute URLs with a
+      // scheme are skipped entirely (matches Next.js behaviour).
+      expect(normalizePathTrailingSlash("https://nextjs.org", true)).toBe("https://nextjs.org");
+      expect(normalizePathTrailingSlash("https://nextjs.org/", true)).toBe("https://nextjs.org/");
+    });
+  });
+
+  describe("trailingSlash: false", () => {
+    it("strips a trailing slash from a non-root path", () => {
+      expect(normalizePathTrailingSlash("/about/", false)).toBe("/about");
+    });
+
+    it("is idempotent for already-canonical paths", () => {
+      expect(normalizePathTrailingSlash("/about", false)).toBe("/about");
+    });
+
+    it("leaves the bare root unchanged", () => {
+      expect(normalizePathTrailingSlash("/", false)).toBe("/");
+    });
+
+    it("preserves query strings", () => {
+      expect(normalizePathTrailingSlash("/about/?hello=world", false)).toBe("/about?hello=world");
+      expect(normalizePathTrailingSlash("/about?hello=world", false)).toBe("/about?hello=world");
+    });
+
+    it("preserves hash fragments", () => {
+      expect(normalizePathTrailingSlash("/about/#section", false)).toBe("/about#section");
+      expect(normalizePathTrailingSlash("/about#section", false)).toBe("/about#section");
+    });
+
+    it("returns absolute URLs unchanged", () => {
+      expect(normalizePathTrailingSlash("https://nextjs.org/", false)).toBe("https://nextjs.org/");
+      expect(normalizePathTrailingSlash("https://nextjs.org", false)).toBe("https://nextjs.org");
+    });
+  });
+});
+
+// ─── Link href trailing-slash rendering ─────────────────────────────────
+//
+// Ports cases from upstream `testLinkShouldRewriteTo` in:
+//   test/e2e/trailing-slashes/with-trailing-slash.test.ts
+//   test/e2e/trailing-slashes/without-trailing-slash.test.ts
+//
+// Note: the build-time define `process.env.__VINEXT_TRAILING_SLASH` is what
+// drives this in real builds. Tests run with the unbuilt source and therefore
+// observe the `trailingSlash: false` default (env var is unset). That is the
+// inverse half of the upstream matrix — the `with-trailing-slash` direction
+// is covered by `normalizePathTrailingSlash` above and exercised end-to-end
+// in CI.
+
+describe("Link href trailing-slash (trailingSlash: false default)", () => {
+  it("strips a trailing slash from the rendered href", () => {
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about/" }, "x"));
+    expect(html).toContain('href="/about"');
+  });
+
+  it("preserves query when stripping the trailing slash", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about/?hello=world" }, "x"),
+    );
+    expect(html).toContain('href="/about?hello=world"');
+  });
+
+  it("preserves the bare root", () => {
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+    expect(html).toContain('href="/"');
+  });
+
+  it("leaves filename-looking paths untouched", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/catch-all/hello.world" }, "x"),
+    );
+    expect(html).toContain('href="/catch-all/hello.world"');
+  });
+
+  it("leaves absolute URLs unchanged", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://nextjs.org" }, "x"),
+    );
+    expect(html).toContain('href="https://nextjs.org"');
+
+    const trailing = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://nextjs.org/" }, "x"),
+    );
+    expect(trailing).toContain('href="https://nextjs.org/"');
   });
 });

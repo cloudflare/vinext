@@ -955,6 +955,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // Expose trailingSlash to client-side code so <Link> can render hrefs
+        // in the canonical form and avoid an unnecessary 308 redirect bounce.
+        defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
+          nextConfig.trailingSlash ? "true" : "false",
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),

@@ -39,6 +39,7 @@ import {
   type LinkPrefetchRouterMode,
 } from "./link-prefetch.js";
 import {
+  normalizePathTrailingSlash,
   resolveRelativeHref,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -115,6 +116,8 @@ export function useLinkStatus(): LinkStatusContextValue {
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+/** trailingSlash from next.config.js, injected by the plugin at build time */
+const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
@@ -404,8 +407,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Apply locale prefix if specified (safe even for dangerous hrefs since we
   // won't use the result when isDangerous is true)
   const localizedHref = applyLocaleToHref(isDangerous ? "/" : resolvedHref, locale);
+  // Normalise trailing slash to match `trailingSlash` config so that rendered
+  // hrefs avoid the redirect bounce. Mirrors Next.js's `addBasePath`, which
+  // delegates to `normalizePathTrailingSlash` after prefixing.
+  const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
   // Full href with basePath for browser URLs and fetches
-  const fullHref = withBasePath(localizedHref, __basePath);
+  const fullHref = withBasePath(normalizedHref, __basePath);
 
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
@@ -444,7 +451,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!node) return;
 
     const hrefToPrefetch = getLinkPrefetchHref({
-      href: localizedHref,
+      href: normalizedHref,
       basePath: __basePath,
       currentOrigin: window.location.origin,
     });
@@ -469,7 +476,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       observedLinkPrefetches.delete(node);
       visibleLinkPrefetches.delete(instance);
     };
-  }, [shouldViewportPrefetch, prefetchMode, localizedHref]);
+  }, [shouldViewportPrefetch, prefetchMode, normalizedHref]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
@@ -489,8 +496,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         instance.mode = "full";
       }
     }
-    prefetchUrl(localizedHref, intentMode, "high");
-  }, [prefetchProp, isDangerous, prefetchMode, localizedHref, unstable_dynamicOnHover]);
+    prefetchUrl(normalizedHref, intentMode, "high");
+  }, [prefetchProp, isDangerous, prefetchMode, normalizedHref, unstable_dynamicOnHover]);
 
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
@@ -530,7 +537,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // External links: let the browser handle it.
     // Same-origin absolute URLs (e.g. http://localhost:3000/about) are
     // normalized to local paths so they get client-side navigation.
-    let navigateHref = localizedHref;
+    let navigateHref = normalizedHref;
     if (
       resolvedHref.startsWith("http://") ||
       resolvedHref.startsWith("https://") ||

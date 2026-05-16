@@ -46,6 +46,75 @@ export function toSameOriginAppPath(url: string, basePath: string): string | nul
 }
 
 /**
+ * Split a path string into pathname, query, and hash without depending on
+ * the URL constructor (which would resolve relative paths against an origin).
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/router/utils/parse-path.ts
+ */
+function parsePath(path: string): { pathname: string; query: string; hash: string } {
+  const hashIndex = path.indexOf("#");
+  const queryIndex = path.indexOf("?");
+  const hasQuery = queryIndex > -1 && (hashIndex < 0 || queryIndex < hashIndex);
+
+  if (hasQuery || hashIndex > -1) {
+    return {
+      pathname: path.substring(0, hasQuery ? queryIndex : hashIndex),
+      query: hasQuery ? path.substring(queryIndex, hashIndex > -1 ? hashIndex : undefined) : "",
+      hash: hashIndex > -1 ? path.slice(hashIndex) : "",
+    };
+  }
+
+  return { pathname: path, query: "", hash: "" };
+}
+
+/**
+ * Drop trailing slashes from a route while preserving the bare root.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/router/utils/remove-trailing-slash.ts
+ */
+function removeRouteTrailingSlash(route: string): string {
+  return route.replace(/\/$/, "") || "/";
+}
+
+/**
+ * Normalise the trailing slash of a local URL according to the
+ * `trailingSlash` config option in `next.config.js`. Used by the `<Link>`
+ * shim so that rendered `href` attributes match the canonical URL form
+ * (which is what the server-side redirect would otherwise enforce).
+ *
+ * Behaviour matches Next.js's client-side `normalizePathTrailingSlash`:
+ * packages/next/src/client/normalize-trailing-slash.ts
+ *
+ * - Absolute URLs (`http://`, `https://`, `//`) and non-local strings are
+ *   returned unchanged.
+ * - Paths whose final segment looks like a filename (`...\.ext`) have any
+ *   trailing slash stripped even when `trailingSlash: true`, mirroring the
+ *   `.well-known`-aware redirect rule shipped in `routes-manifest.json`.
+ * - Query strings and hash fragments are preserved verbatim.
+ * - Idempotent: already-canonical paths round-trip unchanged.
+ */
+export function normalizePathTrailingSlash(path: string, trailingSlash: boolean): string {
+  if (!path.startsWith("/")) {
+    return path;
+  }
+
+  const { pathname, query, hash } = parsePath(path);
+
+  if (trailingSlash) {
+    if (/\.[^/]+\/?$/.test(pathname)) {
+      // Looks like a filename — strip trailing slash even with trailingSlash: true.
+      return `${removeRouteTrailingSlash(pathname)}${query}${hash}`;
+    }
+    if (pathname.endsWith("/")) {
+      return `${pathname}${query}${hash}`;
+    }
+    return `${pathname}/${query}${hash}`;
+  }
+
+  return `${removeRouteTrailingSlash(pathname)}${query}${hash}`;
+}
+
+/**
  * Prepend basePath to a local path for browser URLs / fetches.
  */
 export function withBasePath(path: string, basePath: string): string {
