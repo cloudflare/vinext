@@ -535,22 +535,11 @@ fi
 # --skip-check avoids the interactive compat report, --force overwrites any
 # existing vite.config.ts. Dep installation is a no-op since we already injected
 # them above.
-run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
-
-# After vinext init adds "type": "module", any CJS next.config.{js,ts} will
-# fail because Node.js treats .js as ESM. We can't rename to .cjs (Next.js
-# doesn't support it), so convert CJS syntax to ESM in-place. vinext init
-# handles other config files (postcss, tailwind, etc.) by renaming to .cjs.
 #
-# The converter lives in scripts/cjs-to-esm-config.mjs. It used to be inlined
-# here via `node -e '…'`, but the JS body contained enough `'"'"'`-style
-# quote-escape sequences that a single unquoted `(` in a comment caused bash
-# to fail to parse the whole script.
-for config_file in next.config.js next.config.ts; do
-  if [ -f "${config_file}" ]; then
-    node "${VINEXT_DIR}/scripts/cjs-to-esm-config.mjs" "${config_file}" >> "${BUILD_LOG}" 2>&1
-  fi
-done
+# vinext loads CJS next.config.js in `"type": "module"` packages via a temp
+# .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
+# config file here.
+run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
 
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 

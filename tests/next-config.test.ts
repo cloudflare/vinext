@@ -36,10 +36,84 @@ describe("invalid config files", () => {
     fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }`);
     fs.writeFileSync(
       path.join(tmpDir, "next.config.js"),
-      `const path = require('path');\n module.exports = {};\n`,
+      // Syntactically invalid in any module system.
+      `module.exports = { invalid: } ;\n`,
     );
 
     await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
+
+describe("loadNextConfig with CJS next.config.js under type:module", () => {
+  // Real-world shape from the Next.js deploy suite: `vinext init` flips
+  // package.json to `"type": "module"`, but the test fixture's
+  // `next.config.js` is still written in CJS (module.exports + require).
+  // vinext must load it as CJS instead of forcing the project to rewrite the
+  // file to ESM.
+
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }`);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads module.exports + require() from a .js file", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `const path = require('node:path');\n` +
+        `module.exports = { basePath: path.join('/', 'docs') };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.basePath).toBe("/docs");
+  });
+
+  it("supports __dirname and __filename in a CJS .js config", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = { env: { DIRNAME_SET: String(typeof __dirname === 'string'), FILENAME_SET: String(typeof __filename === 'string') } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.DIRNAME_SET).toBe("true");
+    expect(config?.env?.FILENAME_SET).toBe("true");
+  });
+
+  it("supports require(mod)(args) plugin-wrapper pattern", async () => {
+    // Mirrors @next/bundle-analyzer / nextra plugin shape — the value
+    // returned from require() is called with options and re-exported.
+    fs.writeFileSync(
+      path.join(tmpDir, "wrap.cjs"),
+      `module.exports = (opts) => (config) => ({ ...config, env: { ...(config.env || {}), WRAPPED: opts.tag } });\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `const withWrap = require('./wrap.cjs')({ tag: 'yes' });\n` +
+        `module.exports = withWrap({ basePath: '/app' });\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.basePath).toBe("/app");
+    expect(config?.env?.WRAPPED).toBe("yes");
+  });
+
+  it("does not leave temp .cjs files in the project root", async () => {
+    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+
+    await loadNextConfig(tmpDir);
+
+    const stray = fs
+      .readdirSync(tmpDir)
+      .filter((name) => name.startsWith(".vinext-next-config.") && name.endsWith(".cjs"));
+    expect(stray).toEqual([]);
   });
 });
 
