@@ -408,11 +408,19 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // won't use the result when isDangerous is true)
   const localizedHref = applyLocaleToHref(isDangerous ? "/" : resolvedHref, locale);
   // Normalise trailing slash to match `trailingSlash` config so that rendered
-  // hrefs avoid the redirect bounce. Mirrors Next.js's `addBasePath`, which
-  // delegates to `normalizePathTrailingSlash` after prefixing.
+  // hrefs avoid the redirect bounce. Mirrors Next.js's `addLocale`/`addBasePath`,
+  // both of which run `normalizePathTrailingSlash` after prefixing — we apply
+  // it once after locale prefixing (for prefetch/navigation paths that bypass
+  // basePath) and again after `withBasePath` for the rendered `href` attribute.
   const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
-  // Full href with basePath for browser URLs and fetches
-  const fullHref = withBasePath(normalizedHref, __basePath);
+  // Full href with basePath for browser URLs and fetches, normalised again so
+  // that combining a non-empty basePath with the bare root (`/`) still
+  // produces a canonical href under `trailingSlash: false` (e.g. `/foo`
+  // rather than `/foo/`).
+  const fullHref = normalizePathTrailingSlash(
+    withBasePath(normalizedHref, __basePath),
+    __trailingSlash,
+  );
 
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
