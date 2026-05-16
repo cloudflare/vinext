@@ -299,6 +299,17 @@ export type ResolvedNextConfig = {
    * change without modifying source — useful for cache-busting after CDN poisoning.
    */
   hashSalt: string;
+  /**
+   * Raw `sassOptions` object from next.config (or `null` when unset). vinext
+   * passes the relevant keys through to Vite's `css.preprocessorOptions.scss`
+   * so SCSS variables defined via `additionalData` / `prependData`, partials
+   * resolved via `includePaths` / `loadPaths`, and a custom `implementation`
+   * all behave the same as in Next.js.
+   *
+   * Kept loose (`Record<string, unknown> | null`) to match Next.js's typing —
+   * the object is forwarded to Sass and may contain any modern Sass option.
+   */
+  sassOptions: Record<string, unknown> | null;
 };
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
@@ -565,6 +576,7 @@ export async function resolveNextConfig(
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
       deploymentId,
+      sassOptions: null,
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -747,6 +759,10 @@ export async function resolveNextConfig(
     hashSalt,
     buildId,
     deploymentId,
+    sassOptions:
+      config.sassOptions && typeof config.sassOptions === "object"
+        ? (config.sassOptions as Record<string, unknown>)
+        : null,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

@@ -603,6 +603,7 @@ describe("detectNextIntlConfig", () => {
       expireTime: 31_536_000,
       buildId: "test-build-id",
       deploymentId: undefined,
+      sassOptions: null,
       ...overrides,
     };
   }

@@ -1,0 +1,171 @@
+/**
+ * Tests for vinext's `sassOptions` passthrough from next.config into
+ * Vite's `css.preprocessorOptions.scss`.
+ *
+ * Next.js (sass-loader) destructures `prependData`, `additionalData`, and
+ * `implementation` from `sassOptions` and forwards the rest as Sass options.
+ * `prependData` (legacy) takes precedence over `additionalData`. Modern
+ * Sass renamed `includePaths` → `loadPaths`; vinext accepts either and
+ * forwards `loadPaths` to Vite, which uses modern Sass.
+ *
+ * Covers the upstream fixtures that fail in CI when `sassOptions` is not
+ * threaded through:
+ *   - test/e2e/app-dir/scss/basic-module-include-paths
+ *   - test/e2e/app-dir/scss/basic-module-additional-data
+ *   - test/e2e/app-dir/scss/basic-module-prepend-data
+ *
+ * Reference: packages/next/src/build/webpack/config/blocks/css/index.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/config/blocks/css/index.ts
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import path from "node:path";
+import os from "node:os";
+import fsp from "node:fs/promises";
+import { buildSassPreprocessorOptions } from "../packages/vinext/src/plugins/sass.js";
+
+// The vinext config hook mutates process.env.NODE_ENV as a side effect.
+// Save/restore so tests that call config() don't leak between files.
+let originalNodeEnv: string | undefined;
+
+beforeEach(() => {
+  originalNodeEnv = process.env.NODE_ENV;
+});
+
+afterEach(() => {
+  if (originalNodeEnv === undefined) {
+    Reflect.deleteProperty(process.env, "NODE_ENV");
+  } else {
+    Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+  }
+});
+
+describe("buildSassPreprocessorOptions", () => {
+  it("returns undefined when sassOptions is null/undefined", () => {
+    expect(buildSassPreprocessorOptions(null)).toBeUndefined();
+    expect(buildSassPreprocessorOptions(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty sassOptions object", () => {
+    expect(buildSassPreprocessorOptions({})).toBeUndefined();
+  });
+
+  it("maps additionalData through to Vite's additionalData", () => {
+    const result = buildSassPreprocessorOptions({ additionalData: "$var: red;" });
+    expect(result).toEqual({ additionalData: "$var: red;" });
+  });
+
+  it("maps legacy prependData onto additionalData", () => {
+    const result = buildSassPreprocessorOptions({ prependData: "$var: red;" });
+    expect(result).toEqual({ additionalData: "$var: red;" });
+  });
+
+  it("prefers prependData over additionalData (matches Next.js precedence)", () => {
+    // Next.js: `additionalData: sassPrependData || sassAdditionalData`
+    const result = buildSassPreprocessorOptions({
+      prependData: "$legacy: red;",
+      additionalData: "$modern: blue;",
+    });
+    expect(result?.additionalData).toBe("$legacy: red;");
+  });
+
+  it("forwards loadPaths verbatim", () => {
+    const result = buildSassPreprocessorOptions({ loadPaths: ["./styles"] });
+    expect(result?.loadPaths).toEqual(["./styles"]);
+  });
+
+  it("aliases legacy includePaths onto modern loadPaths", () => {
+    const result = buildSassPreprocessorOptions({ includePaths: ["./styles"] });
+    expect(result?.loadPaths).toEqual(["./styles"]);
+  });
+
+  it("merges loadPaths and includePaths when both are present", () => {
+    const result = buildSassPreprocessorOptions({
+      loadPaths: ["./modern"],
+      includePaths: ["./legacy"],
+    });
+    expect(result?.loadPaths).toEqual(["./modern", "./legacy"]);
+  });
+
+  it("forwards implementation through (e.g. sass-embedded)", () => {
+    const result = buildSassPreprocessorOptions({ implementation: "sass-embedded" });
+    expect(result?.implementation).toBe("sass-embedded");
+  });
+
+  it("forwards unknown Sass options through verbatim", () => {
+    const result = buildSassPreprocessorOptions({
+      silenceDeprecations: ["import"],
+      quietDeps: true,
+    });
+    expect(result?.silenceDeprecations).toEqual(["import"]);
+    expect(result?.quietDeps).toBe(true);
+  });
+
+  it("ignores non-string entries in includePaths/loadPaths", () => {
+    const result = buildSassPreprocessorOptions({
+      includePaths: ["./valid", 42, null] as unknown as string[],
+    });
+    expect(result?.loadPaths).toEqual(["./valid"]);
+  });
+});
+
+describe("vinext config hook threads sassOptions into css.preprocessorOptions", () => {
+  async function runConfigHook(
+    nextConfigSrc: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      // oxlint-disable-next-line typescript/no-explicit-any
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-config-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), nextConfigSrc);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      // oxlint-disable-next-line typescript/no-explicit-any
+      return (result as any)?.css;
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  it("forwards sassOptions.additionalData into css.preprocessorOptions.scss", async () => {
+    const css = await runConfigHook(
+      `export default { sassOptions: { additionalData: '$var: red;' } };`,
+    );
+    // oxlint-disable-next-line typescript/no-explicit-any
+    expect((css as any)?.preprocessorOptions?.scss?.additionalData).toBe("$var: red;");
+    // oxlint-disable-next-line typescript/no-explicit-any
+    expect((css as any)?.preprocessorOptions?.sass?.additionalData).toBe("$var: red;");
+  }, 15000);
+
+  it("aliases includePaths into loadPaths in css.preprocessorOptions.scss", async () => {
+    const css = await runConfigHook(
+      `export default { sassOptions: { includePaths: ['./styles'] } };`,
+    );
+    // oxlint-disable-next-line typescript/no-explicit-any
+    expect((css as any)?.preprocessorOptions?.scss?.loadPaths).toEqual(["./styles"]);
+  }, 15000);
+
+  it("does not set preprocessorOptions when sassOptions is absent", async () => {
+    const css = await runConfigHook(`export default {};`);
+    // css may still be set if there is a postcss override, but preprocessorOptions
+    // should not appear.
+    // oxlint-disable-next-line typescript/no-explicit-any
+    expect((css as any)?.preprocessorOptions).toBeUndefined();
+  }, 15000);
+});
