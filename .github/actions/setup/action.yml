@@ -5,6 +5,7 @@ inputs:
   node-version:
     description: Node.js version to use
     required: false
+    default: "24"
   cache:
     description: Whether to enable caching for Vite+ dependencies
     required: false
