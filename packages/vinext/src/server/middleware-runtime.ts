@@ -1,6 +1,4 @@
-// Install edge-runtime globals (e.g. AsyncLocalStorage) so user middleware
-// can reference them without an explicit import, matching Next.js behavior.
-import "./edge-globals.js";
+import { installEdgeGlobals } from "./edge-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
@@ -19,6 +17,10 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+
+// Expose edge-runtime globals (e.g. AsyncLocalStorage) so user middleware can
+// reference them without an import, matching Next.js.
+installEdgeGlobals();
 
 export type MiddlewareModule = Record<string, unknown>;
 
