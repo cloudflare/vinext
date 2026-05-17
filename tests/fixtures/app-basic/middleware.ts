@@ -97,6 +97,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  // Action forward loop test: rewrite POSTs from /nextjs-compat/action-forward-loop
+  // to /nextjs-compat/action-forward-loop-rewrite so the receiving page does not
+  // bundle the action. Without the x-action-forwarded guard, a multi-worker
+  // deployment would loop indefinitely. In vinext's single-worker model, the
+  // guard still fires defensively when the header is injected.
+  if (pathname === "/nextjs-compat/action-forward-loop" && request.method === "POST") {
+    return NextResponse.rewrite(new URL("/nextjs-compat/action-forward-loop-rewrite", request.url));
+  }
+
   // Block /middleware-blocked with custom response
   if (pathname === "/middleware-blocked") {
     return new Response("Blocked by middleware", { status: 403 });
@@ -299,6 +308,7 @@ export const config = {
     "/script-manual-nonce",
     "/pages-script-manual-nonce",
     "/nextjs-compat/dynamic/:path*",
+    "/nextjs-compat/action-forward-loop",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
     "/rsc-fetch-error-target",
