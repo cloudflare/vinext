@@ -2890,9 +2890,19 @@ describe("next/server shim", () => {
     const { after } = await import("../packages/vinext/src/shims/server.js");
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
 
-    cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, () => {
-      expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
-    });
+    cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      () => {
+        expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
   });
 
   it("after() throws inside unstable_cache() scope", async () => {
@@ -4168,6 +4178,145 @@ describe('"use cache" runtime', () => {
     const r3 = await cached({ params: asyncSports });
     expect(r3).toEqual({ section: "sports", data: "data-for-sports" });
     expect(callCount).toBe(2); // Must have called the function again!
+  });
+
+  // -----------------------------------------------------------------------
+  // Nested-dynamic cache life error tests — ported from Next.js PR #93707
+  // https://github.com/vercel/next.js/pull/93707
+  // -----------------------------------------------------------------------
+
+  it("throws nested-dynamic error when inner cache has revalidate:0 and outer has no explicit cacheLife", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const innerFn = async () => {
+      cacheLife({ revalidate: 0 });
+      return "inner";
+    };
+    const innerCached = registerCachedFunction(innerFn, "test:nested-rev0-inner");
+
+    const outerFn = async () => {
+      const result = await innerCached();
+      return `outer-${result}`;
+    };
+    const outerCached = registerCachedFunction(outerFn, "test:nested-rev0-outer");
+
+    // Top-level call — outer has no explicit cacheLife, inner has revalidate:0
+    // This should throw a nested-dynamic error
+    let thrown: Error | undefined;
+    try {
+      await outerCached();
+    } catch (e) {
+      thrown = e as Error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown!.message).toContain("revalidate");
+    expect(thrown!.message).toContain('"use cache"');
+    expect(thrown!.message).toContain("not allowed");
+    expect(thrown!.cause).toBeDefined();
+    expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+    expect((thrown!.cause as Error).name).toContain("Nested dynamic");
+  });
+
+  it("throws nested-dynamic error when inner cache has short expire and outer has no explicit cacheLife", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const innerFn = async () => {
+      cacheLife({ expire: 60 }); // 1 minute, under 5 minute threshold
+      return "inner";
+    };
+    const innerCached = registerCachedFunction(innerFn, "test:nested-short-inner");
+
+    const outerFn = async () => {
+      const result = await innerCached();
+      return `outer-${result}`;
+    };
+    const outerCached = registerCachedFunction(outerFn, "test:nested-short-outer");
+
+    let thrown: Error | undefined;
+    try {
+      await outerCached();
+    } catch (e) {
+      thrown = e as Error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown!.message).toContain("expire");
+    expect(thrown!.message).toContain('"use cache"');
+    expect(thrown!.message).toContain("not allowed");
+    expect(thrown!.cause).toBeDefined();
+    expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+  });
+
+  it("does not throw when outer cache has explicit cacheLife", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const innerFn = async () => {
+      cacheLife({ revalidate: 0 });
+      return "inner";
+    };
+    const innerCached = registerCachedFunction(innerFn, "test:nested-ok-inner");
+
+    const outerFn = async () => {
+      cacheLife({ revalidate: 60 }); // explicit on outer
+      const result = await innerCached();
+      return `outer-${result}`;
+    };
+    const outerCached = registerCachedFunction(outerFn, "test:nested-ok-outer");
+
+    // Should NOT throw — outer made an explicit choice
+    const result = await outerCached();
+    expect(result).toBe("outer-inner");
+  });
+
+  it("keeps first dynamic child as cause when multiple nested caches are dynamic", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const innerA = registerCachedFunction(async () => {
+      cacheLife({ revalidate: 0 });
+      return "a";
+    }, "test:first-child-a");
+
+    const innerB = registerCachedFunction(async () => {
+      cacheLife({ expire: 120 }); // also dynamic
+      return "b";
+    }, "test:first-child-b");
+
+    const outerFn = async () => {
+      await innerA();
+      await innerB();
+      return "outer";
+    };
+    const outerCached = registerCachedFunction(outerFn, "test:first-child-outer");
+
+    let thrown: Error | undefined;
+    try {
+      await outerCached();
+    } catch (e) {
+      thrown = e as Error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown!.cause).toBeDefined();
+    // The cause should be from the FIRST dynamic child (innerA)
+    // We can't easily test exact stack content in unit tests, but we verify
+    // the cause exists and the error fires.
   });
 });
 
@@ -14411,9 +14560,19 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
     // Run inside a "use cache" ALS scope
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(headers()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(headers()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14427,9 +14586,19 @@ describe("cache scope guards for dynamic APIs", () => {
       cookies: new Map(),
     });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      expect(() => headers().get("x-test")).toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        expect(() => headers().get("x-test")).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14440,9 +14609,19 @@ describe("cache scope guards for dynamic APIs", () => {
 
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(cookies()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(cookies()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14456,9 +14635,19 @@ describe("cache scope guards for dynamic APIs", () => {
       cookies: new Map([["session", "blocked"]]),
     });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      expect(() => cookies().get("session")).toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        expect(() => cookies().get("session")).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14467,9 +14656,19 @@ describe("cache scope guards for dynamic APIs", () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { connection } = await import("../packages/vinext/src/shims/server.js");
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(connection()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(connection()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
   });
 
   it("headers() throws inside unstable_cache() scope", async () => {
@@ -14567,9 +14766,19 @@ describe("cache scope guards for dynamic APIs", () => {
 
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14604,15 +14813,25 @@ describe("cache scope guards for dynamic APIs", () => {
 
     // Nest unstable_cache inside a "use cache" scope: the outermost
     // scope ("use cache") should be detected first.
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      const cached = unstable_cache(async () => {
-        const h = await headers();
-        return h.get("x-test");
-      }, ["test-nested-scopes"]);
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        const cached = unstable_cache(async () => {
+          const h = await headers();
+          return h.get("x-test");
+        }, ["test-nested-scopes"]);
 
-      // Either scope's guard triggers (the "use cache" check runs first)
-      await expect(cached()).rejects.toThrow(/cannot be called inside/);
-    });
+        // Either scope's guard triggers (the "use cache" check runs first)
+        await expect(cached()).rejects.toThrow(/cannot be called inside/);
+      },
+    );
 
     setHeadersContext(null);
     setCacheHandler(new MemoryCacheHandler());
@@ -14665,7 +14884,14 @@ describe("cache scope guards for dynamic APIs", () => {
     await runWithRequestContext(ctx, async () => {
       try {
         await cacheContextStorage.run(
-          { tags: [], lifeConfigs: [], variant: "default" },
+          {
+            tags: [],
+            lifeConfigs: [],
+            variant: "default",
+            hasExplicitRevalidate: false,
+            hasExplicitExpire: false,
+            dynamicNestedCacheError: undefined,
+          },
           async () => {
             throwIfInsideCacheScope("cookies()");
           },

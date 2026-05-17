@@ -40,6 +40,9 @@ type CacheContextLike = {
   tags: string[];
   lifeConfigs: import("./cache-runtime.js").CacheContext["lifeConfigs"];
   variant: string;
+  hasExplicitRevalidate: boolean;
+  hasExplicitExpire: boolean;
+  dynamicNestedCacheError: Error | undefined;
 };
 
 /** @internal Set by cache-runtime.ts on import to avoid circular dependency */
@@ -767,6 +770,8 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
+      if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
+      if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
       _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
