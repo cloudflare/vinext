@@ -1011,3 +1011,199 @@ describe("layoutFlags injection into RSC payload", () => {
     }
   });
 });
+
+describe("dev error reporting for invalid dynamic usage — issue #1195", () => {
+  it("does not double-log an uncaught error that React already stamped with a digest", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithDigest = Object.assign(new Error("cookies() inside use cache"), {
+      digest: "DYNAMIC_SERVER_USAGE",
+    });
+    let consumedError: unknown = null;
+    const consumeInvalidDynamicUsageError = vi.fn(() => {
+      if (consumedError !== null) return null;
+      consumedError = errorWithDigest;
+      return errorWithDigest;
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: true,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("logs a caught error that has no digest (React never saw it)", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithoutDigest = new Error("cookies() inside use cache");
+    let consumedError: unknown = null;
+    const consumeInvalidDynamicUsageError = vi.fn(() => {
+      if (consumedError !== null) return null;
+      consumedError = errorWithoutDigest;
+      return errorWithoutDigest;
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: true,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[vinext] Invalid dynamic usage:",
+      errorWithoutDigest,
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("does not log when no invalid dynamic usage error was recorded", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const consumeInvalidDynamicUsageError = vi.fn(() => null);
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: true,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("still dedups when the stream is cancelled before full consumption", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithDigest = Object.assign(new Error("cookies() inside use cache"), {
+      digest: "DYNAMIC_SERVER_USAGE",
+    });
+    let consumedError: unknown = null;
+    const consumeInvalidDynamicUsageError = vi.fn(() => {
+      if (consumedError !== null) return null;
+      consumedError = errorWithDigest;
+      return errorWithDigest;
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: true,
+    });
+
+    // Cancel the stream before consuming any bytes
+    if (response.body) {
+      await response.body.cancel("client disconnect");
+    }
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("still dedups when the stream errors during pull", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithDigest = Object.assign(new Error("cookies() inside use cache"), {
+      digest: "DYNAMIC_SERVER_USAGE",
+    });
+    let consumedError: unknown = null;
+    const consumeInvalidDynamicUsageError = vi.fn(() => {
+      if (consumedError !== null) return null;
+      consumedError = errorWithDigest;
+      return errorWithDigest;
+    });
+
+    const renderToReadableStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          pull() {
+            throw new Error("stream blowup");
+          },
+        }),
+    );
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: true,
+      renderToReadableStream,
+    });
+
+    // Attempting to consume the stream will trigger the error
+    try {
+      await response.text();
+    } catch {
+      // Expected
+    }
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("does not apply the wrapper in production mode", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithoutDigest = new Error("cookies() inside use cache");
+    const consumeInvalidDynamicUsageError = vi.fn(() => errorWithoutDigest);
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isProduction: true,
+      isRscRequest: true,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    // In production the wrapper is skipped entirely
+    expect(consumeInvalidDynamicUsageError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("does not apply the wrapper for HTML (non-RSC) requests", async () => {
+    const common = createCommonOptions();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const errorWithoutDigest = new Error("cookies() inside use cache");
+    const consumeInvalidDynamicUsageError = vi.fn(() => errorWithoutDigest);
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeInvalidDynamicUsageError,
+      isRscRequest: false,
+    });
+
+    await response.text();
+    // HTML path intentionally defers dev error reporting
+    expect(consumeInvalidDynamicUsageError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+});

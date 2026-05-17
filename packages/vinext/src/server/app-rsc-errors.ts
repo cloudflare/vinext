@@ -27,7 +27,7 @@ type CreateRscOnErrorHandlerOptions = {
   requestInfo: RscRequestInfo | null;
 };
 
-function hasDigest(error: unknown): error is { digest: unknown } {
+export function hasDigest(error: unknown): error is { digest: unknown } {
   return Boolean(error && typeof error === "object" && "digest" in error);
 }
 

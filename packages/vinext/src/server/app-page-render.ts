@@ -3,6 +3,7 @@ import type { ReactFormState } from "react-dom/client";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
+import { hasDigest } from "./app-rsc-errors.js";
 import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -215,7 +216,15 @@ function createAppPageArtifactCompatibility(
  * "use cache" may be caught by user try/catch and silently swallowed — this
  * wrapper waits for the stream to drain and surfaces any recorded error to the
  * terminal (and, via HMR, the browser dev overlay).
- * Ported from Next.js: https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
+ *
+ * Dedups against React's Flight error chunk: if the recorded error already
+ * carries a `digest`, React's serverComponentsErrorHandler has already stamped
+ * it and emitted it into the RSC stream. Skipping `console.error` prevents
+ * double-logging. Caught cases (no digest) still surface here.
+ *
+ * Ported from Next.js:
+ *   https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
+ *   https://github.com/vercel/next.js/pull/93706
  */
 function wrapRscResponseForDevErrorReporting(
   response: Response,
@@ -229,7 +238,9 @@ function wrapRscResponseForDevErrorReporting(
     if (consumed) return;
     consumed = true;
     const error = consumeInvalidDynamicUsageError();
-    if (error) {
+    if (!error) return;
+    // Dedup: React already emitted this error as a Flight error chunk.
+    if (!hasDigest(error)) {
       console.error("[vinext] Invalid dynamic usage:", error);
     }
   };
