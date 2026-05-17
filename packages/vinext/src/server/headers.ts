@@ -66,6 +66,9 @@ export const NEXT_ACTION_HEADER = "next-action";
 /** Next.js action-not-found indicator (value "1"). */
 export const NEXTJS_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
 
+/** Forwarded action marker — set when a request has already been forwarded between workers. */
+export const ACTION_FORWARDED_HEADER = "x-action-forwarded";
+
 // ---------------------------------------------------------------------------
 // Server Action response headers (`x-action-*`)
 // ---------------------------------------------------------------------------
@@ -160,4 +163,5 @@ export const INTERNAL_HEADERS = [
   MATCHED_PATH_HEADER,
   NEXTJS_DATA_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
+  ACTION_FORWARDED_HEADER,
 ];

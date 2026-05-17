@@ -3,6 +3,7 @@ import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
 import {
+  ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
@@ -379,6 +380,14 @@ export async function handleProgressiveServerActionRequest(
     return null;
   }
 
+  // Defensive guard: prevent infinite forwarding loops. See handleServerActionRscRequest.
+  if (options.request.headers.get(ACTION_FORWARDED_HEADER)) {
+    return createActionNotFoundResponse(null, {
+      clearRequestContext: options.clearRequestContext,
+      getAndClearPendingCookies: options.getAndClearPendingCookies,
+    });
+  }
+
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
   if (csrfResponse) {
     return csrfResponse;
@@ -528,6 +537,17 @@ export async function handleServerActionRscRequest<
 ): Promise<Response | null> {
   if (options.request.method.toUpperCase() !== "POST" || !options.actionId) {
     return null;
+  }
+
+  // Defensive guard: if this request has already been forwarded between workers,
+  // do not attempt to process it again. Prevents infinite forwarding loops when
+  // middleware rewrites action POSTs. Matches Next.js behavior:
+  // https://github.com/vercel/next.js/commit/20892dd44e1321c13f755f051e48c3cadd75204b
+  if (options.request.headers.get(ACTION_FORWARDED_HEADER)) {
+    return createActionNotFoundResponse(options.actionId, {
+      clearRequestContext: options.clearRequestContext,
+      getAndClearPendingCookies: options.getAndClearPendingCookies,
+    });
   }
 
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);

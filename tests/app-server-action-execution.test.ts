@@ -948,6 +948,50 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-redirect")).toBe("/target");
   });
 
+  // Defensive guard for forwarded action POSTs — prevents infinite forwarding
+  // loops when middleware rewrites actions to pages that don't bundle them.
+  // Ported from Next.js: vercel/next.js@20892dd
+  // https://github.com/vercel/next.js/commit/20892dd44e1321c13f755f051e48c3cadd75204b
+  it("returns action-not-found when x-action-forwarded header is present on fetch action", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        request: createFetchActionRequest({ "x-action-forwarded": "1" }),
+      }),
+    );
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
+  });
+
+  it("returns action-not-found when x-action-forwarded is present on progressive action", async () => {
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          request: createMultipartRequest({ "x-action-forwarded": "1" }),
+        }),
+      ),
+    );
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response.text()).toBe("Server action not found.");
+  });
+
+  it("returns action-not-found for any truthy x-action-forwarded value", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        request: createFetchActionRequest({ "x-action-forwarded": "true" }),
+      }),
+    );
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+  });
+
+  it("does not block actions when x-action-forwarded is absent", async () => {
+    const response = await handleServerActionRscRequest(createRscOptions());
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(200);
+  });
+
   // Ported from Next.js: packages/next/src/server/app-render/action-handler.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/action-handler.ts
   it("sets the HTTP fallback status while packaging fallback digests into fetch-action Flight", async () => {
