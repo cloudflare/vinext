@@ -10833,10 +10833,14 @@ describe("Pages Router concurrent navigation", () => {
    * Build a minimal HTML response that navigateClient can parse.
    * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.
    */
-  function buildNavHtml(page: string, pageModuleUrl: string): string {
+  function buildNavHtml(
+    page: string,
+    pageModuleUrl: string,
+    query: Record<string, unknown> = {},
+  ): string {
     const nextData = JSON.stringify({
       page,
-      query: {},
+      query,
       isFallback: false,
       props: { pageProps: { page } },
       __vinext: { pageModuleUrl },
@@ -11642,6 +11646,62 @@ describe("Pages Router concurrent navigation", () => {
         (globalThis as any).window = previousWindow;
       }
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // Issue #1196 — catch-all router.query must not be corrupted by basePath + rewrites + middleware.
+  it("preserves catch-all router.query after client navigation with basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win } = createNavWindow();
+
+    // Simulate being on a catch-all page under basePath
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    win.location.pathname = "/docs/first";
+    win.location.href = "http://localhost/docs/first";
+
+    // Server-rendered __NEXT_DATA__ for the catch-all page
+    win.__NEXT_DATA__ = {
+      page: "/[...path]",
+      query: { path: ["first"] },
+      isFallback: false,
+      props: { pageProps: {} },
+      __vinext: { pageModuleUrl: "/@fs/pages/[...path].js" },
+    };
+
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+    let capturedRouter: any;
+    function Probe() {
+      capturedRouter = routerModule.useRouter();
+      return React.createElement("span", null, "ok");
+    }
+
+    try {
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
+
+      expect(capturedRouter.query.path).toEqual(["first"]);
+      expect(capturedRouter.pathname).toBe("/[...path]");
+      expect(capturedRouter.asPath).toBe("/first");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
     }
   });
 });
