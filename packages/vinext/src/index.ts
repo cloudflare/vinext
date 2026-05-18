@@ -1218,6 +1218,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
+            // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
+            //
+            // Vite defaults `environments.ssr.build.emitAssets` to `false`
+            // because the SSR environment has `consumer: "server"`. With
+            // code-split CSS (the default), the CSS plugin still rewrites
+            // server-component CSS imports into `import "<hash>.css"`
+            // statements in the SSR JS, then emits the CSS asset via
+            // `emitFile`. The asset is subsequently stripped from the
+            // bundle by Vite's `vite:asset` generateBundle hook because
+            // `emitAssets` is false — leaving Node's ESM loader to crash
+            // on the unresolvable import the first time `vinext start`
+            // imports the SSR entry:
+            //
+            //   Error [ERR_MODULE_NOT_FOUND]: Cannot find module
+            //     'dist/server/ssr/style.css'
+            //     imported from 'dist/server/ssr/index.js'
+            //
+            // Setting `ssrEmitAssets: true` at the top level propagates
+            // into `environments.ssr.build.emitAssets`. We use the
+            // top-level form because Vite re-applies it during
+            // `resolveConfig` (see `resolveConfig` in vite/src/node/config.ts)
+            // and would otherwise overwrite any per-environment value we
+            // tried to set in `environments.ssr.build`. `@vitejs/plugin-rsc`
+            // already sets `emitAssets: true` on the `rsc` environment for
+            // the same reason; this mirrors that for `ssr`. Affects only
+            // the build pipeline.
+            ssrEmitAssets: true,
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
