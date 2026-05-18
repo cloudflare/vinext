@@ -208,13 +208,23 @@ describe("resolveAppRouterAssetPath", () => {
  * The fixture is copied so tests can mutate next.config.ts independently
  * without polluting each other or the shared on-disk fixture. node_modules
  * is symlinked to the workspace root to avoid a real install.
+ *
+ * `registerCleanup` is invoked synchronously right after `mkdtempSync` so
+ * the tmp dir is always tracked, even if `createBuilder` or `buildApp`
+ * throws before this function returns.
  */
-async function buildFixtureWithConfig(extraConfigJson: string): Promise<{
+async function buildFixtureWithConfig(
+  extraConfigJson: string,
+  registerCleanup: (cleanup: () => void) => void,
+): Promise<{
   fixtureRoot: string;
   outDir: string;
-  cleanup: () => void;
 }> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-asset-prefix-"));
+  // Register the cleanup BEFORE any work that can throw. If the copy/symlink/
+  // build step fails, the afterAll hook still removes the tmp dir.
+  registerCleanup(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
   const fixtureRoot = path.join(tmpDir, "fixture");
   fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
   // Symlink the workspace node_modules so the fixture can resolve React,
@@ -244,23 +254,22 @@ async function buildFixtureWithConfig(extraConfigJson: string): Promise<{
   });
   await builder.buildApp();
 
-  return {
-    fixtureRoot,
-    outDir,
-    cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }),
-  };
+  return { fixtureRoot, outDir };
 }
 
 describe("assetPrefix end-to-end build", () => {
-  // Track tmp dirs so we can clean up if a test throws before its own cleanup.
+  // Track tmp dirs so we can clean up even if a build throws. `cleanups` is
+  // populated by `buildFixtureWithConfig` synchronously right after the tmp
+  // dir is created, so a thrown `createBuilder`/`buildApp` still leaves the
+  // tmp dir registered for the afterAll teardown.
   const cleanups: Array<() => void> = [];
   afterAll(() => {
     for (const c of cleanups) c();
   });
+  const register = (cleanup: () => void) => cleanups.push(cleanup);
 
   it("path-prefix: emits assets under <prefix>/_next/static/ on disk and in HTML", async () => {
-    const built = await buildFixtureWithConfig(`assetPrefix: "/custom-asset-prefix",`);
-    cleanups.push(built.cleanup);
+    const built = await buildFixtureWithConfig(`assetPrefix: "/custom-asset-prefix",`, register);
 
     // Files land on disk where the URLs say they should — Cloudflare's
     // ASSETS binding (and any static file server) can serve them directly
@@ -329,8 +338,7 @@ describe("assetPrefix end-to-end build", () => {
   }, 180_000);
 
   it("absolute URL: emits fully-qualified asset URLs and never includes /assets/", async () => {
-    const built = await buildFixtureWithConfig(`assetPrefix: "https://cdn.example.com",`);
-    cleanups.push(built.cleanup);
+    const built = await buildFixtureWithConfig(`assetPrefix: "https://cdn.example.com",`, register);
 
     // Disk layout is just _next/static/ — the CDN owns the URL prefix.
     const onDiskStatic = path.join(built.outDir, "client", "_next", "static");
@@ -364,8 +372,10 @@ describe("assetPrefix end-to-end build", () => {
   }, 180_000);
 
   it("basePath + assetPrefix: routes under basePath, assets under assetPrefix", async () => {
-    const built = await buildFixtureWithConfig(`basePath: "/app",\n  assetPrefix: "/cdn-prefix",`);
-    cleanups.push(built.cleanup);
+    const built = await buildFixtureWithConfig(
+      `basePath: "/app",\n  assetPrefix: "/cdn-prefix",`,
+      register,
+    );
 
     // On-disk path mirrors the assetPrefix path — independent of basePath.
     const onDiskStatic = path.join(built.outDir, "client", "cdn-prefix", "_next", "static");
@@ -404,8 +414,7 @@ describe("assetPrefix end-to-end build", () => {
   it("unset: continues to emit URLs under /assets/ (backward compatibility)", async () => {
     // Smoke-check the baseline — no assetPrefix is set, so behaviour must
     // be unchanged from before this feature landed.
-    const built = await buildFixtureWithConfig(`// no assetPrefix`);
-    cleanups.push(built.cleanup);
+    const built = await buildFixtureWithConfig(`// no assetPrefix`, register);
 
     // Historical layout preserved.
     const onDiskAssets = path.join(built.outDir, "client", "assets");
