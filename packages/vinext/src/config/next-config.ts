@@ -312,7 +312,18 @@ export type ResolvedNextConfig = {
   sassOptions: Record<string, unknown> | null;
 };
 
-const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+// Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
+// (`.js`/`.mjs`/`.ts`/`.mts`) and adds `.cjs` for parity with vinext's own
+// loader, which has historically accepted CJS configs as well. The order is
+// significant: findNextConfigPath returns the first match, so prefer the more
+// modern flavours first.
+const CONFIG_FILES = [
+  "next.config.ts",
+  "next.config.mts",
+  "next.config.mjs",
+  "next.config.js",
+  "next.config.cjs",
+];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 
 /**
@@ -571,6 +582,95 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
   };
 }
 
+/**
+ * Vite plugin that bridges CJS modules imported by `next.config.{ts,mts,…}`
+ * into the ESM-only module runner.
+ *
+ * Vite's `runnerImport` evaluates every loaded module as ESM. Imports like
+ * `import x from './foo.cjs'` or `import * as y from './bar.cts'` therefore
+ * blow up with `module is not defined` the first time the source references
+ * `module.exports`. Next.js's own `next.config.ts` loader sidesteps this by
+ * routing the file through Node's `Module._compile` and SWC's CommonJS
+ * transform, which provides the CJS globals and auto-converts
+ * `module.exports = X` to a default export.
+ *
+ * We replicate the relevant slice: for any `.cjs`/`.cts` file (unconditionally
+ * CJS by spec) and for `.js`/`.ts` files that statically assign to
+ * `module.exports`, inject CJS globals and re-export `module.exports` as the
+ * ESM default. The transform is config-load scoped: it lives on the inline
+ * Vite instance created for `runnerImport`, so it never touches the user's
+ * application module graph.
+ *
+ * Ports the behaviour exercised by Next.js fixtures
+ * `test/e2e/app-dir/next-config-ts-native-{mts,ts}/import-js-extensions-{cjs,esm}/`
+ * and `…/import-from-node-modules/`.
+ */
+function cjsImportsInteropPlugin(configPath: string): {
+  name: string;
+  enforce: "pre";
+  // oxlint-disable-next-line typescript/no-explicit-any
+  transform(this: unknown, code: string, id: string): any;
+} {
+  const normalizedConfig = safeRealpath(path.resolve(configPath));
+  return {
+    name: "vinext:next-config-cjs-imports-interop",
+    enforce: "pre",
+    transform(code: string, id: string) {
+      const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
+      // Skip the config file itself; cjsGlobalsInjectorPlugin owns that one
+      // (and uses its own export shape via VINEXT_CJS_EXPORTS_KEY).
+      const resolvedId = safeRealpath(path.resolve(idPath));
+      if (resolvedId === normalizedConfig) return null;
+
+      // `.cjs` / `.cts` are unconditionally CJS by file extension; `.js` /
+      // `.ts` are only treated as CJS when they statically reassign
+      // `module.exports`. `.mjs` and `.mts` are always ESM — skip them.
+      const ext = path.extname(idPath).toLowerCase();
+      const isAlwaysCjs = ext === ".cjs" || ext === ".cts";
+      const isMaybeCjs = ext === ".js" || ext === ".ts";
+      if (!isAlwaysCjs && !isMaybeCjs) return null;
+      if (isMaybeCjs && !reassignsModuleExports(code)) return null;
+
+      // Skip files that already look like ESM (have `export` declarations).
+      // Picking ESM over CJS matches Node's resolution for ambiguous extensions
+      // and avoids double-wrapping files that just happen to mention
+      // `module.exports` in a comment.
+      if (
+        isMaybeCjs &&
+        /\bexport\s+(?:default|\{|const|let|var|function|class|async|\*)/.test(code)
+      ) {
+        return null;
+      }
+
+      const dirname = path.dirname(resolvedId);
+      const filenameLiteral = JSON.stringify(resolvedId);
+      const dirnameLiteral = JSON.stringify(dirname);
+      const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
+
+      // Wrap the body in a function so top-level `return` inside the user
+      // source — and any local `const module` shadow — stays scoped, and
+      // re-export the final `module.exports` as the ESM default. Named
+      // exports off `module.exports` are also reflected so
+      // `import * as ns from './foo.cts'` exposes `ns.default` (the common
+      // shape the Next.js fixtures rely on).
+      const wrapped =
+        `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
+        `const __filename = ${filenameLiteral};\n` +
+        `const __dirname = ${dirnameLiteral};\n` +
+        `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
+        `const module = { exports: {} };\n` +
+        `let exports = module.exports;\n` +
+        `(function() {\n${code}\n}).call(module.exports);\n` +
+        `export default module.exports;\n`;
+
+      return {
+        code: wrapped,
+        map: null,
+      };
+    },
+  };
+}
+
 export function findNextConfigPath(root: string): string | null {
   for (const filename of CONFIG_FILES) {
     const configPath = path.join(root, filename);
@@ -677,7 +777,16 @@ export async function loadNextConfig(
       // CJS globals) exclusively to `.ts`/`.mts`/`.cts`; legacy `.js`/`.cjs`
       // configs are loaded through Node and already have `require`/`module`,
       // and `.mjs` configs are explicitly ESM-only.
-      plugins: /\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : [],
+      //
+      // Regardless of the config flavour, also install the CJS-imports
+      // interop plugin so that `.cjs` / `.cts` (and `.js` / `.ts` files that
+      // statically reassign `module.exports`) imported during config load
+      // resolve through Vite's ESM-only module runner. This mirrors how
+      // Next.js's SWC pipeline auto-converts CJS imports.
+      plugins: [
+        ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
+        cjsImportsInteropPlugin(configPath),
+      ],
     });
     return await unwrapConfig(mod, phase);
   } catch (e) {

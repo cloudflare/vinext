@@ -383,7 +383,16 @@ export function scanImports(root: string): CheckItem[] {
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
  */
 export function analyzeConfig(root: string): CheckItem[] {
-  const configFiles = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  // Mirror the Next.js-compatible set in shims/constants.ts. Accepts both
+  // `.ts`/`.mts` (Next.js-recognized) and `.cjs`/`.cts` (defensive — Next.js
+  // does not, but if a user has them we should still scan and report).
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
   let configPath: string | null = null;
   for (const f of configFiles) {
     const p = path.join(root, f);
