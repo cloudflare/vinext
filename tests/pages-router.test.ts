@@ -374,6 +374,32 @@ describe("Pages Router integration", () => {
     expect(html).toContain("/compat-router-test");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/params-hooks-compat/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/params-hooks-compat/index.test.ts
+  // Under Pages Router, hooks from `next/navigation` must work as compat shims
+  // populated from the Pages Router (next/router) state — useParams returns
+  // ONLY dynamic route params (no query keys), useSearchParams returns ONLY
+  // the URL search string (no route params).
+  it("next/navigation useParams returns only dynamic route params under Pages Router", async () => {
+    const res = await fetch(`${baseUrl}/nav-compat/foobar?a=pages`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const paramsMatch = html.match(/<pre id="use-params">([^<]*)<\/pre>/);
+    expect(paramsMatch).not.toBeNull();
+    const params = JSON.parse(paramsMatch![1].replaceAll("&quot;", '"'));
+    expect(params).toEqual({ slug: "foobar" });
+  });
+
+  it("next/navigation useSearchParams returns only query string under Pages Router", async () => {
+    const res = await fetch(`${baseUrl}/nav-compat/foobar?q=pages`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const searchMatch = html.match(/<pre id="use-search-params">([^<]*)<\/pre>/);
+    expect(searchMatch).not.toBeNull();
+    const search = JSON.parse(searchMatch![1].replaceAll("&quot;", '"'));
+    expect(search).toEqual({ q: "pages" });
+  });
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
     writeEncodedSlashPagesFixture(tmpDir);
