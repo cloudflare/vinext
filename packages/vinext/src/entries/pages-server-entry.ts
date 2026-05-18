@@ -104,6 +104,7 @@ export async function generateServerEntry(
   // so prod-server.ts can apply them without loading next.config.js at runtime.
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
+    assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },

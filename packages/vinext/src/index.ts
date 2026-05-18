@@ -79,6 +79,11 @@ import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-r
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath, removeTrailingSlash } from "./utils/base-path.js";
+import {
+  ASSET_PREFIX_URL_DIR,
+  resolveAssetUrlPrefix,
+  resolveAssetsDir,
+} from "./utils/asset-prefix.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
@@ -1363,6 +1368,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
             // asserts `cssText` preserves `max-width: 768px`.
             cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
+            // Direct Vite to write build output under `<assetPrefix>/_next/static/`
+            // (path-prefix form) or `_next/static/` (absolute-URL form) when
+            // `assetPrefix` is configured. Keeps the default of `assets/`
+            // when no prefix is set so existing on-disk layouts are stable
+            // for projects that haven't opted in.
+            //
+            // Pair with `experimental.renderBuiltUrl` above: the on-disk
+            // layout matches the URL path so the Cloudflare ASSETS binding
+            // and any static file server can resolve `<assetPrefix>/_next/static/...`
+            // requests without a runtime rewrite.
+            ...(nextConfig.assetPrefix
+              ? { assetsDir: resolveAssetsDir(nextConfig.assetPrefix) }
+              : {}),
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -1519,8 +1537,51 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
           define: defines,
-          // Set base path if configured
+          // Set base path if configured.
+          //
+          // `base` controls both the dev server URL prefix and the default
+          // asset URL prefix in production. Routes live under `basePath`,
+          // so we anchor `base` there. Asset URLs are then re-prefixed with
+          // `assetPrefix` (when configured) via `experimental.renderBuiltUrl`
+          // below — that keeps `basePath` and `assetPrefix` independent, as
+          // they are in Next.js.
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
+          // When `assetPrefix` is configured, override Vite's default
+          // `assetsURL = base + url` behaviour so emitted JS/CSS/asset URLs
+          // start with the configured asset prefix and use Next.js's
+          // canonical `_next/static/` directory convention. We also write
+          // assets to disk under that same path layout (via `build.assetsDir`
+          // below) so the Cloudflare ASSETS binding and any static file
+          // server can serve them without runtime rewrites.
+          //
+          // See packages/vinext/src/utils/asset-prefix.ts for the helpers
+          // and Next.js docs for the contract:
+          // https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+          ...(nextConfig.assetPrefix
+            ? {
+                experimental: {
+                  renderBuiltUrl: (filename: string) => {
+                    // `filename` is the bundler-relative output path,
+                    // e.g. `_next/static/chunk-abc.js` or
+                    // `<assetPrefix-pathname>/_next/static/chunk-abc.js`
+                    // when assetPrefix is a path prefix. Re-anchor it under
+                    // the configured asset URL prefix.
+                    const urlPrefix = resolveAssetUrlPrefix(nextConfig.assetPrefix);
+                    // Strip any leading on-disk `assetsDir` segment so we
+                    // don't double-prefix when the on-disk layout already
+                    // mirrors the URL path.
+                    const onDiskDir = resolveAssetsDir(nextConfig.assetPrefix);
+                    const dirPrefix = onDiskDir + "/";
+                    const stripped = filename.startsWith(dirPrefix)
+                      ? filename.slice(dirPrefix.length)
+                      : filename.startsWith(`${ASSET_PREFIX_URL_DIR}/`)
+                        ? filename.slice(ASSET_PREFIX_URL_DIR.length + 1)
+                        : filename;
+                    return urlPrefix + stripped;
+                  },
+                },
+              }
+            : {}),
           // Inject resolved PostCSS plugins (when found) and any
           // sassOptions translated from next.config. Both end up on
           // `css.*`, so we merge them into a single `css` object rather
@@ -3532,6 +3593,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           };
 
           fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
+
+          // Persist a small subset of next.config values that the App Router
+          // prod-server needs at startup but which are not embedded in the
+          // RSC entry (the RSC entry only embeds `__basePath`). Keep this
+          // file narrowly scoped — anything that affects request handling
+          // outside of the RSC handler should live here so dev/prod parity
+          // is easy to audit.
+          const runtimeConfig = {
+            assetPrefix: nextConfig?.assetPrefix ?? "",
+          };
+          fs.writeFileSync(
+            path.join(outDir, "vinext-runtime-config.json"),
+            JSON.stringify(runtimeConfig),
+          );
         },
       },
     },

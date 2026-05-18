@@ -130,6 +130,14 @@ export type NextConfig = {
   env?: Record<string, string>;
   /** Base URL path prefix */
   basePath?: string;
+  /**
+   * Prefix applied to every emitted JS/CSS/image/static asset URL.
+   * Accepts a path prefix (e.g. `/custom-asset-prefix`) or an absolute
+   * URL (e.g. `https://cdn.example.com`). Distinct from `basePath`:
+   * `basePath` affects route URLs; `assetPrefix` only affects asset URLs.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+   */
+  assetPrefix?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
   /** Internationalization routing config */
@@ -244,6 +252,20 @@ export type NextConfigInput = NextConfig | NextConfigFactory;
 export type ResolvedNextConfig = {
   env: Record<string, string>;
   basePath: string;
+  /**
+   * Resolved `assetPrefix` from next.config.
+   *
+   * Empty string when unset. Trailing slashes are trimmed. May be either:
+   *  - a path prefix beginning with `/` (e.g. `"/custom-asset-prefix"`), or
+   *  - an absolute URL with `http(s)://` origin (e.g. `"https://cdn.example.com"`
+   *    or `"https://cdn.example.com/sub"`).
+   *
+   * Mirrors Next.js semantics — `assetPrefix` controls emitted asset URLs
+   * only; route URLs continue to live under `basePath`.
+   *
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+   */
+  assetPrefix: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -791,6 +813,47 @@ async function resolveBuildId(
   return trimmed;
 }
 
+/**
+ * Normalize the `assetPrefix` option from next.config.
+ *
+ * Accepts both absolute URLs (`https://cdn.example.com[/subpath]`) and
+ * path prefixes (`/custom-asset-prefix`). Trailing slashes are trimmed.
+ * Empty/whitespace-only strings are treated as unset and return `""`.
+ *
+ * Path prefixes that omit the leading slash get one added so they always
+ * begin with `/` — this matches how Next.js routes match against them.
+ *
+ * Non-string values are rejected to surface config mistakes early.
+ *
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+ */
+export function normalizeAssetPrefix(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "";
+
+  if (typeof value !== "string") {
+    throw new Error(
+      `Invalid \`assetPrefix\` configuration: must be a string, got ${typeof value}. ` +
+        `Accepts a path prefix ("/custom-asset-prefix") or an absolute URL ` +
+        `("https://cdn.example.com").`,
+    );
+  }
+
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (trimmed === "") return "";
+
+  // Absolute URL — keep origin verbatim, validate parseability so a typo
+  // surfaces at config-load time instead of as a confusing build error.
+  if (/^https?:\/\//i.test(trimmed)) {
+    if (!URL.canParse(trimmed)) {
+      throw new Error(`Invalid \`assetPrefix\` configuration: "${value}" is not a parseable URL.`);
+    }
+    return trimmed;
+  }
+
+  // Path prefix — always begin with "/", consistent with basePath.
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
 function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
   const deploymentId =
     configDeploymentId !== undefined ? configDeploymentId : process.env.NEXT_DEPLOYMENT_ID;
@@ -839,6 +902,7 @@ export async function resolveNextConfig(
     const resolved: ResolvedNextConfig = {
       env: {},
       basePath: "",
+      assetPrefix: "",
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -1022,6 +1086,7 @@ export async function resolveNextConfig(
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
+    assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
