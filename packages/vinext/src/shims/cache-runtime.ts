@@ -69,11 +69,16 @@ export class NestedDynamicUseCacheError extends Error {
  * nested-dynamic error messages. The throw is gated to fire only during the
  * build's prerender phase (`VINEXT_PRERENDER=1`) or development; this phrase
  * tells the user which one they're in so the message isn't misleading.
- * Defaults to "during prerendering" to match Next.js wording when called from
- * a context we don't recognize (the throw also wouldn't fire in that case).
+ *
+ * `VINEXT_PRERENDER` takes priority over `NODE_ENV=development`: if the
+ * prerender flag is set, the user really is prerendering regardless of
+ * NODE_ENV (this matters for scenarios like a dev-config prerender). Defaults
+ * to "during prerendering" to match Next.js wording when called from a
+ * context we don't recognize (the throw also wouldn't fire in that case).
  */
 function nestedCacheContextPhrase(): string {
   if (typeof process === "undefined") return "during prerendering";
+  if (process.env.VINEXT_PRERENDER === "1") return "during prerendering";
   if (process.env.NODE_ENV === "development") return "in development";
   return "during prerendering";
 }
@@ -740,6 +745,26 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // its effective revalidate to 0). The error messages explicitly say "not
   // allowed during prerendering" — outside prerendering/dev, surfacing the
   // throw would be misleading and would diverge from Next.js.
+  //
+  // Semantic note on `effectiveLife.revalidate === 0`: this checks the
+  // *outer's merged* effective life after minimum-wins, not the *inner's
+  // entry metadata* directly (as Next.js does via `rdcResult.entry.revalidate`
+  // at the read site). The behavior is functionally equivalent in all
+  // observable cases because the `hasExplicitRevalidate`/`hasExplicitExpire`
+  // guards cover the scenarios where the merge could mask the inner's
+  // contribution:
+  //   - Outer no cacheLife, inner revalidate:0 → merged effective is 0,
+  //     hasExplicit is false, throw fires. (Same outcome as checking inner.)
+  //   - Outer cacheLife({ revalidate: 60 }), inner revalidate:0 → merged
+  //     effective is 0 (min), hasExplicit is true, throw is suppressed.
+  //     (Same outcome — Next.js also suppresses via hasExplicit.)
+  //   - Outer cacheLife({ revalidate: 0 }), inner revalidate:0 → merged
+  //     effective is 0, hasExplicit is true, throw is suppressed.
+  //     (Same outcome.)
+  // We use `effectiveLife` here rather than tracking the inner entry's
+  // revalidate separately because vinext doesn't model a CacheResultMetadata
+  // type — the inner's contribution lives in `parentCtx.lifeConfigs` and
+  // gets resolved as part of the outer's minimum-wins on the next iteration.
   const shouldThrow =
     typeof process !== "undefined" &&
     (process.env.VINEXT_PRERENDER === "1" || process.env.NODE_ENV === "development");

@@ -781,6 +781,18 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
       // suppression semantics are correct: calling `cacheLife()` is itself
       // the explicit choice that opts the outer out of the nested-dynamic
       // throw, regardless of which fields the user specified.
+      //
+      // The `!== undefined` checks below are therefore effectively
+      // unconditional in normal use: `resolvedConfig` always merges over the
+      // default profile, which has both `revalidate` and `expire` set. They
+      // remain as defensive guards in case `cacheLifeProfiles.default` is
+      // ever overridden to omit a field, or a future refactor lets callers
+      // pass `resolvedConfig` without the default merge. If per-field
+      // suppression is ever desired (e.g. `cacheLife({ expire: 60 })`
+      // suppressing only the expire-side throw), the flags would need to
+      // inspect the *raw user input* rather than `resolvedConfig` — but
+      // that would also diverge from Next.js semantics, so it should be a
+      // deliberate, documented design change rather than an incidental one.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
       _setRequestScopedCacheLife(resolvedConfig);
