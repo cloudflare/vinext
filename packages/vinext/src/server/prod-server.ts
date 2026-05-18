@@ -534,7 +534,13 @@ async function tryServeStatic(
   // `assetsDir` carry a content hash regardless of whether they sit under
   // `/assets/` (historical default) or `/<prefix>?/_next/static/`
   // (assetPrefix-enabled builds). Both forms get immutable cache headers.
-  const isHashed = pathname.startsWith("/assets/") || pathname.includes("/_next/static/");
+  // Prefer prefix checks for the well-known layouts; only fall through to a
+  // substring check when an `assetPrefix` could shift `/_next/static/` away
+  // from the URL root (e.g. `/cdn/_next/static/...`).
+  const isHashed =
+    pathname.startsWith("/assets/") ||
+    pathname.startsWith("/_next/static/") ||
+    pathname.includes("/_next/static/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
@@ -1466,12 +1472,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // (see `resolveAppRouterAssetPath` for the full table), so the same
     // helper handles both routers.
     const staticLookupPath = stripBasePath(pathname, basePath);
-    const pagesAssetLookup =
-      resolveAppRouterAssetPath(staticLookupPath, pagesAssetPathPrefix, assetPrefix) ??
-      // Fall back to the unstripped path for the assetPrefix branch — when
-      // `basePath` is not set, `stripBasePath` is a no-op and the helper
-      // result above already covers it.
-      null;
+    const pagesAssetLookup = resolveAppRouterAssetPath(
+      staticLookupPath,
+      pagesAssetPathPrefix,
+      assetPrefix,
+    );
     if (
       pagesAssetLookup &&
       (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache))

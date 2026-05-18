@@ -122,8 +122,14 @@ export class StaticFileCache {
       // becomes `<prefix>/_next/static/...` (path-prefix) or `_next/static/...`
       // (absolute-URL prefix). All three forms get long-lived `immutable`
       // cache headers — the hash in the filename invalidates safely.
+      // Prefer prefix checks when the path is known to be root-relative without
+      // a leading slash (the default case). Fall back to a substring check only
+      // for the path-prefixed `assetPrefix` layout where `_next/static/` lives
+      // under an arbitrary prefix directory (e.g. `cdn/_next/static/...`).
       const isHashed =
-        relativePath.startsWith("assets/") || relativePath.includes("/_next/static/");
+        relativePath.startsWith("assets/") ||
+        relativePath.startsWith("_next/static/") ||
+        relativePath.includes("/_next/static/");
       const cacheControl = isHashed
         ? "public, max-age=31536000, immutable"
         : "public, max-age=3600";
