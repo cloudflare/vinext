@@ -856,6 +856,7 @@ describe("detectNextIntlConfig", () => {
   function makeResolved(overrides: Partial<ResolvedNextConfig> = {}): ResolvedNextConfig {
     return {
       env: {},
+      assetPrefix: "",
       basePath: "",
       trailingSlash: false,
       output: "",
