@@ -413,6 +413,57 @@ describe("assetPrefix end-to-end build", () => {
     }
   }, 180_000);
 
+  // Ported from Next.js: packages/next/src/server/config.ts:528-531
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts
+  it("basePath alone: falls back to using basePath as assetPrefix", async () => {
+    // Next.js parity — `basePath: "/app"` with no `assetPrefix` should serve
+    // assets from `/app/_next/static/...` (NOT `/assets/...` and NOT
+    // `/app/assets/...`). The fallback in resolveNextConfig() rewrites
+    // `assetPrefix = basePath`, which feeds the rest of the pipeline.
+    const built = await buildFixtureWithConfig(`basePath: "/app",`, register);
+
+    // On-disk layout mirrors the asset URL: <basePath>/_next/static/...
+    const onDiskStatic = path.join(built.outDir, "client", "app", "_next", "static");
+    expect(fs.existsSync(onDiskStatic), `expected on-disk layout under ${onDiskStatic}`).toBe(true);
+    // Legacy `<basePath>/assets/` directory should NOT exist — the fallback
+    // moves assets to the Next.js-canonical location.
+    const onDiskAssets = path.join(built.outDir, "client", "app", "assets");
+    expect(fs.existsSync(onDiskAssets)).toBe(false);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({
+      port: 0,
+      outDir: built.outDir,
+      noCompression: true,
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const baseUrl = `http://localhost:${port}`;
+
+      const homeRes = await fetch(`${baseUrl}/app/`);
+      expect(homeRes.status).toBe(200);
+      const html = await homeRes.text();
+
+      const bootstrapMatch = html.match(/<script[^>]+type="module"[^>]+src="([^"]+\.js)"/);
+      expect(bootstrapMatch).not.toBeNull();
+      // Asset URL lives under basePath at Next.js's `_next/static/` path.
+      expect(bootstrapMatch![1]).toMatch(/^\/app\/_next\/static\//);
+      // Critically, the asset URL must NOT include `/assets/` (the old
+      // Vite default) anywhere — the fallback should have completely
+      // replaced that layout.
+      expect(bootstrapMatch![1]).not.toContain("/assets/");
+
+      // The prod-server resolves the URL against the on-disk path and
+      // returns the JS bundle.
+      const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
+      expect(bundleRes.status).toBe(200);
+      expect(bundleRes.headers.get("content-type")).toContain("javascript");
+    } finally {
+      server.close();
+    }
+  }, 180_000);
+
   it("unset: continues to emit URLs under /assets/ (backward compatibility)", async () => {
     // Smoke-check the baseline — no assetPrefix is set, so behaviour must
     // be unchanged from before this feature landed.

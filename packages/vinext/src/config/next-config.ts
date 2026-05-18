@@ -1123,6 +1123,24 @@ export async function resolveNextConfig(
   // webpack/turbopack already in `aliases` take precedence)
   detectNextIntlConfig(root, resolved);
 
+  // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
+  // not, fall back to using `basePath` as the asset prefix. Without this, an
+  // app deployed under a basePath would serve its routes correctly but emit
+  // its assets from `<basePath>/assets/...` (Vite's default `base + assetsDir`
+  // composition) rather than from the Next.js-canonical
+  // `<basePath>/_next/static/...`.
+  //
+  // Mirrors Next.js: packages/next/src/server/config.ts:509-532
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts
+  // Conditions copied verbatim:
+  //   - `basePath !== ""` (skips when basePath is unset)
+  //   - `basePath !== "/"` (Next.js rejects this earlier, but we mirror the
+  //     guard so we don't silently produce `assetPrefix === "/"`)
+  //   - `assetPrefix === ""` (user did not explicitly opt out by setting it)
+  if (resolved.basePath !== "" && resolved.basePath !== "/" && resolved.assetPrefix === "") {
+    resolved.assetPrefix = resolved.basePath;
+  }
+
   return resolved;
 }
 

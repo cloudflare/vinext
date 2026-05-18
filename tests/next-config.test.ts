@@ -844,6 +844,49 @@ describe("resolveNextConfig expireTime", () => {
   });
 });
 
+// Ported from Next.js: packages/next/src/server/config.ts:528-531
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts
+describe("resolveNextConfig basePath → assetPrefix parity fallback", () => {
+  it("falls back to basePath when assetPrefix is empty", async () => {
+    const resolved = await resolveNextConfig({ basePath: "/app" });
+    expect(resolved.basePath).toBe("/app");
+    expect(resolved.assetPrefix).toBe("/app");
+  });
+
+  it("does not override an explicitly set assetPrefix", async () => {
+    const resolved = await resolveNextConfig({
+      basePath: "/app",
+      assetPrefix: "/cdn",
+    });
+    expect(resolved.basePath).toBe("/app");
+    expect(resolved.assetPrefix).toBe("/cdn");
+  });
+
+  it("preserves absolute-URL assetPrefix even when basePath is also set", async () => {
+    const resolved = await resolveNextConfig({
+      basePath: "/app",
+      assetPrefix: "https://cdn.example.com",
+    });
+    expect(resolved.assetPrefix).toBe("https://cdn.example.com");
+  });
+
+  it("leaves assetPrefix empty when basePath is also empty", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.basePath).toBe("");
+    expect(resolved.assetPrefix).toBe("");
+  });
+
+  it("does not fall back when basePath is literal `/` (parity with Next.js)", async () => {
+    // Next.js rejects basePath === "/" earlier in its config pipeline;
+    // vinext passes the value through but the fallback explicitly skips
+    // it to avoid producing assetPrefix === "/" (which would collide
+    // with the root URL).
+    const resolved = await resolveNextConfig({ basePath: "/" });
+    expect(resolved.basePath).toBe("/");
+    expect(resolved.assetPrefix).toBe("");
+  });
+});
+
 describe("detectNextIntlConfig", () => {
   let tmpDir: string;
 

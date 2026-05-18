@@ -2155,6 +2155,18 @@ export default function CounterPage() {
         ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
       );
       expect(counterManifestEntry).toBeDefined();
+      // Next.js parity: when `basePath` is set and `assetPrefix` is unset,
+      // `assetPrefix` falls back to `basePath`. The on-disk layout therefore
+      // mirrors `<basePath>/_next/static/...` rather than the legacy
+      // `<basePath>/assets/...` Vite default.
+      // See packages/next/src/server/config.ts:528-531.
+      //
+      // Every entry should be anchored under basePath. With the parity
+      // fallback in effect, entries land under `<basePath>/_next/static/`
+      // (Vite's raw SSR manifest may produce duplicate-prefixed entries
+      // alongside the backfilled ones — both forms start with `docs/` so
+      // the prod-server's URL→file lookup is unaffected. The
+      // user-visible HTML asserts below are the source of truth).
       expect(counterManifestEntry?.[1].every((file: string) => file.startsWith("docs/"))).toBe(
         true,
       );
@@ -2173,8 +2185,11 @@ export default function CounterPage() {
         const res = await fetch(`http://127.0.0.1:${addr.port}/docs/counter`);
         expect(res.status).toBe(200);
         const html = await res.text();
-        expect(html).toContain('href="/docs/assets/');
-        expect(html).toContain('src="/docs/assets/');
+        // Asset URLs land under `<basePath>/_next/static/` per Next.js
+        // parity (basePath→assetPrefix fallback). Stylesheets and scripts
+        // both share the same prefix.
+        expect(html).toContain('href="/docs/_next/static/');
+        expect(html).toContain('src="/docs/_next/static/');
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }
