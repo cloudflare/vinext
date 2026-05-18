@@ -1338,16 +1338,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // pipeline preserves the original syntax), so user code carried
             // over from Next.js can break when migrating to vinext.
             //
-            // Pin a baseline old enough to suppress the rewrite — Safari 15
-            // predates support for CSS MQ Level 4 range syntax (added in
-            // Safari 16.4). esbuild checks the configured target and skips
-            // lowering when any target is too old. This only affects literal
-            // media-query syntax; matching behavior at runtime is unchanged.
+            // esbuild lowers a CSS feature when ANY target in the list lacks
+            // support, so we only need to pin one engine below the range-syntax
+            // baseline. Range syntax shipped in Chrome 104, Edge 104, Firefox 63,
+            // and Safari 16.4 (per esbuild's `internal/compat/css_table.go`
+            // MediaRange entry — and caniuse). Of those, Safari is the latest:
+            // pinning `safari15` (semantically Safari 15.0, which predates
+            // Safari 16.4) is sufficient to suppress the rewrite on its own.
+            //
+            // The other three targets are pinned to ~2023 baselines instead of
+            // the absolute oldest supported version so esbuild does NOT
+            // collaterally downlevel unrelated modern CSS features. With
+            // chrome111/edge111/firefox114 we keep through:
+            //   - `:is()` pseudo-class (Chrome 88, Firefox 78)
+            //   - `hwb()` colors (Chrome 101, Firefox 96)
+            //   - `lab()`, `oklch()`, `color()` (Chrome 111, Firefox 113)
+            //   - gradient interpolation hints (Chrome 111)
+            // CSS Nesting (Chrome 120, Safari 17.2) and Firefox-137 gradient
+            // interpolation will still be lowered; that is an intentional
+            // trade-off — those features are newer than the baseline and
+            // lowering them is the correct behavior for our target audience.
             //
             // Mirrors the Next.js fixture
             // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
             // asserts `cssText` preserves `max-width: 768px`.
-            cssTarget: ["chrome87", "edge88", "firefox78", "safari15"],
+            cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
