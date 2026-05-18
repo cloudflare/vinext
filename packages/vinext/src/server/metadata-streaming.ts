@@ -35,7 +35,7 @@ const HTML_LIMITED_BOT_UA_RE =
  * Whether the user-agent is a known HTML-only bot that needs metadata in
  * <head> in the initial response (rather than streamed into <body>).
  */
-export function isHtmlLimitedBotRequest(userAgent: string | null | undefined): boolean {
+function isHtmlLimitedBotRequest(userAgent: string | null | undefined): boolean {
   if (!userAgent) return false;
   return HTML_LIMITED_BOT_UA_RE.test(userAgent);
 }
