@@ -688,6 +688,12 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // result. Tests in tests/shims.test.ts under "use cache runtime" cover
   // this; the first-child-wins and minimum-wins documenting tests will fail
   // if this invariant is broken.
+  //
+  // This invariant holds for both sequential inner calls (`await innerA();
+  // await innerB()`) and parallel ones (`await Promise.all([innerA(),
+  // innerB()])`), because `await cacheContextStorage.run(ctx, () =>
+  // fn(...args))` only resolves after `fn`'s returned promise settles —
+  // and that promise itself awaits all nested inner calls.
   const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
 
   // Propagate the inner's resolved cache life into the parent's lifeConfigs so
@@ -695,11 +701,12 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // matches Next.js, which propagates the inner's resolved metadata into the
   // outer's revalidate store via `propagateCacheLifeAndTagsToRevalidateStore`
   // (see use-cache-wrapper.ts: minimum-wins on revalidate/expire/stale). It is
-  // also load-bearing for the nested-dynamic error detection below: the outer
-  // only suppresses the throw when its own explicit cacheLife() pushed the
-  // effective revalidate/expire above the dynamic thresholds. Without this
-  // propagation, the outer's effectiveLife would not reflect the inner's
-  // dynamic values and the throw at lines below would never fire.
+  // also load-bearing for the nested-dynamic error detection below: without
+  // this propagation, the outer's `effectiveLife` would not reflect the
+  // inner's dynamic values, the `revalidate === 0` / `expire < DYNAMIC_EXPIRE`
+  // threshold checks below would evaluate false, and the throw would never
+  // fire. (The `hasExplicit*` guards then independently decide whether to
+  // suppress the throw — see the longer comment below.)
   if (parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
   }
@@ -723,12 +730,19 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   //
   // This block is tightly coupled with the `lifeConfigs.push(effectiveLife)`
   // above: it relies on the inner's dynamic values being merged into this
-  // outer's `effectiveLife` via minimum-wins. If the outer's own explicit
-  // cacheLife() pushed revalidate/expire above the thresholds, the inner's
-  // values still appear in `lifeConfigs` but minimum-wins drops them, the
-  // checks below evaluate false, and the captured error is silently dropped.
-  // That is the desired behavior — the outer made an explicit choice that
-  // overrides the dynamic child.
+  // outer's `effectiveLife` via minimum-wins. When the outer has its own
+  // explicit `cacheLife()`, the effective life may still be dynamic
+  // (e.g., `Math.min(60, 0) === 0`), so the threshold checks (`revalidate
+  // === 0` / `expire < DYNAMIC_EXPIRE`) below remain `true`. What actually
+  // suppresses the throw is the `!ctx.hasExplicitRevalidate` /
+  // `!ctx.hasExplicitExpire` guard: those flags are set whenever the
+  // outer calls `cacheLife()` at all (see cache.ts), so the outer's
+  // explicit choice opts it out of the error even though the merged
+  // effective life remains dynamic. The captured `cause` is then silently
+  // discarded, which is the desired behavior — the outer made an explicit
+  // choice that overrides the dynamic child. Do not remove the
+  // `hasExplicit*` guards under the assumption that minimum-wins alone
+  // gates the throw; it does not.
   //
   // If both `revalidate === 0` and `expire < DYNAMIC_EXPIRE` are true,
   // only the revalidate error is thrown (the expire branch is unreachable),
