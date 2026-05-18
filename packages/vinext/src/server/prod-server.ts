@@ -52,6 +52,11 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
+import {
+  ASSET_PREFIX_URL_DIR,
+  assetPrefixPathname,
+  isAbsoluteAssetPrefix,
+} from "../utils/asset-prefix.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
@@ -525,7 +530,11 @@ async function tryServeStatic(
 
   const ext = path.extname(resolved.path);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-  const isHashed = pathname.startsWith("/assets/");
+  // Mirror the StaticFileCache's `isHashed` rule: assets under Vite's
+  // `assetsDir` carry a content hash regardless of whether they sit under
+  // `/assets/` (historical default) or `/<prefix>?/_next/static/`
+  // (assetPrefix-enabled builds). Both forms get immutable cache headers.
+  const isHashed = pathname.startsWith("/assets/") || pathname.includes("/_next/static/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
@@ -923,6 +932,70 @@ function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<
 }
 
 /**
+ * Resolve a request pathname to a static-asset lookup path inside `clientDir`.
+ *
+ * Returns `null` when the request is not for a built asset, in which case
+ * the caller should let the request fall through to the RSC handler.
+ *
+ * Three URL shapes are recognised:
+ *
+ *  - `/assets/...` — the historical Vite default, used when `assetPrefix` is
+ *    unset. Returns the pathname verbatim.
+ *  - `<assetPathPrefix>/_next/static/...` — when `assetPrefix` is a path
+ *    prefix (e.g. `/custom-asset-prefix`). The on-disk layout is
+ *    `dist/client/<prefix>/_next/static/...`, so the pathname maps 1:1.
+ *  - `/_next/static/...` — when `assetPrefix` is an absolute URL with no
+ *    path component (e.g. `https://cdn.example.com`). Files land on disk
+ *    at `dist/client/_next/static/...`. This branch is mostly a fallback
+ *    for setups that don't actually route asset requests to the CDN.
+ *
+ * When `assetPrefix` is an absolute URL with a non-empty pathname
+ * (e.g. `https://cdn.example.com/sub`), files are written to
+ * `dist/client/_next/static/...` but emitted URLs prepend the full URL
+ * (`https://cdn.example.com/sub/_next/static/...`). Requests for those
+ * URLs do not normally arrive at this server — they go to the CDN. We
+ * still accept `<pathname>/_next/static/...` so a same-origin reverse
+ * proxy can route through.
+ */
+export function resolveAppRouterAssetPath(
+  pathname: string,
+  assetPathPrefix: string,
+  assetPrefix: string,
+): string | null {
+  // Historical layout — always supported for projects without assetPrefix.
+  if (pathname.startsWith("/assets/")) return pathname;
+
+  if (!assetPrefix) return null;
+
+  const nextStaticDir = `/${ASSET_PREFIX_URL_DIR}/`;
+
+  if (assetPathPrefix) {
+    // Path prefix (or absolute URL with a path component). Strip the prefix
+    // and verify the rest lives under `_next/static/`.
+    if (pathname === assetPathPrefix || pathname.startsWith(assetPathPrefix + "/")) {
+      const rest = pathname.slice(assetPathPrefix.length) || "/";
+      if (rest.startsWith(nextStaticDir)) {
+        // For path-prefix assetPrefix: on-disk path mirrors the URL, so the
+        // request path is already the lookup path.
+        if (!isAbsoluteAssetPrefix(assetPrefix)) {
+          return pathname;
+        }
+        // For absolute-URL assetPrefix with a path component: on-disk path
+        // is just `_next/static/...` (no extra prefix dir on disk).
+        return rest;
+      }
+    }
+    return null;
+  }
+
+  // Absolute-URL assetPrefix with no path component — files on disk at
+  // `dist/client/_next/static/...`. Accept incoming `/_next/static/...`.
+  if (pathname.startsWith(nextStaticDir)) return pathname;
+
+  return null;
+}
+
+/**
  * Start the App Router production server.
  *
  * The App Router entry (dist/server/index.js) can export either:
@@ -953,6 +1026,29 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       /* ignore parse errors */
     }
   }
+
+  // Load runtime config written by the same plugin. Contains values the App
+  // Router prod-server needs at startup but which are not embedded in the
+  // RSC entry — currently `assetPrefix`. Defaults to an empty assetPrefix
+  // when the file is missing (older builds) so behaviour is unchanged for
+  // projects that haven't opted in.
+  let appRouterAssetPrefix = "";
+  const runtimeConfigPath = path.join(path.dirname(rscEntryPath), "vinext-runtime-config.json");
+  if (fs.existsSync(runtimeConfigPath)) {
+    try {
+      const runtimeConfig = JSON.parse(fs.readFileSync(runtimeConfigPath, "utf-8"));
+      if (typeof runtimeConfig?.assetPrefix === "string") {
+        appRouterAssetPrefix = runtimeConfig.assetPrefix;
+      }
+    } catch {
+      /* ignore parse errors */
+    }
+  }
+  // Path portion of the assetPrefix to match incoming asset requests against
+  // (empty when the prefix is an absolute URL with no path component, or when
+  // no prefix is configured). The URL prefix the prod-server needs to strip
+  // before locating files on disk includes this path plus `_next/static/`.
+  const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -1031,11 +1127,27 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // Serve hashed build assets (Vite output in /assets/) directly.
     // Public directory files fall through to the RSC handler, which runs
     // middleware before serving them.
-    if (
-      pathname.startsWith("/assets/") &&
-      (await tryServeStatic(req, res, clientDir, pathname, compress, staticCache))
-    ) {
-      return;
+    //
+    // When `assetPrefix` is configured the on-disk layout under
+    // `dist/client` mirrors `<prefix>/_next/static/...` (path-prefix form)
+    // or `_next/static/...` (absolute-URL form). Either way, requests for
+    // `<prefix>/_next/static/...` arrive at this server in production
+    // (Cloudflare's ASSETS binding serves these directly in Workers; this
+    // branch is the Node fallback) and we look them up on disk. The base
+    // `/assets/` prefix continues to work too — projects without
+    // `assetPrefix` keep the historical layout.
+    {
+      const assetLookupPath = resolveAppRouterAssetPath(
+        pathname,
+        appAssetPathPrefix,
+        appRouterAssetPrefix,
+      );
+      if (
+        assetLookupPath &&
+        (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache))
+      ) {
+        return;
+      }
     }
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
@@ -1222,6 +1334,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
+  const assetPrefix: string = vinextConfig?.assetPrefix ?? "";
+  // Path component of `assetPrefix` against which incoming requests are
+  // matched (empty when absent or when the prefix is an absolute URL with
+  // no path component).
+  const pagesAssetPathPrefix = assetPrefixPathname(assetPrefix);
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
   const configRedirects = vinextConfig?.redirects ?? [];
@@ -1342,10 +1459,22 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // middleware. These are always public and don't need protection.
     // Public directory files (e.g. /favicon.ico, /robots.txt) are served
     // after middleware (step 5b) so middleware can intercept them.
+    //
+    // When `assetPrefix` is configured, also accept asset requests under
+    // `<prefix>/_next/static/...` (or `/_next/static/...` for an absolute
+    // URL prefix). On disk the layout under `dist/client` mirrors the URL
+    // (see `resolveAppRouterAssetPath` for the full table), so the same
+    // helper handles both routers.
     const staticLookupPath = stripBasePath(pathname, basePath);
+    const pagesAssetLookup =
+      resolveAppRouterAssetPath(staticLookupPath, pagesAssetPathPrefix, assetPrefix) ??
+      // Fall back to the unstripped path for the assetPrefix branch — when
+      // `basePath` is not set, `stripBasePath` is a no-op and the helper
+      // result above already covers it.
+      null;
     if (
-      staticLookupPath.startsWith("/assets/") &&
-      (await tryServeStatic(req, res, clientDir, staticLookupPath, compress, staticCache))
+      pagesAssetLookup &&
+      (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache))
     ) {
       return;
     }

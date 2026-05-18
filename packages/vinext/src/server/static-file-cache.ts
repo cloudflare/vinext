@@ -117,7 +117,13 @@ export class StaticFileCache {
 
       const ext = path.extname(relativePath);
       const contentType = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      const isHashed = relativePath.startsWith("assets/");
+      // Files under Vite's `assetsDir` are content-hashed. The historical
+      // default is `assets/`; when `assetPrefix` is configured the layout
+      // becomes `<prefix>/_next/static/...` (path-prefix) or `_next/static/...`
+      // (absolute-URL prefix). All three forms get long-lived `immutable`
+      // cache headers — the hash in the filename invalidates safely.
+      const isHashed =
+        relativePath.startsWith("assets/") || relativePath.includes("/_next/static/");
       const cacheControl = isHashed
         ? "public, max-age=31536000, immutable"
         : "public, max-age=3600";
