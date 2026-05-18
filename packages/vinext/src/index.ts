@@ -111,6 +111,7 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
+import { withCjsGlobalsBanner } from "./build/server-build-config.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
@@ -1516,9 +1517,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
-                ...withBuildBundlerOptions(viteMajorVersion, {
-                  input: { index: VIRTUAL_RSC_ENTRY },
-                }),
+                ...withBuildBundlerOptions(
+                  viteMajorVersion,
+                  // The CJS-globals banner only applies to plain Node server
+                  // bundles. Cloudflare Workers and Nitro deploy targets do
+                  // their own runtime bundling; their adapters supply the
+                  // appropriate globals (or, for Workers, the bundle does
+                  // not need them — V8 isolates don't expose __filename and
+                  // user code never reaches the Node-specific reference).
+                  hasCloudflarePlugin || hasNitroPlugin
+                    ? { input: { index: VIRTUAL_RSC_ENTRY } }
+                    : withCjsGlobalsBanner({ input: { index: VIRTUAL_RSC_ENTRY } }),
+                ),
               },
             },
             ssr: {
@@ -1562,9 +1572,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
-                ...withBuildBundlerOptions(viteMajorVersion, {
-                  input: { index: VIRTUAL_APP_SSR_ENTRY },
-                }),
+                // Banner applies only on plain Node — see RSC env above for
+                // why Cloudflare/Nitro bundles skip it.
+                ...withBuildBundlerOptions(
+                  viteMajorVersion,
+                  hasCloudflarePlugin || hasNitroPlugin
+                    ? { input: { index: VIRTUAL_APP_SSR_ENTRY } }
+                    : withCjsGlobalsBanner({ input: { index: VIRTUAL_APP_SSR_ENTRY } }),
+                ),
               },
             },
             client: {
@@ -1685,12 +1700,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               build: {
                 outDir: "dist/server",
-                ...withBuildBundlerOptions(viteMajorVersion, {
-                  input: { index: VIRTUAL_SERVER_ENTRY },
-                  output: {
-                    entryFileNames: "entry.js",
-                  },
-                }),
+                // Banner applies only on plain Node. This is the Pages Router
+                // server bundle for non-Cloudflare builds, so always inject.
+                ...withBuildBundlerOptions(
+                  viteMajorVersion,
+                  withCjsGlobalsBanner({
+                    input: { index: VIRTUAL_SERVER_ENTRY },
+                    output: {
+                      entryFileNames: "entry.js",
+                    },
+                  }),
+                ),
               },
             },
           };

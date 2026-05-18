@@ -28,6 +28,7 @@ import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
+import { withCjsGlobalsBanner } from "./build/server-build-config.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -543,11 +544,19 @@ async function buildApp() {
           outDir: "dist/server",
           emptyOutDir: false, // preserve RSC artefacts from buildApp()
           ssr: "virtual:vinext-server-entry",
-          ...withBuildBundlerOptions({
-            output: {
-              entryFileNames: "entry.js",
-            },
-          }),
+          // Inject the CJS-globals banner so bundled CJS-style packages
+          // (sqlite3, typescript, graceful-fs, node-pre-gyp, etc.) that
+          // reference __filename / __dirname / require at module load time
+          // continue to work after Vite emits this hybrid Pages bundle as
+          // ESM into a "type": "module" project. The App Router's RSC and
+          // SSR bundles get the same banner via vinext()'s config() hook.
+          ...withBuildBundlerOptions(
+            withCjsGlobalsBanner({
+              output: {
+                entryFileNames: "entry.js",
+              },
+            }),
+          ),
         },
       });
     }
