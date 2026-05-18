@@ -145,6 +145,21 @@ type BuildAppPageRouteElementOptions<
   matchedParams: AppPageParams;
   resolvedMetadata: Metadata | null;
   resolvedViewport: Viewport;
+  /**
+   * When set, dynamic metadata is rendered as a Suspense-wrapped async element
+   * placed after the route tree so the streamed `<title>` / `<meta>` / `<link>`
+   * tags appear inside `<body>` in the initial SSR HTML. React 19 Float hoists
+   * them to `<head>` during hydration on the client.
+   *
+   * The promise should resolve to the same shape `resolveAppPageHead` returns,
+   * but the caller is responsible for ensuring the static portion (charset,
+   * viewport) is already encoded in `resolvedViewport`/`resolvedMetadata` so
+   * the initial shell can flush without waiting for the promise.
+   *
+   * Ported from Next.js's MetadataBoundary pattern:
+   *   https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/metadata.tsx
+   */
+  streamingMetadata?: Promise<{ metadata: Metadata | null }> | null;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
@@ -354,6 +369,53 @@ function createAppPageRouteHead(metadata: Metadata | null, viewport: Viewport): 
       {metadata ? <MetadataHead metadata={metadata} /> : null}
       <ViewportHead viewport={viewport} />
     </>
+  );
+}
+
+/**
+ * Static portion of the head that always flushes synchronously: charset and
+ * viewport. Used by the streaming path so the initial shell can include
+ * device-width viewport and utf-8 charset without waiting for `generateMetadata`.
+ */
+function createAppPageStaticHead(viewport: Viewport): ReactNode {
+  return (
+    <>
+      <meta charSet="utf-8" />
+      <ViewportHead viewport={viewport} />
+    </>
+  );
+}
+
+/**
+ * Async component that awaits the metadata promise and renders the resolved
+ * `<title>`, `<meta>`, and `<link>` tags. Wrapped in `<Suspense>` and
+ * `<div hidden>` so React streams the tags into the document body after the
+ * initial flush. React 19 Float hoists them to `<head>` during hydration.
+ */
+async function StreamingMetadataTags({
+  metadataPromise,
+}: {
+  metadataPromise: Promise<{ metadata: Metadata | null }>;
+}) {
+  const { metadata } = await metadataPromise;
+  if (!metadata) return null;
+  return <MetadataHead metadata={metadata} />;
+}
+
+function createAppPageStreamingMetadata(
+  metadataPromise: Promise<{ metadata: Metadata | null }>,
+): ReactNode {
+  // The <div hidden> wrapper holds the Suspense placeholder so the streamed
+  // metadata tags land inside <body> in the SSR HTML (the initial shell only
+  // contains the placeholder; the tags arrive in a later <template> chunk).
+  // We mark the wrapper with a data attribute for debugging and so the
+  // client-side icon-reinsertion script can target it if needed.
+  return (
+    <div hidden data-vinext-streaming-metadata>
+      <Suspense fallback={null}>
+        <StreamingMetadataTags metadataPromise={metadataPromise} />
+      </Suspense>
+    </div>
   );
 }
 
@@ -835,12 +897,26 @@ export function buildAppPageElements<
     routeChildren = <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>;
   }
 
-  elements[routeId] = (
-    <>
-      {createAppPageRouteHead(options.resolvedMetadata, options.resolvedViewport)}
-      {routeChildren}
-    </>
-  );
+  // Streaming metadata path: render static charset+viewport into <head>,
+  // emit the route tree, then append a hidden <Suspense> wrapper whose
+  // streamed content lands inside <body>. The client-side React 19 Float
+  // runtime hoists the resolved <title>/<meta>/<link> tags to <head>.
+  if (options.streamingMetadata) {
+    elements[routeId] = (
+      <>
+        {createAppPageStaticHead(options.resolvedViewport)}
+        {routeChildren}
+        {createAppPageStreamingMetadata(options.streamingMetadata)}
+      </>
+    );
+  } else {
+    elements[routeId] = (
+      <>
+        {createAppPageRouteHead(options.resolvedMetadata, options.resolvedViewport)}
+        {routeChildren}
+      </>
+    );
+  }
 
   return elements;
 }

@@ -17,6 +17,8 @@ import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
+import { hasDynamicMetadataModules, shouldStreamMetadata } from "./metadata-streaming.js";
+import type { Metadata } from "vinext/shims/metadata";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
@@ -151,12 +153,26 @@ export async function buildPageElements<
     };
   }
 
-  const {
-    hasSearchParams,
-    metadata: resolvedMetadata,
-    pageSearchParams,
-    viewport: resolvedViewport,
-  } = await resolveAppPageHead({
+  // Decide whether to stream metadata into <body> (Next.js 15+ behavior) or
+  // block on resolution and emit it into <head>. Streaming is only enabled
+  // when the route has a `generateMetadata`/`generateViewport` somewhere AND
+  // the request is not an HTML-only bot AND not an RSC navigation. The RSC
+  // payload still needs fully-resolved metadata so the client router can put
+  // it in the right place; streaming only applies to the initial document
+  // SSR.
+  const metadataModules: Array<Record<string, unknown> | null | undefined> = [
+    ...route.layouts,
+    route.page ?? null,
+  ];
+  const hasDynamic = hasDynamicMetadataModules(metadataModules);
+  const userAgent = pageRequest.request.headers.get("user-agent");
+  const useStreamingMetadata = shouldStreamMetadata({
+    hasDynamic,
+    userAgent,
+    isRscRequest,
+  });
+
+  const headResolution = resolveAppPageHead({
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
@@ -175,6 +191,34 @@ export async function buildPageElements<
     routeSegments: route.routeSegments ?? null,
     searchParams,
   });
+
+  // Always await once to get search-params info (needed for page props) and
+  // the resolved viewport (needed for the static head emission even in the
+  // streaming path). When streaming, we forward the same promise into the
+  // tree so React can stream the metadata tags into <body> via Suspense.
+  const headSettled = await headResolution;
+  const {
+    hasSearchParams,
+    metadata: resolvedMetadata,
+    pageSearchParams,
+    viewport: resolvedViewport,
+  } = headSettled;
+
+  // Defer the metadata promise across a microtask so React sees it as pending
+  // when reaching the Suspense boundary. Without this, an already-resolved
+  // promise gets inlined and React 19 Float hoists the `<title>` etc. to
+  // `<head>` — defeating the purpose of streaming. The microtask deferral
+  // also matches Next.js's behavior where the metadata resolves AFTER the
+  // initial shell flushes.
+  // NOTE (WIP): synchronously-resolved promise is not enough — see
+  // `metadata-streaming.ts` for the open question about Suspense streaming
+  // through the RSC->SSR pipeline. Even with a setTimeout-deferred promise
+  // (tried up to 200ms), React still hoists the streamed <title> to <head>
+  // because the RSC payload may already have the resolved chunk by the time
+  // SSR begins consuming. Left here as scaffolding for the next iteration.
+  const streamingMetadata: Promise<{ metadata: Metadata | null }> | null = useStreamingMetadata
+    ? Promise.resolve({ metadata: resolvedMetadata })
+    : null;
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
   if (searchParams) {
@@ -196,8 +240,12 @@ export async function buildPageElements<
     mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
-    resolvedMetadata,
+    // In streaming mode, suppress the resolvedMetadata from the synchronous
+    // head emission so the static head only contains charset + viewport.
+    // The same metadata will arrive via the streamingMetadata promise.
+    resolvedMetadata: useStreamingMetadata ? null : resolvedMetadata,
     resolvedViewport,
+    streamingMetadata,
     interceptionContext: opts?.interceptionContext ?? null,
     interception,
     routePath,
