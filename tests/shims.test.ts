@@ -4185,145 +4185,255 @@ describe('"use cache" runtime', () => {
   // https://github.com/vercel/next.js/pull/93707
   // -----------------------------------------------------------------------
 
-  it("throws nested-dynamic error when inner cache has revalidate:0 and outer has no explicit cacheLife", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
-      await import("../packages/vinext/src/shims/cache.js");
-    setCacheHandler(new MemoryCacheHandler());
+  // These tests exercise the prerender-only throw path. The runtime check
+  // is gated on `process.env.VINEXT_PRERENDER === "1"` (or NODE_ENV ===
+  // "development") to match Next.js, which only throws when the work unit
+  // type is `prerender` or `request` in dev. We set/restore the flag around
+  // each test rather than relying on test ordering.
+  function withPrerenderFlag<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    return fn().finally(() => {
+      if (previous === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previous;
+    });
+  }
 
-    const innerFn = async () => {
-      cacheLife({ revalidate: 0 });
-      return "inner";
-    };
-    const innerCached = registerCachedFunction(innerFn, "test:nested-rev0-inner");
+  it("throws nested-dynamic error when inner cache has revalidate:0 and outer has no explicit cacheLife (prerender)", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
 
-    const outerFn = async () => {
-      const result = await innerCached();
-      return `outer-${result}`;
-    };
-    const outerCached = registerCachedFunction(outerFn, "test:nested-rev0-outer");
+      const innerFn = async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-rev0-inner");
 
-    // Top-level call — outer has no explicit cacheLife, inner has revalidate:0
-    // This should throw a nested-dynamic error
-    let thrown: Error | undefined;
-    try {
-      await outerCached();
-    } catch (e) {
-      thrown = e as Error;
-    }
+      const outerFn = async () => {
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-rev0-outer");
 
-    expect(thrown).toBeDefined();
-    expect(thrown!.message).toContain("revalidate");
-    expect(thrown!.message).toContain('"use cache"');
-    expect(thrown!.message).toContain("not allowed");
-    expect(thrown!.cause).toBeDefined();
-    expect((thrown!.cause as Error).message).toContain("dynamic cache life");
-    expect((thrown!.cause as Error).name).toContain("Nested dynamic");
+      // Top-level call — outer has no explicit cacheLife, inner has revalidate:0
+      // This should throw a nested-dynamic error
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("revalidate");
+      expect(thrown!.message).toContain('"use cache"');
+      expect(thrown!.message).toContain("not allowed");
+      expect(thrown!.cause).toBeDefined();
+      expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+      expect((thrown!.cause as Error).name).toContain("Nested dynamic");
+    });
   });
 
-  it("throws nested-dynamic error when inner cache has short expire and outer has no explicit cacheLife", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
-      await import("../packages/vinext/src/shims/cache.js");
-    setCacheHandler(new MemoryCacheHandler());
+  it("throws nested-dynamic error when inner cache has short expire and outer has no explicit cacheLife (prerender)", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
 
-    const innerFn = async () => {
-      cacheLife({ expire: 60 }); // 1 minute, under 5 minute threshold
-      return "inner";
-    };
-    const innerCached = registerCachedFunction(innerFn, "test:nested-short-inner");
+      const innerFn = async () => {
+        cacheLife({ expire: 60 }); // 1 minute, under 5 minute threshold
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-short-inner");
 
-    const outerFn = async () => {
-      const result = await innerCached();
-      return `outer-${result}`;
-    };
-    const outerCached = registerCachedFunction(outerFn, "test:nested-short-outer");
+      const outerFn = async () => {
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-short-outer");
 
-    let thrown: Error | undefined;
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("expire");
+      expect(thrown!.message).toContain('"use cache"');
+      expect(thrown!.message).toContain("not allowed");
+      expect(thrown!.cause).toBeDefined();
+      expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+    });
+  });
+
+  it("does not throw outside prerender/dev even with a nested dynamic inner cache", async () => {
+    // Verifies the prerender gate: in production runtime SSR (no
+    // VINEXT_PRERENDER, NODE_ENV !== "development"), nesting a dynamic
+    // inner inside a non-cacheLife() outer must NOT throw. This matches
+    // Next.js, which only surfaces the error during prerender or dev
+    // requests (see use-cache-wrapper.ts).
+    // `NODE_ENV` is typed read-only on `process.env`; cast to the indexable
+    // signature to allow temporary mutation in this test.
+    const env = process.env as Record<string, string | undefined>;
+    const previousPrerender = env.VINEXT_PRERENDER;
+    const previousNodeEnv = env.NODE_ENV;
+    delete env.VINEXT_PRERENDER;
+    env.NODE_ENV = "production";
     try {
-      await outerCached();
-    } catch (e) {
-      thrown = e as Error;
-    }
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
 
-    expect(thrown).toBeDefined();
-    expect(thrown!.message).toContain("expire");
-    expect(thrown!.message).toContain('"use cache"');
-    expect(thrown!.message).toContain("not allowed");
-    expect(thrown!.cause).toBeDefined();
-    expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:nested-prod-inner");
+
+      // No explicit cacheLife on the outer — in prerender this would throw,
+      // but in production runtime SSR it must just run and not be cached.
+      const outerCached = registerCachedFunction(
+        async () => `outer-${await innerCached()}`,
+        "test:nested-prod-outer",
+      );
+
+      const result = await outerCached();
+      expect(result).toBe("outer-inner");
+    } finally {
+      if (previousPrerender === undefined) delete env.VINEXT_PRERENDER;
+      else env.VINEXT_PRERENDER = previousPrerender;
+      if (previousNodeEnv === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = previousNodeEnv;
+    }
   });
 
   it("does not throw when outer cache has explicit cacheLife", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
-      await import("../packages/vinext/src/shims/cache.js");
-    setCacheHandler(new MemoryCacheHandler());
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
 
-    const innerFn = async () => {
-      cacheLife({ revalidate: 0 });
-      return "inner";
-    };
-    const innerCached = registerCachedFunction(innerFn, "test:nested-ok-inner");
+      const innerFn = async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-ok-inner");
 
-    const outerFn = async () => {
-      cacheLife({ revalidate: 60 }); // explicit on outer
-      const result = await innerCached();
-      return `outer-${result}`;
-    };
-    const outerCached = registerCachedFunction(outerFn, "test:nested-ok-outer");
+      const outerFn = async () => {
+        cacheLife({ revalidate: 60 }); // explicit on outer
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-ok-outer");
 
-    // Should NOT throw — outer made an explicit choice
-    const result = await outerCached();
-    expect(result).toBe("outer-inner");
+      // Should NOT throw — outer made an explicit choice
+      const result = await outerCached();
+      expect(result).toBe("outer-inner");
+    });
+  });
+
+  it("explicit cacheLife on outer suppresses throw but minimum-wins still applies to effective cache life", async () => {
+    // Documents a potentially surprising behavior: when the outer has an
+    // explicit `cacheLife({ revalidate: 60 })` and the inner is dynamic
+    // (`revalidate: 0`), the throw is suppressed (outer made an explicit
+    // choice), but the outer's effective `revalidate` resolves to 0 via
+    // minimum-wins (because the inner's resolved life is pushed into the
+    // outer's `lifeConfigs`). MemoryCacheHandler treats `revalidate: 0` as
+    // not cached, so the outer function executes on every call. This matches
+    // Next.js's `propagateCacheLifeAndTagsToRevalidateStore` semantics —
+    // the outer's explicit cacheLife() opts it out of the throw, but does
+    // not override the inner's minimum-wins contribution.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      let innerCalls = 0;
+      let outerCalls = 0;
+
+      const innerCached = registerCachedFunction(async () => {
+        innerCalls++;
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:min-wins-inner");
+
+      const outerCached = registerCachedFunction(async () => {
+        outerCalls++;
+        cacheLife({ revalidate: 60 });
+        return `outer-${await innerCached()}`;
+      }, "test:min-wins-outer");
+
+      const first = await outerCached();
+      const second = await outerCached();
+      expect(first).toBe("outer-inner");
+      expect(second).toBe("outer-inner");
+      // The outer function must execute twice — minimum-wins resolved its
+      // effective revalidate to 0, so the result was not cached despite the
+      // explicit `cacheLife({ revalidate: 60 })`.
+      expect(outerCalls).toBe(2);
+      // Inner is also dynamic (revalidate: 0) so it re-executes too.
+      expect(innerCalls).toBe(2);
+    });
   });
 
   it("keeps first dynamic child as cause when multiple nested caches are dynamic", async () => {
-    const { registerCachedFunction } =
-      await import("../packages/vinext/src/shims/cache-runtime.js");
-    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
-      await import("../packages/vinext/src/shims/cache.js");
-    setCacheHandler(new MemoryCacheHandler());
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
 
-    const innerA = registerCachedFunction(async () => {
-      cacheLife({ revalidate: 0 });
-      return "a";
-    }, "test:first-child-a");
+      const innerA = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "a";
+      }, "test:first-child-a");
 
-    const innerB = registerCachedFunction(async () => {
-      cacheLife({ expire: 120 }); // also dynamic
-      return "b";
-    }, "test:first-child-b");
+      const innerB = registerCachedFunction(async () => {
+        cacheLife({ expire: 120 }); // also dynamic
+        return "b";
+      }, "test:first-child-b");
 
-    const outerFn = async () => {
-      await innerA();
-      await innerB();
-      return "outer";
-    };
-    const outerCached = registerCachedFunction(outerFn, "test:first-child-outer");
+      const outerFn = async () => {
+        await innerA();
+        await innerB();
+        return "outer";
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:first-child-outer");
 
-    let thrown: Error | undefined;
-    try {
-      await outerCached();
-    } catch (e) {
-      thrown = e as Error;
-    }
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
 
-    expect(thrown).toBeDefined();
-    expect(thrown!.cause).toBeDefined();
-    // The cause should be from the FIRST dynamic child (innerA), which set
-    // `revalidate: 0`. The outer error message reflects the first-firing
-    // dynamic field — if innerA's revalidate propagated first, the outer
-    // throws the revalidate (not expire) error, even though innerB's
-    // `expire: 120` is also below DYNAMIC_EXPIRE. This rigorously verifies
-    // first-child-wins semantics: dynamicNestedCacheError uses `??=` so the
-    // first dynamic child's eager error is preserved as the cause, and the
-    // revalidate check fires before the expire check in the outer.
-    expect(thrown!.message).toContain("revalidate");
-    expect(thrown!.message).not.toContain("expire");
+      expect(thrown).toBeDefined();
+      expect(thrown!.cause).toBeDefined();
+      // The cause should be from the FIRST dynamic child (innerA), which set
+      // `revalidate: 0`. The outer error message reflects the first-firing
+      // dynamic field — if innerA's revalidate propagated first, the outer
+      // throws the revalidate (not expire) error, even though innerB's
+      // `expire: 120` is also below DYNAMIC_EXPIRE. This rigorously verifies
+      // first-child-wins semantics: dynamicNestedCacheError uses `??=` so the
+      // first dynamic child's eager error is preserved as the cause, and the
+      // revalidate check fires before the expire check in the outer.
+      expect(thrown!.message).toContain("revalidate");
+      expect(thrown!.message).not.toContain("expire");
+    });
   });
 });
 

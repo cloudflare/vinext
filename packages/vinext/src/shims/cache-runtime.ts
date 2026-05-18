@@ -576,6 +576,24 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * context. If this (outer) cache itself lacks an explicit cacheLife for the
  * relevant dynamic field, we throw the appropriate nested-dynamic error with
  * the inner's stack as `cause`.
+ *
+ * Callers and propagation paths:
+ * - Shared cache MISS (`registerCachedFunction`, production): allocates the
+ *   eager error only when the inner is nested inside a public parent, and
+ *   propagates lifeConfigs/dynamicNestedCacheError up to the parent.
+ * - Private variant (`"use cache: private"`): always reaches here via
+ *   `executeWithContext`. The variant is excluded from being a *parent* that
+ *   throws (see the `parentCtx.variant !== "private"` guard below), but can
+ *   still propagate its resolved life *up* to a public parent — matching
+ *   Next.js's `propagateCacheEntryMetadata` for `private` kind.
+ * - Dev mode (`registerCachedFunction`, NODE_ENV=development): skips the
+ *   shared cache and always reaches here via `executeWithContext`.
+ *
+ * In all three paths, `recordRequestScopedCacheLife(effectiveLife)` is called
+ * by `executeWithContext`/`registerCachedFunction` after this helper returns.
+ * The request-scoped store uses minimum-wins accumulation, so the order of
+ * inner-vs-outer recording does not affect correctness — the final request
+ * stale/revalidate/expire is the min across all caches encountered.
  */
 type CachedFunctionResult<T> = {
   result: T;
@@ -666,7 +684,22 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // If both `revalidate === 0` and `expire < DYNAMIC_EXPIRE` are true,
   // only the revalidate error is thrown (the expire branch is unreachable),
   // matching Next.js which surfaces `revalidate: 0` first.
-  if (ctx.dynamicNestedCacheError) {
+  //
+  // The throw is gated on either the build's prerender phase
+  // (`VINEXT_PRERENDER=1`, set by build/prerender.ts when running prerender)
+  // or development mode. This matches Next.js, which only throws when the
+  // work unit type is `prerender` or `request` in development (see
+  // use-cache-wrapper.ts cases 'prerender'/'request' at the read site).
+  // Production dynamic SSR is not subject to the throw — a runtime request
+  // that nests a dynamic cache inside a non-cacheLife() outer will just run
+  // both functions; the outer simply won't be cached (minimum-wins resolves
+  // its effective revalidate to 0). The error messages explicitly say "not
+  // allowed during prerendering" — outside prerendering/dev, surfacing the
+  // throw would be misleading and would diverge from Next.js.
+  const shouldThrow =
+    typeof process !== "undefined" &&
+    (process.env.VINEXT_PRERENDER === "1" || process.env.NODE_ENV === "development");
+  if (shouldThrow && ctx.dynamicNestedCacheError) {
     if (effectiveLife.revalidate === 0 && !ctx.hasExplicitRevalidate) {
       throw new Error(nestedCacheZeroRevalidateErrorMessage, {
         cause: ctx.dynamicNestedCacheError,
