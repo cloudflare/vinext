@@ -4316,6 +4316,57 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("does throw in development mode even without VINEXT_PRERENDER set", async () => {
+    // Companion to the production test above: verifies the *other side* of
+    // the gate. With `NODE_ENV === "development"` (and no VINEXT_PRERENDER),
+    // the throw must still fire. This catches a hypothetical regression
+    // where the gate is broken to e.g. only check VINEXT_PRERENDER, or to
+    // check `!== "production"` (which would falsely fire in Vitest's
+    // default `NODE_ENV=test`). Together with the production test, this
+    // pins down both branches of the gate.
+    const env = process.env as Record<string, string | undefined>;
+    const previousPrerender = env.VINEXT_PRERENDER;
+    const previousNodeEnv = env.NODE_ENV;
+    delete env.VINEXT_PRERENDER;
+    env.NODE_ENV = "development";
+    try {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:nested-dev-inner");
+
+      const outerCached = registerCachedFunction(
+        async () => `outer-${await innerCached()}`,
+        "test:nested-dev-outer",
+      );
+
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("revalidate");
+      // In dev, the message should say "in development", not
+      // "during prerendering", since no prerendering is happening.
+      expect(thrown!.message).toContain("in development");
+      expect(thrown!.message).not.toContain("during prerendering");
+    } finally {
+      if (previousPrerender === undefined) delete env.VINEXT_PRERENDER;
+      else env.VINEXT_PRERENDER = previousPrerender;
+      if (previousNodeEnv === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   it("does not throw when outer cache has explicit cacheLife", async () => {
     await withPrerenderFlag(async () => {
       const { registerCachedFunction } =

@@ -64,21 +64,43 @@ export class NestedDynamicUseCacheError extends Error {
   }
 }
 
-const nestedCacheZeroRevalidateErrorMessage =
-  `A "use cache" with zero \`revalidate\` is nested inside another "use cache" ` +
-  `that has no explicit \`cacheLife\`, which is not allowed during ` +
-  `prerendering. Add \`cacheLife()\` to the outer "use cache" to choose ` +
-  `whether it should be prerendered (with non-zero \`revalidate\`) or remain ` +
-  `dynamic (with zero \`revalidate\`). Read more: ` +
-  `https://nextjs.org/docs/messages/nested-use-cache-no-explicit-cachelife`;
+/**
+ * Returns the human-readable phrase describing the current context for use in
+ * nested-dynamic error messages. The throw is gated to fire only during the
+ * build's prerender phase (`VINEXT_PRERENDER=1`) or development; this phrase
+ * tells the user which one they're in so the message isn't misleading.
+ * Defaults to "during prerendering" to match Next.js wording when called from
+ * a context we don't recognize (the throw also wouldn't fire in that case).
+ */
+function nestedCacheContextPhrase(): string {
+  if (typeof process === "undefined") return "during prerendering";
+  if (process.env.NODE_ENV === "development") return "in development";
+  return "during prerendering";
+}
 
-const nestedCacheShortExpireErrorMessage =
-  `A "use cache" with short \`expire\` (under 5 minutes) is nested inside ` +
-  `another "use cache" that has no explicit \`cacheLife\`, which is not ` +
-  `allowed during prerendering. Add \`cacheLife()\` to the outer "use cache" ` +
-  `to choose whether it should be prerendered (with longer \`expire\`) or remain ` +
-  `dynamic (with short \`expire\`). Read more: ` +
-  `https://nextjs.org/docs/messages/nested-use-cache-no-explicit-cachelife`;
+function getNestedCacheZeroRevalidateErrorMessage(): string {
+  const phrase = nestedCacheContextPhrase();
+  return (
+    `A "use cache" with zero \`revalidate\` is nested inside another "use cache" ` +
+    `that has no explicit \`cacheLife\`, which is not allowed ${phrase}. ` +
+    `Add \`cacheLife()\` to the outer "use cache" to choose ` +
+    `whether it should be prerendered (with non-zero \`revalidate\`) or remain ` +
+    `dynamic (with zero \`revalidate\`). Read more: ` +
+    `https://nextjs.org/docs/messages/nested-use-cache-no-explicit-cachelife`
+  );
+}
+
+function getNestedCacheShortExpireErrorMessage(): string {
+  const phrase = nestedCacheContextPhrase();
+  return (
+    `A "use cache" with short \`expire\` (under 5 minutes) is nested inside ` +
+    `another "use cache" that has no explicit \`cacheLife\`, which is not ` +
+    `allowed ${phrase}. Add \`cacheLife()\` to the outer "use cache" ` +
+    `to choose whether it should be prerendered (with longer \`expire\`) or remain ` +
+    `dynamic (with short \`expire\`). Read more: ` +
+    `https://nextjs.org/docs/messages/nested-use-cache-no-explicit-cachelife`
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
@@ -619,6 +641,15 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // run under a non-V8 runtime (e.g. JavaScriptCore in Bun); the `super()`
   // call in the `Error` constructor already captures a stack — the
   // captureStackTrace call just trims the constructor frame.
+  //
+  // Performance note: this allocation runs for every nested public cache
+  // call, including those where the inner ultimately resolves a non-dynamic
+  // cache life — in which case the error is silently discarded later. This
+  // matches Next.js, which captures eagerly so the resulting `cause` points
+  // at the original `"use cache"` call site rather than the post-execution
+  // detection point. If a future profile ever shows this as a hot-path
+  // bottleneck for cache-heavy workloads, switching to a lazy capture would
+  // be the optimization — at the cost of less useful stack frames.
   let eagerError: Error | undefined;
   if (parentCtx && parentCtx.variant !== "private") {
     eagerError = new NestedDynamicUseCacheError();
@@ -638,7 +669,20 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
 
   const result = await cacheContextStorage.run(ctx, () => fn(...args));
 
-  // Resolve effective cache life from collected configs
+  // Resolve effective cache life from collected configs.
+  //
+  // Sequencing invariant: this must run after `fn(...args)` returns. By that
+  // point, any nested inner cache's `runCachedFunctionWithContext` has
+  // already completed (its `await` in `fn` resolved), and during its own
+  // post-execution it pushed its `effectiveLife` into THIS context's
+  // `lifeConfigs` (via the `parentCtx.lifeConfigs.push` block below — `ctx`
+  // here is `parentCtx` from the inner's perspective). Don't refactor the
+  // `await` away or move this resolveCacheLife before the inner's post-
+  // execution propagation, or the outer's `lifeConfigs` will be missing the
+  // inner's contribution and minimum-wins will silently produce a stale
+  // result. Tests in tests/shims.test.ts under "use cache runtime" cover
+  // this; the first-child-wins and minimum-wins documenting tests will fail
+  // if this invariant is broken.
   const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
 
   // Propagate the inner's resolved cache life into the parent's lifeConfigs so
@@ -701,7 +745,7 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     (process.env.VINEXT_PRERENDER === "1" || process.env.NODE_ENV === "development");
   if (shouldThrow && ctx.dynamicNestedCacheError) {
     if (effectiveLife.revalidate === 0 && !ctx.hasExplicitRevalidate) {
-      throw new Error(nestedCacheZeroRevalidateErrorMessage, {
+      throw new Error(getNestedCacheZeroRevalidateErrorMessage(), {
         cause: ctx.dynamicNestedCacheError,
       });
     }
@@ -710,7 +754,7 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
       effectiveLife.expire < DYNAMIC_EXPIRE &&
       !ctx.hasExplicitExpire
     ) {
-      throw new Error(nestedCacheShortExpireErrorMessage, {
+      throw new Error(getNestedCacheShortExpireErrorMessage(), {
         cause: ctx.dynamicNestedCacheError,
       });
     }
