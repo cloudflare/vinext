@@ -11704,6 +11704,107 @@ describe("Pages Router concurrent navigation", () => {
       vi.resetModules();
     }
   });
+
+  // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // Issue #1196 — during a client-side <Link>/Router.push() navigation on a
+  // catch-all route under basePath, router.query.<catchAll> must reflect the
+  // destination URL segments and not be corrupted by intermediate data-URL
+  // handling. In Next.js the corruption originated in getMiddlewareData where
+  // basePath wasn't stripped from the _next/data/... URL before the catch-all
+  // route regex matched against it. vinext's navigateClient reads __NEXT_DATA__
+  // directly from the response HTML rather than constructing _next/data URLs,
+  // so it doesn't have that architectural pattern, but the route-param
+  // extraction path that ultimately produces router.query must still strip
+  // basePath from the resolved pathname before matching the catch-all pattern.
+  // This test exercises Router.push() through performNavigation → pushState
+  // and verifies that router.query.path reflects the destination segments.
+  it("preserves catch-all router.query after client navigation with basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+
+    // Simulate being on a catch-all page under basePath when navigation starts.
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    win.location.pathname = "/docs/first";
+    win.location.href = "http://localhost/docs/first";
+    win.__NEXT_DATA__ = {
+      page: "/[...path]",
+      query: { path: ["first"] },
+      isFallback: false,
+      props: { pageProps: {} },
+      // The catch-all module file is referenced through a Vite-style path that
+      // passes isValidModulePath() (no ".." directory-traversal segments).
+      __vinext: { pageModuleUrl: "/@fs/pages/catchall.js" },
+    };
+
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    // Capture router state mid-navigation, after pushState has updated
+    // window.location but before navigateClient's dynamic import runs (which
+    // would fail in this test env). useRouter() reads from window.location
+    // and window.__NEXT_DATA__ at provider-mount time, so rendering a Probe
+    // inside the mocked fetch handler observes the post-pushState state —
+    // exactly the code path that #1196 corrupts in Next.js.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+    let capturedRouter: any;
+    function Probe() {
+      capturedRouter = routerModule.useRouter();
+      return React.createElement("span", null, "ok");
+    }
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
+      // Return HTML containing the destination's __NEXT_DATA__. The dynamic
+      // import of the page module fails in this test env, which is fine — the
+      // assertion above has already captured router.query.
+      return new Response(
+        buildNavHtml("/[...path]", "/@fs/pages/catchall.js", { path: ["second"] }),
+      );
+    };
+
+    // Silence the expected routeChangeError from the page-module import failure.
+    const onRouteChangeError = vi.fn();
+
+    try {
+      const Router = routerModule.default;
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Router.push() takes an app-relative path; basePath is added internally
+      // by performNavigation → toBrowserNavigationHref before pushState.
+      await Router.push("/second");
+
+      // pushState has fired, so location.pathname is "/docs/second".
+      // stripBasePath() removes "/docs", and the catch-all pattern
+      // "/[...path]" from __NEXT_DATA__.page extracts { path: ["second"] }.
+      expect(capturedRouter.pathname).toBe("/[...path]");
+      expect(capturedRouter.asPath).toBe("/second");
+      expect(capturedRouter.query.path).toEqual(["second"]);
+      // Negative assertion mirroring #1196: query.path must NOT contain
+      // _next/data segments.
+      expect(capturedRouter.query.path).not.toContain("_next");
+      expect(capturedRouter.query.path).not.toContain("data");
+    } finally {
+      routerModule.default.events.off("routeChangeError", onRouteChangeError);
+      globalThis.fetch = originalFetch;
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      vi.resetModules();
+    }
+  });
 });
 
 describe("next/server enhancements", () => {
