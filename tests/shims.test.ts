@@ -13652,7 +13652,7 @@ describe("next/script SSR rendering", () => {
     expect(html).toContain('id="analytics"');
   });
 
-  it("afterInteractive returns null in SSR", async () => {
+  it("afterInteractive emits a preload <link> (no <script> tag) in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13663,11 +13663,16 @@ describe("next/script SSR rendering", () => {
         strategy: "afterInteractive",
       }),
     );
-    // afterInteractive should not render anything server-side
-    expect(html).toBe("");
+    // afterInteractive does not render a <script> tag during SSR,
+    // but it does emit <link rel="preload" as="script"> via React Float
+    // so the script is fetched while HTML streams.
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="https://example.com/chat.js"');
+    expect(html).toContain('as="script"');
+    expect(html).not.toContain("<script");
   });
 
-  it("lazyOnload returns null in SSR", async () => {
+  it("lazyOnload returns null (no preload) in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13681,7 +13686,7 @@ describe("next/script SSR rendering", () => {
     expect(html).toBe("");
   });
 
-  it("default strategy (no strategy prop) returns null in SSR", async () => {
+  it("default strategy (no strategy prop) emits a preload <link> in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13691,8 +13696,11 @@ describe("next/script SSR rendering", () => {
         src: "https://example.com/default.js",
       }),
     );
-    // Default is afterInteractive → null in SSR
-    expect(html).toBe("");
+    // Default is afterInteractive → preload link only, no <script> tag.
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="https://example.com/default.js"');
+    expect(html).toContain('as="script"');
+    expect(html).not.toContain("<script");
   });
 
   it("beforeInteractive with dangerouslySetInnerHTML renders inline script", async () => {

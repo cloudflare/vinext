@@ -52,14 +52,20 @@ describe("Script SSR rendering", () => {
     expect(html).toContain('src="/analytics.js"');
   });
 
-  it("renders nothing for afterInteractive strategy on SSR", () => {
+  it("emits a preload link for afterInteractive strategy on SSR (no <script> tag)", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Script, {
         src: "/tracking.js",
         strategy: "afterInteractive",
       } as ScriptProps),
     );
-    expect(html).toBe("");
+    // React Float hoists the ReactDOM.preload call into <link rel="preload"> in <head>.
+    // The Script component itself never returns a <script> tag for afterInteractive.
+    // Mirrors .nextjs-ref/packages/next/src/client/script.tsx:361-376.
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="/tracking.js"');
+    expect(html).toContain('as="script"');
+    expect(html).not.toContain("<script");
   });
 
   it("renders nothing for lazyOnload strategy on SSR", () => {
@@ -82,13 +88,67 @@ describe("Script SSR rendering", () => {
     expect(html).toBe("");
   });
 
-  it("defaults to afterInteractive (renders nothing on SSR)", () => {
+  it("defaults to afterInteractive (emits preload link on SSR)", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Script, {
         src: "/default.js",
       } as ScriptProps),
     );
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="/default.js"');
+    expect(html).toContain('as="script"');
+  });
+
+  it("preserves crossOrigin and integrity on the preload link", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/secure-after.js",
+        strategy: "afterInteractive",
+        crossOrigin: "anonymous",
+        integrity: "sha384-abc123",
+      } as ScriptProps),
+    );
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="/secure-after.js"');
+    // React normalises `crossOrigin="anonymous"` to `crossorigin=""` in HTML —
+    // both forms are equivalent per the HTML spec (an empty value selects
+    // the "anonymous" state). Accept either.
+    expect(html).toMatch(/crossorigin=("anonymous"|"")/);
+    expect(html).toContain('integrity="sha384-abc123"');
+  });
+
+  it("does not emit a preload link for inline (no-src) afterInteractive scripts", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        strategy: "afterInteractive",
+        children: 'console.log("inline")',
+      } as ScriptProps),
+    );
     expect(html).toBe("");
+  });
+
+  it("does not emit a preload link for lazyOnload scripts on SSR", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/lazy-preload.js",
+        strategy: "lazyOnload",
+      } as ScriptProps),
+    );
+    expect(html).not.toContain('rel="preload"');
+  });
+
+  it("emits both preload link and <script> tag for beforeInteractive with src", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/before.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="/before.js"');
+    expect(html).toContain('as="script"');
+    expect(html).toContain("<script");
+    expect(html).toContain('src="/before.js"');
   });
 
   it("renders beforeInteractive with id attribute", () => {
