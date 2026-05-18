@@ -71,17 +71,30 @@ async function* walkFiles(dir: string, base: string = dir): AsyncGenerator<strin
 }
 
 /**
- * Precompress all compressible hashed assets under `clientDir/assets/`.
+ * Precompress all compressible hashed assets under `clientDir/<assetsDir>/`.
  *
  * Writes `.br`, `.gz`, and `.zst` files alongside each original.
  * Safe to re-run — overwrites existing compressed variants with identical
  * output, and never compresses `.br`, `.gz`, or `.zst` files themselves.
+ *
+ * `assetsDir` defaults to `"assets"` (Vite's historical default). When
+ * `assetPrefix` is configured the build writes assets to a different
+ * directory (e.g. `"cdn/_next/static"` for a path prefix, or `"_next/static"`
+ * for an absolute URL prefix); callers should resolve that with
+ * `resolveAssetsDir(assetPrefix)` and thread it through. Without this,
+ * `assetPrefix` builds would walk an empty `assets/` directory and emit
+ * zero compressed variants.
  */
 export async function precompressAssets(
   clientDir: string,
-  onProgress?: (completed: number, total: number, file: string) => void,
+  options: {
+    /** Subdirectory under `clientDir` containing hashed assets. Defaults to `"assets"`. */
+    assetsDir?: string;
+    onProgress?: (completed: number, total: number, file: string) => void;
+  } = {},
 ): Promise<PrecompressResult> {
-  const assetsDir = path.join(clientDir, "assets");
+  const { assetsDir: assetsSubdir = "assets", onProgress } = options;
+  const assetsDir = path.join(clientDir, assetsSubdir);
   const result: PrecompressResult = {
     filesCompressed: 0,
     totalOriginalBytes: 0,

@@ -3791,7 +3791,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             // Only precompress hashed assets — public directory files use
             // on-the-fly compression since they may change between deploys.
-            const assetsDir = path.join(outDir, "assets");
+            // When `assetPrefix` is configured the assets live under a
+            // different subdirectory (e.g. `cdn/_next/static/`); resolve from
+            // the config so we walk the actual on-disk layout.
+            const assetsSubdir = resolveAssetsDir(nextConfig.assetPrefix);
+            const assetsDir = path.join(outDir, assetsSubdir);
             if (!fs.existsSync(assetsDir)) return;
 
             const isTTY = process.stderr.isTTY;
@@ -3803,16 +3807,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // the full precompression cost on the critical path of step 4/5.
             pendingPrecompressError = null;
             pendingPrecompress = (async () => {
-              const result = await precompressAssets(outDir, (completed, total, file) => {
-                if (!isTTY) return;
-                const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
-                const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
-                const maxFile = 30;
-                const fileLabel = file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
-                const line = `Compressing assets... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${fileLabel}`;
-                const padded = line.padEnd(lastLineLen);
-                lastLineLen = line.length;
-                process.stderr.write(`\r${padded}`);
+              const result = await precompressAssets(outDir, {
+                assetsDir: assetsSubdir,
+                onProgress: (completed, total, file) => {
+                  if (!isTTY) return;
+                  const pct = total > 0 ? Math.floor((completed / total) * 100) : 0;
+                  const bar = `[${"█".repeat(Math.floor(pct / 5))}${" ".repeat(20 - Math.floor(pct / 5))}]`;
+                  const maxFile = 30;
+                  const fileLabel = file.length > maxFile ? "…" + file.slice(-(maxFile - 1)) : file;
+                  const line = `Compressing assets... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${fileLabel}`;
+                  const padded = line.padEnd(lastLineLen);
+                  lastLineLen = line.length;
+                  process.stderr.write(`\r${padded}`);
+                },
               });
               if (isTTY) {
                 process.stderr.write(`\r${" ".repeat(lastLineLen)}\r`);

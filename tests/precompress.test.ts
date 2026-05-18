@@ -181,6 +181,38 @@ describe("precompressAssets", () => {
     expect(decompressed).toBe(jsContent);
   });
 
+  it("compresses assets under a custom assetsDir (assetPrefix layout)", async () => {
+    // With `assetPrefix: "/cdn"` the build emits hashed assets under
+    // `<clientDir>/cdn/_next/static/...` instead of the default `assets/`.
+    // Caller threads the resolved subdir in via options.assetsDir.
+    const jsContent = "const x = 1;\n".repeat(200);
+    await writeAsset(clientDir, "cdn/_next/static/main-abc123.js", jsContent);
+    // A file at the legacy `assets/` location must NOT be picked up when a
+    // custom assetsDir is in effect — otherwise both layouts would be walked.
+    await writeAsset(clientDir, "assets/legacy-def456.js", jsContent);
+
+    const result = await precompressAssets(clientDir, { assetsDir: "cdn/_next/static" });
+
+    expect(result.filesCompressed).toBe(1);
+    expect(fs.existsSync(path.join(clientDir, "cdn/_next/static/main-abc123.js.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "cdn/_next/static/main-abc123.js.gz"))).toBe(true);
+    // Legacy location is untouched
+    expect(fs.existsSync(path.join(clientDir, "assets/legacy-def456.js.br"))).toBe(false);
+  });
+
+  it("compresses assets under _next/static for absolute-URL assetPrefix", async () => {
+    // With an absolute-URL `assetPrefix` (e.g. `https://cdn.example.com`)
+    // assets are written to `_next/static/` on disk; the URL prefix is
+    // applied at render time, not on the filesystem.
+    const jsContent = "function f() { return 1; }\n".repeat(200);
+    await writeAsset(clientDir, "_next/static/chunk-xyz999.js", jsContent);
+
+    const result = await precompressAssets(clientDir, { assetsDir: "_next/static" });
+
+    expect(result.filesCompressed).toBe(1);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/chunk-xyz999.js.br"))).toBe(true);
+  });
+
   it("reports total original and compressed byte sizes", async () => {
     const jsContent = "const x = 1;\n".repeat(500);
     await writeAsset(clientDir, "assets/big-fff666.js", jsContent);
