@@ -838,7 +838,10 @@ export function normalizeAssetPrefix(value: unknown): string {
     );
   }
 
-  const trimmed = value.trim().replace(/\/+$/, "");
+  // Avoid `replace(/\/+$/, "")` — CodeQL flags it as polynomial backtracking
+  // on uncontrolled input. An explicit loop has the same effect with linear time.
+  let trimmed = value.trim();
+  while (trimmed.endsWith("/")) trimmed = trimmed.slice(0, -1);
   if (trimmed === "") return "";
 
   // Absolute URL — keep origin verbatim, validate parseability so a typo

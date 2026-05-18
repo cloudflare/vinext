@@ -53,7 +53,10 @@ export function resolveAssetsDir(assetPrefix: string): string {
     return ASSET_PREFIX_URL_DIR;
   }
   // Path prefix — strip leading slash so the path joins cleanly with outDir.
-  const stripped = assetPrefix.replace(/^\/+/, "");
+  // Use an explicit loop instead of `replace(/^\/+/, "")` so CodeQL doesn't
+  // flag the regex as polynomial-time on uncontrolled input.
+  let stripped = assetPrefix;
+  while (stripped.startsWith("/")) stripped = stripped.slice(1);
   return `${stripped}/${ASSET_PREFIX_URL_DIR}`;
 }
 
@@ -87,7 +90,8 @@ export function assetPrefixPathname(assetPrefix: string): string {
   if (!assetPrefix) return "";
   if (!isAbsoluteAssetPrefix(assetPrefix)) return assetPrefix;
   try {
-    const pathname = new URL(assetPrefix).pathname.replace(/\/+$/, "");
+    let pathname = new URL(assetPrefix).pathname;
+    while (pathname.endsWith("/")) pathname = pathname.slice(0, -1);
     return pathname === "" ? "" : pathname;
   } catch {
     return "";
