@@ -2119,8 +2119,9 @@ describe("App Router Production build", () => {
       const homeHtml = await homeRes.text();
       expect(homeHtml).toContain("Welcome to App Router");
       expect(homeHtml).toContain("<script");
-      // Production bootstrap should reference hashed assets
-      expect(homeHtml).toMatch(/import\("\/assets\/[^"]+\.js"\)/);
+      // Production bootstrap is emitted as a real <script type="module" src=…>
+      // tag (via React's bootstrapModules option) referencing hashed assets.
+      expect(homeHtml).toMatch(/<script[^>]+type="module"[^>]+src="\/assets\/[^"]+\.js"/);
 
       // Dynamic route works
       const blogRes = await fetch(`${previewUrl}/blog/test-post`);

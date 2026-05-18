@@ -304,21 +304,23 @@ describe("assetPrefix end-to-end build", () => {
       // Helpful when this test starts to drift — uncomment to inspect HTML.
       // console.log("--- HTML ---\n" + html + "\n--- /HTML ---");
 
-      // Bootstrap script URL must be prefixed AND live under _next/static.
-      // Mirrors the Next.js fixture assertion:
+      // Bootstrap is emitted as `<script type="module" src="…">` via React's
+      // `bootstrapModules` option (see app-ssr-entry.ts). Mirrors the Next.js
+      // fixture assertion:
       //   src?.includes('/custom-asset-prefix/_next/static') ||
       //   src?.includes('/custom-asset-prefix/_next/static/immutable')
-      const bootstrapMatch = html.match(/import\("([^"]+\.js)"\)/);
+      const bootstrapSrcRe = /<script[^>]+type="module"[^>]+src="([^"]+\.js)"/;
+      const bootstrapMatch = html.match(bootstrapSrcRe);
       expect(
         bootstrapMatch,
-        "expected a bootstrap `import(...)` script in the HTML",
+        'expected a `<script type="module" src="…">` bootstrap in the HTML',
       ).not.toBeNull();
       expect(bootstrapMatch![1]).toMatch(/^\/custom-asset-prefix\/_next\/static\//);
 
-      // Any `<script src="...">` tag with a non-inline src must also be
-      // under the configured prefix. Vite/RSC may inject modulepreload
-      // links too — we don't strictly require them here, but they must
-      // not leak the old /assets/ default.
+      // Every `<script src="...">` tag (bootstrap + any preload-related
+      // injected tags) must live under the configured prefix. Vite/RSC may
+      // inject modulepreload links too — we don't strictly require them
+      // here, but they must not leak the old /assets/ default.
       const scriptSrcRe = /<script[^>]+src="([^"]+)"/g;
       const scriptSrcs: string[] = [];
       for (const m of html.matchAll(scriptSrcRe)) {
@@ -359,7 +361,7 @@ describe("assetPrefix end-to-end build", () => {
       expect(homeRes.status).toBe(200);
       const html = await homeRes.text();
 
-      const bootstrapMatch = html.match(/import\("([^"]+\.js)"\)/);
+      const bootstrapMatch = html.match(/<script[^>]+type="module"[^>]+src="([^"]+\.js)"/);
       expect(bootstrapMatch).not.toBeNull();
       // Fully qualified — no protocol-relative or path-only URLs.
       expect(bootstrapMatch![1]).toMatch(/^https:\/\/cdn\.example\.com\/_next\/static\//);
@@ -397,7 +399,7 @@ describe("assetPrefix end-to-end build", () => {
       expect(homeRes.status).toBe(200);
       const html = await homeRes.text();
 
-      const bootstrapMatch = html.match(/import\("([^"]+\.js)"\)/);
+      const bootstrapMatch = html.match(/<script[^>]+type="module"[^>]+src="([^"]+\.js)"/);
       expect(bootstrapMatch).not.toBeNull();
       // Asset URLs must NOT be under basePath — they are under assetPrefix only.
       expect(bootstrapMatch![1]).toMatch(/^\/cdn-prefix\/_next\/static\//);
@@ -438,7 +440,7 @@ describe("assetPrefix end-to-end build", () => {
       expect(homeRes.status).toBe(200);
       const html = await homeRes.text();
 
-      const bootstrapMatch = html.match(/import\("([^"]+\.js)"\)/);
+      const bootstrapMatch = html.match(/<script[^>]+type="module"[^>]+src="([^"]+\.js)"/);
       expect(bootstrapMatch).not.toBeNull();
       expect(bootstrapMatch![1]).toMatch(/^\/assets\//);
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);

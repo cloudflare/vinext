@@ -111,18 +111,35 @@ function renderFontHtml(fontData?: FontData, nonce?: string): string {
   return fontHTML;
 }
 
-function extractModulePreloadHtml(bootstrapScriptContent?: string, nonce?: string): string {
-  if (!bootstrapScriptContent) return "";
-
+/**
+ * Extract the bootstrap module URL from the `import("...")` string that
+ * `import.meta.viteRsc.loadBootstrapScriptContent("index")` returns.
+ *
+ * The plugin-rsc helper returns the bootstrap as an inline call so we can
+ * inject it via `bootstrapScriptContent`. We instead pass the URL to
+ * React's `bootstrapModules` option so a real
+ * `<script type="module" src="…">` tag ends up in the streamed HTML —
+ * this exposes the URL to anything that reads `script.attribs.src` (e.g.
+ * the Next.js asset-prefix fixture test). The same URL also feeds the
+ * `<link rel="modulepreload">` we emit ahead of the bootstrap.
+ *
+ * Returns `undefined` when the helper produced no URL (older plugin-rsc
+ * versions, or a custom client entry that disables bootstrap content).
+ */
+function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | undefined {
+  if (!bootstrapScriptContent) return undefined;
   const match = bootstrapScriptContent.match(/import\("([^"]+)"\)/);
-  if (!match?.[1]) return "";
+  return match?.[1] ?? undefined;
+}
 
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(match[1])}" />\n`;
+function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
+  if (!bootstrapModuleUrl) return "";
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" />\n`;
 }
 
 function buildHeadInjectionHtml(
   navContext: NavigationContext | null,
-  bootstrapScriptContent: string | undefined,
+  bootstrapModuleUrl: string | undefined,
   formState: ReactFormState | null,
   insertedHTML: string,
   fontHTML: string,
@@ -152,7 +169,7 @@ function buildHeadInjectionHtml(
     paramsScript +
     navScript +
     formStateScript +
-    extractModulePreloadHtml(bootstrapScriptContent, scriptNonce) +
+    buildModulePreloadHtml(bootstrapModuleUrl, scriptNonce) +
     insertedHTML +
     fontHTML
   );
@@ -244,13 +261,34 @@ export async function handleSsr(
         : root;
       const ssrRoot = withScriptNonce(ssrTree, options?.scriptNonce);
 
+      // plugin-rsc returns the bootstrap as `import("<url>")` so callers can
+      // inject it via `bootstrapScriptContent`. We hand the URL to React's
+      // `bootstrapModules` option instead so the streamed HTML contains a
+      // real `<script type="module" src="<url>">` tag — exposing the URL
+      // to anything that inspects `script.attribs.src` (e.g. the Next.js
+      // asset-prefix fixture test "bundles should return 200 on served
+      // assetPrefix"). Mirrors Next.js's app-render path which passes
+      // `bootstrapScripts: [{ src }]` for the same reason; we use
+      // `bootstrapModules` because vinext's chunks are native ES modules
+      // (Vite output) so a `type="module"` tag is the correct loader.
+      //
+      // In dev, `<url>` is a Vite dev URL like
+      // `/@id/__x00__virtual:vinext-app-browser-entry`; the browser fetches
+      // it as a module from the dev server. In prod it's the hashed bundle
+      // URL (e.g. `/_next/static/index-abc123.js`, optionally prefixed by
+      // `assetPrefix`). Both are valid `<script type="module" src=…>` targets.
       const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent("index");
+      const bootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
       const errorMetaRenderer = createSsrErrorMetaRenderer({
         basePath: options?.basePath,
       });
 
       const htmlStream = await renderToReadableStream(ssrRoot, {
-        bootstrapScriptContent,
+        // `bootstrapScriptContent` was previously how vinext injected the
+        // dynamic-import call. `bootstrapModules` performs the same work
+        // natively (and exposes the URL in the DOM), so passing both would
+        // load the bootstrap module twice.
+        bootstrapModules: bootstrapModuleUrl ? [bootstrapModuleUrl] : undefined,
         formState: options?.formState ?? null,
         nonce: options?.scriptNonce,
         onError(error) {
@@ -288,7 +326,7 @@ export async function handleSsr(
         didInjectHeadHTML = true;
         return buildHeadInjectionHtml(
           navContext,
-          bootstrapScriptContent,
+          bootstrapModuleUrl,
           options?.formState ?? null,
           insertedHTML + errorMetaHTML,
           fontHTML,

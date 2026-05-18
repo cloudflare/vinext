@@ -48,8 +48,9 @@ test.describe("Cloudflare Workers Navigation", () => {
   test("static assets are served (client JS bundle)", async ({ request }) => {
     // First get the home page to find the JS bundle URL
     const html = await (await request.get(`${BASE}/`)).text();
-    // The bundle is referenced as import("/assets/index-XXXX.js")
-    const match = html.match(/import\("(\/assets\/[^"]+)"\)/);
+    // The bundle is referenced as <script type="module" src="/assets/index-XXXX.js">
+    // (emitted via React's bootstrapModules option from app-ssr-entry.ts).
+    const match = html.match(/<script[^>]+type="module"[^>]+src="(\/assets\/[^"]+)"/);
     expect(match).toBeTruthy();
 
     const jsUrl = match![1];
