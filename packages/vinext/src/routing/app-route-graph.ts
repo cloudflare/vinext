@@ -16,6 +16,22 @@ export type InterceptingRoute = {
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
   targetPattern: string;
+  /**
+   * URL pattern of the *intercepting route* — the path that owns the slot
+   * containing this interception marker, with route groups and `@slot`
+   * segments stripped. Mirrors Next.js' `interceptingRoute` from
+   * `extractInterceptionRouteInformation`.
+   *
+   * Used at request time to gate `findIntercept` against the Next-URL /
+   * interception-context header: an intercept only fires when the source
+   * pathname matches `^<sourceMatchPattern>(?:/.*)?$`. Without this gate
+   * a direct RSC fetch to the intercept target would render the modal
+   * instead of the underlying page.
+   *
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
+   */
+  sourceMatchPattern: string;
   /** Absolute path to the intercepting page component */
   pagePath: string;
   /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
@@ -1777,7 +1793,10 @@ function scanForInterceptingPages(
       const restOfName = entry.name.slice(interceptMatch.prefix.length);
       const interceptDir = path.join(currentDir, entry.name);
 
-      // Find page files within this intercepting directory tree
+      // Find page files within this intercepting directory tree.
+      // `currentDir` is the *parent* of the marker dir — used by
+      // computeInterceptSourceMatchPattern to derive the intercepting-route
+      // URL (the path that owns the slot containing the marker).
       collectInterceptingPages(
         interceptDir,
         interceptDir,
@@ -1785,6 +1804,7 @@ function scanForInterceptingPages(
         restOfName,
         routeDir,
         appDir,
+        currentDir,
         results,
         matcher,
       );
@@ -1824,6 +1844,14 @@ function collectInterceptingPages(
   interceptSegment: string,
   routeDir: string,
   appDir: string,
+  /**
+   * Filesystem directory that owns the slot containing the interception
+   * marker — i.e. the parent of the marker dir. Used to derive the
+   * intercepting-route URL pattern that gates `findIntercept` at request
+   * time. With route groups and `@slot` segments stripped, this becomes
+   * Next.js' `interceptingRoute`.
+   */
+  interceptParentDir: string,
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
   parentLayoutPaths: readonly string[] = [],
@@ -1845,10 +1873,12 @@ function collectInterceptingPages(
       appDir,
     );
     if (targetPattern) {
+      const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
       results.push({
         convention,
         layoutPaths: [...layoutPaths],
         targetPattern: targetPattern.pattern,
+        sourceMatchPattern,
         pagePath: page,
         params: targetPattern.params,
       });
@@ -1869,11 +1899,35 @@ function collectInterceptingPages(
       interceptSegment,
       routeDir,
       appDir,
+      interceptParentDir,
       results,
       matcher,
       layoutPaths,
     );
   }
+}
+
+/**
+ * Compute the URL pattern for the *intercepting route* — the path that
+ * owns the slot containing the interception marker. Route groups (`(name)`)
+ * and parallel slots (`@slot`) are stripped because Next.js'
+ * `normalizeAppPath` treats them as invisible in the URL.
+ *
+ * Mirrors Next.js' computation in `extractInterceptionRouteInformation`:
+ * `interceptingRoute = normalizeAppPath(path.split(marker, 2)[0])`.
+ *
+ * Returns `/` for the app root.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
+ */
+function computeInterceptSourceMatchPattern(interceptParentDir: string, appDir: string): string {
+  const segments = path.relative(appDir, interceptParentDir).split(path.sep).filter(Boolean);
+  const converted = convertSegmentsToRouteParts(segments);
+  const urlSegments = converted
+    ? converted.urlSegments
+    : segments.filter((segment) => !isInvisibleSegment(segment));
+  if (urlSegments.length === 0) return "/";
+  return "/" + urlSegments.join("/");
 }
 
 /**

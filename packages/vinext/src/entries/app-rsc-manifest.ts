@@ -118,6 +118,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         (ir) => `        {
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
+          sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
           page: ${imports.getImportVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},

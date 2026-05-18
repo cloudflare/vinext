@@ -234,6 +234,7 @@ describe("App Router generated manifest construction", () => {
               {
                 convention: ".",
                 targetPattern: "/photos/:photoId",
+                sourceMatchPattern: "/dashboard",
                 pagePath: "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx",
                 layoutPaths: ["/tmp/test/app/dashboard/@modal/(.)photos/layout.tsx"],
                 params: ["photoId"],

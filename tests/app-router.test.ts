@@ -743,6 +743,12 @@ describe("App Router integration", () => {
     // RSC request simulates client-side navigation from /team/[teamId]/members
     // to /team/[teamId]/settings. The source route has a dynamic :teamId segment.
     // The intercepting route handler must extract "42" from the URL, not ":teamId".
+    //
+    // The X-Vinext-Interception-Context header carries the source pathname
+    // (the equivalent of Next.js' Next-URL header). Without it the matcher
+    // must NOT fire the interception, matching Next.js' rewrite semantics —
+    // see app-rsc-route-matching.ts and the source-pathname filtering tests
+    // in app-rsc-route-matching.test.ts.
     const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
       headers: {
         Accept: "text/x-component",
@@ -761,6 +767,41 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("members-page");
     // The literal pattern string ":teamId" must NOT appear as a param value anywhere
     expect(rscPayload).not.toContain('":teamId"');
+  });
+
+  it("does NOT fire intercept on direct RSC request without interception context", async () => {
+    // Mirrors Next.js: interception rewrites only fire when the Next-URL
+    // header matches the intercepting-route regex. A direct `.rsc` fetch
+    // with no source pathname must render the underlying page.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+
+    const rscPayload = await res.text();
+    expect(rscPayload).not.toContain("Settings Modal");
+    expect(rscPayload).not.toContain("settings-modal");
+    expect(rscPayload).toContain("settings-page");
+  });
+
+  it("does NOT fire intercept when interception context is from an unrelated route", async () => {
+    // The intercept lives at app/team/[teamId]/members/@modal/(..)settings,
+    // so its sourceMatchPattern is /team/:teamId/members. A source pathname
+    // outside that prefix (e.g. `/feed`) must not satisfy the rewrite header
+    // and the underlying settings page should render.
+    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Context": "/feed",
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const rscPayload = await res.text();
+    expect(rscPayload).not.toContain("Settings Modal");
+    expect(rscPayload).not.toContain("settings-modal");
+    expect(rscPayload).toContain("settings-page");
   });
 
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
@@ -4855,6 +4896,7 @@ describe("generateRscEntry ISR code generation", () => {
               pagePath: "/tmp/test/app/@modal/(.)explicit-layout/deeper/page.tsx",
               params: [],
               targetPattern: "/explicit-layout/deeper",
+              sourceMatchPattern: "/",
             },
           ],
           key: "modal@@modal",

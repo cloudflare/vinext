@@ -842,4 +842,140 @@ describe("App Router route graph builder", () => {
       expect(patterns).toHaveLength(0);
     });
   });
+
+  // Intercepting route source-pattern computation. Mirrors Next.js'
+  // `extractInterceptionRouteInformation` which derives the intercepting
+  // route from the slot's owner path (route groups + `@slot` segments are
+  // invisible). The pattern is used at request time to gate `findIntercept`
+  // against the Next-URL header.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
+  describe("intercepting routes", () => {
+    function collectIntercepts(routes: readonly AppRouteGraphRoute[]) {
+      const out: Array<{
+        ownerRoute: string;
+        slotKey: string;
+        targetPattern: string;
+        sourceMatchPattern: string;
+        convention: string;
+      }> = [];
+      for (const route of routes) {
+        for (const slot of route.parallelSlots) {
+          for (const ir of slot.interceptingRoutes) {
+            out.push({
+              ownerRoute: route.pattern,
+              slotKey: slot.key,
+              targetPattern: ir.targetPattern,
+              sourceMatchPattern: ir.sourceMatchPattern,
+              convention: ir.convention,
+            });
+          }
+        }
+      }
+      return out;
+    }
+
+    it("computes `/` for root-level (.) slot", async () => {
+      // Mirrors test/e2e/app-dir/parallel-routes-and-interception-basepath.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "nested/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/(.)nested/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/nested",
+            sourceMatchPattern: "/",
+            convention: ".",
+          }),
+        );
+      });
+    });
+
+    it("computes `/feed` for (..) slot nested under a static segment", async () => {
+      // Mirrors the (..) marker scoped to a parallel slot: source pathname
+      // must match the slot's owner directory (`/feed`), and the target
+      // pattern climbs one segment to `/photos/:id`.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "photos/[id]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/@modal/(..)photos/[id]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/photos/:id",
+            sourceMatchPattern: "/feed",
+            convention: "..",
+          }),
+        );
+      });
+    });
+
+    it("strips `@modal` and keeps dynamic ancestor segments", async () => {
+      // Mirrors test/e2e/app-dir/parallel-routes-and-interception-from-root:
+      // app/[locale]/example/@modal/(...)[locale]/intercepted/page.tsx
+      // intercepting route = /[locale]/example.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[locale]/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[locale]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/example/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[locale]/example/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/example/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(
+          appDir,
+          "[locale]/example/@modal/(...)[locale]/intercepted/page.tsx",
+          EMPTY_PAGE,
+        );
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/:locale/intercepted",
+            sourceMatchPattern: "/:locale/example",
+            convention: "...",
+          }),
+        );
+      });
+    });
+
+    it("computes intercepting route across `(..)(..)` two-levels-up marker", async () => {
+      // Inspired by test/e2e/app-dir/interception-segments-two-levels-above
+      // but adapted to use a parallel slot, which is the structure vinext
+      // currently supports for interception markers.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "hoge/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/@modal/(..)(..)hoge/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        // (..)(..) target climbs two visible segments from /foo/bar → /,
+        // then appends `hoge`. Intercepting route remains /foo/bar.
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/hoge",
+            sourceMatchPattern: "/foo/bar",
+            convention: "../..",
+          }),
+        );
+      });
+    });
+  });
 });
