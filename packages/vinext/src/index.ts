@@ -423,6 +423,61 @@ function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
 }
 
+/**
+ * Returns true when `code` starts with a React `"use client"` or `"use server"`
+ * directive (after stripping leading comments, hashbang, and whitespace).
+ *
+ * Used by `vinext:jsx-in-js` to opt `.js` files inside `node_modules` into the
+ * JSX transform. We mirror `@vitejs/plugin-rsc`'s detection by looking at the
+ * directive prologue rather than scanning the whole file — `code.includes`
+ * alone would match incidental occurrences in template literals or comments.
+ */
+function hasReactDirective(code: string): boolean {
+  let i = 0;
+  const len = code.length;
+  // Strip BOM.
+  if (code.charCodeAt(0) === 0xfeff) i = 1;
+  // Strip hashbang.
+  if (code[i] === "#" && code[i + 1] === "!") {
+    const nl = code.indexOf("\n", i);
+    if (nl === -1) return false;
+    i = nl + 1;
+  }
+  while (i < len) {
+    // Skip whitespace.
+    while (i < len && /\s/.test(code[i] ?? "")) i++;
+    if (i >= len) return false;
+    // Skip line comments.
+    if (code[i] === "/" && code[i + 1] === "/") {
+      const nl = code.indexOf("\n", i + 2);
+      if (nl === -1) return false;
+      i = nl + 1;
+      continue;
+    }
+    // Skip block comments.
+    if (code[i] === "/" && code[i + 1] === "*") {
+      const end = code.indexOf("*/", i + 2);
+      if (end === -1) return false;
+      i = end + 2;
+      continue;
+    }
+    // At first non-comment, non-whitespace token. Must be a string literal
+    // directive to qualify (per ECMA-262 Directive Prologue grammar).
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") return false;
+    const closing = code.indexOf(quote, i + 1);
+    if (closing === -1) return false;
+    const directive = code.slice(i + 1, closing);
+    if (directive === "use client" || directive === "use server") return true;
+    // Other directives (e.g., "use strict") may precede the React directive.
+    // Continue scanning past the statement-terminating `;` or newline.
+    i = closing + 1;
+    while (i < len && (code[i] === ";" || code[i] === " " || code[i] === "\t")) i++;
+    if (code[i] === "\n") i++;
+  }
+  return false;
+}
+
 function generateRootParamsModule(rootParamNames: Iterable<string>): string {
   const names = Array.from(new Set(rootParamNames)).filter(isValidExportIdentifier).sort();
   if (names.length === 0) return "export {};\n";
@@ -812,17 +867,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `vite:oxc`. We transform `.js` files with `lang: "jsx"` using Vite's
     // exported `transformWithOxc`. When `vite:oxc` later processes the
     // output, the JSX has already been compiled to createElement calls.
+    //
+    // For files inside `node_modules`, we only re-transform `.js`/`.mjs`
+    // modules that begin with a React `"use client"` or `"use server"`
+    // directive. Third-party Next.js client libraries routinely ship plain
+    // `.js` files containing `"use client"` + JSX (Next.js's SWC pipeline
+    // compiles JSX in `.js` transparently). Without this, `@vitejs/plugin-rsc`'s
+    // `rsc:use-client` analysis pass parses those files via rolldown/oxc with
+    // `lang: "js"` and fails with `RolldownError: Unexpected JSX expression`.
+    //
+    // We limit the node_modules transform to directive-bearing files to:
+    //   1. avoid re-parsing every `.js` in `node_modules` (build perf), and
+    //   2. avoid forcibly applying `lang: "jsx"` to library code that may use
+    //      syntax incompatible with the JSX-enabled OXC parser.
     ...(viteMajorVersion >= 8
       ? [
           {
             name: "vinext:jsx-in-js",
             enforce: "pre" as const,
             async transform(code: string, id: string) {
-              // Only handle .js/.mjs files outside node_modules.
+              // Only handle .js/.mjs files.
               // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
               const cleanId = id.split("?")[0];
               if (!/\.(m?js)$/.test(cleanId)) return;
-              if (cleanId.includes("/node_modules/")) return;
+
+              // Inside node_modules, restrict the JSX transform to files that
+              // carry a React directive. `@vitejs/plugin-rsc` only parses
+              // such modules (and only those failures have been observed in
+              // the wild). The cheap `includes` check avoids any work for the
+              // vast majority of `.js` files in `node_modules`.
+              if (cleanId.includes("/node_modules/")) {
+                if (!code.includes("use client") && !code.includes("use server")) {
+                  return;
+                }
+                if (!hasReactDirective(code)) {
+                  return;
+                }
+              }
 
               const result = await transformWithOxc(code, id, {
                 lang: "jsx",
