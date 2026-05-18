@@ -103,6 +103,15 @@ type AppRouterConfig = {
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   /**
+   * Absolute path to `app/global-not-found.{tsx,ts,js,jsx}` when present.
+   * When provided, route-miss 404s render this module standalone (it owns its
+   * own `<html>` and `<body>`) instead of wrapping the regular `not-found.tsx`
+   * boundary inside the root layout. Mirrors Next.js 16's
+   * `experimental.globalNotFound` behavior.
+   * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+   */
+  globalNotFoundPath?: string | null;
+  /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
    * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_startWorker`
@@ -144,7 +153,12 @@ export function generateRscEntry(
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
-  const manifestCode = buildAppRscManifestCode({ routes, metadataRoutes, globalErrorPath });
+  const manifestCode = buildAppRscManifestCode({
+    routes,
+    metadataRoutes,
+    globalErrorPath,
+    globalNotFoundPath: config?.globalNotFoundPath ?? null,
+  });
   const {
     imports,
     routeEntries,
@@ -155,6 +169,7 @@ export function generateRscEntry(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
+    globalNotFoundVar,
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
@@ -336,6 +351,12 @@ const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
+// Root-level app/global-not-found module. When present, route-miss 404s render
+// this module standalone (it provides its own html/body) instead of wrapping
+// the not-found.tsx boundary inside the root layout. Page-triggered notFound()
+// calls still use the regular not-found.tsx boundary inside the layouts.
+// See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
+const globalNotFoundModule = ${globalNotFoundVar ? globalNotFoundVar : "null"};
 
 const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
@@ -348,6 +369,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
     rootUnauthorizedModule,
   },
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+  globalNotFoundModule,
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");

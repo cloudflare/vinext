@@ -299,6 +299,35 @@ describe("App Router generated manifest construction", () => {
     ]);
   });
 
+  it("imports the global-not-found module and exposes its var when provided", () => {
+    // Mirrors how vinext scans `app/global-not-found.tsx` in
+    // packages/vinext/src/index.ts and threads it into the manifest so the
+    // generated RSC entry can hand it to createAppFallbackRenderer.
+    // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    const manifest = buildAppRscManifestCode({
+      routes: minimalAppRoutes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    const imports = manifest.imports.join("\n");
+    expect(imports).toContain('from "/tmp/test/app/global-not-found.tsx"');
+    expect(manifest.globalNotFoundVar).toBeTruthy();
+  });
+
+  it("does not import a global-not-found module when the path is absent", () => {
+    const manifest = buildAppRscManifestCode({
+      routes: minimalAppRoutes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      globalNotFoundPath: null,
+    });
+
+    expect(manifest.imports.join("\n")).not.toContain("global-not-found");
+    expect(manifest.globalNotFoundVar).toBeNull();
+  });
+
   it("serializes graph-minted ids without leaking the filesystem root", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
     const appDir = path.join(tmpDir, "app");
@@ -513,6 +542,29 @@ describe("App Router entry templates", () => {
     expect(code).toContain("app-rsc-handler.js");
     expect(code).toContain("export default __createAppRscHandler({");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
+  });
+
+  it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
+    // The generated entry's createAppFallbackRenderer call must receive a
+    // globalNotFoundModule binding so route-miss 404s can render
+    // app/global-not-found.tsx standalone.
+    // See packages/vinext/src/entries/app-rsc-entry.ts and
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    expect(code).toContain('from "/tmp/test/app/global-not-found.tsx"');
+    // The renderer is wired with the module binding (not just `null`).
+    expect(code).toContain("globalNotFoundModule,");
+    expect(code).not.toContain("const globalNotFoundModule = null;");
+  });
+
+  it("generateRscEntry emits a null globalNotFoundModule when no path is provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("const globalNotFoundModule = null;");
+    expect(code).not.toContain("global-not-found.tsx");
   });
 
   it("generateRscEntry delegates React Flight preload hint normalization", () => {

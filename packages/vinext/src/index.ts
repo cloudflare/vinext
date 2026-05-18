@@ -1905,6 +1905,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
+          // Check for global-not-found.tsx at app root (Next.js 16+ feature)
+          // When present, this file replaces the root layout when serving a
+          // route-miss 404. The file is responsible for emitting its own
+          // <html> and <body> tags (similar to global-error.tsx).
+          // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+          const globalNotFoundPath = findFileWithExts(appDir, "global-not-found", fileMatcher);
           // Collect Layer 1 (segment config) classifications for all layouts.
           // Layer 2 (module graph) runs later in generateBundle once Rollup's
           // module info is available.
@@ -1932,6 +1938,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               i18n: nextConfig?.i18n,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
+              globalNotFoundPath,
             },
             instrumentationPath,
           );
