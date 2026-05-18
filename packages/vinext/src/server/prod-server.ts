@@ -1030,29 +1030,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
   }
 
-  // Load runtime config written by the same plugin. Contains values the App
-  // Router prod-server needs at startup but which are not embedded in the
-  // RSC entry — currently `assetPrefix`. Defaults to an empty assetPrefix
-  // when the file is missing (older builds) so behaviour is unchanged for
-  // projects that haven't opted in.
-  let appRouterAssetPrefix = "";
-  const runtimeConfigPath = path.join(path.dirname(rscEntryPath), "vinext-runtime-config.json");
-  if (fs.existsSync(runtimeConfigPath)) {
-    try {
-      const runtimeConfig = JSON.parse(fs.readFileSync(runtimeConfigPath, "utf-8"));
-      if (typeof runtimeConfig?.assetPrefix === "string") {
-        appRouterAssetPrefix = runtimeConfig.assetPrefix;
-      }
-    } catch {
-      /* ignore parse errors */
-    }
-  }
-  // Path portion of the assetPrefix to match incoming asset requests against
-  // (empty when the prefix is an absolute URL with no path component, or when
-  // no prefix is configured). The URL prefix the prod-server needs to strip
-  // before locating files on disk includes this path plus `_next/static/`.
-  const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
-
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
   const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
@@ -1064,6 +1041,20 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
   const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
+
+  // `assetPrefix` is embedded as a compile-time constant in the generated
+  // RSC entry (see `entries/app-rsc-entry.ts`'s `export const __assetPrefix`),
+  // mirroring how `__basePath` is inlined there and how the Pages Router
+  // entry exposes `vinextConfig.assetPrefix`. Default to "" so older builds
+  // (and the rare case where the entry doesn't re-export this constant)
+  // continue to work with the historical asset layout.
+  const appRouterAssetPrefix: string =
+    typeof rscModule.__assetPrefix === "string" ? rscModule.__assetPrefix : "";
+  // Path portion of the assetPrefix to match incoming asset requests against
+  // (empty when the prefix is an absolute URL with no path component, or when
+  // no prefix is configured). The URL prefix the prod-server needs to strip
+  // before locating files on disk includes this path plus `_next/static/`.
+  const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.

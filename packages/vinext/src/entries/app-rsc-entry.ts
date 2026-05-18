@@ -99,6 +99,15 @@ type AppRouterConfig = {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /**
+   * Resolved `assetPrefix` from next.config. Empty string when unset.
+   * Embedded in the generated entry so the App Router prod-server reads
+   * it from the imported module instead of a sidecar JSON file —
+   * matches how the Pages Router entry exposes `vinextConfig.assetPrefix`.
+   *
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+   */
+  assetPrefix?: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime?: number;
   /** Internationalization routing config for middleware matcher locale handling. */
@@ -150,6 +159,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
@@ -435,6 +445,10 @@ const __configHeaders = ${JSON.stringify(headers)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
+// Re-exported for the App Router prod-server to consume at startup —
+// mirrors the embedded \`__basePath\` pattern (and Pages Router's
+// \`vinextConfig\` export). Empty string when unset.
+export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 

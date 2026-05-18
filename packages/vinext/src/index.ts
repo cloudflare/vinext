@@ -2140,6 +2140,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
               i18n: nextConfig?.i18n,
               hasPagesDir,
@@ -3593,20 +3594,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           };
 
           fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
-
-          // Persist a small subset of next.config values that the App Router
-          // prod-server needs at startup but which are not embedded in the
-          // RSC entry (the RSC entry only embeds `__basePath`). Keep this
-          // file narrowly scoped — anything that affects request handling
-          // outside of the RSC handler should live here so dev/prod parity
-          // is easy to audit.
-          const runtimeConfig = {
-            assetPrefix: nextConfig?.assetPrefix ?? "",
-          };
-          fs.writeFileSync(
-            path.join(outDir, "vinext-runtime-config.json"),
-            JSON.stringify(runtimeConfig),
-          );
         },
       },
     },
