@@ -3938,12 +3938,12 @@ export default function middleware() {
 `,
       );
 
-      const { server, baseUrl } = await startFixtureServer(tmpRoot, { appRouter: false });
+      const { server, baseUrl } = await startFixtureServer(tmpRoot);
       try {
         const res = await fetch(`${baseUrl}/docs/first`);
         expect(res.status).toBe(200);
         const html = await res.text();
-        const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({[\s\S]*?})<\/script>/);
+        const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
         expect(match).toBeTruthy();
         const nextData = JSON.parse(match![1]);
         expect(nextData.page).toBe("/[...path]");

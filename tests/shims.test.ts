@@ -11652,7 +11652,7 @@ describe("Pages Router concurrent navigation", () => {
   // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
   // Issue #1196 — catch-all router.query must not be corrupted by basePath + rewrites + middleware.
-  it("preserves catch-all router.query after client navigation with basePath", async () => {
+  it("initializes catch-all router.query from __NEXT_DATA__ with basePath", async () => {
     const previousWindow = (globalThis as any).window;
     const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
     const { win } = createNavWindow();
@@ -11696,12 +11696,12 @@ describe("Pages Router concurrent navigation", () => {
       } else {
         process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
       }
-      vi.resetModules();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
         (globalThis as any).window = previousWindow;
       }
+      vi.resetModules();
     }
   });
 });
