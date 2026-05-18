@@ -595,10 +595,18 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // Eagerly capture an error at the call site if we're inside a public cache.
   // Private parents are intentionally excluded — "use cache: private" is
   // dynamic-by-definition and never triggers the throw upstream.
+  //
+  // `Error.captureStackTrace` is a V8-specific API (Node.js, Cloudflare
+  // Workers, Chrome). It is guarded for robustness in case vinext is ever
+  // run under a non-V8 runtime (e.g. JavaScriptCore in Bun); the `super()`
+  // call in the `Error` constructor already captures a stack — the
+  // captureStackTrace call just trims the constructor frame.
   let eagerError: Error | undefined;
   if (parentCtx && parentCtx.variant !== "private") {
     eagerError = new NestedDynamicUseCacheError();
-    Error.captureStackTrace(eagerError, runCachedFunctionWithContext);
+    if (typeof Error.captureStackTrace === "function") {
+      Error.captureStackTrace(eagerError, runCachedFunctionWithContext);
+    }
   }
 
   const ctx: CacheContext = {
@@ -615,13 +623,24 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // Resolve effective cache life from collected configs
   const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
 
-  // Propagate the inner's resolved cache life into the parent's configs so
-  // the outer's minimum-wins computation includes the inner's values.
+  // Propagate the inner's resolved cache life into the parent's lifeConfigs so
+  // the outer's minimum-wins computation includes the inner's values. This
+  // matches Next.js, which propagates the inner's resolved metadata into the
+  // outer's revalidate store via `propagateCacheLifeAndTagsToRevalidateStore`
+  // (see use-cache-wrapper.ts: minimum-wins on revalidate/expire/stale). It is
+  // also load-bearing for the nested-dynamic error detection below: the outer
+  // only suppresses the throw when its own explicit cacheLife() pushed the
+  // effective revalidate/expire above the dynamic thresholds. Without this
+  // propagation, the outer's effectiveLife would not reflect the inner's
+  // dynamic values and the throw at lines below would never fire.
   if (parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
   }
 
-  // Propagate the eager error to the parent if this inner cache resolved dynamic.
+  // Propagate the eager error to the parent if this inner cache resolved
+  // dynamic. `??=` keeps the first dynamic child as the cause, matching
+  // Next.js: see `dynamicNestedCacheError ??=` in
+  // packages/next/src/server/use-cache/use-cache-wrapper.ts.
   if (
     parentCtx &&
     eagerError &&
@@ -634,6 +653,19 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // If a nested inner cache propagated a dynamic life into this context,
   // and this outer cache lacks an explicit cacheLife for the relevant field,
   // throw the nested-dynamic error now.
+  //
+  // This block is tightly coupled with the `lifeConfigs.push(effectiveLife)`
+  // above: it relies on the inner's dynamic values being merged into this
+  // outer's `effectiveLife` via minimum-wins. If the outer's own explicit
+  // cacheLife() pushed revalidate/expire above the thresholds, the inner's
+  // values still appear in `lifeConfigs` but minimum-wins drops them, the
+  // checks below evaluate false, and the captured error is silently dropped.
+  // That is the desired behavior — the outer made an explicit choice that
+  // overrides the dynamic child.
+  //
+  // If both `revalidate === 0` and `expire < DYNAMIC_EXPIRE` are true,
+  // only the revalidate error is thrown (the expire branch is unreachable),
+  // matching Next.js which surfaces `revalidate: 0` first.
   if (ctx.dynamicNestedCacheError) {
     if (effectiveLife.revalidate === 0 && !ctx.hasExplicitRevalidate) {
       throw new Error(nestedCacheZeroRevalidateErrorMessage, {

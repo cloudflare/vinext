@@ -770,6 +770,17 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
+      // Note: these flags are slightly misnamed — they really mean
+      // "cacheLife() was called and the resolved config includes this field"
+      // rather than "the user explicitly passed this field". Because we merge
+      // user input over the default profile (`{ ...default, ...profile }`),
+      // calling `cacheLife({ expire: 60 })` still resolves a `revalidate`
+      // from the default profile, so `hasExplicitRevalidate` becomes true.
+      // This matches Next.js, which tracks the flag at the work unit store
+      // level (set when `cacheLife()` is called at all), not per-field. The
+      // suppression semantics are correct: calling `cacheLife()` is itself
+      // the explicit choice that opts the outer out of the nested-dynamic
+      // throw, regardless of which fields the user specified.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
       _setRequestScopedCacheLife(resolvedConfig);

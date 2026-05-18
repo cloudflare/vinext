@@ -4314,9 +4314,16 @@ describe('"use cache" runtime', () => {
 
     expect(thrown).toBeDefined();
     expect(thrown!.cause).toBeDefined();
-    // The cause should be from the FIRST dynamic child (innerA)
-    // We can't easily test exact stack content in unit tests, but we verify
-    // the cause exists and the error fires.
+    // The cause should be from the FIRST dynamic child (innerA), which set
+    // `revalidate: 0`. The outer error message reflects the first-firing
+    // dynamic field — if innerA's revalidate propagated first, the outer
+    // throws the revalidate (not expire) error, even though innerB's
+    // `expire: 120` is also below DYNAMIC_EXPIRE. This rigorously verifies
+    // first-child-wins semantics: dynamicNestedCacheError uses `??=` so the
+    // first dynamic child's eager error is preserved as the cause, and the
+    // revalidate check fires before the expire check in the outer.
+    expect(thrown!.message).toContain("revalidate");
+    expect(thrown!.message).not.toContain("expire");
   });
 });
 
