@@ -90,7 +90,7 @@ export function isCjsGlobalsBanner(s: string): boolean {
  * preserve dynamic behaviour while still ensuring the shim is emitted —
  * the user function's return value is appended after the shim.
  */
-export function mergeBanner(
+function mergeBanner(
   // oxlint-disable-next-line typescript/no-explicit-any
   existing: string | ((...args: any[]) => string | Promise<string>) | undefined,
   // oxlint-disable-next-line typescript/no-explicit-any
