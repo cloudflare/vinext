@@ -648,11 +648,12 @@ function cjsImportsInteropPlugin(configPath: string): {
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
 
       // Wrap the body in a function so top-level `return` inside the user
-      // source — and any local `const module` shadow — stays scoped, and
-      // re-export the final `module.exports` as the ESM default. Named
-      // exports off `module.exports` are also reflected so
-      // `import * as ns from './foo.cts'` exposes `ns.default` (the common
-      // shape the Next.js fixtures rely on).
+      // source stays scoped, then re-export the final `module.exports` as
+      // the ESM default. `exports` and `module.exports` start aliased to the
+      // same object — matching Node's CJS semantics — so writes to
+      // `exports.foo` propagate until the user reassigns `module.exports = X`,
+      // after which any further `exports.foo = …` mutates the discarded
+      // original. Code that reassigns should use `module.exports.foo = …`.
       const wrapped =
         `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
         `const __filename = ${filenameLiteral};\n` +
