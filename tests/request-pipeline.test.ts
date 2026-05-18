@@ -667,6 +667,7 @@ describe("INTERNAL_HEADERS", () => {
       "x-matched-path",
       "x-nextjs-data",
       "x-next-resume-state-length",
+      "x-action-forwarded",
     ];
     expect(INTERNAL_HEADERS).toEqual(expected);
   });
