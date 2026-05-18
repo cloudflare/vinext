@@ -204,18 +204,24 @@ export async function buildPageElements<
     viewport: resolvedViewport,
   } = headSettled;
 
-  // Defer the metadata promise across a microtask so React sees it as pending
-  // when reaching the Suspense boundary. Without this, an already-resolved
-  // promise gets inlined and React 19 Float hoists the `<title>` etc. to
-  // `<head>` — defeating the purpose of streaming. The microtask deferral
-  // also matches Next.js's behavior where the metadata resolves AFTER the
-  // initial shell flushes.
-  // NOTE (WIP): synchronously-resolved promise is not enough — see
-  // `metadata-streaming.ts` for the open question about Suspense streaming
-  // through the RSC->SSR pipeline. Even with a setTimeout-deferred promise
-  // (tried up to 200ms), React still hoists the streamed <title> to <head>
-  // because the RSC payload may already have the resolved chunk by the time
-  // SSR begins consuming. Left here as scaffolding for the next iteration.
+  // NOTE (WIP): this scaffolding does not yet stream metadata to <body>.
+  //
+  // The fundamental issue: `resolveAppPageHead` is awaited above BEFORE the
+  // element tree is constructed. By the time we hand the promise to the
+  // RSC-side `<Suspense>` boundary it is already settled, so the RSC
+  // payload serializes the resolved tree synchronously and SSR sees no
+  // pending Suspense to stream through. Even a microtask- or 200ms-deferred
+  // promise didn't help — confirmed by experiment.
+  //
+  // Path forward (next iteration):
+  //   1. Thread the metadata promise through `handleSsr` (alongside
+  //      navigationContext) so the Suspense lives in the SSR tree, not
+  //      the RSC tree.
+  //   2. Render the Suspense + `<div hidden>` wrapper inside
+  //      `app-ssr-entry.ts` where React's `renderToReadableStream` can
+  //      observe a pending promise and emit a `<template>` placeholder.
+  //   3. The RSC payload either omits metadata or uses a sentinel; the
+  //      SSR layer is solely responsible for emitting the resolved tags.
   const streamingMetadata: Promise<{ metadata: Metadata | null }> | null = useStreamingMetadata
     ? Promise.resolve({ metadata: resolvedMetadata })
     : null;

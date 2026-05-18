@@ -25,6 +25,21 @@ import {
 
 let ctx: TestServerResult;
 
+/**
+ * Split an HTML response at `</head>` so callers can independently assert on
+ * the head and body slices. Hard-fails (rather than returning -1) when the
+ * boundary is missing so a malformed response surfaces as a clear test
+ * failure instead of misleading "expected contains" diffs.
+ */
+function splitAtHeadClose(html: string): { headSlice: string; bodySlice: string } {
+  expect(html).toContain("</head>");
+  const boundary = html.indexOf("</head>");
+  return {
+    headSlice: html.slice(0, boundary),
+    bodySlice: html.slice(boundary),
+  };
+}
+
 // All "should-be-streamed" assertions are currently `it.todo` because vinext
 // does not yet stream dynamic metadata to <body>. Tracking PR: see metadata
 // streaming follow-up. The bot/HTML-only assertions are live since the
@@ -42,11 +57,10 @@ describe("Next.js compat: metadata-streaming", () => {
   //   "should delay the metadata render to body"
   it.todo("should delay metadata render to body for pages with generateMetadata", async () => {
     const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-streaming-test");
+    const { headSlice, bodySlice } = splitAtHeadClose(html);
     // The streamed metadata must NOT be in <head>.
-    const headSlice = html.slice(0, html.indexOf("</head>"));
     expect(headSlice).not.toContain("<title>metadata streaming index page</title>");
     // It must appear somewhere in the document body.
-    const bodySlice = html.slice(html.indexOf("</head>"));
     expect(bodySlice).toContain("<title>metadata streaming index page</title>");
   });
 
@@ -54,7 +68,7 @@ describe("Next.js compat: metadata-streaming", () => {
   //   "should still load viewport meta tags even if metadata is delayed"
   it("should still emit viewport meta tags in <head> while metadata is streaming", async () => {
     const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-streaming-test/slow");
-    const headSlice = html.slice(0, html.indexOf("</head>"));
+    const { headSlice } = splitAtHeadClose(html);
     expect(headSlice).toMatch(/<meta[^>]+name="viewport"[^>]+content="[^"]*width=device-width/);
     expect(headSlice).toMatch(/<meta[^>]*charSet="utf-8"|<meta[^>]*charset="utf-8"/i);
   });
@@ -66,8 +80,7 @@ describe("Next.js compat: metadata-streaming", () => {
       ctx.baseUrl,
       "/nextjs-compat/metadata-streaming-test/static-partial",
     );
-    const headSlice = html.slice(0, html.indexOf("</head>"));
-    const bodySlice = html.slice(html.indexOf("</head>"));
+    const { headSlice, bodySlice } = splitAtHeadClose(html);
     expect(headSlice).not.toContain("<title>partial static page</title>");
     expect(bodySlice).toContain("<title>partial static page</title>");
   });
@@ -79,7 +92,7 @@ describe("Next.js compat: metadata-streaming", () => {
       headers: { "user-agent": "Twitterbot/1.0" },
     });
     const html = await res.text();
-    const headSlice = html.slice(0, html.indexOf("</head>"));
+    const { headSlice } = splitAtHeadClose(html);
     expect(headSlice).toContain("<title>partial static page</title>");
   });
 
@@ -90,7 +103,7 @@ describe("Next.js compat: metadata-streaming", () => {
       headers: { "user-agent": "Twitterbot/1.0" },
     });
     const html = await res.text();
-    const headSlice = html.slice(0, html.indexOf("</head>"));
+    const { headSlice } = splitAtHeadClose(html);
     expect(headSlice).toContain("<title>metadata streaming index page</title>");
   });
 });

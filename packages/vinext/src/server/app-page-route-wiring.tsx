@@ -376,6 +376,13 @@ function createAppPageRouteHead(metadata: Metadata | null, viewport: Viewport): 
  * Static portion of the head that always flushes synchronously: charset and
  * viewport. Used by the streaming path so the initial shell can include
  * device-width viewport and utf-8 charset without waiting for `generateMetadata`.
+ *
+ * TODO(#1305): once the streaming metadata path is fully wired, the dynamic
+ * `<MetadataHead>` may also include a charset/viewport tag from user-supplied
+ * metadata. We'll need to deduplicate so the initial shell and the streamed
+ * tags don't both emit conflicting `<meta charset>` or `<meta name="viewport">`.
+ * For now this is harmless because streaming is gated behind a path that
+ * never actually streams (see app-page-element-builder.ts WIP note).
  */
 function createAppPageStaticHead(viewport: Viewport): ReactNode {
   return (
