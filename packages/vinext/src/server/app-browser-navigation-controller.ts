@@ -39,6 +39,7 @@ type BrowserNavigationCommitEffectFactory = (options: {
   navId: number;
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
+  targetHistoryIndex?: number | null;
 }) => () => void;
 
 type BrowserRouterStateRef = {
@@ -55,6 +56,7 @@ type SameUrlServerActionLifecycleOptions = {
 type BrowserNavigationControllerDeps = {
   commitClientNavigationState?: typeof commitClientNavigationState;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
+  syncHistoryStatePreviousNextUrl?: (previousNextUrl: string | null) => void;
 };
 
 type BrowserNavigationController = {
@@ -80,6 +82,7 @@ type BrowserNavigationController = {
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
   }): Promise<NavigationPayloadOutcome>;
@@ -190,6 +193,7 @@ export function createAppBrowserNavigationController(
   const commitClientNavigationStateImpl =
     deps.commitClientNavigationState ?? commitClientNavigationState;
   const performHardNavigation = deps.performHardNavigation ?? performHardNavigationWithLoopGuard;
+  const syncHistoryStatePreviousNextUrl = deps.syncHistoryStatePreviousNextUrl ?? (() => {});
 
   // These are plain module-level variables (inside the controller closure),
   // unlike ClientNavigationState which uses Symbol.for to survive multiple
@@ -488,6 +492,7 @@ export function createAppBrowserNavigationController(
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
   }): Promise<NavigationPayloadOutcome> {
@@ -545,6 +550,7 @@ export function createAppBrowserNavigationController(
           navId: options.navId,
           params: options.params,
           previousNextUrl: approvedCommit.previousNextUrl,
+          targetHistoryIndex: options.targetHistoryIndex,
         }),
       );
       activateNavigationSnapshot();
@@ -624,6 +630,7 @@ export function createAppBrowserNavigationController(
 
       if (latestApproval.approvedCommit) {
         dispatchSynchronousVisibleCommit(latestApproval.approvedCommit);
+        syncHistoryStatePreviousNextUrl(latestApproval.approvedCommit.previousNextUrl);
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);
       }

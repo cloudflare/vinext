@@ -11,6 +11,8 @@ import { describe, it, expect } from "vite-plus/test";
 import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
+import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
@@ -234,6 +236,7 @@ describe("App Router generated manifest construction", () => {
               {
                 convention: ".",
                 targetPattern: "/photos/:photoId",
+                sourceMatchPattern: "/dashboard",
                 pagePath: "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx",
                 layoutPaths: ["/tmp/test/app/dashboard/@modal/(.)photos/layout.tsx"],
                 params: ["photoId"],
@@ -297,6 +300,35 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/dashboard/:id": mod_5?.generateStaticParams ?? null,',
     ]);
+  });
+
+  it("imports the global-not-found module and exposes its var when provided", () => {
+    // Mirrors how vinext scans `app/global-not-found.tsx` in
+    // packages/vinext/src/index.ts and threads it into the manifest so the
+    // generated RSC entry can hand it to createAppFallbackRenderer.
+    // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    const manifest = buildAppRscManifestCode({
+      routes: minimalAppRoutes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    const imports = manifest.imports.join("\n");
+    expect(imports).toContain('from "/tmp/test/app/global-not-found.tsx"');
+    expect(manifest.globalNotFoundVar).toBeTruthy();
+  });
+
+  it("does not import a global-not-found module when the path is absent", () => {
+    const manifest = buildAppRscManifestCode({
+      routes: minimalAppRoutes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      globalNotFoundPath: null,
+    });
+
+    expect(manifest.imports.join("\n")).not.toContain("global-not-found");
+    expect(manifest.globalNotFoundVar).toBeNull();
   });
 
   it("serializes graph-minted ids without leaking the filesystem root", async () => {
@@ -425,6 +457,19 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("installs server globals before App Router user modules are imported", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    const globalsImportIndex = code.indexOf("/server-globals.js");
+    const firstUserImportIndex = code.search(
+      /import \* as mod_\d+ from "\/tmp\/test\/app\/page\.tsx";/,
+    );
+
+    expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
+    expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
+    expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+  });
+
   it("generateRscEntry fails with a path-specific error when a static metadata file cannot be read", () => {
     const metadataRoutes: MetadataFileRoute[] = [
       {
@@ -515,6 +560,29 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
+    // The generated entry's createAppFallbackRenderer call must receive a
+    // globalNotFoundModule binding so route-miss 404s can render
+    // app/global-not-found.tsx standalone.
+    // See packages/vinext/src/entries/app-rsc-entry.ts and
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    expect(code).toContain('from "/tmp/test/app/global-not-found.tsx"');
+    // The renderer is wired with the module binding (not just `null`).
+    expect(code).toContain("globalNotFoundModule,");
+    expect(code).not.toContain("const globalNotFoundModule = null;");
+  });
+
+  it("generateRscEntry emits a null globalNotFoundModule when no path is provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("const globalNotFoundModule = null;");
+    expect(code).not.toContain("global-not-found.tsx");
+  });
+
   it("generateRscEntry delegates React Flight preload hint normalization", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
@@ -523,5 +591,41 @@ describe("App Router entry templates", () => {
       "const renderToReadableStream = createRscRenderer(_renderToReadableStream",
     );
     expect(code).not.toContain("const _hlFixRe =");
+  });
+});
+
+// ── Pages Router entry template runtime bootstrap ─────────────────────
+
+describe("Pages Router entry template", () => {
+  it("installs server globals before Pages Router user modules are imported", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      const globalsImportIndex = code.indexOf("/server-globals.js");
+      const firstUserImportIndex = code.indexOf(
+        `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
+      );
+
+      expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
+      expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
+      expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -6,6 +6,11 @@ import { waitForAppRouterHydration } from "../helpers";
 // etc.). Port 4174 is the vite preview default for the app-basic fixture.
 const BASE = "http://localhost:4174";
 
+type RouterSideEffectWindow = Window & {
+  __APP_ROUTER_HISTORY_MARKER__?: string;
+  __NEXT_ROUTER_IMPORTED__?: boolean;
+};
+
 test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
   test("cross-route navigation completes without hanging", async ({ page }) => {
     await page.goto(`${BASE}/nav-flash/link-sync`);
@@ -69,6 +74,51 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     await page.goForward();
     await expect(page.locator("#list-title")).toHaveText("Nav Flash List", { timeout: 10_000 });
     expect(page.url()).toBe(`${BASE}/nav-flash/list`);
+  });
+
+  test("importing next/router in an App Router client bundle does not hijack back/forward", async ({
+    page,
+  }) => {
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") {
+        documentRequests.push(request.url());
+      }
+    });
+
+    await page.goto(`${BASE}/router-side-effect-leak`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("h1")).toHaveText("Router side effect leak source");
+    await expect(page.locator("#router-shim-imported")).toHaveText("router shim imported");
+    await expect
+      .poll(() => page.evaluate(() => (window as RouterSideEffectWindow).__NEXT_ROUTER_IMPORTED__))
+      .toBe(true);
+
+    await page.evaluate(() => {
+      (window as RouterSideEffectWindow).__APP_ROUTER_HISTORY_MARKER__ = "alive";
+    });
+    documentRequests.length = 0;
+
+    await page.click("#side-effect-destination-link");
+    await expect(page.locator("h1")).toHaveText("Router side effect leak destination", {
+      timeout: 10_000,
+    });
+
+    await page.goBack();
+    await expect(page.locator("h1")).toHaveText("Router side effect leak source", {
+      timeout: 10_000,
+    });
+
+    await page.goForward();
+    await expect(page.locator("h1")).toHaveText("Router side effect leak destination", {
+      timeout: 10_000,
+    });
+
+    const marker = await page.evaluate(
+      () => (window as RouterSideEffectWindow).__APP_ROUTER_HISTORY_MARKER__,
+    );
+    expect(marker).toBe("alive");
+    expect(documentRequests).toEqual([]);
   });
 
   test("rapid same-route navigation settles correctly", async ({ page }) => {

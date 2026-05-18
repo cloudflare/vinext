@@ -14,7 +14,6 @@
  */
 
 import vinext from "./index.js";
-import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -591,6 +590,7 @@ async function buildApp() {
   // Opt-in via --precompress CLI flag or `precompress: true` in plugin options.
 
   process.stdout.write("\x1b[0m");
+  const { printBuildReport } = await import("./build/report.js");
   await printBuildReport({
     root: process.cwd(),
     pageExtensions: resolvedNextConfig.pageExtensions,

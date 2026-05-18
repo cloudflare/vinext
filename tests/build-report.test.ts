@@ -1,7 +1,7 @@
 /**
  * Build report tests — verifies route classification, formatting, and sorting.
  *
- * Tests the regex-based export detection helpers and the classification
+ * Tests the static export detection helpers and the classification
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
@@ -58,6 +58,10 @@ describe("hasNamedExport", () => {
     expect(hasNamedExport("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
   });
 
+  it("does not detect alias exported under the searched name", () => {
+    expect(hasNamedExport("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
+  });
+
   it("returns false when export is absent", () => {
     expect(hasNamedExport("export default function Page() {}", "getStaticProps")).toBe(false);
   });
@@ -76,6 +80,13 @@ describe("hasNamedExport", () => {
 
   it("detects TypeScript-annotated const", () => {
     expect(hasNamedExport("export const dynamic: string = 'force-dynamic';", "dynamic")).toBe(true);
+  });
+
+  it("ignores export-shaped text inside block comments", () => {
+    const code = `/*
+export function getServerSideProps() {}
+*/`;
+    expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
   });
 });
 
@@ -98,6 +109,19 @@ describe("extractExportConstString", () => {
     expect(extractExportConstString("export const dynamic: string = 'error';", "dynamic")).toBe(
       "error",
     );
+  });
+
+  it("extracts no-substitution template literal values", () => {
+    expect(extractExportConstString("export const dynamic = `force-dynamic`;", "dynamic")).toBe(
+      "force-dynamic",
+    );
+  });
+
+  it("ignores export-shaped string values inside block comments", () => {
+    const code = `/*
+export const dynamic = "force-dynamic";
+*/`;
+    expect(extractExportConstString(code, "dynamic")).toBeNull();
   });
 
   it("returns null when export is absent", () => {
@@ -140,6 +164,16 @@ describe("extractExportConstNumber", () => {
     expect(extractExportConstNumber("export const revalidate: number = 120;", "revalidate")).toBe(
       120,
     );
+  });
+
+  it("extracts numeric separators", () => {
+    expect(extractExportConstNumber("export const revalidate = 60_000;", "revalidate")).toBe(60000);
+  });
+
+  it("extracts config from TypeScript files with generic arrow syntax", () => {
+    const code = `const identity = <T>(value: T) => value;
+export const revalidate = 60;`;
+    expect(extractExportConstNumber(code, "revalidate")).toBe(60);
   });
 
   it("returns null when export is absent", () => {
@@ -324,11 +358,26 @@ export { getStaticProps } from "./shared";
     expect(extractGetStaticPropsRevalidate(code)).toBeNull();
   });
 
+  it("ignores an alias exported under the getStaticProps name", () => {
+    const code = `const gsp = async () => ({ props: {}, revalidate: 60 });
+
+export { gsp as getStaticProps };
+`;
+    expect(extractGetStaticPropsRevalidate(code)).toBeNull();
+  });
+
   it("handles inline comment after value (fixture file style)", () => {
     // From tests/fixtures/pages-basic/pages/isr-test.tsx:
     //   revalidate: 1, // Revalidate every 1 second
     const code = `return { props: {}, revalidate: 1, // comment\n};`;
     expect(extractGetStaticPropsRevalidate(code)).toBe(1);
+  });
+
+  it("extracts revalidate from numeric separators in getStaticProps", () => {
+    const code = `export async function getStaticProps() {
+  return { props: {}, revalidate: 60_000 };
+}`;
+    expect(extractGetStaticPropsRevalidate(code)).toBe(60000);
   });
 });
 

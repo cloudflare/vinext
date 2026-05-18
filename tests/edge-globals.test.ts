@@ -13,16 +13,78 @@
 import { describe, expect, it } from "vite-plus/test";
 import { AsyncLocalStorage as NodeAsyncLocalStorage } from "node:async_hooks";
 
+import { installServerGlobals } from "../packages/vinext/src/server/server-globals.js";
 import { handlePagesApiRoute } from "../packages/vinext/src/server/pages-api-route.js";
 
 type GlobalWithAls = typeof globalThis & {
   AsyncLocalStorage?: typeof NodeAsyncLocalStorage;
 };
 
+type GlobalWithBrowserGlobals = typeof globalThis & {
+  window?: unknown;
+  document?: unknown;
+};
+
+function defineTemporaryGlobal(key: "window" | "document", value: unknown): void {
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    value,
+    writable: true,
+  });
+}
+
 describe("edge runtime globals", () => {
+  it("removes partial browser globals before server code evaluates user modules", () => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+
+    try {
+      defineTemporaryGlobal("window", { getComputedStyle: undefined, history: undefined });
+      defineTemporaryGlobal("document", { documentElement: {} });
+
+      installServerGlobals();
+
+      const g = globalThis as GlobalWithBrowserGlobals;
+      expect(typeof g.window).toBe("undefined");
+      expect(typeof g.document).toBe("undefined");
+    } finally {
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+
+      if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+      else Reflect.deleteProperty(globalThis, "document");
+    }
+  });
+
+  it("shadows inherited browser globals before server code evaluates user modules", () => {
+    const originalPrototype = Object.getPrototypeOf(globalThis);
+    const inheritedBrowserGlobals = Object.create(originalPrototype) as {
+      window: unknown;
+      document: unknown;
+    };
+    inheritedBrowserGlobals.window = { history: undefined };
+    inheritedBrowserGlobals.document = { documentElement: {} };
+
+    try {
+      Object.setPrototypeOf(globalThis, inheritedBrowserGlobals);
+
+      installServerGlobals();
+
+      const g = globalThis as GlobalWithBrowserGlobals;
+      expect(typeof g.window).toBe("undefined");
+      expect(typeof g.document).toBe("undefined");
+      expect(Object.prototype.hasOwnProperty.call(globalThis, "window")).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(globalThis, "document")).toBe(true);
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+      Reflect.deleteProperty(globalThis, "document");
+      Object.setPrototypeOf(globalThis, originalPrototype);
+    }
+  });
+
   it("exposes AsyncLocalStorage on globalThis after loading the pages api route entry", () => {
     // Importing pages-api-route should have side-effect-installed the global
-    // (via the edge-globals module). Reference handlePagesApiRoute so the
+    // (via the server-globals module). Reference handlePagesApiRoute so the
     // import is not tree-shaken in case the test runner gets clever.
     expect(typeof handlePagesApiRoute).toBe("function");
 

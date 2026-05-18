@@ -27,6 +27,7 @@ const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", 
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
+const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -175,6 +176,7 @@ export async function runMiddleware() { return { continue: true }; }
   // The server entry is a self-contained module that uses Web-standard APIs
   // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
   return `
+import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";

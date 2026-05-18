@@ -2890,9 +2890,19 @@ describe("next/server shim", () => {
     const { after } = await import("../packages/vinext/src/shims/server.js");
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
 
-    cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, () => {
-      expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
-    });
+    cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      () => {
+        expect(() => after(() => {})).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
   });
 
   it("after() throws inside unstable_cache() scope", async () => {
@@ -4168,6 +4178,313 @@ describe('"use cache" runtime', () => {
     const r3 = await cached({ params: asyncSports });
     expect(r3).toEqual({ section: "sports", data: "data-for-sports" });
     expect(callCount).toBe(2); // Must have called the function again!
+  });
+
+  // -----------------------------------------------------------------------
+  // Nested-dynamic cache life error tests — ported from Next.js PR #93707
+  // https://github.com/vercel/next.js/pull/93707
+  // -----------------------------------------------------------------------
+
+  // These tests exercise the prerender-only throw path. The runtime check
+  // is gated on `process.env.VINEXT_PRERENDER === "1"` (or NODE_ENV ===
+  // "development") to match Next.js, which only throws when the work unit
+  // type is `prerender` or `request` in dev. We set/restore the flag around
+  // each test rather than relying on test ordering.
+  function withPrerenderFlag<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    return fn().finally(() => {
+      if (previous === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previous;
+    });
+  }
+
+  it("throws nested-dynamic error when inner cache has revalidate:0 and outer has no explicit cacheLife (prerender)", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerFn = async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-rev0-inner");
+
+      const outerFn = async () => {
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-rev0-outer");
+
+      // Top-level call — outer has no explicit cacheLife, inner has revalidate:0
+      // This should throw a nested-dynamic error
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("revalidate");
+      expect(thrown!.message).toContain('"use cache"');
+      expect(thrown!.message).toContain("not allowed");
+      expect(thrown!.cause).toBeDefined();
+      expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+      expect((thrown!.cause as Error).name).toContain("Nested dynamic");
+    });
+  });
+
+  it("throws nested-dynamic error when inner cache has short expire and outer has no explicit cacheLife (prerender)", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerFn = async () => {
+        cacheLife({ expire: 60 }); // 1 minute, under 5 minute threshold
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-short-inner");
+
+      const outerFn = async () => {
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-short-outer");
+
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("expire");
+      expect(thrown!.message).toContain('"use cache"');
+      expect(thrown!.message).toContain("not allowed");
+      expect(thrown!.cause).toBeDefined();
+      expect((thrown!.cause as Error).message).toContain("dynamic cache life");
+    });
+  });
+
+  it("does not throw outside prerender/dev even with a nested dynamic inner cache", async () => {
+    // Verifies the prerender gate: in production runtime SSR (no
+    // VINEXT_PRERENDER, NODE_ENV !== "development"), nesting a dynamic
+    // inner inside a non-cacheLife() outer must NOT throw. This matches
+    // Next.js, which only surfaces the error during prerender or dev
+    // requests (see use-cache-wrapper.ts).
+    // `NODE_ENV` is typed read-only on `process.env`; cast to the indexable
+    // signature to allow temporary mutation in this test.
+    const env = process.env as Record<string, string | undefined>;
+    const previousPrerender = env.VINEXT_PRERENDER;
+    const previousNodeEnv = env.NODE_ENV;
+    delete env.VINEXT_PRERENDER;
+    env.NODE_ENV = "production";
+    try {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:nested-prod-inner");
+
+      // No explicit cacheLife on the outer — in prerender this would throw,
+      // but in production runtime SSR it must just run and not be cached.
+      const outerCached = registerCachedFunction(
+        async () => `outer-${await innerCached()}`,
+        "test:nested-prod-outer",
+      );
+
+      const result = await outerCached();
+      expect(result).toBe("outer-inner");
+    } finally {
+      if (previousPrerender === undefined) delete env.VINEXT_PRERENDER;
+      else env.VINEXT_PRERENDER = previousPrerender;
+      if (previousNodeEnv === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
+  it("does throw in development mode even without VINEXT_PRERENDER set", async () => {
+    // Companion to the production test above: verifies the *other side* of
+    // the gate. With `NODE_ENV === "development"` (and no VINEXT_PRERENDER),
+    // the throw must still fire. This catches a hypothetical regression
+    // where the gate is broken to e.g. only check VINEXT_PRERENDER, or to
+    // check `!== "production"` (which would falsely fire in Vitest's
+    // default `NODE_ENV=test`). Together with the production test, this
+    // pins down both branches of the gate.
+    const env = process.env as Record<string, string | undefined>;
+    const previousPrerender = env.VINEXT_PRERENDER;
+    const previousNodeEnv = env.NODE_ENV;
+    delete env.VINEXT_PRERENDER;
+    env.NODE_ENV = "development";
+    try {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:nested-dev-inner");
+
+      const outerCached = registerCachedFunction(
+        async () => `outer-${await innerCached()}`,
+        "test:nested-dev-outer",
+      );
+
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain("revalidate");
+      // In dev, the message should say "in development", not
+      // "during prerendering", since no prerendering is happening.
+      expect(thrown!.message).toContain("in development");
+      expect(thrown!.message).not.toContain("during prerendering");
+    } finally {
+      if (previousPrerender === undefined) delete env.VINEXT_PRERENDER;
+      else env.VINEXT_PRERENDER = previousPrerender;
+      if (previousNodeEnv === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
+  it("does not throw when outer cache has explicit cacheLife", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerFn = async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      };
+      const innerCached = registerCachedFunction(innerFn, "test:nested-ok-inner");
+
+      const outerFn = async () => {
+        cacheLife({ revalidate: 60 }); // explicit on outer
+        const result = await innerCached();
+        return `outer-${result}`;
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:nested-ok-outer");
+
+      // Should NOT throw — outer made an explicit choice
+      const result = await outerCached();
+      expect(result).toBe("outer-inner");
+    });
+  });
+
+  it("explicit cacheLife on outer suppresses throw but minimum-wins still applies to effective cache life", async () => {
+    // Documents a potentially surprising behavior: when the outer has an
+    // explicit `cacheLife({ revalidate: 60 })` and the inner is dynamic
+    // (`revalidate: 0`), the throw is suppressed (outer made an explicit
+    // choice), but the outer's effective `revalidate` resolves to 0 via
+    // minimum-wins (because the inner's resolved life is pushed into the
+    // outer's `lifeConfigs`). MemoryCacheHandler treats `revalidate: 0` as
+    // not cached, so the outer function executes on every call. This matches
+    // Next.js's `propagateCacheLifeAndTagsToRevalidateStore` semantics —
+    // the outer's explicit cacheLife() opts it out of the throw, but does
+    // not override the inner's minimum-wins contribution.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      let innerCalls = 0;
+      let outerCalls = 0;
+
+      const innerCached = registerCachedFunction(async () => {
+        innerCalls++;
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:min-wins-inner");
+
+      const outerCached = registerCachedFunction(async () => {
+        outerCalls++;
+        cacheLife({ revalidate: 60 });
+        return `outer-${await innerCached()}`;
+      }, "test:min-wins-outer");
+
+      const first = await outerCached();
+      const second = await outerCached();
+      expect(first).toBe("outer-inner");
+      expect(second).toBe("outer-inner");
+      // The outer function must execute twice — minimum-wins resolved its
+      // effective revalidate to 0, so the result was not cached despite the
+      // explicit `cacheLife({ revalidate: 60 })`.
+      expect(outerCalls).toBe(2);
+      // Inner is also dynamic (revalidate: 0) so it re-executes too.
+      expect(innerCalls).toBe(2);
+    });
+  });
+
+  it("keeps first dynamic child as cause when multiple nested caches are dynamic", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerA = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "a";
+      }, "test:first-child-a");
+
+      const innerB = registerCachedFunction(async () => {
+        cacheLife({ expire: 120 }); // also dynamic
+        return "b";
+      }, "test:first-child-b");
+
+      const outerFn = async () => {
+        await innerA();
+        await innerB();
+        return "outer";
+      };
+      const outerCached = registerCachedFunction(outerFn, "test:first-child-outer");
+
+      let thrown: Error | undefined;
+      try {
+        await outerCached();
+      } catch (e) {
+        thrown = e as Error;
+      }
+
+      expect(thrown).toBeDefined();
+      expect(thrown!.cause).toBeDefined();
+      // The cause should be from the FIRST dynamic child (innerA), which set
+      // `revalidate: 0`. The outer error message reflects the first-firing
+      // dynamic field — if innerA's revalidate propagated first, the outer
+      // throws the revalidate (not expire) error, even though innerB's
+      // `expire: 120` is also below DYNAMIC_EXPIRE. This rigorously verifies
+      // first-child-wins semantics: dynamicNestedCacheError uses `??=` so the
+      // first dynamic child's eager error is preserved as the cause, and the
+      // revalidate check fires before the expire check in the outer.
+      expect(thrown!.message).toContain("revalidate");
+      expect(thrown!.message).not.toContain("expire");
+    });
   });
 });
 
@@ -10751,6 +11068,54 @@ describe("Pages Router router helpers", () => {
 });
 
 describe("Pages Router concurrent navigation", () => {
+  it("does not install the Pages Router popstate runtime when next/router is imported", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    win.addEventListener = vi.fn();
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      expect(win.addEventListener).not.toHaveBeenCalledWith("popstate", expect.any(Function));
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("installPagesRouterRuntime registers the Pages Router popstate handler once", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    win.addEventListener = vi.fn();
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+
+      installPagesRouterRuntime();
+      installPagesRouterRuntime();
+
+      expect(win.addEventListener).toHaveBeenCalledTimes(1);
+      expect(win.addEventListener).toHaveBeenCalledWith("popstate", expect.any(Function));
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   /**
    * Helper: create a mock window suitable for non-shallow Router.push().
    * Returns an object with the window mock plus helpers for controlling
@@ -10833,10 +11198,14 @@ describe("Pages Router concurrent navigation", () => {
    * Build a minimal HTML response that navigateClient can parse.
    * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.
    */
-  function buildNavHtml(page: string, pageModuleUrl: string): string {
+  function buildNavHtml(
+    page: string,
+    pageModuleUrl: string,
+    query: Record<string, unknown> = {},
+  ): string {
     const nextData = JSON.stringify({
       page,
-      query: {},
+      query,
       isFallback: false,
       props: { pageProps: { page } },
       __vinext: { pageModuleUrl },
@@ -11371,6 +11740,9 @@ describe("Pages Router concurrent navigation", () => {
     try {
       vi.resetModules();
       await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
 
       const popstateHandler = listeners.get("popstate");
       expect(popstateHandler).toBeDefined();
@@ -11642,6 +12014,163 @@ describe("Pages Router concurrent navigation", () => {
         (globalThis as any).window = previousWindow;
       }
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // Issue #1196 — catch-all router.query must not be corrupted by basePath + rewrites + middleware.
+  it("initializes catch-all router.query from __NEXT_DATA__ with basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win } = createNavWindow();
+
+    // Simulate being on a catch-all page under basePath
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    win.location.pathname = "/docs/first";
+    win.location.href = "http://localhost/docs/first";
+
+    // Server-rendered __NEXT_DATA__ for the catch-all page
+    win.__NEXT_DATA__ = {
+      page: "/[...path]",
+      query: { path: ["first"] },
+      isFallback: false,
+      props: { pageProps: {} },
+      __vinext: { pageModuleUrl: "/@fs/pages/[...path].js" },
+    };
+
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+    let capturedRouter: any;
+    function Probe() {
+      capturedRouter = routerModule.useRouter();
+      return React.createElement("span", null, "ok");
+    }
+
+    try {
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
+
+      expect(capturedRouter.query.path).toEqual(["first"]);
+      expect(capturedRouter.pathname).toBe("/[...path]");
+      expect(capturedRouter.asPath).toBe("/first");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
+  // Issue #1196 — during a client-side <Link>/Router.push() navigation on a
+  // catch-all route under basePath, router.query.<catchAll> must reflect the
+  // destination URL segments and not be corrupted by intermediate data-URL
+  // handling. In Next.js the corruption originated in getMiddlewareData where
+  // basePath wasn't stripped from the _next/data/... URL before the catch-all
+  // route regex matched against it. vinext's navigateClient reads __NEXT_DATA__
+  // directly from the response HTML rather than constructing _next/data URLs,
+  // so it doesn't have that architectural pattern, but the route-param
+  // extraction path that ultimately produces router.query must still strip
+  // basePath from the resolved pathname before matching the catch-all pattern.
+  // This test exercises Router.push() through performNavigation → pushState
+  // and verifies that router.query.path reflects the destination segments.
+  it("preserves catch-all router.query after client navigation with basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+
+    // Simulate being on a catch-all page under basePath when navigation starts.
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    win.location.pathname = "/docs/first";
+    win.location.href = "http://localhost/docs/first";
+    win.__NEXT_DATA__ = {
+      page: "/[...path]",
+      query: { path: ["first"] },
+      isFallback: false,
+      props: { pageProps: {} },
+      // The catch-all module file is referenced through a Vite-style path that
+      // passes isValidModulePath() (no ".." directory-traversal segments).
+      __vinext: { pageModuleUrl: "/@fs/pages/catchall.js" },
+    };
+
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    // Capture router state mid-navigation, after pushState has updated
+    // window.location but before navigateClient's dynamic import runs (which
+    // would fail in this test env). useRouter() reads from window.location
+    // and window.__NEXT_DATA__ at provider-mount time, so rendering a Probe
+    // inside the mocked fetch handler observes the post-pushState state —
+    // exactly the code path that #1196 corrupts in Next.js.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+    let capturedRouter: any;
+    function Probe() {
+      capturedRouter = routerModule.useRouter();
+      return React.createElement("span", null, "ok");
+    }
+
+    globalThis.fetch = async (_url: any, _init: any) => {
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
+      // Return HTML containing the destination's __NEXT_DATA__. The dynamic
+      // import of the page module fails in this test env, which is fine — the
+      // assertion above has already captured router.query.
+      return new Response(
+        buildNavHtml("/[...path]", "/@fs/pages/catchall.js", { path: ["second"] }),
+      );
+    };
+
+    // Silence the expected routeChangeError from the page-module import failure.
+    const onRouteChangeError = vi.fn();
+
+    try {
+      const Router = routerModule.default;
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      // Router.push() takes an app-relative path; basePath is added internally
+      // by performNavigation → toBrowserNavigationHref before pushState.
+      await Router.push("/second");
+
+      // pushState has fired, so location.pathname is "/docs/second".
+      // stripBasePath() removes "/docs", and the catch-all pattern
+      // "/[...path]" from __NEXT_DATA__.page extracts { path: ["second"] }.
+      expect(capturedRouter.pathname).toBe("/[...path]");
+      expect(capturedRouter.asPath).toBe("/second");
+      expect(capturedRouter.query.path).toEqual(["second"]);
+      // Negative assertion mirroring #1196: query.path must NOT contain
+      // _next/data segments.
+      expect(capturedRouter.query.path).not.toContain("_next");
+      expect(capturedRouter.query.path).not.toContain("data");
+    } finally {
+      routerModule.default.events.off("routeChangeError", onRouteChangeError);
+      globalThis.fetch = originalFetch;
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      vi.resetModules();
     }
   });
 });
@@ -13440,7 +13969,7 @@ describe("next/script SSR rendering", () => {
     expect(html).toContain('id="analytics"');
   });
 
-  it("afterInteractive returns null in SSR", async () => {
+  it("afterInteractive emits a preload <link> (no <script> tag) in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13451,11 +13980,16 @@ describe("next/script SSR rendering", () => {
         strategy: "afterInteractive",
       }),
     );
-    // afterInteractive should not render anything server-side
-    expect(html).toBe("");
+    // afterInteractive does not render a <script> tag during SSR,
+    // but it does emit <link rel="preload" as="script"> via React Float
+    // so the script is fetched while HTML streams.
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="https://example.com/chat.js"');
+    expect(html).toContain('as="script"');
+    expect(html).not.toContain("<script");
   });
 
-  it("lazyOnload returns null in SSR", async () => {
+  it("lazyOnload returns null (no preload) in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13469,7 +14003,7 @@ describe("next/script SSR rendering", () => {
     expect(html).toBe("");
   });
 
-  it("default strategy (no strategy prop) returns null in SSR", async () => {
+  it("default strategy (no strategy prop) emits a preload <link> in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Script = (await import("../packages/vinext/src/shims/script.js")).default;
@@ -13479,8 +14013,11 @@ describe("next/script SSR rendering", () => {
         src: "https://example.com/default.js",
       }),
     );
-    // Default is afterInteractive → null in SSR
-    expect(html).toBe("");
+    // Default is afterInteractive → preload link only, no <script> tag.
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain('href="https://example.com/default.js"');
+    expect(html).toContain('as="script"');
+    expect(html).not.toContain("<script");
   });
 
   it("beforeInteractive with dangerouslySetInnerHTML renders inline script", async () => {
@@ -14411,9 +14948,19 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
     // Run inside a "use cache" ALS scope
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(headers()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(headers()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14427,9 +14974,19 @@ describe("cache scope guards for dynamic APIs", () => {
       cookies: new Map(),
     });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      expect(() => headers().get("x-test")).toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        expect(() => headers().get("x-test")).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14440,9 +14997,19 @@ describe("cache scope guards for dynamic APIs", () => {
 
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(cookies()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(cookies()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14456,9 +15023,19 @@ describe("cache scope guards for dynamic APIs", () => {
       cookies: new Map([["session", "blocked"]]),
     });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      expect(() => cookies().get("session")).toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        expect(() => cookies().get("session")).toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14467,9 +15044,19 @@ describe("cache scope guards for dynamic APIs", () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { connection } = await import("../packages/vinext/src/shims/server.js");
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(connection()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(connection()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
   });
 
   it("headers() throws inside unstable_cache() scope", async () => {
@@ -14567,9 +15154,19 @@ describe("cache scope guards for dynamic APIs", () => {
 
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
-    });
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
+      },
+    );
 
     setHeadersContext(null);
   });
@@ -14604,15 +15201,25 @@ describe("cache scope guards for dynamic APIs", () => {
 
     // Nest unstable_cache inside a "use cache" scope: the outermost
     // scope ("use cache") should be detected first.
-    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
-      const cached = unstable_cache(async () => {
-        const h = await headers();
-        return h.get("x-test");
-      }, ["test-nested-scopes"]);
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        const cached = unstable_cache(async () => {
+          const h = await headers();
+          return h.get("x-test");
+        }, ["test-nested-scopes"]);
 
-      // Either scope's guard triggers (the "use cache" check runs first)
-      await expect(cached()).rejects.toThrow(/cannot be called inside/);
-    });
+        // Either scope's guard triggers (the "use cache" check runs first)
+        await expect(cached()).rejects.toThrow(/cannot be called inside/);
+      },
+    );
 
     setHeadersContext(null);
     setCacheHandler(new MemoryCacheHandler());
@@ -14665,7 +15272,14 @@ describe("cache scope guards for dynamic APIs", () => {
     await runWithRequestContext(ctx, async () => {
       try {
         await cacheContextStorage.run(
-          { tags: [], lifeConfigs: [], variant: "default" },
+          {
+            tags: [],
+            lifeConfigs: [],
+            variant: "default",
+            hasExplicitRevalidate: false,
+            hasExplicitExpire: false,
+            dynamicNestedCacheError: undefined,
+          },
           async () => {
             throwIfInsideCacheScope("cookies()");
           },

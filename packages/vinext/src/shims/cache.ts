@@ -40,6 +40,9 @@ type CacheContextLike = {
   tags: string[];
   lifeConfigs: import("./cache-runtime.js").CacheContext["lifeConfigs"];
   variant: string;
+  hasExplicitRevalidate: boolean;
+  hasExplicitExpire: boolean;
+  dynamicNestedCacheError: Error | undefined;
 };
 
 /** @internal Set by cache-runtime.ts on import to avoid circular dependency */
@@ -767,6 +770,31 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = _getCacheContextFn?.();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
+      // Note: these flags are slightly misnamed — they really mean
+      // "cacheLife() was called and the resolved config includes this field"
+      // rather than "the user explicitly passed this field". Because we merge
+      // user input over the default profile (`{ ...default, ...profile }`),
+      // calling `cacheLife({ expire: 60 })` still resolves a `revalidate`
+      // from the default profile, so `hasExplicitRevalidate` becomes true.
+      // This matches Next.js, which tracks the flag at the work unit store
+      // level (set when `cacheLife()` is called at all), not per-field. The
+      // suppression semantics are correct: calling `cacheLife()` is itself
+      // the explicit choice that opts the outer out of the nested-dynamic
+      // throw, regardless of which fields the user specified.
+      //
+      // The `!== undefined` checks below are therefore effectively
+      // unconditional in normal use: `resolvedConfig` always merges over the
+      // default profile, which has both `revalidate` and `expire` set. They
+      // remain as defensive guards in case `cacheLifeProfiles.default` is
+      // ever overridden to omit a field, or a future refactor lets callers
+      // pass `resolvedConfig` without the default merge. If per-field
+      // suppression is ever desired (e.g. `cacheLife({ expire: 60 })`
+      // suppressing only the expire-side throw), the flags would need to
+      // inspect the *raw user input* rather than `resolvedConfig` — but
+      // that would also diverge from Next.js semantics, so it should be a
+      // deliberate, documented design change rather than an incidental one.
+      if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
+      if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
       _setRequestScopedCacheLife(resolvedConfig);
       return;
     }

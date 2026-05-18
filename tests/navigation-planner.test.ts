@@ -15,6 +15,7 @@ import {
   type ParallelSlotBindingSnapshotV0,
   type RefreshScope,
   type RouteSnapshotV0,
+  type InterceptionSnapshotV0,
   type RootBoundaryTransition,
 } from "../packages/vinext/src/server/navigation-planner.js";
 
@@ -26,12 +27,27 @@ function createRouteSnapshot(
 ): RouteSnapshotV0 {
   return {
     displayUrl: "https://example.com/dashboard",
+    interception: null,
+    interceptionContext: null,
     layoutIds,
     matchedUrl: "/dashboard",
     mountedParallelSlots,
     rootBoundaryId,
     routeId: "route:/dashboard",
     slotBindings,
+  };
+}
+
+function createInterceptionSnapshot(
+  overrides: Partial<InterceptionSnapshotV0> = {},
+): InterceptionSnapshotV0 {
+  return {
+    sourceMatchedUrl: "/feed",
+    sourceRouteId: "route:/feed",
+    slotId: "slot:modal:/feed",
+    targetMatchedUrl: "/photos/42",
+    targetRouteId: "route:/photos/42",
+    ...overrides,
   };
 }
 
@@ -534,6 +550,253 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
   });
 
+  it("approves intercepted preservation only from explicit source and slot proof", () => {
+    // Core-15 oracle, porting the visible behavior from Next.js:
+    // test/e2e/app-dir/parallel-routes-and-interception-catchall/parallel-routes-and-interception-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception-catchall/parallel-routes-and-interception-catchall.test.ts
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [
+          createSlotBinding("slot:modal:/feed", "layout:/feed", "default"),
+          createSlotBinding("slot:activity:/feed", "layout:/feed", "active"),
+        ],
+      ),
+      displayUrl: "https://example.com/feed",
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [
+          createSlotBinding("slot:activity:/feed", "layout:/feed", "default"),
+          createSlotBinding("slot:modal:/feed", "layout:/feed", "active"),
+        ],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preserveAbsentSlots).toBe(false);
+    expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/feed"]);
+    expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:activity:/feed"]);
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedCommitCurrent,
+    );
+  });
+
+  it("does not treat legacy context-only payloads as intercepted preservation proof", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      displayUrl: "https://example.com/photos/42",
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("currentRootBoundary");
+    expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/feed"]);
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.commitCurrent);
+  });
+
+  it("rejects intercepted preservation when the visible source route is stale", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/gallery"]),
+      matchedUrl: "/gallery",
+      routeId: "route:/gallery",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("interceptionProofRejected");
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    );
+  });
+
+  it("rejects intercepted preservation when proof target does not match the rendered route", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot({ targetMatchedUrl: "/photos/99" }),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("interceptionProofRejected");
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedTargetMismatch,
+    );
+  });
+
+  it("rejects intercepted preservation when source and target share no layout root", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/marketing",
+        ["layout:/marketing"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/marketing", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("interceptionProofRejected");
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedIncompatibleRoot,
+    );
+  });
+
+  it("rejects intercepted preservation when the target slot is not proven active", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "default")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("interceptionProofRejected");
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedMissingSlotProof,
+    );
+  });
+
+  it("allows traverse to restore an intercepted visible world only with proof", () => {
+    const currentSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:activity:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/feed",
+      matchedUrl: "/feed",
+      routeId: "route:/feed",
+    };
+    const targetSnapshot: RouteSnapshotV0 = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [
+          createSlotBinding("slot:activity:/feed", "layout:/feed", "default"),
+          createSlotBinding("slot:modal:/feed", "layout:/feed", "active"),
+        ],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "traverse",
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:activity:/feed"]);
+  });
+
   it("does not preserve layouts across root-boundary uncertainty", () => {
     const currentSnapshot = createRouteSnapshot("/", ["layout:/"]);
     const targetSnapshot = createRouteSnapshot(null, ["layout:/"]);
@@ -662,5 +925,35 @@ describe("navigationPlanner root-boundary decisions", () => {
       kind: "traverseFlight",
     });
     expect(decision.trace.entries[0]?.fields.targetHref).toBeNull();
+    expect(decision.trace.entries[0]?.fields.traverseDirection).toBe("back");
+  });
+
+  it("keeps unknown traversal direction explicit instead of guessing", () => {
+    const token = createOperationToken();
+    const historyState = { key: "external-entry" };
+    const decision = navigationPlanner.plan({
+      routeManifest: null,
+      state: {
+        nextOperationToken: token,
+        visibleCommitVersion: 2,
+        visibleSnapshot: createRouteSnapshot("/"),
+      },
+      event: {
+        direction: "unknown",
+        historyState,
+        kind: "traverse",
+      },
+    });
+
+    expect(decision.kind).toBe("requestWork");
+    if (decision.kind !== "requestWork") {
+      throw new Error("Expected requestWork decision");
+    }
+    expect(decision.work).toEqual({
+      direction: "unknown",
+      historyState,
+      kind: "traverseFlight",
+    });
+    expect(decision.trace.entries[0]?.fields.traverseDirection).toBe("unknown");
   });
 });

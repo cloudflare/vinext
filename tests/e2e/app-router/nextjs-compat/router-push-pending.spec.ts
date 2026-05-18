@@ -162,4 +162,32 @@ test.describe("Next.js compat: router pending state (browser)", () => {
       timeout: 10_000,
     });
   });
+
+  /**
+   * Redirected RSC responses should stay inside the initiating router.push()
+   * lifecycle. The final destination is the committed history entry; vinext
+   * must not replace the source entry before the redirected payload is approved.
+   *
+   * Next.js source reference:
+   * .nextjs-ref/packages/next/src/client/components/router-reducer/fetch-server-response.ts
+   * uses the post-redirect canonical URL while preserving the navigation type.
+   */
+  test("back after router.push to a server-redirecting page returns to the source entry", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/router-push-pending`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#push-redirect");
+    await expect(page.locator("#redirect-destination")).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/router-push-pending-destination");
+
+    await page.goBack();
+    await expect(page.locator("#router-push-pending-title")).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/router-push-pending");
+  });
 });

@@ -129,6 +129,31 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
   });
 
+  test("refresh after chained intercepted navigation keeps the proven source context", async ({
+    page,
+  }) => {
+    // Same user-visible contract as Next.js intercepted refresh coverage:
+    // test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
+    await page.goto(`${BASE}/feed`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#feed-photo-42-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 42");
+
+    await page.click("#modal-photo-43-link");
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 43");
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+
+    await page.click('[data-testid="photo-modal-refresh"]');
+
+    await expect(page.locator('[data-testid="photo-modal"]')).toContainText("Viewing photo 43");
+    await expect(page.locator('[data-testid="feed-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-page"]')).not.toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/photos/43");
+  });
+
   test("refresh on direct photo load preserves the full-page render", async ({ page }) => {
     await page.goto(`${BASE}/photos/42`);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
@@ -138,6 +163,61 @@ test.describe("Intercepting Routes", () => {
 
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
+  test("refresh on direct target clears stale intercepted history context", async ({ page }) => {
+    const refreshInterceptionHeaders: Array<string | null> = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/photos/42.rsc") {
+        refreshInterceptionHeaders.push(request.headers()["x-vinext-interception-context"] ?? null);
+      }
+    });
+
+    await page.goto(`${BASE}/photos/42`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+
+    await page.evaluate(() => {
+      const currentState = window.history.state;
+      const nextState =
+        currentState && typeof currentState === "object" ? Object.assign({}, currentState) : {};
+      Reflect.set(nextState, "__vinext_previousNextUrl", "/feed");
+      window.history.replaceState(nextState, "", window.location.href);
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const currentState = window.history.state;
+          if (!currentState || typeof currentState !== "object") return null;
+          const value = Reflect.get(currentState, "__vinext_previousNextUrl");
+          return typeof value === "string" ? value : null;
+        }),
+      )
+      .toBe("/feed");
+
+    await page.evaluate(async () => {
+      const navigate = Reflect.get(window, "__VINEXT_RSC_NAVIGATE__");
+      if (typeof navigate !== "function") {
+        throw new Error("Expected Vinext RSC navigation executor to be installed");
+      }
+      await navigate(window.location.href, 0, "refresh", undefined, undefined, true);
+    });
+
+    await expect.poll(() => refreshInterceptionHeaders.length).toBeGreaterThan(0);
+    expect(refreshInterceptionHeaders.at(-1)).toBeNull();
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const currentState = window.history.state;
+          if (!currentState || typeof currentState !== "object") return null;
+          const value = Reflect.get(currentState, "__vinext_previousNextUrl");
+          return typeof value === "string" ? value : null;
+        }),
+      )
+      .toBeNull();
   });
 
   test("hard reload after intercepted navigation renders the full page", async ({ page }) => {

@@ -47,10 +47,7 @@ export async function generateClientEntry(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-// Eagerly import the router shim so its module-level popstate listener is
-// registered.  Without this, browser back/forward buttons do nothing because
-// navigateClient() is never invoked on history changes.
-import "next/router";
+import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -107,6 +104,7 @@ async function hydrate() {
 
   const root = hydrateRoot(container, element);
   window.__VINEXT_ROOT__ = root;
+  installPagesRouterRuntime();
   window.__VINEXT_HYDRATED_AT = performance.now();
 }
 

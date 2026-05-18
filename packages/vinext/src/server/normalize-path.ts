@@ -37,6 +37,16 @@ export function decodePathParams(pathname: string): string {
     .join("/");
 }
 
+export function isInterceptionMatchedUrlPath(value: string): boolean {
+  return (
+    value.startsWith("/") &&
+    !value.startsWith("//") &&
+    !value.includes("?") &&
+    !value.includes("#") &&
+    !value.includes("\0")
+  );
+}
+
 /**
  * Path normalization utility for request handling.
  *

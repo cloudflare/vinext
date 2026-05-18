@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { HashActions } from "./hash-actions";
 
 export default function HashPopstateScrollPage() {
   return (
@@ -17,6 +18,7 @@ export default function HashPopstateScrollPage() {
         <Link href="#top" id="top-link">
           Go to top
         </Link>
+        <HashActions />
       </nav>
       <div style={{ height: 1200 }} />
       <section id="content" style={{ minHeight: 400 }}>

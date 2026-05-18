@@ -46,8 +46,18 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   fontProviders: AppFallbackRendererFontProviders;
   getNavigationContext: () => unknown;
   globalErrorModule?: TModule | null;
+  /**
+   * Optional `app/global-not-found.tsx` module. When provided, route-miss 404s
+   * render this module as a standalone document (skipping the root layout)
+   * because it ships its own `<html>` and `<body>`. Page-triggered `notFound()`
+   * calls continue to use the regular `not-found.tsx` boundary inside layouts.
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+   */
+  globalNotFoundModule?: TModule | null;
   makeThenableParams: (params: AppPageParams) => unknown;
   metadataRoutes: MetadataFileRoute[];
+  /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
+  basePath?: string;
   resolveChildSegments: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -101,11 +111,13 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   options: AppFallbackRendererOptions<TModule>,
 ): AppFallbackRenderer<TModule> {
   const {
+    basePath = "",
     clearRequestContext,
     createRscOnErrorHandler: buildRscOnErrorHandler,
     fontProviders,
     getNavigationContext,
     globalErrorModule,
+    globalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
     resolveChildSegments,
@@ -128,7 +140,56 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       scriptNonce,
       middlewareContext,
     ) {
+      // global-not-found.tsx replaces the root layout for route-miss 404s.
+      // Only applies when:
+      //   - The user defined app/global-not-found.tsx
+      //   - The 404 originates from a route miss (no matched route)
+      //   - The caller did not already pick a specific boundary component
+      // Page-triggered notFound() calls (route is non-null) keep using the
+      // regular not-found.tsx boundary inside the route's layouts.
+      // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
+      const useGlobalNotFound =
+        statusCode === 404 && !!globalNotFoundModule && !route && !opts?.boundaryComponent;
+
+      if (useGlobalNotFound) {
+        const globalNotFoundComponent = globalNotFoundModule?.default ?? null;
+        if (globalNotFoundComponent) {
+          return renderAppPageHttpAccessFallback({
+            boundaryComponent: globalNotFoundComponent,
+            buildFontLinkHeader: fontProviders.buildFontLinkHeader,
+            clearRequestContext,
+            createRscOnErrorHandler(pathname, routePath) {
+              return buildRscOnErrorHandler(request, pathname, routePath);
+            },
+            getFontLinks: fontProviders.getFontLinks,
+            getFontPreloads: fontProviders.getFontPreloads,
+            getFontStyles: fontProviders.getFontStyles,
+            getNavigationContext,
+            globalErrorModule,
+            isRscRequest,
+            layoutModules: [],
+            loadSsrHandler: ssrLoader,
+            makeThenableParams,
+            matchedParams: opts?.matchedParams ?? {},
+            middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
+            metadataRoutes,
+            requestUrl: request.url,
+            resolveChildSegments,
+            rootForbiddenModule: null,
+            rootLayouts: [],
+            rootNotFoundModule: null,
+            rootUnauthorizedModule: null,
+            route: null,
+            renderToReadableStream: rscRenderer,
+            scriptNonce,
+            skipLayoutWrapping: true,
+            statusCode,
+          });
+        }
+      }
+
       return renderAppPageHttpAccessFallback({
+        basePath,
         boundaryComponent: opts?.boundaryComponent ?? null,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
@@ -182,6 +243,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
     ) {
       return renderAppPageErrorBoundary({
+        basePath,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
         createRscOnErrorHandler(pathname, routePath) {

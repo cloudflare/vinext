@@ -6,6 +6,7 @@ import {
   createNavigationTrace,
   type NavigationTrace,
   type NavigationTraceFields,
+  type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
 
 export type OperationLane =
@@ -27,6 +28,8 @@ export type OperationToken = {
 };
 
 export type RouteSnapshotV0 = {
+  interception: InterceptionSnapshotV0 | null;
+  interceptionContext: string | null;
   routeId: string;
   // Ordered ancestor-first, with the root layout at index 0. Same-layout
   // persistence uses prefix comparison, so callers must preserve this order.
@@ -36,6 +39,14 @@ export type RouteSnapshotV0 = {
   displayUrl: string;
   matchedUrl: string;
   slotBindings: readonly ParallelSlotBindingSnapshotV0[];
+};
+
+export type InterceptionSnapshotV0 = {
+  sourceMatchedUrl: string;
+  sourceRouteId: string;
+  slotId: string;
+  targetMatchedUrl: string;
+  targetRouteId: string;
 };
 
 export type MountedParallelSlotSnapshotV0 = {
@@ -64,29 +75,30 @@ export type NavigationPlannerStateV0 = {
 };
 
 export type RefreshScope = "visible";
+export type TraverseDirection = "back" | "forward" | "unknown";
 
 export type NavigationEvent =
   | { kind: "navigate"; href: string; mode: "push" | "replace" }
   | { kind: "refresh"; scope: RefreshScope }
-  | { kind: "traverse"; direction: "back" | "forward"; historyState: unknown }
+  | { kind: "traverse"; direction: TraverseDirection; historyState: unknown }
   | { kind: "prefetch"; href: string }
   | { kind: "flightResponseArrived"; token: OperationToken; result: FlightResultV0 };
 
 export type RequestedWork =
   | { kind: "flight"; href: string; mode: "push" | "replace" | "refresh" }
-  | { direction: "back" | "forward"; historyState: unknown; kind: "traverseFlight" }
+  | { direction: TraverseDirection; historyState: unknown; kind: "traverseFlight" }
   | { kind: "prefetch"; href: string };
 
 export type CommitProposal = {
   preserveAbsentSlots: boolean;
   preserveElementIds: readonly string[];
   preservePreviousSlotIds: readonly string[];
-  reason: "currentRootBoundary" | "rootBoundaryUnknownFallback";
+  reason: "currentRootBoundary" | "interceptedCurrentRootBoundary" | "rootBoundaryUnknownFallback";
   targetSnapshot: RouteSnapshotV0;
 };
 
 export type NoCommitReason = "prefetchOnly";
-export type HardNavigationReason = "rootBoundaryChanged";
+export type HardNavigationReason = "interceptionProofRejected" | "rootBoundaryChanged";
 export type RootBoundaryTransition =
   | "currentRootBoundary"
   | "rootBoundaryChanged"
@@ -138,6 +150,8 @@ function createRequestWorkDecision(options: {
   state: NavigationPlannerStateV0;
   work: RequestedWork;
 }): NavigationDecisionV0 {
+  const traverseFields =
+    options.work.kind === "traverseFlight" ? { traverseDirection: options.work.direction } : {};
   return {
     kind: "requestWork",
     token: options.state.nextOperationToken,
@@ -145,6 +159,7 @@ function createRequestWorkDecision(options: {
     trace: createNavigationTrace(NavigationTraceReasonCodes.requestWork, {
       eventKind: options.eventKind,
       targetHref: getRequestedWorkTargetHref(options.work),
+      ...traverseFields,
     }),
   };
 }
@@ -334,6 +349,121 @@ function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
   return preservedSlotIds.sort(compareAppElementsSlotIds);
 }
 
+type VisibleInterceptionSourceIdentity = {
+  matchedUrl: string;
+  routeId: string;
+};
+
+type InterceptedPreservationValidation =
+  | {
+      kind: "approved";
+      preserveElementIds: readonly string[];
+      preservePreviousSlotIds: readonly string[];
+    }
+  | {
+      kind: "rejected";
+      reasonCode: NavigationTraceReasonCode;
+    };
+
+function getVisibleInterceptionSourceIdentity(
+  snapshot: RouteSnapshotV0,
+): VisibleInterceptionSourceIdentity {
+  if (snapshot.interception) {
+    return {
+      matchedUrl: snapshot.interception.sourceMatchedUrl,
+      routeId: snapshot.interception.sourceRouteId,
+    };
+  }
+  return {
+    matchedUrl: snapshot.matchedUrl,
+    routeId: snapshot.routeId,
+  };
+}
+
+function createInterceptionProofRejectedDecision(options: {
+  event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
+  reasonCode: NavigationTraceReasonCode;
+  traceFields: NavigationTraceFields;
+}): NavigationDecisionV0 {
+  return {
+    kind: "hardNavigate",
+    reason: "interceptionProofRejected",
+    token: options.event.token,
+    trace: createNavigationTrace(options.reasonCode, options.traceFields),
+    url: options.event.result.href,
+  };
+}
+
+function validateInterceptedPreservation(options: {
+  currentSnapshot: RouteSnapshotV0;
+  targetSnapshot: RouteSnapshotV0;
+}): InterceptedPreservationValidation {
+  const proof = options.targetSnapshot.interception;
+  if (!proof) {
+    return {
+      kind: "rejected",
+      reasonCode: NavigationTraceReasonCodes.interceptedRejectedMissingProof,
+    };
+  }
+
+  if (proof.targetMatchedUrl !== options.targetSnapshot.matchedUrl) {
+    return {
+      kind: "rejected",
+      reasonCode: NavigationTraceReasonCodes.interceptedRejectedTargetMismatch,
+    };
+  }
+
+  const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
+  if (
+    proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
+    proof.sourceRouteId !== sourceIdentity.routeId
+  ) {
+    return {
+      kind: "rejected",
+      reasonCode: NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    };
+  }
+
+  const preservedLayoutIds = resolveSameLayoutAncestorPersistence(
+    options.currentSnapshot,
+    options.targetSnapshot,
+  );
+  if (preservedLayoutIds.length === 0) {
+    return {
+      kind: "rejected",
+      reasonCode: NavigationTraceReasonCodes.interceptedRejectedIncompatibleRoot,
+    };
+  }
+
+  const preservedLayoutIdSet = new Set(preservedLayoutIds);
+  const targetSlotBinding = options.targetSnapshot.slotBindings.find(
+    (binding) => binding.slotId === proof.slotId,
+  );
+  if (
+    !targetSlotBinding ||
+    targetSlotBinding.state !== "active" ||
+    targetSlotBinding.ownerLayoutId === null ||
+    !preservedLayoutIdSet.has(targetSlotBinding.ownerLayoutId)
+  ) {
+    return {
+      kind: "rejected",
+      reasonCode: NavigationTraceReasonCodes.interceptedRejectedMissingSlotProof,
+    };
+  }
+
+  const preservePreviousSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+    currentSnapshot: options.currentSnapshot,
+    preservedLayoutIds,
+    targetSnapshot: options.targetSnapshot,
+  }).filter((slotId) => slotId !== proof.slotId);
+
+  return {
+    kind: "approved",
+    preserveElementIds: preservedLayoutIds,
+    preservePreviousSlotIds,
+  };
+}
+
 function planFlightResponseArrived(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
   state: NavigationPlannerStateV0;
@@ -349,9 +479,44 @@ function planFlightResponseArrived(options: {
     };
   }
 
+  const targetSnapshot = options.event.result.targetSnapshot;
+  // interceptionContext is transport evidence, not authority. Normal payloads
+  // can carry it when a request was sent from an intercepted visible world, so
+  // only explicit __interception proof enters the preservation branch.
+  const hasInterceptedPayload = targetSnapshot.interception !== null;
+  if (hasInterceptedPayload) {
+    const validation = validateInterceptedPreservation({
+      currentSnapshot: options.state.visibleSnapshot,
+      targetSnapshot,
+    });
+    if (validation.kind === "rejected") {
+      return createInterceptionProofRejectedDecision({
+        event: options.event,
+        reasonCode: validation.reasonCode,
+        traceFields,
+      });
+    }
+
+    return {
+      kind: "proposeCommit",
+      proposal: {
+        preserveAbsentSlots: false,
+        preserveElementIds: validation.preserveElementIds,
+        preservePreviousSlotIds: validation.preservePreviousSlotIds,
+        reason: "interceptedCurrentRootBoundary",
+        targetSnapshot,
+      },
+      token: options.event.token,
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.interceptedCommitCurrent,
+        traceFields,
+      ),
+    };
+  }
+
   const transition = classifyRootBoundaryTransition(
     options.state.visibleSnapshot.rootBoundaryId,
-    options.event.result.targetSnapshot.rootBoundaryId,
+    targetSnapshot.rootBoundaryId,
   );
 
   if (transition === "rootBoundaryChanged") {
@@ -376,7 +541,7 @@ function planFlightResponseArrived(options: {
         preserveElementIds: [],
         preservePreviousSlotIds: [],
         reason: "rootBoundaryUnknownFallback",
-        targetSnapshot: options.event.result.targetSnapshot,
+        targetSnapshot,
       },
       token: options.event.token,
       trace: createNavigationTrace(NavigationTraceReasonCodes.rootBoundaryUnknown, traceFields),
@@ -390,15 +555,15 @@ function planFlightResponseArrived(options: {
       preserveElementIds: resolveCurrentRootBoundaryCommitElementPersistence({
         currentSnapshot: options.state.visibleSnapshot,
         lane: options.event.token.lane,
-        targetSnapshot: options.event.result.targetSnapshot,
+        targetSnapshot,
       }),
       preservePreviousSlotIds: resolveCurrentRootBoundaryCommitSlotPersistence({
         currentSnapshot: options.state.visibleSnapshot,
         lane: options.event.token.lane,
-        targetSnapshot: options.event.result.targetSnapshot,
+        targetSnapshot,
       }),
       reason: "currentRootBoundary",
-      targetSnapshot: options.event.result.targetSnapshot,
+      targetSnapshot,
     },
     token: options.event.token,
     trace: createNavigationTrace(NavigationTraceReasonCodes.commitCurrent, traceFields),

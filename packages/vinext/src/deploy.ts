@@ -309,7 +309,17 @@ function scanDirForPattern(dir: string, pattern: RegExp): boolean {
  */
 function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boolean {
   // Check next.config for pageExtensions with mdx
-  const configFiles = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  // Mirror the Next.js-compatible set in shims/constants.ts. We accept
+  // `.cjs` and `.cts` defensively in case a user has them — Next.js itself
+  // does not, but `findNextConfigPath` will only return the first match in
+  // the canonical order, so adding extra extensions here is harmless.
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
   for (const f of configFiles) {
     const p = path.join(root, f);
     if (fs.existsSync(p)) {

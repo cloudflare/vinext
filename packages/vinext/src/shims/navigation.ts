@@ -254,6 +254,49 @@ export function _registerStateAccessors(accessors: _StateAccessors): void {
   _clearInsertedHTMLCallbacks = accessors.clearInsertedHTMLCallbacks;
 }
 
+// ---------------------------------------------------------------------------
+// Pages Router compat source.
+//
+// `next/navigation` is the App Router API surface, but Next.js exposes the
+// same hook names to Pages Router pages as a compat shim. In Next.js this is
+// done by wrapping pages with SearchParamsContext / PathParamsContext /
+// PathnameContext providers populated from the Pages Router's state — see:
+// .nextjs-ref/packages/next/src/server/render.tsx
+// .nextjs-ref/packages/next/src/client/index.tsx
+// .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
+//
+// vinext drives these hooks from a module-level navigation context instead of
+// React Context, so we fall back to a Pages Router accessor when no App
+// Router context is set. The accessor is published by next/router via a
+// global Symbol.for handle (see packages/vinext/src/shims/router.ts); we do
+// NOT import router.ts here because doing so would force navigation.ts to be
+// loaded for every consumer of next/router, triggering window.history
+// patches in unit tests that only want the router shim.
+// ---------------------------------------------------------------------------
+
+type PagesNavigationContext = {
+  pathname: string;
+  searchParams: URLSearchParams;
+  params: Record<string, string | string[]>;
+};
+
+const PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
+  "vinext.navigation.pagesNavigationContextAccessor",
+);
+type _GlobalWithPagesAccessor = typeof globalThis & {
+  [PAGES_NAVIGATION_ACCESSOR_KEY]?: () => PagesNavigationContext | null;
+};
+
+function _getPagesNavigationContext(): PagesNavigationContext | null {
+  const accessor = (globalThis as _GlobalWithPagesAccessor)[PAGES_NAVIGATION_ACCESSOR_KEY];
+  if (!accessor) return null;
+  try {
+    return accessor();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get the navigation context for the current SSR/RSC render.
  * Reads from AsyncLocalStorage when available (concurrent-safe),
@@ -822,7 +865,13 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const ctx = _getServerContext() as NavigationContextWithReadonlyCache | null;
 
   if (!ctx) {
-    // No server context available - return cached empty instance
+    // No App Router server context - try Pages Router compat shim.
+    // See `adaptForSearchParams` in Next.js's adapters:
+    // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
+    const pagesCtx = _getPagesNavigationContext();
+    if (pagesCtx) {
+      return new ReadonlyURLSearchParams(pagesCtx.searchParams);
+    }
     if (_cachedEmptyServerSearchParams === null) {
       _cachedEmptyServerSearchParams = new ReadonlyURLSearchParams();
     }
@@ -998,11 +1047,25 @@ export function clearPendingPathname(navId: number): void {
 }
 
 function getClientParamsSnapshot(): Record<string, string | string[]> {
-  return getClientNavigationState()?.clientParams ?? _EMPTY_PARAMS;
+  const state = getClientNavigationState();
+  if (state && Object.keys(state.clientParams).length > 0) {
+    return state.clientParams;
+  }
+  // Fall back to the Pages Router compat shim if nothing has populated the
+  // App Router client params (Pages Router pages never call setClientParams).
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) return pagesCtx.params;
+  return state?.clientParams ?? _EMPTY_PARAMS;
 }
 
 function getServerParamsSnapshot(): Record<string, string | string[]> {
-  return _getServerContext()?.params ?? _EMPTY_PARAMS;
+  const ctx = _getServerContext();
+  if (ctx) return ctx.params;
+  // No App Router navigation context — fall back to Pages Router state.
+  // See `adaptForPathParams` in Next.js's pages-router adapter:
+  // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
+  const pagesCtx = _getPagesNavigationContext();
+  return pagesCtx?.params ?? _EMPTY_PARAMS;
 }
 
 function subscribeToNavigation(cb: () => void): () => void {
@@ -1024,14 +1087,17 @@ export function usePathname(): string {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
-    return _getServerContext()?.pathname ?? "/";
+    const ctx = _getServerContext();
+    if (ctx) return ctx.pathname;
+    // Pages Router compat shim: derive pathname from the Pages Router state.
+    return _getPagesNavigationContext()?.pathname ?? "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
   const pathname = React.useSyncExternalStore(
     subscribeToNavigation,
     getPathnameSnapshot,
-    () => _getServerContext()?.pathname ?? "/",
+    () => _getServerContext()?.pathname ?? _getPagesNavigationContext()?.pathname ?? "/",
   );
   // Prefer the render snapshot during an active navigation transition so
   // hooks return the pending URL, not the stale committed one. After commit,
@@ -1051,7 +1117,7 @@ export function usePathname(): string {
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
     // During SSR for "use client" components, the navigation context may not be set.
-    // Return a safe fallback — the client will hydrate with the real value.
+    // getServerSearchParamsSnapshot also covers the Pages Router compat shim.
     return getServerSearchParamsSnapshot();
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
@@ -1076,7 +1142,8 @@ export function useParams<
 >(): T {
   if (isServer) {
     // During SSR for "use client" components, the navigation context may not be set.
-    return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
+    // getServerParamsSnapshot covers both App Router and Pages Router compat.
+    return getServerParamsSnapshot() as T;
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   const params = React.useSyncExternalStore(
@@ -1214,6 +1281,20 @@ function saveScrollPosition(): void {
   );
 }
 
+function commitHashOnlyHistoryState(href: string, mode: "push" | "replace", scroll: boolean): void {
+  const commitAppRouterHashNavigation = window.__VINEXT_RSC_COMMIT_HASH_NAVIGATION__;
+  if (commitAppRouterHashNavigation) {
+    commitAppRouterHashNavigation(href, mode, scroll);
+    return;
+  }
+
+  if (mode === "replace") {
+    replaceHistoryStateWithoutNotify(null, "", href);
+  } else {
+    pushHistoryStateWithoutNotify(null, "", href);
+  }
+}
+
 /**
  * Restore scroll position from a history state object (used on popstate).
  *
@@ -1297,11 +1378,7 @@ export async function navigateClientSide(
   // Hash-only change: update URL and scroll to target, skip RSC fetch
   if (isHashOnlyChange(fullHref)) {
     const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
-    if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
-    } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
-    }
+    commitHashOnlyHistoryState(fullHref, mode, scroll);
     commitClientNavigationState();
     if (scroll) {
       scrollToHashTarget(hash);

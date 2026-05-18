@@ -893,6 +893,7 @@ export function createSSRHandler(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
 import { wrapWithRouterContext } from "next/router";
 
 const nextData = window.__NEXT_DATA__;
@@ -917,6 +918,7 @@ async function hydrate() {
   element = wrapWithRouterContext(element);
   const root = hydrateRoot(document.getElementById("__next"), element);
   window.__VINEXT_ROOT__ = root;
+  installPagesRouterRuntime();
   window.__VINEXT_HYDRATED_AT = performance.now();
 }
 hydrate();

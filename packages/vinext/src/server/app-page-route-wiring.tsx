@@ -3,6 +3,7 @@ import {
   AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
+  type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import {
@@ -155,6 +156,7 @@ type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
@@ -416,8 +418,12 @@ export function buildAppPageElements<
 
     return undefined;
   };
-  const elements: Record<string, ReactNode | string | null | readonly AppElementsSlotBinding[]> = {
+  const elements: Record<
+    string,
+    ReactNode | string | null | AppElementsInterception | readonly AppElementsSlotBinding[]
+  > = {
     ...AppElementsWire.createMetadataEntries({
+      interception: options.interception ?? null,
       interceptionContext,
       layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
       rootLayoutTreePath,

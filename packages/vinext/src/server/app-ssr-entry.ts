@@ -1,5 +1,6 @@
 /// <reference types="@vitejs/plugin-rsc/types" />
 
+import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import { Fragment, createElement as createReactElement, use } from "react";

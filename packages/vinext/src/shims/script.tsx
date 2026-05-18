@@ -13,6 +13,7 @@
  *   - "worker": sets type="text/partytown" (requires Partytown setup)
  */
 import React, { useEffect, useRef } from "react";
+import * as ReactDOM from "react-dom";
 import { escapeInlineContent } from "./head.js";
 import { useScriptNonce } from "./script-nonce-context.js";
 
@@ -99,11 +100,41 @@ function buildBeforeInteractiveScriptProps(options: {
   return scriptProps;
 }
 
+function setBooleanScriptAttribute(el: HTMLScriptElement, attr: string, value: unknown): boolean {
+  const enabled = value !== false && value !== "false" && Boolean(value);
+
+  switch (attr) {
+    case "async":
+      el.async = enabled;
+      break;
+    case "defer":
+      el.defer = enabled;
+      break;
+    case "noModule":
+    case "nomodule":
+      el.noModule = enabled;
+      break;
+    default:
+      return false;
+  }
+
+  if (!enabled) {
+    // Dynamic script elements start in the browser's force-async state.
+    // Setting and removing the attribute mirrors Next.js and clears that state.
+    el.setAttribute(attr, "");
+    el.removeAttribute(attr);
+  }
+
+  return true;
+}
+
 function setScriptAttributes(el: HTMLScriptElement, rest: Record<string, unknown>): void {
   for (const [attr, value] of Object.entries(rest)) {
     if (attr === "dangerouslySetInnerHTML") continue;
-    if (attr === "className") {
-      el.setAttribute("class", String(value));
+    if (value === undefined) continue;
+    if (setBooleanScriptAttribute(el, attr, value)) continue;
+    if (attr === "className" && typeof value === "string") {
+      el.setAttribute("class", value);
     } else if (typeof value === "string") {
       el.setAttribute(attr, value);
     } else if (typeof value === "boolean" && value) {
@@ -315,6 +346,37 @@ function Script(props: ScriptProps): React.ReactElement | null {
 
   // SSR path: only "beforeInteractive" renders a <script> tag server-side
   if (typeof window === "undefined") {
+    // React Float preload — emits <link rel="preload" as="script" /> in <head>
+    // so the script is fetched while HTML streams. Mirrors Next.js's App Router
+    // behavior at .nextjs-ref/packages/next/src/client/script.tsx:298-376:
+    //   - afterInteractive with src: preload only (no <script> tag in SSR)
+    //   - beforeInteractive with src: preload + <script> tag
+    //   - inline scripts (no src): no preload
+    // Calling ReactDOM.preload during SSR is safe in both routers; React only
+    // hoists the link when it has a real <head> to hoist into.
+    if (
+      src &&
+      typeof ReactDOM.preload === "function" &&
+      (strategy === "afterInteractive" || strategy === "beforeInteractive")
+    ) {
+      const integrity = typeof rest.integrity === "string" ? rest.integrity : undefined;
+      const crossOrigin =
+        rest.crossOrigin === "anonymous" || rest.crossOrigin === "use-credentials"
+          ? rest.crossOrigin
+          : undefined;
+      const preloadOptions: ReactDOM.PreloadOptions = {
+        as: "script",
+        crossOrigin,
+      };
+      if (resolvedNonce !== undefined) {
+        preloadOptions.nonce = resolvedNonce;
+      }
+      if (integrity !== undefined) {
+        preloadOptions.integrity = integrity;
+      }
+      ReactDOM.preload(src, preloadOptions);
+    }
+
     if (strategy === "beforeInteractive") {
       return React.createElement(
         "script",

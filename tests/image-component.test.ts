@@ -205,6 +205,30 @@ describe("Image SSR rendering", () => {
     expect(html).toContain('class="hero-img"');
     expect(html).toContain("border-radius:8px");
   });
+
+  it("preserves custom style for remote images with width and height", () => {
+    // Next.js computes a single imgAttributes.style object in getImgProps and
+    // passes it through to the rendered <img>.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/get-img-props.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/image-component.tsx
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote styled",
+        src: "https://images.unsplash.com/photo-style",
+        width: 400,
+        height: 300,
+        style: {
+          borderRadius: "12px",
+          objectPosition: "left center",
+          transform: "scale(0.9)",
+        },
+      }),
+    );
+
+    expect(html).toContain("border-radius:12px");
+    expect(html).toContain("object-position:left center");
+    expect(html).toContain("transform:scale(0.9)");
+  });
 });
 
 // ─── srcSet generation ──────────────────────────────────────────────────

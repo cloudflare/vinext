@@ -1,5 +1,6 @@
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { fnv1a64 } from "../utils/hash.js";
+import { findSortedStringPosition } from "../utils/sorted-array.js";
 
 export const CACHE_PROOF_MODEL_SCHEMA_VERSION = 1;
 export type CacheProofModelSchemaVersion = 1;
@@ -14,11 +15,27 @@ export type CacheProofRejectionCode =
   | "CP_DIMENSION_VALUES_MISSING"
   | "CP_ENCODED_VARIANT_TOO_LONG"
   | "CP_INVALID_VARIANT_BUDGET"
+  | "CP_ROUTE_VARIANT_BUDGET_ROUTE_MISMATCH"
   | "CP_ROUTE_VARIANT_CEILING_EXCEEDED"
   | "CP_UNSAFE_PUBLIC_DIMENSION"
   | "CP_BOUNDARY_OUTCOME_MISMATCH"
   | "CP_BOUNDARY_OUTCOME_UNKNOWN"
-  | "CP_PRIVATE_DYNAMIC_DOWNGRADE";
+  | "CP_PRIVATE_DYNAMIC_DOWNGRADE"
+  | "CP_STATIC_LAYOUT_CANDIDATE_OUTPUT_KIND"
+  | "CP_STATIC_LAYOUT_CURRENT_OUTPUT_KIND"
+  | "CP_STATIC_LAYOUT_ID_MISMATCH"
+  | "CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_KIND"
+  | "CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_MISMATCH"
+  | "CP_STATIC_LAYOUT_PRIVATE_DYNAMIC_DOWNGRADE"
+  | "CP_STATIC_LAYOUT_PRIVATE_VARIANT_DIMENSION"
+  | "CP_STATIC_LAYOUT_REQUEST_API_OBSERVED"
+  | "CP_STATIC_LAYOUT_REQUEST_API_UNKNOWN"
+  | "CP_STATIC_LAYOUT_ROOT_BOUNDARY_MISMATCH"
+  | "CP_STATIC_LAYOUT_ROOT_BOUNDARY_UNKNOWN";
+
+export type CacheProofAcceptanceCode = "CP_STATIC_LAYOUT_REUSE_PROVEN";
+
+export type CacheProofTraceCode = CacheProofAcceptanceCode | CacheProofRejectionCode;
 
 export type CacheProofTraceFieldValue = string | number | boolean | null | readonly string[];
 
@@ -128,6 +145,8 @@ export type CacheProofOutputScope =
       templateId: string;
     }>;
 
+export type StaticLayoutCacheProofOutputScope = Extract<CacheProofOutputScope, { kind: "layout" }>;
+
 export type CacheVariant = Readonly<{
   budget: CacheVariantBudget;
   cacheKey: string;
@@ -140,13 +159,37 @@ export type CacheVariant = Readonly<{
 export type BuildCacheVariantInput = Readonly<{
   budget: CacheVariantBudget;
   dimensions: readonly CacheVariantDimensionInput[];
-  existingVariantCount: number;
   output: CacheProofOutputScope;
 }>;
 
 export type BuildCacheVariantResult =
   | Readonly<{ kind: "variant"; variant: CacheVariant }>
   | Readonly<{ kind: "breakerFallback"; fallback: CacheProofBreakerFallback }>;
+
+export type CacheVariantRouteBudget = Readonly<{
+  routeId: string;
+  variantCacheKeys: readonly string[];
+}>;
+
+export type CacheVariantRouteBudgetAdmission =
+  | Readonly<{
+      didConsumeRouteVariantBudget: boolean;
+      kind: "variant";
+      routeBudget: CacheVariantRouteBudget;
+      variant: CacheVariant;
+    }>
+  | Readonly<{
+      fallback: CacheProofBreakerFallback;
+      kind: "breakerFallback";
+      routeBudget: CacheVariantRouteBudget | null;
+    }>;
+
+export type BuildCacheVariantWithRouteBudgetInput = BuildCacheVariantInput &
+  Readonly<{
+    routeBudget: CacheVariantRouteBudget | null;
+  }>;
+
+export type BuildCacheVariantWithRouteBudgetResult = CacheVariantRouteBudgetAdmission;
 
 export type AppRouteCacheProofGraphScopeInput = Readonly<{
   ids: AppRouteSemanticIds;
@@ -303,6 +346,28 @@ export type RenderObservation = Readonly<{
   schemaVersion: CacheProofModelSchemaVersion;
 }>;
 
+export type StaticLayoutReuseProof = Readonly<{
+  authorizesRuntimeReuse: false;
+  candidateOutput: StaticLayoutCacheProofOutputScope;
+  code: "CP_STATIC_LAYOUT_REUSE_PROVEN";
+  currentOutput: StaticLayoutCacheProofOutputScope;
+  fields: CacheProofTraceFields;
+  observation: RenderObservation;
+  requiredNegativeRequestApis: readonly RenderRequestApiKind[];
+  reuseClass: "static-layout";
+  variant: CacheVariant;
+}>;
+
+export type BuildStaticLayoutReuseProofInput = Readonly<{
+  candidateObservation: RenderObservation;
+  candidateVariant: CacheVariant;
+  currentOutput: CacheProofOutputScope;
+}>;
+
+export type BuildStaticLayoutReuseProofResult =
+  | Readonly<{ kind: "proof"; proof: StaticLayoutReuseProof }>
+  | Readonly<{ kind: "rejected"; fallback: CacheProofBreakerFallback }>;
+
 export type BuildRenderObservationInput = Readonly<{
   boundaryOutcome: BoundaryOutcome;
   cacheTags: readonly string[];
@@ -324,11 +389,13 @@ export type DisabledCacheProofDecision = Readonly<{
   fallback: CacheProofBreakerFallback;
   kind: "disabled";
   observation: RenderObservation;
+  staticLayoutProof?: StaticLayoutReuseProof;
   variant: CacheVariant;
 }>;
 
 export type CreateDisabledCacheProofDecisionInput = Readonly<{
   observation: RenderObservation;
+  staticLayoutProof?: StaticLayoutReuseProof;
   variant: CacheVariant;
 }>;
 
@@ -613,21 +680,6 @@ export function buildCacheVariant(input: BuildCacheVariantInput): BuildCacheVari
       fallback: budgetFallback,
     };
   }
-  if (input.existingVariantCount >= input.budget.maxVariantsPerRoute) {
-    return {
-      kind: "breakerFallback",
-      fallback: buildBreakerFallback(
-        "CP_ROUTE_VARIANT_CEILING_EXCEEDED",
-        {
-          existingVariantCount: input.existingVariantCount,
-          maxVariantsPerRoute: input.budget.maxVariantsPerRoute,
-          routeId: input.output.routeId,
-        },
-        "privateUncacheable",
-        "route",
-      ),
-    };
-  }
   const dimensionInputs = mergeDimensionInputs(input.dimensions);
   if (dimensionInputs.length > input.budget.maxDimensionCount) {
     return {
@@ -682,6 +734,124 @@ export function buildCacheVariant(input: BuildCacheVariantInput): BuildCacheVari
       budget: { ...input.budget },
     },
   };
+}
+
+function normalizeRouteBudget(input: CacheVariantRouteBudget): CacheVariantRouteBudget {
+  return {
+    routeId: input.routeId,
+    variantCacheKeys: sortedUnique(input.variantCacheKeys),
+  };
+}
+
+function buildRouteVariantCeilingFallback(
+  variant: CacheVariant,
+  existingVariantCount: number,
+): CacheProofBreakerFallback {
+  return buildBreakerFallback(
+    "CP_ROUTE_VARIANT_CEILING_EXCEEDED",
+    {
+      existingVariantCount,
+      maxVariantsPerRoute: variant.budget.maxVariantsPerRoute,
+      routeId: variant.output.routeId,
+    },
+    "privateUncacheable",
+    "route",
+  );
+}
+
+export function enforceCacheVariantRouteBudget(input: {
+  routeBudget: CacheVariantRouteBudget | null;
+  variant: CacheVariant;
+}): CacheVariantRouteBudgetAdmission {
+  if (input.routeBudget && input.routeBudget.routeId !== input.variant.output.routeId) {
+    return {
+      kind: "breakerFallback",
+      routeBudget: normalizeRouteBudget(input.routeBudget),
+      fallback: buildBreakerFallback(
+        "CP_ROUTE_VARIANT_BUDGET_ROUTE_MISMATCH",
+        {
+          budgetRouteId: input.routeBudget.routeId,
+          routeId: input.variant.output.routeId,
+        },
+        "privateUncacheable",
+        "route",
+      ),
+    };
+  }
+
+  const routeBudget = normalizeRouteBudget(
+    input.routeBudget ?? {
+      routeId: input.variant.output.routeId,
+      variantCacheKeys: [],
+    },
+  );
+  const existingVariantCount = routeBudget.variantCacheKeys.length;
+  const variantKeyPosition = findSortedStringPosition(
+    routeBudget.variantCacheKeys,
+    input.variant.cacheKey,
+  );
+
+  if (existingVariantCount > input.variant.budget.maxVariantsPerRoute) {
+    return {
+      kind: "breakerFallback",
+      routeBudget,
+      fallback: buildRouteVariantCeilingFallback(input.variant, existingVariantCount),
+    };
+  }
+
+  if (variantKeyPosition.found) {
+    return {
+      kind: "variant",
+      variant: input.variant,
+      routeBudget,
+      didConsumeRouteVariantBudget: false,
+    };
+  }
+
+  if (existingVariantCount >= input.variant.budget.maxVariantsPerRoute) {
+    return {
+      kind: "breakerFallback",
+      routeBudget,
+      fallback: buildRouteVariantCeilingFallback(input.variant, existingVariantCount),
+    };
+  }
+
+  return {
+    kind: "variant",
+    variant: input.variant,
+    routeBudget: {
+      routeId: routeBudget.routeId,
+      variantCacheKeys: [
+        ...routeBudget.variantCacheKeys.slice(0, variantKeyPosition.index),
+        input.variant.cacheKey,
+        ...routeBudget.variantCacheKeys.slice(variantKeyPosition.index),
+      ],
+    },
+    didConsumeRouteVariantBudget: true,
+  };
+}
+
+export function buildCacheVariantWithRouteBudget(
+  input: BuildCacheVariantWithRouteBudgetInput,
+): BuildCacheVariantWithRouteBudgetResult {
+  const variantResult = buildCacheVariant({
+    budget: input.budget,
+    dimensions: input.dimensions,
+    output: input.output,
+  });
+
+  if (variantResult.kind === "breakerFallback") {
+    return {
+      kind: "breakerFallback",
+      routeBudget: input.routeBudget ? normalizeRouteBudget(input.routeBudget) : null,
+      fallback: variantResult.fallback,
+    };
+  }
+
+  return enforceCacheVariantRouteBudget({
+    routeBudget: input.routeBudget,
+    variant: variantResult.variant,
+  });
 }
 
 function boundaryOutcomesMatch(expected: BoundaryOutcome, candidate: BoundaryOutcome): boolean {
@@ -1056,7 +1226,7 @@ export function hasCompleteNegativeRequestApiProof(
   if (observation.completeness !== "complete") return false;
 
   const statuses = new Map<RenderRequestApiKind, RenderRequestApiStatus>();
-  for (const requestApi of observation.requestApis) {
+  for (const requestApi of normalizeRequestApiObservations(observation.requestApis)) {
     statuses.set(requestApi.kind, requestApi.status);
   }
 
@@ -1064,6 +1234,223 @@ export function hasCompleteNegativeRequestApiProof(
     if (statuses.get(api) !== "notObserved") return false;
   }
   return true;
+}
+
+function isStaticLayoutOutputScope(
+  output: CacheProofOutputScope,
+): output is StaticLayoutCacheProofOutputScope {
+  return output.kind === "layout";
+}
+
+function rejectStaticLayoutReuseProof(
+  code: CacheProofRejectionCode,
+  fields: CacheProofTraceFields,
+  mode: CacheProofBreakerFallbackMode = "renderFresh",
+): BuildStaticLayoutReuseProofResult {
+  return {
+    kind: "rejected",
+    fallback: buildBreakerFallback(code, fields, mode),
+  };
+}
+
+function getRequestApiStatus(
+  observations: readonly RenderRequestApiObservation[],
+  kind: RenderRequestApiKind,
+): RenderRequestApiStatus | "missing" {
+  let status: RenderRequestApiStatus | null = null;
+
+  for (const requestApi of observations) {
+    if (requestApi.kind !== kind) continue;
+    if (status === null || requestApiStatusRank(requestApi.status) > requestApiStatusRank(status)) {
+      status = requestApi.status;
+    }
+  }
+
+  return status ?? "missing";
+}
+
+function createStaticLayoutDowngradeFallback(
+  downgrade: CacheProofDowngradeClassification,
+): CacheProofBreakerFallback {
+  const mode: CacheProofBreakerFallbackMode =
+    downgrade.target === "privateUncacheable" ? "privateUncacheable" : "renderFresh";
+  return buildBreakerFallback(
+    "CP_STATIC_LAYOUT_PRIVATE_DYNAMIC_DOWNGRADE",
+    {
+      reasonCodes: downgrade.reasons.map((reason) => reason.code),
+      target: downgrade.target,
+    },
+    mode,
+  );
+}
+
+function createPrivateVariantDimensionFallback(
+  dimension: CacheVariantDimension,
+): CacheProofBreakerFallback | null {
+  const downgrade = classifyCacheVariantDimensionDowngrade({ source: dimension.source });
+  if (!downgrade && dimension.privacy !== "private") {
+    return null;
+  }
+
+  const target = downgrade?.target ?? "private";
+  const mode: CacheProofBreakerFallbackMode =
+    target === "privateUncacheable" ? "privateUncacheable" : "renderFresh";
+  return buildBreakerFallback(
+    "CP_STATIC_LAYOUT_PRIVATE_VARIANT_DIMENSION",
+    {
+      dimension: dimension.name,
+      privacy: dimension.privacy,
+      reasonCode: downgrade?.code ?? null,
+      source: dimension.source,
+      target,
+    },
+    mode,
+  );
+}
+
+function outputFieldMismatch(
+  candidate: StaticLayoutCacheProofOutputScope,
+  observation: StaticLayoutCacheProofOutputScope,
+): "layoutId" | "rootBoundaryId" | "routeId" | null {
+  if (candidate.layoutId !== observation.layoutId) return "layoutId";
+  if (candidate.rootBoundaryId !== observation.rootBoundaryId) return "rootBoundaryId";
+  if (candidate.routeId !== observation.routeId) return "routeId";
+  return null;
+}
+
+export function buildStaticLayoutReuseProof(
+  input: BuildStaticLayoutReuseProofInput,
+): BuildStaticLayoutReuseProofResult {
+  if (!isStaticLayoutOutputScope(input.currentOutput)) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_CURRENT_OUTPUT_KIND", {
+      currentOutputKind: input.currentOutput.kind,
+    });
+  }
+
+  if (!isStaticLayoutOutputScope(input.candidateVariant.output)) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_CANDIDATE_OUTPUT_KIND", {
+      candidateOutputKind: input.candidateVariant.output.kind,
+    });
+  }
+
+  if (!isStaticLayoutOutputScope(input.candidateObservation.output)) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_KIND", {
+      observationOutputKind: input.candidateObservation.output.kind,
+    });
+  }
+
+  const currentOutput = input.currentOutput;
+  const candidateOutput = input.candidateVariant.output;
+  const observationOutput = input.candidateObservation.output;
+  const requestApis = normalizeRequestApiObservations(input.candidateObservation.requestApis);
+  const candidateObservation = {
+    ...input.candidateObservation,
+    requestApis,
+    downgrade: classifyRenderObservationDowngrade({
+      cacheability: input.candidateObservation.cacheability,
+      completeness: input.candidateObservation.completeness,
+      dynamicFetches: input.candidateObservation.dynamicFetches,
+      requestApis,
+    }),
+  } satisfies RenderObservation;
+  const observedOutputMismatch = outputFieldMismatch(candidateOutput, observationOutput);
+  if (observedOutputMismatch) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_MISMATCH", {
+      candidateLayoutId: candidateOutput.layoutId,
+      candidateRootBoundaryId: candidateOutput.rootBoundaryId,
+      candidateRouteId: candidateOutput.routeId,
+      field: observedOutputMismatch,
+      observationLayoutId: observationOutput.layoutId,
+      observationRootBoundaryId: observationOutput.rootBoundaryId,
+      observationRouteId: observationOutput.routeId,
+    });
+  }
+
+  if (currentOutput.layoutId !== candidateOutput.layoutId) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_ID_MISMATCH", {
+      candidateLayoutId: candidateOutput.layoutId,
+      currentLayoutId: currentOutput.layoutId,
+    });
+  }
+
+  if (currentOutput.rootBoundaryId === null || candidateOutput.rootBoundaryId === null) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_ROOT_BOUNDARY_UNKNOWN", {
+      candidateRootBoundaryId: candidateOutput.rootBoundaryId,
+      currentRootBoundaryId: currentOutput.rootBoundaryId,
+    });
+  }
+
+  if (currentOutput.rootBoundaryId !== candidateOutput.rootBoundaryId) {
+    return rejectStaticLayoutReuseProof("CP_STATIC_LAYOUT_ROOT_BOUNDARY_MISMATCH", {
+      candidateRootBoundaryId: candidateOutput.rootBoundaryId,
+      currentRootBoundaryId: currentOutput.rootBoundaryId,
+    });
+  }
+
+  const boundaryCompatibility = buildBoundaryOutcomeCompatibility({
+    candidate: candidateObservation.boundaryOutcome,
+    expected: { kind: "success" },
+  });
+  if (boundaryCompatibility.kind === "incompatible") {
+    return {
+      kind: "rejected",
+      fallback: boundaryCompatibility.fallback,
+    };
+  }
+
+  for (const dimension of input.candidateVariant.dimensions) {
+    const fallback = createPrivateVariantDimensionFallback(dimension);
+    if (fallback) {
+      return {
+        kind: "rejected",
+        fallback,
+      };
+    }
+  }
+
+  if (!candidateObservation.downgrade.isPublicCacheCandidate) {
+    return {
+      kind: "rejected",
+      fallback: createStaticLayoutDowngradeFallback(candidateObservation.downgrade),
+    };
+  }
+
+  // The loop can use the shared readonly registry; the proof stores a detached evidence copy.
+  const requiredNegativeRequestApis = ALL_RENDER_REQUEST_API_KINDS;
+  for (const api of requiredNegativeRequestApis) {
+    const status = getRequestApiStatus(candidateObservation.requestApis, api);
+    if (status === "notObserved") continue;
+
+    return rejectStaticLayoutReuseProof(
+      status === "missing"
+        ? "CP_STATIC_LAYOUT_REQUEST_API_UNKNOWN"
+        : "CP_STATIC_LAYOUT_REQUEST_API_OBSERVED",
+      {
+        requestApi: api,
+        status,
+      },
+    );
+  }
+
+  return {
+    kind: "proof",
+    proof: {
+      authorizesRuntimeReuse: false,
+      candidateOutput,
+      code: "CP_STATIC_LAYOUT_REUSE_PROVEN",
+      currentOutput,
+      fields: {
+        candidateRouteId: candidateOutput.routeId,
+        currentRouteId: currentOutput.routeId,
+        layoutId: currentOutput.layoutId,
+        rootBoundaryId: currentOutput.rootBoundaryId,
+      },
+      observation: candidateObservation,
+      requiredNegativeRequestApis: [...requiredNegativeRequestApis],
+      reuseClass: "static-layout",
+      variant: input.candidateVariant,
+    },
+  };
 }
 
 export function createDisabledCacheProofDecision(
@@ -1074,6 +1461,7 @@ export function createDisabledCacheProofDecision(
     canReuse: false,
     variant: input.variant,
     observation: input.observation,
+    ...(input.staticLayoutProof ? { staticLayoutProof: input.staticLayoutProof } : {}),
     fallback: buildBreakerFallback("CP_MODEL_DISABLED"),
   };
 }

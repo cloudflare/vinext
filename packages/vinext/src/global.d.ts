@@ -92,6 +92,7 @@ declare global {
      * @param redirectDepth - Internal parameter used to detect redirect loops.
      * @param navigationKind - Internal hint for traversal vs regular navigation.
      * @param historyUpdateMode - Internal hint for when history should publish.
+     * @param traversalIntent - Internal popstate direction/history metadata.
      */
     __VINEXT_RSC_NAVIGATE__:
       | ((
@@ -101,6 +102,11 @@ declare global {
           historyUpdateMode?: "push" | "replace",
           previousNextUrlOverride?: string | null,
           programmaticTransition?: boolean,
+          traversalIntent?: {
+            direction: "back" | "forward" | "unknown";
+            historyState: unknown;
+            targetHistoryIndex: number | null;
+          },
         ) => Promise<void>)
       | undefined;
 
@@ -113,6 +119,16 @@ declare global {
      * Next.js refresh-reducer.ts).
      */
     __VINEXT_CLEAR_NAV_CACHES__: (() => void) | undefined;
+
+    /**
+     * Commits an App Router hash-only navigation without fetching RSC data.
+     * Installed by the browser RSC entry so `next/navigation` and `next/link`
+     * can route app-owned hash-only history writes through the same vinext
+     * history metadata/index allocator as approved RSC commits.
+     */
+    __VINEXT_RSC_COMMIT_HASH_NAVIGATION__:
+      | ((href: string, historyUpdateMode: "push" | "replace", scroll: boolean) => void)
+      | undefined;
 
     /**
      * A Promise that resolves when the current in-flight popstate RSC navigation

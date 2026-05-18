@@ -4,6 +4,7 @@ import {
   getMountedSlotIds,
   getMountedSlotIdsHeader,
   type AppElements,
+  type AppElementsInterception,
   type AppElementsSlotBinding,
   type LayoutFlags,
 } from "./app-elements.js";
@@ -29,9 +30,15 @@ import {
   type RouteSnapshotV0,
 } from "./navigation-planner.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { normalizePath } from "./normalize-path.js";
 export {
+  createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
   readHistoryStatePreviousNextUrl,
+  readHistoryStateTraversalIndex,
+  resolveHistoryTraversalIntent,
+  type HistoryTraversalIntent,
 } from "./app-history-state.js";
 
 export type { OperationLane } from "./navigation-planner.js";
@@ -56,6 +63,7 @@ export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
 export type AppRouterState = {
   activeOperation: OperationRecord | null;
   elements: AppElements;
+  interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
   layoutIds: readonly string[];
@@ -70,6 +78,7 @@ export type AppRouterState = {
 
 export type AppRouterAction = {
   elements: AppElements;
+  interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutFlags: LayoutFlags;
   layoutIds: readonly string[];
@@ -85,6 +94,7 @@ export type AppRouterAction = {
 
 export type PendingNavigationCommit = {
   action: AppRouterAction;
+  interception: AppElementsInterception | null;
   interceptionContext: string | null;
   previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
@@ -107,7 +117,6 @@ type NonDispatchPendingNavigationCommitDispositionDecision = {
 type PendingNavigationCommitDispositionDecision =
   | DispatchPendingNavigationCommitDispositionDecision
   | NonDispatchPendingNavigationCommitDispositionDecision;
-
 function createOperationRecord(options: {
   id: number;
   lane: OperationLane;
@@ -119,6 +128,26 @@ function createOperationRecord(options: {
     startedVisibleCommitVersion: options.startedVisibleCommitVersion,
     state: "pending",
   };
+}
+
+function normalizeNavigationSnapshotMatchedUrl(pathname: string): string {
+  return normalizePath(normalizePathnameForRouteMatch(pathname));
+}
+
+function createRouteSnapshotRouteId(options: {
+  interception: AppElementsInterception | null;
+  routeId: string;
+}): string {
+  if (options.interception !== null) return options.routeId;
+
+  const parsed = AppElementsWire.parseElementKey(options.routeId);
+  if (parsed?.kind !== "route" || parsed.interceptionContext === null) {
+    return options.routeId;
+  }
+
+  // A context suffix keeps AppElements render keys partitioned, but without
+  // explicit interception proof it is not semantic route authority.
+  return AppElementsWire.encodeRouteId(parsed.path, null);
 }
 
 export function resolveInterceptionContextFromPreviousNextUrl(
@@ -250,31 +279,46 @@ function createMountedParallelSlotSnapshots(
 
 function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshotV0 {
   const displayUrl = createNavigationSnapshotUrl(state.navigationSnapshot);
+  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
+    interception: state.interception,
+    interceptionContext: state.interceptionContext,
     layoutIds: state.layoutIds,
-    // `displayUrl` preserves the browser-visible query string for decisions and
-    // traces. `matchedUrl` stays path-only because route matching has already
-    // consumed query params before AppElements metadata reaches this boundary.
-    matchedUrl: state.navigationSnapshot.pathname,
+    // `displayUrl` preserves the browser-visible URL for decisions and traces.
+    // `matchedUrl` uses the route-state canonical pathname, matching the
+    // server's segment-decoded representation without changing user-facing
+    // navigation state such as usePathname().
+    matchedUrl,
     mountedParallelSlots: createMountedParallelSlotSnapshots(state.elements),
     rootBoundaryId: state.rootLayoutTreePath,
-    routeId: state.routeId,
+    routeId: createRouteSnapshotRouteId({
+      interception: state.interception,
+      routeId: state.routeId,
+    }),
     slotBindings: state.slotBindings,
   };
 }
 
 function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshotV0 {
   const displayUrl = createNavigationSnapshotUrl(pending.action.navigationSnapshot);
+  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
+    pending.action.navigationSnapshot.pathname,
+  );
   return {
     displayUrl,
+    interception: pending.action.interception,
+    interceptionContext: pending.action.interceptionContext,
     layoutIds: pending.action.layoutIds,
     // See createVisibleRouteSnapshot: matchedUrl intentionally models the route
     // identity, not the address bar URL.
-    matchedUrl: pending.action.navigationSnapshot.pathname,
+    matchedUrl,
     mountedParallelSlots: createMountedParallelSlotSnapshots(pending.action.elements),
     rootBoundaryId: pending.rootLayoutTreePath,
-    routeId: pending.routeId,
+    routeId: createRouteSnapshotRouteId({
+      interception: pending.action.interception,
+      routeId: pending.routeId,
+    }),
     slotBindings: pending.action.slotBindings,
   };
 }
@@ -369,20 +413,24 @@ export async function createPendingNavigationCommit(options: {
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
+  // Advisory: non-intercepted responses clear this even when callers pass the
+  // current visible previousNextUrl.
   previousNextUrl?: string | null;
   renderId: number;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
   const metadata = AppElementsWire.readMetadata(elements);
-  const previousNextUrl =
+  const requestedPreviousNextUrl =
     options.previousNextUrl !== undefined
       ? options.previousNextUrl
       : options.currentState.previousNextUrl;
+  const previousNextUrl = metadata.interception === null ? null : requestedPreviousNextUrl;
 
   return {
     action: {
       elements,
+      interception: metadata.interception,
       interceptionContext: metadata.interceptionContext,
       layoutIds: metadata.layoutIds,
       layoutFlags: metadata.layoutFlags,
@@ -400,6 +448,7 @@ export async function createPendingNavigationCommit(options: {
       type: options.type,
     },
     // Convenience aliases — always equal action.interceptionContext / action.rootLayoutTreePath / action.routeId.
+    interception: metadata.interception,
     interceptionContext: metadata.interceptionContext,
     previousNextUrl,
     rootLayoutTreePath: metadata.rootLayoutTreePath,

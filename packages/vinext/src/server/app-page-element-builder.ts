@@ -10,11 +10,13 @@ import {
   type AppPageRouteWiringRoute,
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
-import { AppElementsWire, type AppElements } from "./app-elements.js";
+import { AppElementsWire, type AppElements, type AppElementsInterception } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
@@ -38,7 +40,9 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
+  interceptSlotId?: string | null;
   interceptSlotKey?: string | null;
+  interceptSourceMatchedUrl?: string | null;
 };
 
 export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = {
@@ -74,6 +78,11 @@ export type BuildPageElementsOptions<
   rootUnauthorizedModule?: TModule | null;
   /** File-based metadata routes (favicon, manifest, sitemap, etc.). */
   metadataRoutes: readonly MetadataFileRoute[];
+  /**
+   * Configured next.config `basePath`. Threaded through `resolveAppPageHead`
+   * so file-based metadata route URLs emitted in <head> are prefixed.
+   */
+  basePath?: string;
 };
 
 /**
@@ -118,6 +127,7 @@ export async function buildPageElements<
   const pageModule: AppPageModule | null | undefined = route.page;
   const PageComponent = pageModule?.default;
   const hasPageModule = !!pageModule;
+  const interception = createAppPageInterceptionProof(routePath, opts);
 
   if (hasPageModule && !PageComponent) {
     const interceptionContext = opts?.interceptionContext ?? null;
@@ -136,6 +146,7 @@ export async function buildPageElements<
     }
     return {
       ...AppElementsWire.createMetadataEntries({
+        interception,
         interceptionContext,
         layoutIds: noExportLayoutIds,
         rootLayoutTreePath: noExportRootLayout,
@@ -151,6 +162,7 @@ export async function buildPageElements<
     pageSearchParams,
     viewport: resolvedViewport,
   } = await resolveAppPageHead({
+    basePath: options.basePath ?? "",
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
@@ -193,6 +205,7 @@ export async function buildPageElements<
     resolvedMetadata,
     resolvedViewport,
     interceptionContext: opts?.interceptionContext ?? null,
+    interception,
     routePath,
     rootNotFoundModule: rootNotFoundModule ?? null,
     rootForbiddenModule: rootForbiddenModule ?? null,
@@ -201,6 +214,32 @@ export async function buildPageElements<
     slotOverrides,
     renderMode,
   });
+}
+
+function createAppPageInterceptionProof<TModule extends AppPageModule>(
+  routePath: string,
+  opts?: AppPageInterceptOptions<TModule> | null,
+): AppElementsInterception | null {
+  const sourceMatchedUrl = normalizeInterceptionProofMatchedUrl(
+    opts?.interceptSourceMatchedUrl ?? null,
+  );
+  const targetMatchedUrl = normalizeInterceptionProofMatchedUrl(routePath);
+  const slotId = opts?.interceptSlotId ?? null;
+  if (sourceMatchedUrl === null || targetMatchedUrl === null || slotId === null) return null;
+
+  return {
+    sourceMatchedUrl,
+    sourceRouteId: AppElementsWire.encodeRouteId(sourceMatchedUrl, null),
+    slotId,
+    targetMatchedUrl,
+    targetRouteId: AppElementsWire.encodeRouteId(targetMatchedUrl, null),
+  };
+}
+
+function normalizeInterceptionProofMatchedUrl(value: string | null): string | null {
+  if (value === null || !isInterceptionMatchedUrlPath(value)) return null;
+
+  return normalizePath(normalizePathnameForRouteMatch(value));
 }
 
 /**

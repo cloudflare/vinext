@@ -5,10 +5,12 @@ import {
   type ArtifactCompatibilityEnvelope,
 } from "./artifact-compatibility.js";
 import type { RenderObservation } from "./cache-proof.js";
+import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 
 export const APP_ARTIFACT_COMPATIBILITY_KEY = "__artifactCompatibility";
+export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
@@ -26,6 +28,14 @@ export type AppElementsSlotBinding = Readonly<{
   ownerLayoutId: string | null;
   slotId: string;
   state: AppElementsSlotBindingState;
+}>;
+
+export type AppElementsInterception = Readonly<{
+  sourceMatchedUrl: string;
+  sourceRouteId: string;
+  slotId: string;
+  targetMatchedUrl: string;
+  targetRouteId: string;
 }>;
 
 export function compareAppElementsSlotIds(left: string, right: string): number {
@@ -78,6 +88,7 @@ export type AppElementValue =
   | null
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
+  | AppElementsInterception
   | readonly AppElementsSlotBinding[];
 type AppWireElementValue =
   | ReactNode
@@ -85,6 +96,7 @@ type AppWireElementValue =
   | null
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
+  | AppElementsInterception
   | readonly AppElementsSlotBinding[];
 
 export type AppElements = Readonly<Record<string, AppElementValue>>;
@@ -111,6 +123,7 @@ export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 
 type AppElementsMetadata = {
   artifactCompatibility: ArtifactCompatibilityEnvelope;
+  interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
   layoutFlags: LayoutFlags;
@@ -127,6 +140,7 @@ type AppElementsWireElementKey =
   | { kind: "template"; treePath: string };
 
 type AppElementsWireMetadataInput = {
+  interception?: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds?: readonly string[];
   routeId: string;
@@ -136,6 +150,7 @@ type AppElementsWireMetadataInput = {
 
 type AppElementsWireMetadataEntries = Readonly<{
   [APP_ROUTE_KEY]: string;
+  [APP_INTERCEPTION_KEY]?: AppElementsInterception;
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
   [APP_ROOT_LAYOUT_KEY]: string | null;
@@ -154,6 +169,7 @@ export type AppOutgoingElements = Readonly<
     | ReactNode
     | LayoutFlags
     | ArtifactCompatibilityEnvelope
+    | AppElementsInterception
     | RenderObservation
     | readonly AppElementsSlotBinding[]
   >
@@ -161,6 +177,7 @@ export type AppOutgoingElements = Readonly<
 
 type AppElementsWireKeys = {
   readonly artifactCompatibility: typeof APP_ARTIFACT_COMPATIBILITY_KEY;
+  readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
   readonly layoutFlags: typeof APP_LAYOUT_FLAGS_KEY;
@@ -178,7 +195,11 @@ type AppElementsWireCodec = {
   encodeCacheKey(rscUrl: string, interceptionContext: string | null): string;
   encodeLayoutId(treePath: string): string;
   encodeOutgoingPayload(input: {
-    element: ReactNode | Readonly<Record<string, ReactNode | readonly AppElementsSlotBinding[]>>;
+    element:
+      | ReactNode
+      | Readonly<
+          Record<string, ReactNode | AppElementsInterception | readonly AppElementsSlotBinding[]>
+        >;
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     layoutFlags: LayoutFlags;
     renderObservation?: RenderObservation;
@@ -303,14 +324,16 @@ function createAppElementsWireMetadataEntries(
   // Empty slot binding metadata is intentionally omitted. Missing
   // __slotBindings round-trips as [] and means "no route-state proof", so
   // default/unmatched slot preservation is not promoted for that payload.
+  const entriesWithInterception = input.interception
+    ? { ...entries, [APP_INTERCEPTION_KEY]: input.interception }
+    : entries;
   if (input.slotBindings && input.slotBindings.length > 0) {
-    const slotBindings = normalizeAppElementsSlotBindings(input.slotBindings, { layoutIds });
     return {
-      ...entries,
-      [APP_SLOT_BINDINGS_KEY]: slotBindings,
+      ...entriesWithInterception,
+      [APP_SLOT_BINDINGS_KEY]: normalizeAppElementsSlotBindings(input.slotBindings, { layoutIds }),
     };
   }
-  return entries;
+  return entriesWithInterception;
 }
 
 export function normalizeAppElements(elements: AppWireElements): AppElements {
@@ -428,6 +451,70 @@ function parseSlotBindings(
   return normalizeAppElementsSlotBindings(slotBindings, options);
 }
 
+function readRequiredInterceptionString(
+  entry: Record<string, unknown>,
+  fieldName: keyof AppElementsInterception,
+): string {
+  const value = entry[fieldName];
+  if (typeof value !== "string") {
+    throw new Error("[vinext] Invalid __interception in App Router payload: expected strings");
+  }
+  return value;
+}
+
+function parseInterceptionMatchedUrl(value: string): string {
+  if (!isInterceptionMatchedUrlPath(value)) {
+    throw new Error("[vinext] Invalid __interception in App Router payload: expected path URLs");
+  }
+  return value;
+}
+
+function parseInterceptionRouteId(value: string, matchedUrl: string): string {
+  const parsed = parseAppElementsWireElementKey(value);
+  if (
+    parsed?.kind !== "route" ||
+    parsed.path !== matchedUrl ||
+    parsed.interceptionContext !== null
+  ) {
+    throw new Error("[vinext] Invalid __interception in App Router payload: expected route ids");
+  }
+  return value;
+}
+
+function parseInterceptionSlotId(value: string): string {
+  if (parseAppElementsWireElementKey(value)?.kind !== "slot") {
+    throw new Error("[vinext] Invalid __interception in App Router payload: expected slot id");
+  }
+  return value;
+}
+
+function parseInterceptionMetadata(value: unknown): AppElementsInterception | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) {
+    throw new Error("[vinext] Invalid __interception in App Router payload: expected object");
+  }
+
+  const sourceMatchedUrl = parseInterceptionMatchedUrl(
+    readRequiredInterceptionString(value, "sourceMatchedUrl"),
+  );
+  const targetMatchedUrl = parseInterceptionMatchedUrl(
+    readRequiredInterceptionString(value, "targetMatchedUrl"),
+  );
+  return {
+    sourceMatchedUrl,
+    sourceRouteId: parseInterceptionRouteId(
+      readRequiredInterceptionString(value, "sourceRouteId"),
+      sourceMatchedUrl,
+    ),
+    slotId: parseInterceptionSlotId(readRequiredInterceptionString(value, "slotId")),
+    targetMatchedUrl,
+    targetRouteId: parseInterceptionRouteId(
+      readRequiredInterceptionString(value, "targetRouteId"),
+      targetMatchedUrl,
+    ),
+  };
+}
+
 /**
  * Type predicate for a plain (non-null, non-array) record of app payload values.
  * Used to distinguish the App Router payload object from bare React elements at
@@ -452,7 +539,11 @@ export function withLayoutFlags<T extends Record<string, unknown>>(
 }
 
 export function buildOutgoingAppPayload(input: {
-  element: ReactNode | Readonly<Record<string, ReactNode | readonly AppElementsSlotBinding[]>>;
+  element:
+    | ReactNode
+    | Readonly<
+        Record<string, ReactNode | AppElementsInterception | readonly AppElementsSlotBinding[]>
+      >;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   layoutFlags: LayoutFlags;
   renderObservation?: RenderObservation;
@@ -465,6 +556,7 @@ export function buildOutgoingAppPayload(input: {
     | ReactNode
     | LayoutFlags
     | ArtifactCompatibilityEnvelope
+    | AppElementsInterception
     | RenderObservation
     | readonly AppElementsSlotBinding[]
   > = {
@@ -518,12 +610,14 @@ export function readAppElementsMetadata(
   const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
   const layoutIds = parseLayoutIds(elements[APP_LAYOUT_IDS_KEY]);
   const slotBindings = parseSlotBindings(elements[APP_SLOT_BINDINGS_KEY], { layoutIds });
+  const interception = parseInterceptionMetadata(elements[APP_INTERCEPTION_KEY]);
   const artifactCompatibility = readArtifactCompatibilityMetadata(
     elements[APP_ARTIFACT_COMPATIBILITY_KEY],
   );
 
   return {
     artifactCompatibility,
+    interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
     layoutFlags,
@@ -538,6 +632,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   // behind the codec boundary.
   keys: {
     artifactCompatibility: APP_ARTIFACT_COMPATIBILITY_KEY,
+    interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,
     layoutFlags: APP_LAYOUT_FLAGS_KEY,

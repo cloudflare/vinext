@@ -423,6 +423,61 @@ function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
 }
 
+/**
+ * Returns true when `code` starts with a React `"use client"` or `"use server"`
+ * directive (after stripping leading comments, hashbang, and whitespace).
+ *
+ * Used by `vinext:jsx-in-js` to opt `.js` files inside `node_modules` into the
+ * JSX transform. We mirror `@vitejs/plugin-rsc`'s detection by looking at the
+ * directive prologue rather than scanning the whole file — `code.includes`
+ * alone would match incidental occurrences in template literals or comments.
+ */
+function hasReactDirective(code: string): boolean {
+  let i = 0;
+  const len = code.length;
+  // Strip BOM.
+  if (code.charCodeAt(0) === 0xfeff) i = 1;
+  // Strip hashbang.
+  if (code[i] === "#" && code[i + 1] === "!") {
+    const nl = code.indexOf("\n", i);
+    if (nl === -1) return false;
+    i = nl + 1;
+  }
+  while (i < len) {
+    // Skip whitespace.
+    while (i < len && /\s/.test(code[i] ?? "")) i++;
+    if (i >= len) return false;
+    // Skip line comments.
+    if (code[i] === "/" && code[i + 1] === "/") {
+      const nl = code.indexOf("\n", i + 2);
+      if (nl === -1) return false;
+      i = nl + 1;
+      continue;
+    }
+    // Skip block comments.
+    if (code[i] === "/" && code[i + 1] === "*") {
+      const end = code.indexOf("*/", i + 2);
+      if (end === -1) return false;
+      i = end + 2;
+      continue;
+    }
+    // At first non-comment, non-whitespace token. Must be a string literal
+    // directive to qualify (per ECMA-262 Directive Prologue grammar).
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") return false;
+    const closing = code.indexOf(quote, i + 1);
+    if (closing === -1) return false;
+    const directive = code.slice(i + 1, closing);
+    if (directive === "use client" || directive === "use server") return true;
+    // Other directives (e.g., "use strict") may precede the React directive.
+    // Continue scanning past the statement-terminating `;` or newline.
+    i = closing + 1;
+    while (i < len && (code[i] === ";" || code[i] === " " || code[i] === "\t")) i++;
+    if (code[i] === "\n") i++;
+  }
+  return false;
+}
+
 function generateRootParamsModule(rootParamNames: Iterable<string>): string {
   const names = Array.from(new Set(rootParamNames)).filter(isValidExportIdentifier).sort();
   if (names.length === 0) return "export {};\n";
@@ -812,17 +867,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `vite:oxc`. We transform `.js` files with `lang: "jsx"` using Vite's
     // exported `transformWithOxc`. When `vite:oxc` later processes the
     // output, the JSX has already been compiled to createElement calls.
+    //
+    // For files inside `node_modules`, we only re-transform `.js`/`.mjs`
+    // modules that begin with a React `"use client"` or `"use server"`
+    // directive. Third-party Next.js client libraries routinely ship plain
+    // `.js` files containing `"use client"` + JSX (Next.js's SWC pipeline
+    // compiles JSX in `.js` transparently). Without this, `@vitejs/plugin-rsc`'s
+    // `rsc:use-client` analysis pass parses those files via rolldown/oxc with
+    // `lang: "js"` and fails with `RolldownError: Unexpected JSX expression`.
+    //
+    // We limit the node_modules transform to directive-bearing files to:
+    //   1. avoid re-parsing every `.js` in `node_modules` (build perf), and
+    //   2. avoid forcibly applying `lang: "jsx"` to library code that may use
+    //      syntax incompatible with the JSX-enabled OXC parser.
     ...(viteMajorVersion >= 8
       ? [
           {
             name: "vinext:jsx-in-js",
             enforce: "pre" as const,
             async transform(code: string, id: string) {
-              // Only handle .js/.mjs files outside node_modules.
+              // Only handle .js/.mjs files.
               // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
               const cleanId = id.split("?")[0];
               if (!/\.(m?js)$/.test(cleanId)) return;
-              if (cleanId.includes("/node_modules/")) return;
+
+              // Inside node_modules, restrict the JSX transform to files that
+              // carry a React directive. `@vitejs/plugin-rsc` only parses
+              // such modules (and only those failures have been observed in
+              // the wild). The cheap `includes` check avoids any work for the
+              // vast majority of `.js` files in `node_modules`.
+              if (cleanId.includes("/node_modules/")) {
+                if (!code.includes("use client") && !code.includes("use server")) {
+                  return;
+                }
+                if (!hasReactDirective(code)) {
+                  return;
+                }
+              }
 
               const result = await transformWithOxc(code, id, {
                 lang: "jsx",
@@ -1111,6 +1192,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
             "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
             "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
+            "vinext/pages-router-runtime": path.join(shimsDir, "pages-router-runtime"),
             "vinext/router-state": path.join(shimsDir, "router-state"),
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
@@ -1218,6 +1300,69 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
+            // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
+            //
+            // Vite defaults `environments.ssr.build.emitAssets` to `false`
+            // because the SSR environment has `consumer: "server"`. With
+            // code-split CSS (the default), the CSS plugin still rewrites
+            // server-component CSS imports into `import "<hash>.css"`
+            // statements in the SSR JS, then emits the CSS asset via
+            // `emitFile`. The asset is subsequently stripped from the
+            // bundle by Vite's `vite:asset` generateBundle hook because
+            // `emitAssets` is false — leaving Node's ESM loader to crash
+            // on the unresolvable import the first time `vinext start`
+            // imports the SSR entry:
+            //
+            //   Error [ERR_MODULE_NOT_FOUND]: Cannot find module
+            //     'dist/server/ssr/style.css'
+            //     imported from 'dist/server/ssr/index.js'
+            //
+            // Setting `ssrEmitAssets: true` at the top level propagates
+            // into `environments.ssr.build.emitAssets`. We use the
+            // top-level form because Vite re-applies it during
+            // `resolveConfig` (see `resolveConfig` in vite/src/node/config.ts)
+            // and would otherwise overwrite any per-environment value we
+            // tried to set in `environments.ssr.build`. `@vitejs/plugin-rsc`
+            // already sets `emitAssets: true` on the `rsc` environment for
+            // the same reason; this mirrors that for `ssr`. Affects only
+            // the build pipeline.
+            ssrEmitAssets: true,
+            // CSS minification target. Vite/esbuild defaults to the same target
+            // as JS (modern evergreens), which lets esbuild's CSS minifier rewrite
+            // `@media (max-width: 768px)` to the Media Queries Level 4 range
+            // syntax `@media (width <= 768px)`. Both forms are semantically
+            // equivalent in modern browsers, but the rewrite is observable to
+            // user code that inspects `cssText` of `CSSMediaRule`s and breaks
+            // tools that pattern-match the raw query string. Next.js does not
+            // perform this rewrite by default (its webpack/lightningcss CSS
+            // pipeline preserves the original syntax), so user code carried
+            // over from Next.js can break when migrating to vinext.
+            //
+            // esbuild lowers a CSS feature when ANY target in the list lacks
+            // support, so we only need to pin one engine below the range-syntax
+            // baseline. Range syntax shipped in Chrome 104, Edge 104, Firefox 63,
+            // and Safari 16.4 (per esbuild's `internal/compat/css_table.go`
+            // MediaRange entry — and caniuse). Of those, Safari is the latest:
+            // pinning `safari15` (semantically Safari 15.0, which predates
+            // Safari 16.4) is sufficient to suppress the rewrite on its own.
+            //
+            // The other three targets are pinned to ~2023 baselines instead of
+            // the absolute oldest supported version so esbuild does NOT
+            // collaterally downlevel unrelated modern CSS features. With
+            // chrome111/edge111/firefox114 we keep through:
+            //   - `:is()` pseudo-class (Chrome 88, Firefox 78)
+            //   - `hwb()` colors (Chrome 101, Firefox 96)
+            //   - `lab()`, `oklch()`, `color()` (Chrome 111, Firefox 113)
+            //   - gradient interpolation hints (Chrome 111)
+            // CSS Nesting (Chrome 120, Safari 17.2) and Firefox-137 gradient
+            // interpolation will still be lowered; that is an intentional
+            // trade-off — those features are newer than the baseline and
+            // lowering them is the correct behavior for our target audience.
+            //
+            // Mirrors the Next.js fixture
+            // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
+            // asserts `cssText` preserves `max-width: 768px`.
+            cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -1905,6 +2050,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
+          // Check for global-not-found.tsx at app root (Next.js 16+ feature)
+          // When present, this file replaces the root layout when serving a
+          // route-miss 404. The file is responsible for emitting its own
+          // <html> and <body> tags (similar to global-error.tsx).
+          // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+          const globalNotFoundPath = findFileWithExts(appDir, "global-not-found", fileMatcher);
           // Collect Layer 1 (segment config) classifications for all layouts.
           // Layer 2 (module graph) runs later in generateBundle once Rollup's
           // module info is available.
@@ -1932,6 +2083,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               i18n: nextConfig?.i18n,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
+              globalNotFoundPath,
             },
             instrumentationPath,
           );

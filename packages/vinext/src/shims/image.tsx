@@ -555,6 +555,10 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     }
     // constrained layout requires width+height or aspectRatio
     if (imgWidth && imgHeight) {
+      // @unpic/react forwards additional image props through transformProps and
+      // merges `style` with generated layout styles at runtime, but its public
+      // React type omits `style`.
+      const unpicRuntimeStyleProps: { style?: React.CSSProperties } = { style };
       preloadImageResource({
         shouldPreload,
         src,
@@ -573,6 +577,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           fetchPriority={priorityFetchPriority}
           sizes={sizes}
           className={className}
+          {...unpicRuntimeStyleProps}
           background={bg}
           onLoad={handleLoad}
           onError={handleError}

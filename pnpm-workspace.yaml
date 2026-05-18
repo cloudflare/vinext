@@ -42,7 +42,7 @@ catalog:
   "@next/mdx": 16.2.6
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
-  "@vitejs/plugin-rsc": ^0.5.23
+  "@vitejs/plugin-rsc": ^0.5.26
   "@vitest/coverage-istanbul": ^4.1.5
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0

@@ -5,6 +5,16 @@ import { waitForAppRouterHydration } from "../../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: hash popstate scroll", () => {
+  async function readVinextHistoryIndex(page: Page) {
+    return page.evaluate(() => {
+      const state = window.history.state;
+      if (!state || typeof state !== "object") return null;
+
+      const value = (state as Record<string, unknown>).__vinext_historyIndex;
+      return typeof value === "number" ? value : null;
+    });
+  }
+
   async function expectScrollY(page: Page, expected: number) {
     await expect(async () => {
       const scrollY = await page.evaluate(() => window.scrollY);
@@ -56,6 +66,73 @@ test.describe("Next.js compat: hash popstate scroll", () => {
     await page.goForward();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
     await expect(page.locator("#content")).toBeInViewport();
+  });
+
+  test("hash-only Link entries carry vinext traversal metadata", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("h1")).toHaveText("Hash Popstate Scroll");
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+
+    await page.click("#hash-link");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    expect(await readVinextHistoryIndex(page)).toBe(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+
+    await page.goForward();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    expect(await readVinextHistoryIndex(page)).toBe(1);
+  });
+
+  test("hash-only replace after back keeps the current traversal index", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#hash-link");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    expect(await readVinextHistoryIndex(page)).toBe(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+
+    await page.click("#replace-top");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#top`);
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+  });
+
+  test("hash-only replace after back restores scroll for the replaced hash target", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#hash-link");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    expect(await readVinextHistoryIndex(page)).toBe(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await expectScrollY(page, 0);
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+
+    await page.click("#replace-content");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    await expect(page.locator("#content")).toBeInViewport();
+    expect(await readVinextHistoryIndex(page)).toBe(0);
+
+    await page.goForward();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    await expect(page.locator("#content")).toBeInViewport();
+    expect(await readVinextHistoryIndex(page)).toBe(1);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll#content`);
+    await expect(page.locator("#content")).toBeInViewport();
+    expect(await readVinextHistoryIndex(page)).toBe(0);
   });
 
   // Next.js App Router handles popstate with ACTION_RESTORE and classifies

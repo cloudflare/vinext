@@ -73,6 +73,8 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   makeThenableParams: (params: AppPageParams) => unknown;
   middlewareContext: AppPageMiddlewareContext;
   metadataRoutes: MetadataFileRoute[];
+  /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
+  basePath?: string;
   renderToReadableStream: (
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
@@ -95,6 +97,14 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
   route?: AppPageBoundaryRoute<TModule> | null;
+  /**
+   * When true, the resolved boundary is rendered without wrapping it in the
+   * route's layouts. Used by `global-not-found.tsx`, which provides its own
+   * `<html>`/`<body>` and intentionally replaces the root layout.
+   * Mirrors Next.js's `createNotFoundLoaderTree` behavior for `hasGlobalNotFound`.
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
+   */
+  skipLayoutWrapping?: boolean;
   statusCode: number;
 } & AppPageBoundaryRenderCommonOptions<TModule>;
 
@@ -297,6 +307,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
+    basePath: options.basePath ?? "",
     layoutModules,
     layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
       options.route,
@@ -317,6 +328,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   }
   headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
 
+  const skipLayoutWrapping = options.skipLayoutWrapping ?? false;
   const element = wrapRenderedBoundaryElement({
     element: createElement(Fragment, null, ...headElements, createElement(boundaryComponent)),
     globalErrorModule: options.globalErrorModule,
@@ -328,13 +340,17 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     matchedParams: options.matchedParams,
     resolveChildSegments: options.resolveChildSegments,
     routeSegments: options.route?.routeSegments,
+    skipLayoutWrapping,
   });
 
   return renderAppPageBoundaryElementResponse({
     ...options,
+    // When global-not-found owns the document, no layouts should contribute to
+    // the RSC payload's layout entries either — otherwise the SSR pipeline
+    // would expect a root-layout tree path that doesn't exist in the markup.
     element,
-    layoutModules,
-    route: options.route,
+    layoutModules: skipLayoutWrapping ? [] : layoutModules,
+    route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
     status: options.statusCode,
   });
@@ -366,6 +382,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   if (!errorBoundary.isGlobalError) {
     try {
       const { metadata, viewport } = await resolveAppPageHead({
+        basePath: options.basePath ?? "",
         fallbackOnFileMetadataError: true,
         layoutModules,
         layoutTreePositions: options.route?.layoutTreePositions,

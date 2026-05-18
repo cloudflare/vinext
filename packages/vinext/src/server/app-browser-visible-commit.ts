@@ -46,6 +46,7 @@ export type ApprovedVisibleCommit = {
   readonly [approvedVisibleCommitBrand]: true;
   readonly action: AppRouterAction;
   readonly decision: VisibleCommitDecision;
+  readonly interception: AppRouterAction["interception"];
   readonly interceptionContext: string | null;
   readonly previousNextUrl: string | null;
   readonly rootLayoutTreePath: string | null;
@@ -156,6 +157,7 @@ function reduceApprovedVisibleCommitState(
             preserveElementIds: commit.decision.preserveElementIds,
             preservePreviousSlotIds: commit.decision.preservePreviousSlotIds,
           }),
+          interception: action.interception,
           interceptionContext: action.interceptionContext,
           layoutFlags: mergeLayoutFlags(
             state.layoutFlags,
@@ -182,6 +184,7 @@ function reduceApprovedVisibleCommitState(
         state,
         {
           elements: action.elements,
+          interception: action.interception,
           interceptionContext: action.interceptionContext,
           layoutFlags: action.layoutFlags,
           layoutIds: action.layoutIds,
@@ -266,6 +269,7 @@ function createApprovedVisibleCommit(options: {
     [approvedVisibleCommitBrand]: true,
     action: options.pending.action,
     decision: options.decision,
+    interception: options.pending.interception,
     interceptionContext: options.pending.interceptionContext,
     previousNextUrl: options.pending.previousNextUrl,
     rootLayoutTreePath: options.pending.rootLayoutTreePath,

@@ -35,6 +35,7 @@ import {
 } from "../utils/query.js";
 import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
+import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -269,6 +270,86 @@ export function _registerRouterStateAccessors(accessors: {
 
 export function setSSRContext(ctx: SSRContext | null): void {
   _setSSRContextImpl(ctx);
+}
+
+type PagesNavigationContextShape = {
+  pathname: string;
+  searchParams: URLSearchParams;
+  params: Record<string, string | string[]>;
+};
+
+// Client-only cache for snapshot stability. useSyncExternalStore compares
+// snapshots with Object.is, so returning a fresh object on every render would
+// trigger re-render loops. We use a module-level cache keyed by URL inputs;
+// this is safe in the browser because there is exactly one request at a time
+// but it must NOT be used on the server (concurrent ALS-scoped requests).
+let _cachedClientPagesNavCtx: PagesNavigationContextShape | null = null;
+let _cachedClientPagesNavCtxKey: string | null = null;
+
+function _buildClientPagesNavigationContext(
+  routePattern: string,
+  resolvedPath: string,
+  searchString: string,
+): PagesNavigationContextShape {
+  const cacheKey = `${routePattern}|${resolvedPath}|${searchString}`;
+  if (_cachedClientPagesNavCtxKey === cacheKey && _cachedClientPagesNavCtx) {
+    return _cachedClientPagesNavCtx;
+  }
+  const searchParams = new URLSearchParams(searchString);
+  const params = routePattern ? (extractRouteParamsFromPath(routePattern, resolvedPath) ?? {}) : {};
+  const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+  _cachedClientPagesNavCtx = ctx;
+  _cachedClientPagesNavCtxKey = cacheKey;
+  return ctx;
+}
+
+/**
+ * Cross-router compat shim source for `next/navigation` hooks.
+ *
+ * Returns the current Pages Router state shaped as a navigation context so
+ * the App Router hooks (useParams/useSearchParams/usePathname) can act as
+ * compat shims when invoked inside a Pages Router render. Mirrors Next.js's
+ * `adaptForPathParams` and `adaptForSearchParams` in
+ * .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx, which Next.js
+ * uses to populate SearchParamsContext / PathParamsContext for the Pages
+ * Router (see packages/next/src/server/render.tsx and
+ * packages/next/src/client/index.tsx).
+ *
+ * Returns `null` when there is no Pages Router state available — e.g. App
+ * Router pages, RSC-only renders, or pre-router renders. Callers should
+ * treat null as "App Router context, use normal app-router state".
+ */
+export function getPagesNavigationContext(): PagesNavigationContextShape | null {
+  if (typeof window === "undefined") {
+    const ssrCtx = _getSSRContext();
+    if (!ssrCtx) return null;
+    // ssrCtx.pathname is the route pattern (e.g. "/blog/[slug]").
+    // ssrCtx.asPath is the resolved URL with query string. For useSearchParams
+    // we want only the URL search string; for useParams we want only the
+    // dynamic route params. Build a fresh object each call — server scope is
+    // request-isolated via ALS but module state must not be cached across
+    // concurrent requests.
+    let searchParams: URLSearchParams;
+    let resolvedPath: string;
+    try {
+      const url = new URL(ssrCtx.asPath, "http://_");
+      searchParams = url.searchParams;
+      resolvedPath = url.pathname;
+    } catch {
+      searchParams = new URLSearchParams();
+      resolvedPath = ssrCtx.pathname;
+    }
+    const params = extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ?? {};
+    return { pathname: resolvedPath, searchParams, params };
+  }
+
+  // Client: derive from window.location + __NEXT_DATA__. __NEXT_DATA__.page
+  // is the route pattern that was matched; navigateClient() keeps it in sync
+  // with the visible URL on every client-side navigation. Cached so
+  // useSyncExternalStore sees a stable snapshot between renders.
+  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const pattern = window.__NEXT_DATA__?.page ?? "";
+  return _buildClientPagesNavigationContext(pattern, resolvedPath, window.location.search);
 }
 
 /**
@@ -783,10 +864,11 @@ export function useRouter(): NextRouter {
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
   const [{ pathname, query, asPath }, setState] = useState(getPathnameAndQuery);
 
-  // Popstate is handled by the module-level listener below so beforePopState()
-  // is consistently enforced regardless of hook consumers. Keep URL snapshot
-  // subscriptions at the provider boundary so many useRouter() calls share one
-  // router state and one vinext:navigate listener.
+  // Popstate is handled by the Pages Router client entry via
+  // installPagesRouterRuntime() so beforePopState() is consistently enforced
+  // regardless of hook consumers. Keep URL snapshot subscriptions at the
+  // provider boundary so many useRouter() calls share one router state and one
+  // vinext:navigate listener.
   useEffect(() => {
     const onNavigate = ((_e: CustomEvent) => {
       setState(getPathnameAndQuery());
@@ -821,62 +903,59 @@ let _beforePopStateCb: BeforePopStateCallback | undefined;
 let _lastPathnameAndSearch =
   typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
 
-// Module-level popstate listener: handles browser back/forward by re-rendering
-// the React root with the page at the new URL. This runs regardless of whether
-// any component calls useRouter().
-if (typeof window !== "undefined") {
-  window.addEventListener("popstate", (e: PopStateEvent) => {
-    const browserUrl = window.location.pathname + window.location.search;
-    const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+function handlePagesRouterPopState(e: PopStateEvent): void {
+  const browserUrl = window.location.pathname + window.location.search;
+  const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
 
-    // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
-    const isHashOnly = browserUrl === _lastPathnameAndSearch;
+  // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
+  const isHashOnly = browserUrl === _lastPathnameAndSearch;
 
-    // Check beforePopState callback
-    if (_beforePopStateCb !== undefined) {
-      const shouldContinue = (_beforePopStateCb as BeforePopStateCallback)({
-        url: appUrl,
-        as: appUrl,
-        options: { shallow: false },
-      });
-      if (!shouldContinue) return;
-    }
+  // Check beforePopState callback
+  if (_beforePopStateCb !== undefined) {
+    const shouldContinue = _beforePopStateCb({
+      url: appUrl,
+      as: appUrl,
+      options: { shallow: false },
+    });
+    if (!shouldContinue) return;
+  }
 
-    // Update tracker only after beforePopState confirms navigation proceeds.
-    // If beforePopState cancels, the tracker must retain the previous value
-    // so the next popstate compares against the correct baseline.
-    _lastPathnameAndSearch = browserUrl;
+  // Update tracker only after beforePopState confirms navigation proceeds.
+  // If beforePopState cancels, the tracker must retain the previous value
+  // so the next popstate compares against the correct baseline.
+  _lastPathnameAndSearch = browserUrl;
 
-    if (isHashOnly) {
-      // Hash-only back/forward — no page fetch needed
-      const hashUrl = appUrl + window.location.hash;
-      routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
-      scrollToHashTarget(window.location.hash);
-      routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
+  if (isHashOnly) {
+    // Hash-only back/forward — no page fetch needed
+    const hashUrl = appUrl + window.location.hash;
+    routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
+    scrollToHashTarget(window.location.hash);
+    routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
+    dispatchNavigateEvent();
+    return;
+  }
+
+  const fullAppUrl = appUrl + window.location.hash;
+  routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
+  // Note: The browser has already updated window.location by the time popstate
+  // fires, so this is not truly "before" the URL change. In Next.js the popstate
+  // handler calls replaceState to store history metadata — beforeHistoryChange
+  // precedes that call, not the URL change itself. We emit it here for API
+  // compatibility.
+  routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
+  void (async () => {
+    const result = await runNavigateClient(browserUrl, fullAppUrl);
+    if (result === "completed") {
+      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
+      restoreScrollPosition(e.state);
       dispatchNavigateEvent();
-      return;
     }
-
-    const fullAppUrl = appUrl + window.location.hash;
-    routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
-    // Note: The browser has already updated window.location by the time popstate
-    // fires, so this is not truly "before" the URL change. In Next.js the popstate
-    // handler calls replaceState to store history metadata — beforeHistoryChange
-    // precedes that call, not the URL change itself. We emit it here for API
-    // compatibility.
-    routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
-    void (async () => {
-      const result = await runNavigateClient(browserUrl, fullAppUrl);
-      if (result === "completed") {
-        routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
-        restoreScrollPosition(e.state);
-        dispatchNavigateEvent();
-      }
-      // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
-      // "failed": runNavigateClient already scheduled the hard-navigation fallback.
-    })();
-  });
+    // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
+    // "failed": runNavigateClient already scheduled the hard-navigation fallback.
+  })();
 }
+
+setPagesRouterPopStateHandler(handlePagesRouterPopState);
 
 /**
  * Wrap a React element in a RouterContext.Provider so that
@@ -1001,5 +1080,20 @@ if (typeof window !== "undefined") {
   // and treat the surface as opaque.
   installWindowNext({ router: Router as unknown as PagesRouterPublicInstance });
 }
+
+// Register the Pages Router compat shim source for `next/navigation` hooks
+// (useParams / useSearchParams / usePathname). The accessor is exposed
+// through a well-known Symbol.for so navigation.ts can read it without
+// importing this module — that avoids triggering navigation.ts's
+// `window.history.pushState` patch in tests that only need next/router.
+//
+// Mirrors Next.js's behavior where the pages-router server (render.tsx) and
+// client (client/index.tsx) wrap pages with SearchParamsContext /
+// PathParamsContext / PathnameContext providers populated from the router.
+const _PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
+  "vinext.navigation.pagesNavigationContextAccessor",
+);
+(globalThis as Record<PropertyKey, unknown>)[_PAGES_NAVIGATION_ACCESSOR_KEY] =
+  getPagesNavigationContext;
 
 export default Router;

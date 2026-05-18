@@ -158,11 +158,17 @@ describe("Next.js compat: draft-mode", () => {
     expect(bypassCookie).not.toMatch(/;\s*Secure/i);
   });
 
-  // ── draftMode() marks dynamic usage ──────────────────────────
-  // draftMode() reads from a request cookie, so it must opt out of
-  // static/ISR caching — same as headers() and cookies().
+  // ── draftMode() dynamic tracking ─────────────────────────────
+  // Calling `draftMode()` itself is NOT dynamic — `isEnabled` is a plain
+  // getter and merely awaiting `draftMode()` does not require bailing out
+  // of static prerendering. Only `enable()` / `disable()` mutate state and
+  // must be tracked as dynamic.
+  //
+  // Ported from Next.js: test/e2e/app-dir/draft-mode/draft-mode.test.ts
+  // ("should not generate rand when draft mode disabled during next start").
+  // Source: .nextjs-ref/packages/next/src/server/request/draft-mode.ts (trackDynamicDraftMode).
 
-  it("draftMode() marks dynamic usage so the render is uncacheable", async () => {
+  it("draftMode() does NOT mark dynamic usage on its own (allows static prerender)", async () => {
     const {
       draftMode: draftModeFn,
       consumeDynamicUsage,
@@ -172,10 +178,47 @@ describe("Next.js compat: draft-mode", () => {
 
     const ctx = headersContextFromRequest(new Request("http://localhost/test"));
     await runWithHeadersContext(ctx, async () => {
-      // Reset any prior dynamic usage
       consumeDynamicUsage();
+      const dm = await draftModeFn();
+      // Reading isEnabled is also non-dynamic.
+      // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+      dm.isEnabled;
+      expect(consumeDynamicUsage()).toBe(false);
+    });
+  });
 
-      await draftModeFn();
+  it("draftMode().enable() marks dynamic usage", async () => {
+    const {
+      draftMode: draftModeFn,
+      consumeDynamicUsage,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(new Request("http://localhost/test"));
+    await runWithHeadersContext(ctx, async () => {
+      consumeDynamicUsage();
+      const dm = await draftModeFn();
+      expect(consumeDynamicUsage()).toBe(false);
+      dm.enable();
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+  });
+
+  it("draftMode().disable() marks dynamic usage", async () => {
+    const {
+      draftMode: draftModeFn,
+      consumeDynamicUsage,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(new Request("http://localhost/test"));
+    await runWithHeadersContext(ctx, async () => {
+      consumeDynamicUsage();
+      const dm = await draftModeFn();
+      expect(consumeDynamicUsage()).toBe(false);
+      dm.disable();
       expect(consumeDynamicUsage()).toBe(true);
     });
   });
