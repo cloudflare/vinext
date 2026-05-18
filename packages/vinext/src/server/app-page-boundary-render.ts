@@ -73,6 +73,8 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   makeThenableParams: (params: AppPageParams) => unknown;
   middlewareContext: AppPageMiddlewareContext;
   metadataRoutes: MetadataFileRoute[];
+  /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
+  basePath?: string;
   renderToReadableStream: (
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
@@ -297,6 +299,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
+    basePath: options.basePath ?? "",
     layoutModules,
     layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
       options.route,
@@ -366,6 +369,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   if (!errorBoundary.isGlobalError) {
     try {
       const { metadata, viewport } = await resolveAppPageHead({
+        basePath: options.basePath ?? "",
         fallbackOnFileMetadataError: true,
         layoutModules,
         layoutTreePositions: options.route?.layoutTreePositions,

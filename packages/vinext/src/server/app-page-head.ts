@@ -54,6 +54,13 @@ type ResolveActiveParallelRouteHeadInputsOptions<
 };
 
 type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  /**
+   * Configured next.config `basePath`. Threaded into `applyFileBasedMetadata`
+   * so file-based metadata route URLs (icon, opengraph-image, manifest, ...)
+   * emitted in <head> are prefixed with the basePath. Empty string when no
+   * basePath is configured.
+   */
+  basePath?: string;
   fallbackOnFileMetadataError?: boolean;
   layoutModules: readonly (TModule | null | undefined)[];
   layoutTreePositions?: readonly number[] | null;
@@ -395,6 +402,7 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
       {
         routeSegments,
         metadataSources,
+        basePath: options.basePath ?? "",
       },
     );
   } catch (error) {

@@ -48,6 +48,8 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   globalErrorModule?: TModule | null;
   makeThenableParams: (params: AppPageParams) => unknown;
   metadataRoutes: MetadataFileRoute[];
+  /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
+  basePath?: string;
   resolveChildSegments: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -101,6 +103,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   options: AppFallbackRendererOptions<TModule>,
 ): AppFallbackRenderer<TModule> {
   const {
+    basePath = "",
     clearRequestContext,
     createRscOnErrorHandler: buildRscOnErrorHandler,
     fontProviders,
@@ -129,6 +132,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
     ) {
       return renderAppPageHttpAccessFallback({
+        basePath,
         boundaryComponent: opts?.boundaryComponent ?? null,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
@@ -182,6 +186,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
     ) {
       return renderAppPageErrorBoundary({
+        basePath,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
         createRscOnErrorHandler(pathname, routePath) {

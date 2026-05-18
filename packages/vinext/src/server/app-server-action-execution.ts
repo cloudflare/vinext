@@ -2,6 +2,8 @@ import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { type FetchCacheMode, setCurrentFetchCacheMode } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import { isExternalUrl } from "../config/config-matchers.js";
+import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
@@ -131,6 +133,8 @@ type DecodeServerActionReplyOptions<TTemporaryReferences> = {
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
   allowedOrigins: string[];
+  /** Configured next.config `basePath`. Prefixed onto progressive Location targets. */
+  basePath?: string;
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
@@ -155,6 +159,8 @@ export type HandleServerActionRscRequestOptions<
 > = {
   actionId: string | null;
   allowedOrigins: string[];
+  /** Configured next.config `basePath`. Prefixed onto ACTION_REDIRECT_HEADER targets. */
+  basePath?: string;
   buildPageElement: (
     options: BuildServerActionPageElementOptions<TRoute, TInterceptOpts>,
   ) => TElement;
@@ -306,6 +312,49 @@ function getActionRedirect(error: unknown): AppServerActionRedirect | null {
     type: redirect.type ?? "push",
     url: redirect.url,
   };
+}
+
+/**
+ * Prepend the configured next.config `basePath` to a server-action redirect
+ * target before it goes on the wire.
+ *
+ * `redirect("/foo")` called from a server action mounted at `/base/...` must
+ * land the browser at `/base/foo`, mirroring how Next.js threads basePath
+ * through `addPathPrefix(getURLFromRedirectError(err), basePath)` in
+ * `app-render.tsx` for SSR redirects and in `action-handler.ts` for action
+ * redirects.
+ *
+ * Idempotent and external-aware:
+ *  - Empty basePath → returned unchanged.
+ *  - External URLs (`http://`, `https://`, `data:`, protocol-relative `//`)
+ *    are returned unchanged because the framework does not own those routes.
+ *  - Targets that already start with the configured basePath are returned
+ *    unchanged so this helper can be applied at any layer without risk of
+ *    double-prefixing (`/base/base/foo`).
+ *
+ * Exported for tests. Used by both the progressive (no-JS form POST) and
+ * RSC (`ACTION_REDIRECT_HEADER`) action redirect paths below.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/action-handler.ts
+ */
+export function applyActionRedirectBasePath(url: string, basePath: string): string {
+  if (!basePath) return url;
+  if (isExternalUrl(url)) return url;
+  // Pathnames that already include basePath are returned as-is.
+  if (hasBasePath(url, basePath)) return url;
+  // Relative or hash/query-only targets cannot be prefixed safely without an
+  // origin; leave them to the caller's URL resolution.
+  if (!url.startsWith("/")) return url;
+  // Split off optional query+hash so addBasePathToPathname only operates on
+  // the path. We must accept hash too because Next.js redirect targets may
+  // contain "#anchor".
+  const queryIndex = url.indexOf("?");
+  const hashIndex = url.indexOf("#");
+  const splitAt =
+    queryIndex === -1 ? hashIndex : hashIndex === -1 ? queryIndex : Math.min(queryIndex, hashIndex);
+  const pathname = splitAt === -1 ? url : url.slice(0, splitAt);
+  const suffix = splitAt === -1 ? "" : url.slice(splitAt);
+  return `${addBasePathToPathname(pathname, basePath)}${suffix}`;
 }
 
 function getActionHttpFallbackStatus(error: unknown): number | null {
@@ -468,7 +517,14 @@ export async function handleProgressiveServerActionRequest(
     options.clearRequestContext();
 
     const headers = new Headers();
-    headers.set("Location", new URL(actionRedirect.url, options.request.url).toString());
+    // Prefix the configured basePath onto the redirect target before it
+    // becomes an absolute Location URL. Mirrors Next.js, which threads
+    // basePath through `addPathPrefix(...)` for server-action redirects.
+    const prefixedRedirectUrl = applyActionRedirectBasePath(
+      actionRedirect.url,
+      options.basePath ?? "",
+    );
+    headers.set("Location", new URL(prefixedRedirectUrl, options.request.url).toString());
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
     for (const cookie of actionPendingCookies) {
       headers.append("Set-Cookie", cookie);
@@ -623,7 +679,14 @@ export async function handleServerActionRscRequest<
       });
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(redirectHeaders);
-      redirectHeaders.set(ACTION_REDIRECT_HEADER, actionRedirect.url);
+      // Prefix basePath onto the redirect target. The client-side handler in
+      // app-browser-entry reads ACTION_REDIRECT_HEADER and calls
+      // window.location.assign/replace verbatim, so the value must already
+      // be a basePath-prefixed URL.
+      redirectHeaders.set(
+        ACTION_REDIRECT_HEADER,
+        applyActionRedirectBasePath(actionRedirect.url, options.basePath ?? ""),
+      );
       redirectHeaders.set(ACTION_REDIRECT_TYPE_HEADER, actionRedirect.type);
       redirectHeaders.set(ACTION_REDIRECT_STATUS_HEADER, String(actionRedirect.status));
       for (const cookie of actionPendingCookies) {

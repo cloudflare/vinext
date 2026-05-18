@@ -1,6 +1,7 @@
 import type { Metadata } from "vinext/shims/metadata";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { fillRoutePatternSegments, routePattern } from "../routing/route-pattern.js";
+import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import {
   getMetadataImageRouteKind,
   getMetadataRouteKind,
@@ -52,6 +53,19 @@ type FileBasedMetadataSource = {
 type FileBasedMetadataOptions = {
   routeSegments?: readonly string[] | null;
   metadataSources?: readonly FileBasedMetadataSource[] | null;
+  /**
+   * The configured next.config `basePath`, prefixed to all file-based
+   * metadata URLs emitted in the page <head> (icons, opengraph-image,
+   * twitter-image, manifest, apple-icon, favicon).
+   *
+   * Mirrors Next.js, which bakes basePath into static metadata route URLs
+   * during webpack build and threads it through the dynamic image loader's
+   * `pathnamePrefix = normalizePathSep(path.join(basePath, segment))`.
+   *
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-metadata-image-loader.ts#L63
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/metadata/discover.ts#L88
+   */
+  basePath?: string;
 };
 
 type IconMap = {
@@ -574,6 +588,50 @@ async function resolveHeadDataList(
   return headDataList.flat();
 }
 
+/**
+ * Prepend the configured basePath to a file-based metadata href.
+ *
+ * Hrefs at this point are framework-built strings of the form
+ *   "/<route>/<file>[?<contentHash>]"
+ * The basePath must go before the path portion only; the query (cache-busting
+ * content hash) must be preserved verbatim. External URLs (http://, https://,
+ * //, data:, blob:) are left untouched — those are user-controlled and the
+ * framework has no business prefixing them.
+ *
+ * Idempotent: when the path already starts with `basePath` (or equals it),
+ * the path is returned unchanged so consumers may safely apply the prefix
+ * at any layer without risking `/base/base/icon.png`.
+ */
+function prefixMetadataHrefWithBasePath(href: string, basePath: string): string {
+  if (!basePath) return href;
+  // External / scheme-relative / data URLs: not a framework-owned route.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) {
+    return href;
+  }
+  // Must start with "/" to be a framework-owned pathname. Defensive guard —
+  // resolveRouteHeadData / metadata-route-build-data always emit absolute paths.
+  if (!href.startsWith("/")) return href;
+
+  // Split off the optional query so addBasePathToPathname only sees the path.
+  const queryIndex = href.indexOf("?");
+  const pathname = queryIndex === -1 ? href : href.slice(0, queryIndex);
+  const search = queryIndex === -1 ? "" : href.slice(queryIndex);
+
+  if (hasBasePath(pathname, basePath)) return href;
+  return `${addBasePathToPathname(pathname, basePath)}${search}`;
+}
+
+function applyBasePathToHeadDataList(
+  headDataList: MetadataRouteHeadData[],
+  basePath: string,
+): MetadataRouteHeadData[] {
+  if (!basePath) return headDataList;
+  return headDataList.map((entry) => ({
+    ...entry,
+    href: prefixMetadataHrefWithBasePath(entry.href, basePath),
+  }));
+}
+
 export async function applyFileBasedMetadata(
   metadata: Metadata | null,
   routePath: string,
@@ -629,13 +687,15 @@ export async function applyFileBasedMetadata(
     routeSegments,
   );
 
+  const basePath = options?.basePath ?? "";
+
   const [
-    faviconHeadData,
-    iconHeadData,
-    appleHeadData,
-    openGraphHeadData,
-    twitterHeadData,
-    manifestHeadData,
+    rawFaviconHeadData,
+    rawIconHeadData,
+    rawAppleHeadData,
+    rawOpenGraphHeadData,
+    rawTwitterHeadData,
+    rawManifestHeadData,
   ] = await Promise.all([
     resolveHeadDataList(faviconRoutes, params),
     resolveHeadDataList(iconRoutes, params),
@@ -644,6 +704,18 @@ export async function applyFileBasedMetadata(
     resolveHeadDataList(twitterRoutes, params),
     resolveHeadDataList(manifestRoutes, params),
   ]);
+
+  // Prefix every file-based metadata href with the configured basePath.
+  // Matches Next.js, which bakes basePath into both static and dynamic
+  // metadata route URLs at build time. Doing it here keeps the metadata route
+  // request matching (which operates on basePath-stripped pathnames) and the
+  // <head> URL emission (which must include basePath) symmetric.
+  const faviconHeadData = applyBasePathToHeadDataList(rawFaviconHeadData, basePath);
+  const iconHeadData = applyBasePathToHeadDataList(rawIconHeadData, basePath);
+  const appleHeadData = applyBasePathToHeadDataList(rawAppleHeadData, basePath);
+  const openGraphHeadData = applyBasePathToHeadDataList(rawOpenGraphHeadData, basePath);
+  const twitterHeadData = applyBasePathToHeadDataList(rawTwitterHeadData, basePath);
+  const manifestHeadData = applyBasePathToHeadDataList(rawManifestHeadData, basePath);
 
   if (
     !metadata &&
