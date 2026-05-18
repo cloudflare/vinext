@@ -1327,6 +1327,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // the same reason; this mirrors that for `ssr`. Affects only
             // the build pipeline.
             ssrEmitAssets: true,
+            // CSS minification target. Vite/esbuild defaults to the same target
+            // as JS (modern evergreens), which lets esbuild's CSS minifier rewrite
+            // `@media (max-width: 768px)` to the Media Queries Level 4 range
+            // syntax `@media (width <= 768px)`. Both forms are semantically
+            // equivalent in modern browsers, but the rewrite is observable to
+            // user code that inspects `cssText` of `CSSMediaRule`s and breaks
+            // tools that pattern-match the raw query string. Next.js does not
+            // perform this rewrite by default (its webpack/lightningcss CSS
+            // pipeline preserves the original syntax), so user code carried
+            // over from Next.js can break when migrating to vinext.
+            //
+            // Pin a baseline old enough to suppress the rewrite — Safari 15
+            // predates support for CSS MQ Level 4 range syntax (added in
+            // Safari 16.4). esbuild checks the configured target and skips
+            // lowering when any target is too old. This only affects literal
+            // media-query syntax; matching behavior at runtime is unchanged.
+            //
+            // Mirrors the Next.js fixture
+            // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
+            // asserts `cssText` preserves `max-width: 768px`.
+            cssTarget: ["chrome87", "edge88", "firefox78", "safari15"],
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
