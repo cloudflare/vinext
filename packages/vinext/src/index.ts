@@ -3955,11 +3955,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const workerEntry = path.join(workerOutDir, "index.js");
             if (!fs.existsSync(workerEntry)) return;
 
-            // Fallback: scan dist/client/assets/ for the client entry chunk.
-            // Pages Router uses "vinext-client-entry", App Router uses
-            // "vinext-app-browser-entry".
+            // Fallback: scan the on-disk assets directory for the client entry
+            // chunk when the SSR manifest lookup didn't surface one. Pages Router
+            // uses "vinext-client-entry", App Router uses "vinext-app-browser-entry".
+            //
+            // When `assetPrefix` is configured, chunks live under
+            // `<prefix>/_next/static/` (path-prefix) or `_next/static/`
+            // (absolute-URL prefix) — NOT `assets/`. Resolve the actual
+            // subdirectory from the same helper that drives `build.assetsDir`
+            // and the prod-server lookup path, so this fallback works for every
+            // layout supported by the rest of the pipeline.
             if (!clientEntryFile) {
-              const assetsDir = path.join(clientDir, "assets");
+              const assetsSubdir = resolveAssetsDir(nextConfig?.assetPrefix);
+              const assetsDir = path.join(clientDir, assetsSubdir);
               if (fs.existsSync(assetsDir)) {
                 const files = fs.readdirSync(assetsDir);
                 const entry = files.find(
@@ -3967,7 +3975,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
                     f.endsWith(".js"),
                 );
-                if (entry) clientEntryFile = manifestFileWithBase("assets/" + entry, clientBase);
+                if (entry)
+                  clientEntryFile = manifestFileWithBase(`${assetsSubdir}/${entry}`, clientBase);
               }
             }
 
