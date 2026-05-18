@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { isExternalUrl } from "./config-matchers.js";
@@ -582,96 +583,6 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
   };
 }
 
-/**
- * Vite plugin that bridges CJS modules imported by `next.config.{ts,mts,…}`
- * into the ESM-only module runner.
- *
- * Vite's `runnerImport` evaluates every loaded module as ESM. Imports like
- * `import x from './foo.cjs'` or `import * as y from './bar.cts'` therefore
- * blow up with `module is not defined` the first time the source references
- * `module.exports`. Next.js's own `next.config.ts` loader sidesteps this by
- * routing the file through Node's `Module._compile` and SWC's CommonJS
- * transform, which provides the CJS globals and auto-converts
- * `module.exports = X` to a default export.
- *
- * We replicate the relevant slice: for any `.cjs`/`.cts` file (unconditionally
- * CJS by spec) and for `.js`/`.ts` files that statically assign to
- * `module.exports`, inject CJS globals and re-export `module.exports` as the
- * ESM default. The transform is config-load scoped: it lives on the inline
- * Vite instance created for `runnerImport`, so it never touches the user's
- * application module graph.
- *
- * Ports the behaviour exercised by Next.js fixtures
- * `test/e2e/app-dir/next-config-ts-native-{mts,ts}/import-js-extensions-{cjs,esm}/`
- * and `…/import-from-node-modules/`.
- */
-function cjsImportsInteropPlugin(configPath: string): {
-  name: string;
-  enforce: "pre";
-  // oxlint-disable-next-line typescript/no-explicit-any
-  transform(this: unknown, code: string, id: string): any;
-} {
-  const normalizedConfig = safeRealpath(path.resolve(configPath));
-  return {
-    name: "vinext:next-config-cjs-imports-interop",
-    enforce: "pre",
-    transform(code: string, id: string) {
-      const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
-      // Skip the config file itself; cjsGlobalsInjectorPlugin owns that one
-      // (and uses its own export shape via VINEXT_CJS_EXPORTS_KEY).
-      const resolvedId = safeRealpath(path.resolve(idPath));
-      if (resolvedId === normalizedConfig) return null;
-
-      // `.cjs` / `.cts` are unconditionally CJS by file extension; `.js` /
-      // `.ts` are only treated as CJS when they statically reassign
-      // `module.exports`. `.mjs` and `.mts` are always ESM — skip them.
-      const ext = path.extname(idPath).toLowerCase();
-      const isAlwaysCjs = ext === ".cjs" || ext === ".cts";
-      const isMaybeCjs = ext === ".js" || ext === ".ts";
-      if (!isAlwaysCjs && !isMaybeCjs) return null;
-      if (isMaybeCjs && !reassignsModuleExports(code)) return null;
-
-      // Skip files that already look like ESM (have `export` declarations).
-      // Picking ESM over CJS matches Node's resolution for ambiguous extensions
-      // and avoids double-wrapping files that just happen to mention
-      // `module.exports` in a comment.
-      if (
-        isMaybeCjs &&
-        /\bexport\s+(?:default|\{|const|let|var|function|class|async|\*)/.test(code)
-      ) {
-        return null;
-      }
-
-      const dirname = path.dirname(resolvedId);
-      const filenameLiteral = JSON.stringify(resolvedId);
-      const dirnameLiteral = JSON.stringify(dirname);
-      const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
-
-      // Wrap the body in a function so top-level `return` inside the user
-      // source stays scoped, then re-export the final `module.exports` as
-      // the ESM default. `exports` and `module.exports` start aliased to the
-      // same object — matching Node's CJS semantics — so writes to
-      // `exports.foo` propagate until the user reassigns `module.exports = X`,
-      // after which any further `exports.foo = …` mutates the discarded
-      // original. Code that reassigns should use `module.exports.foo = …`.
-      const wrapped =
-        `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
-        `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
-        `const module = { exports: {} };\n` +
-        `let exports = module.exports;\n` +
-        `(function() {\n${code}\n}).call(module.exports);\n` +
-        `export default module.exports;\n`;
-
-      return {
-        code: wrapped,
-        map: null,
-      };
-    },
-  };
-}
-
 export function findNextConfigPath(root: string): string | null {
   for (const filename of CONFIG_FILES) {
     const configPath = path.join(root, filename);
@@ -763,6 +674,11 @@ export async function loadNextConfig(
   // See packages/next/src/build/next-config-ts/transpile-config.ts.
   const tsconfigAliases = loadTsconfigPathAliasesForRoot(root);
 
+  // Symlink-resolved config path, used by the `commonjs()` filter below to
+  // exclude the config file itself. macOS uses /private/var symlinks, so
+  // string-compare without realpath would falsely include the config.
+  const normalizedConfigPath = safeRealpath(path.resolve(configPath));
+
   try {
     // Load config via Vite's module runner (TS + extensionless import support)
     const { runnerImport } = await import("vite");
@@ -772,6 +688,12 @@ export async function loadNextConfig(
       clearScreen: false,
       resolve: {
         alias: tsconfigAliases,
+        // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
+        // those extensions (the plugin keys off `config.resolve.extensions`,
+        // which on Vite defaults to `[.mjs, .js, .mts, .ts, .jsx, .tsx,
+        // .json]` — no CJS extensions). This also lets the runner's resolver
+        // find `./foo` style imports that resolve to a `.cjs`/`.cts` sibling.
+        extensions: [".mjs", ".js", ".cjs", ".mts", ".ts", ".cts", ".jsx", ".tsx", ".json"],
       },
       // Only inject CJS globals for TypeScript config flavours. Next.js
       // applies its `Module._compile` / SWC pipeline (which exposes the
@@ -779,14 +701,34 @@ export async function loadNextConfig(
       // configs are loaded through Node and already have `require`/`module`,
       // and `.mjs` configs are explicitly ESM-only.
       //
-      // Regardless of the config flavour, also install the CJS-imports
-      // interop plugin so that `.cjs` / `.cts` (and `.js` / `.ts` files that
-      // statically reassign `module.exports`) imported during config load
-      // resolve through Vite's ESM-only module runner. This mirrors how
-      // Next.js's SWC pipeline auto-converts CJS imports.
+      // Pair that with `vite-plugin-commonjs` (the same plugin used for
+      // application code in index.ts) so sibling imports like `.cjs`/`.cts`,
+      // or `.js`/`.ts` files that assign to `module.exports`, are converted
+      // to ESM before Vite's runner evaluates them. The default `filter`
+      // skips `node_modules`; we opt back in so bare-import packages
+      // imported by next.config.* (e.g. CJS plugin wrappers) keep working —
+      // this mirrors how Next.js's SWC pipeline handles those imports too.
+      //
+      // The config file itself is excluded from `commonjs()`: when it needs
+      // CJS globals it goes through `cjsGlobalsInjectorPlugin`, which sets
+      // up a specific `__vinext_cjs_exports` wiring that `unwrapConfig` reads
+      // back. Letting both plugins inject `module = { exports: {} }` for the
+      // same source produces an `Identifier 'module' has already been
+      // declared` syntax error.
       plugins: [
         ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
-        cjsImportsInteropPlugin(configPath),
+        commonjs({
+          filter: (id: string) => {
+            const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
+            const resolvedId = safeRealpath(path.resolve(idPath));
+            if (resolvedId === normalizedConfigPath) return false;
+            // Returning `true` forces the transform to run even for ids
+            // inside `node_modules` (default behaviour skips them);
+            // `undefined` falls through to the plugin's default for
+            // user code.
+            return id.includes("node_modules") ? true : undefined;
+          },
+        }),
       ],
     });
     return await unwrapConfig(mod, phase);
