@@ -841,7 +841,11 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (state.headersContext?.accessError) {
     throw state.headersContext.accessError;
   }
-  markDynamicUsage();
+  // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
+  // getter and merely calling `draftMode()` does not require bailing out
+  // of static prerendering. Only `enable()`/`disable()` mutate state and
+  // must be tracked as dynamic, mirroring Next.js's `trackDynamicDraftMode`
+  // (see .nextjs-ref/packages/next/src/server/request/draft-mode.ts:152-165).
   const secret = getDraftSecret();
 
   return {
@@ -851,6 +855,7 @@ export async function draftMode(): Promise<DraftModeResult> {
         : false;
     },
     enable(): void {
+      markDynamicUsage();
       if (state.headersContext?.accessError) {
         throw state.headersContext.accessError;
       }
@@ -860,6 +865,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
     disable(): void {
+      markDynamicUsage();
       if (state.headersContext?.accessError) {
         throw state.headersContext.accessError;
       }
