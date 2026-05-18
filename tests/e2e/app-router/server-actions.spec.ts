@@ -252,16 +252,13 @@ test.describe("Server action forwarding loop guard", () => {
     }).toPass({ timeout: 10_000 });
   });
 
-  // Ported from Next.js: test/e2e/app-dir/action-forward-loop/action-forward-loop.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/action-forward-loop/action-forward-loop.test.ts
-  test("UnrecognizedActionError is caught by client error boundary", async ({ page }) => {
+  // This tests the pre-existing "unknown action ID" path, not the new
+  // x-action-forwarded guard. In vinext's single-worker model the action is
+  // found locally, so the guard cannot be triggered organically via E2E.
+  test("stale action ID returns 404 with x-nextjs-action-not-found header", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/action-forward-loop`);
     await waitForAppRouterHydration(page);
 
-    // Simulate the x-action-forwarded header by directly POSTing via Playwright.
-    // In a multi-worker deployment this would happen naturally; here we force it
-    // to verify the client-side contract: 404 + x-nextjs-action-not-found ->
-    // UnrecognizedActionError -> error boundary renders #action-not-found-error.
     const response = await page.evaluate(async (base) => {
       const res = await fetch(`${base}/nextjs-compat/action-forward-loop`, {
         method: "POST",
