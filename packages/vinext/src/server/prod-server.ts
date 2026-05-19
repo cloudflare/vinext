@@ -1459,12 +1459,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // URL prefix). On disk the layout under `dist/client` mirrors the URL
     // (see `resolveAppRouterAssetPath` for the full table), so the same
     // helper handles both routers.
+    //
+    // Match the App Router's behaviour (above) and use the UN-stripped
+    // `pathname` here, not `staticLookupPath`. Emitted asset URLs already
+    // carry the assetPrefix verbatim (which equals `basePath` when the
+    // Next.js parity fallback fires — packages/next/src/server/config.ts:528-531),
+    // so stripping `basePath` first would make `resolveAppRouterAssetPath`'s
+    // path-prefix branch miss the match and return null → 404.
+    // `staticLookupPath` is still computed because non-asset paths below
+    // (image-optimization, SSR routing) match against the basePath-stripped form.
     const staticLookupPath = stripBasePath(pathname, basePath);
-    const pagesAssetLookup = resolveAppRouterAssetPath(
-      staticLookupPath,
-      pagesAssetPathPrefix,
-      assetPrefix,
-    );
+    const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
     if (
       pagesAssetLookup &&
       (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache))

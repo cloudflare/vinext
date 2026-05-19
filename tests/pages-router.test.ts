@@ -2182,7 +2182,8 @@ export default function CounterPage() {
 
       try {
         const addr = prodServer.address() as { port: number };
-        const res = await fetch(`http://127.0.0.1:${addr.port}/docs/counter`);
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+        const res = await fetch(`${baseUrl}/docs/counter`);
         expect(res.status).toBe(200);
         const html = await res.text();
         // Asset URLs land under `<basePath>/_next/static/` per Next.js
@@ -2190,6 +2191,25 @@ export default function CounterPage() {
         // both share the same prefix.
         expect(html).toContain('href="/docs/_next/static/');
         expect(html).toContain('src="/docs/_next/static/');
+
+        // Every emitted asset URL must actually resolve to 200 from the
+        // prod server. The previous version of this test only asserted
+        // the URLs APPEAR in HTML, not that they were served correctly.
+        // The Pages Router asset lookup was stripping basePath BEFORE
+        // matching against the assetPrefix, so requests for
+        // `/docs/_next/static/...` were 404ing when assetPrefix fell
+        // back to basePath (round-5 review feedback on #1311).
+        const assetUrls = new Set<string>();
+        for (const m of html.matchAll(
+          /<(?:script|link)[^>]+(?:src|href)="(\/docs\/_next\/[^"]+)"/g,
+        )) {
+          assetUrls.add(m[1]);
+        }
+        expect(assetUrls.size).toBeGreaterThan(0);
+        for (const url of assetUrls) {
+          const assetRes = await fetch(`${baseUrl}${url}`);
+          expect(assetRes.status, `expected 200 for ${url}`).toBe(200);
+        }
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }

@@ -23,7 +23,7 @@ import { describe, it, expect, afterAll } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createBuilder } from "vite";
+import { build, createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   isAbsoluteAssetPrefix,
@@ -496,6 +496,115 @@ describe("assetPrefix end-to-end build", () => {
       expect(bootstrapMatch![1]).toMatch(/^\/assets\//);
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
+    } finally {
+      server.close();
+    }
+  }, 180_000);
+
+  // Regression test for round-5 review feedback on #1311. Mirrors the App
+  // Router "basePath alone" test above, but for the Pages Router. The bug:
+  // the Pages Router prod-server stripped basePath from the request path
+  // BEFORE matching against assetPrefix's path-prefix branch, so when the
+  // Next.js parity fallback set `assetPrefix = basePath`, every asset 404'd.
+  //
+  // Critically: this test FETCHES the asset URLs (not just inspecting HTML),
+  // which is what the existing pages-router basePath test missed.
+  it("Pages Router with basePath alone serves assets under <basePath>/_next/static/", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-asset-prefix-"));
+    register(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+    // Spin up a minimal Pages Router fixture inline rather than copy
+    // tests/fixtures/pages-basic — that fixture pulls in a large config
+    // object (redirects/rewrites/headers) we don't need here.
+    fs.symlinkSync(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/docs" };\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `import { useState } from "react";
+export default function HomePage() {
+  const [count, setCount] = useState(0);
+  return (
+    <button data-testid="increment" onClick={() => setCount((c) => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+`,
+    );
+
+    const outDir = path.join(tmpDir, "dist");
+
+    // Pages Router build pipeline — server then client. Matches the pattern
+    // in tests/pages-router.test.ts for the SSR-manifest basePath test.
+    await build({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "server"),
+        ssr: "virtual:vinext-server-entry",
+        rollupOptions: { output: { entryFileNames: "entry.js" } },
+      },
+    });
+    await build({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "client"),
+        manifest: true,
+        ssrManifest: true,
+        rollupOptions: { input: "virtual:vinext-client-entry" },
+      },
+    });
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir,
+      noCompression: true,
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const baseUrl = `http://127.0.0.1:${port}`;
+
+      const homeRes = await fetch(`${baseUrl}/docs/`);
+      expect(homeRes.status).toBe(200);
+      const html = await homeRes.text();
+
+      // Collect every emitted asset URL (script srcs + stylesheet hrefs).
+      // The parity fallback (`assetPrefix = basePath`) puts them all under
+      // `<basePath>/_next/static/`, which is the Next.js-canonical layout.
+      const assetUrls = new Set<string>();
+      for (const m of html.matchAll(
+        /<(?:script|link)[^>]+(?:src|href)="(\/docs\/_next\/[^"]+)"/g,
+      )) {
+        assetUrls.add(m[1]);
+      }
+      expect(assetUrls.size, "expected at least one asset URL in the SSR HTML").toBeGreaterThan(0);
+
+      // Critically: fetch each asset URL and assert 200. Before the
+      // round-5 fix, the Pages Router lookup stripped basePath from the
+      // request path before matching assetPrefix's path-prefix branch,
+      // which made the helper return null → 404 here. Inspecting HTML
+      // alone (as the pre-existing pages-router basePath test did) was
+      // not enough to catch the regression.
+      for (const url of assetUrls) {
+        const assetRes = await fetch(`${baseUrl}${url}`);
+        expect(assetRes.status, `expected 200 for ${url}`).toBe(200);
+        if (url.endsWith(".js")) {
+          expect(assetRes.headers.get("content-type")).toContain("javascript");
+        }
+      }
     } finally {
       server.close();
     }
