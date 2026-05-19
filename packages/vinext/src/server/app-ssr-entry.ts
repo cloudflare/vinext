@@ -128,7 +128,10 @@ function renderFontHtml(fontData?: FontData, nonce?: string): string {
  */
 function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | undefined {
   if (!bootstrapScriptContent) return undefined;
-  const match = bootstrapScriptContent.match(/import\("([^"]+)"\)/);
+  // Accept either quote style — plugin-rsc currently emits double quotes
+  // (`import("…")`) but a future version could switch to single quotes,
+  // and there's no public contract documenting which is used.
+  const match = bootstrapScriptContent.match(/import\(["']([^"']+)["']\)/);
   return match?.[1] ?? undefined;
 }
 
