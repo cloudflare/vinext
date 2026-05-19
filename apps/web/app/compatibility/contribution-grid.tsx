@@ -20,8 +20,8 @@
  * fewer rows, narrow screens get fewer columns and more rows. No SVG-coord
  * scaling, so tooltip positioning math stays straightforward.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FileStatus } from "@/app/lib/db/schema";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 
 // useLayoutEffect would log a warning during SSR. Fall through to useEffect
 // on the server (where there is nothing to measure anyway).
@@ -30,11 +30,42 @@ const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayout
 export type GridCell = {
   suite: string;
   status: FileStatus;
+  router: RouterKind;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
 };
+
+/**
+ * Router-filter values for the chip bar above the grid.
+ *   - "all"     — every test file in the latest run
+ *   - "app"     — App Router fixtures + parity tests (since they exercise app)
+ *   - "pages"   — Pages Router fixtures + parity tests
+ *   - "both"    — only parity tests (real `app/` and `pages/` in same fixture)
+ *   - "unknown" — config/build/edge-runtime tests with no router fixture
+ *
+ * Note: "app" and "pages" both include "both" cells. This is intentional —
+ * a parity test failure is a real failure for both routers. Adding the
+ * pass counts of "app" and "pages" therefore exceeds the total; the
+ * stat-card labels make this explicit.
+ */
+type RouterFilter = "all" | RouterKind;
+
+const ROUTER_FILTERS: ReadonlyArray<{ key: RouterFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "app", label: "App Router" },
+  { key: "pages", label: "Pages Router" },
+  { key: "both", label: "Parity (both)" },
+  { key: "unknown", label: "Other" },
+];
+
+function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "app") return cell.router === "app" || cell.router === "both";
+  if (filter === "pages") return cell.router === "pages" || cell.router === "both";
+  return cell.router === filter;
+}
 
 const COLORS: Record<FileStatus, string> = {
   pass: "#2da44e", // green
@@ -48,6 +79,13 @@ const LABELS: Record<FileStatus, string> = {
   partial: "Partial",
   fail: "Fail",
   skip: "Skipped by Next.js",
+};
+
+const ROUTER_LABELS: Record<RouterKind, string> = {
+  app: "App Router",
+  pages: "Pages Router",
+  both: "Parity (App + Pages)",
+  unknown: "No router fixture",
 };
 
 const CELL_SIZE = 12;
@@ -65,7 +103,8 @@ function summarize(cell: GridCell): string {
   if (cell.skipped > 0) parts.push(`${cell.skipped} skipped`);
   const group = deriveSuiteGroup(cell.suite);
   const prefix = group ? `[${group}] ${cell.suite}` : cell.suite;
-  return `${prefix} — ${LABELS[cell.status]} (${parts.join(", ")})`;
+  const routerTag = ROUTER_LABELS[cell.router];
+  return `${prefix} — ${LABELS[cell.status]} · ${routerTag} (${parts.join(", ")})`;
 }
 
 /**
@@ -100,11 +139,41 @@ function deriveSuiteGroup(suite: string): string | null {
 export function ContributionGrid({ cells }: { cells: GridCell[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [cols, setCols] = useState(SSR_COLS);
+  const [filter, setFilter] = useState<RouterFilter>("all");
   const [hover, setHover] = useState<{
     cell: GridCell;
     x: number; // pixels relative to containerRef
     y: number;
   } | null>(null);
+
+  // Per-filter counts for the chip labels. Recomputed only when `cells`
+  // changes — filter changes don't need to re-bucket.
+  const filterCounts = useMemo(() => {
+    const counts: Record<RouterFilter, number> = {
+      all: cells.length,
+      app: 0,
+      pages: 0,
+      both: 0,
+      unknown: 0,
+    };
+    for (const c of cells) {
+      if (c.router === "app") counts.app++;
+      else if (c.router === "pages") counts.pages++;
+      else if (c.router === "both") {
+        counts.both++;
+        // Parity tests count toward both router buckets (see comment on
+        // RouterFilter above).
+        counts.app++;
+        counts.pages++;
+      } else counts.unknown++;
+    }
+    return counts;
+  }, [cells]);
+
+  const visibleCells = useMemo(
+    () => (filter === "all" ? cells : cells.filter((c) => cellMatchesFilter(c, filter))),
+    [cells, filter],
+  );
 
   // Measure the container synchronously before paint so the first client
   // render uses the real column count (no layout flash if the SSR guess is
@@ -143,21 +212,51 @@ export function ContributionGrid({ cells }: { cells: GridCell[] }) {
     );
   }
 
-  const effectiveCols = Math.max(1, Math.min(cols, cells.length));
-  const rows = Math.ceil(cells.length / effectiveCols);
+  const effectiveCols = Math.max(1, Math.min(cols, Math.max(visibleCells.length, 1)));
+  const rows = Math.max(1, Math.ceil(visibleCells.length / effectiveCols));
   const svgWidth = effectiveCols * STRIDE - GAP;
   const svgHeight = rows * STRIDE - GAP;
 
   return (
     <div ref={containerRef} className="relative w-full">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {ROUTER_FILTERS.map((f) => {
+          const count = filterCounts[f.key];
+          const active = filter === f.key;
+          const disabled = count === 0;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFilter(f.key)}
+              disabled={disabled}
+              aria-pressed={active}
+              className={[
+                "rounded-full px-3 py-1 text-xs font-medium ring transition-colors",
+                active
+                  ? "bg-kumo-default text-kumo-base ring-kumo-default"
+                  : "bg-kumo-base text-kumo-default ring-kumo-hairline hover:bg-kumo-elevated",
+                disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+              ].join(" ")}
+            >
+              {f.label} <span className="opacity-70">({count})</span>
+            </button>
+          );
+        })}
+      </div>
+      {visibleCells.length === 0 ? (
+        <div className="py-8 text-center text-sm text-kumo-subtle">
+          No test files in this category.
+        </div>
+      ) : null}
       <svg
         role="img"
-        aria-label={`Compatibility grid: ${cells.length} test files`}
+        aria-label={`Compatibility grid: ${visibleCells.length} test files`}
         width={svgWidth}
         height={svgHeight}
         style={{ display: "block", maxWidth: "100%" }}
       >
-        {cells.map((cell, i) => {
+        {visibleCells.map((cell, i) => {
           const col = i % effectiveCols;
           const row = Math.floor(i / effectiveCols);
           const x = col * STRIDE;
@@ -194,16 +293,17 @@ export function ContributionGrid({ cells }: { cells: GridCell[] }) {
       {hover
         ? (() => {
             const group = deriveSuiteGroup(hover.cell.suite);
+            const routerLabel = ROUTER_LABELS[hover.cell.router];
             return (
               <div
                 className="pointer-events-none absolute z-10 max-w-sm rounded-md bg-kumo-elevated px-3 py-2 text-xs text-kumo-default shadow-lg ring ring-kumo-hairline"
                 style={{ left: hover.x, top: hover.y, transform: "translateX(-50%)" }}
               >
-                {group ? (
-                  <div className="mb-1 text-[10px] font-medium tracking-wide text-kumo-subtle uppercase">
-                    {group}
-                  </div>
-                ) : null}
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-medium tracking-wide text-kumo-subtle uppercase">
+                  {group ? <span>{group}</span> : null}
+                  {group ? <span aria-hidden>·</span> : null}
+                  <span>{routerLabel}</span>
+                </div>
                 <div className="font-mono break-all">{hover.cell.suite}</div>
                 <div className="mt-1 text-kumo-subtle">{summarize(hover.cell).split(" — ")[1]}</div>
               </div>

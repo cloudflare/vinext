@@ -93,6 +93,33 @@ jobs:
           fi
           node scripts/nextjs-deploy-manifest.mjs "${args[@]}"
 
+      # Classify every Next.js e2e test file by which router(s) its fixture
+      # exercises. We do this once at build time (so the heavy directory
+      # walk happens with the Next.js checkout still on disk) and ship the
+      # resulting map to the report job as an artifact. The report job
+      # joins it onto each per-file result before POSTing to /api/compatibility.
+      - name: Classify Next.js test suites by router
+        env:
+          NEXTJS_DIR: ${{ github.workspace }}/next.js
+        run: |
+          # 1) Enumerate every *.test.{ts,tsx,js,jsx} under next.js/test/e2e/.
+          #    This is the universe of suites that could possibly show up in
+          #    any shard's results. Doing this once lets the report job do
+          #    a pure lookup with no filesystem dependency.
+          # 2) Classify each one by which router(s) its fixture exercises.
+          node scripts/list-nextjs-e2e-suites.mjs "$NEXTJS_DIR" nextjs-all-suites.json
+          node scripts/classify-nextjs-suites.mjs \
+            "$NEXTJS_DIR" \
+            nextjs-all-suites.json \
+            nextjs-suite-routers.json
+
+      - name: Upload suite router classification
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextjs-suite-routers
+          path: nextjs-suite-routers.json
+          retention-days: 14
+
       - name: Save build artifacts
         uses: actions/cache/save@v5
         with:
@@ -211,6 +238,19 @@ jobs:
           path: results
           merge-multiple: true
 
+      # Pre-computed in the build job: `{ "test/e2e/foo/foo.test.ts": "app", ... }`.
+      # Used by the next step to attach a `router` field to each ingested file
+      # so the /compatibility UI can split the grid by App Router vs Pages Router.
+      # If the artifact is missing (older builds, partial cache, etc.) the
+      # report still posts; all files just default to "unknown".
+      - name: Download suite router classification
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: nextjs-suite-routers
+          path: classification
+
       - name: Generate report
         id: report
         uses: actions/github-script@v7
@@ -250,6 +290,23 @@ jobs:
               return;
             }
 
+            // Load the suite → router classification map built in the build
+            // job. Missing file is non-fatal — `router` just won't be attached
+            // to ingest rows, which the worker treats as "unknown".
+            let routerMap = {};
+            try {
+              const buf = fs.readFileSync(
+                path.join('classification', 'nextjs-suite-routers.json'),
+                'utf8',
+              );
+              routerMap = JSON.parse(buf);
+              core.info(`Loaded ${Object.keys(routerMap).length} suite classifications`);
+            } catch (e) {
+              core.warning(
+                `Could not load suite router classification (ingest will use "unknown" for all): ${e.message}`,
+              );
+            }
+
             const passed = [];
             const failed = [];
             const skipped = [];
@@ -258,7 +315,14 @@ jobs:
             function bumpFile(suite, key) {
               let cur = fileCounts.get(suite);
               if (!cur) {
-                cur = { suite, total: 0, passed: 0, failed: 0, skipped: 0 };
+                cur = {
+                  suite,
+                  router: routerMap[suite] || 'unknown',
+                  total: 0,
+                  passed: 0,
+                  failed: 0,
+                  skipped: 0,
+                };
                 fileCounts.set(suite, cur);
               }
               cur.total++;

@@ -58,6 +58,23 @@ export const compatFileResults = sqliteTable(
     suite: text("suite").notNull(),
     /** "pass" | "fail" | "partial" | "skip" */
     status: text("status", { enum: ["pass", "fail", "partial", "skip"] }).notNull(),
+    /**
+     * Which Next.js router(s) the test fixture exercises:
+     *   - "app"     — App Router only (fixture has app/ with real routes, no pages/)
+     *   - "pages"   — Pages Router only (fixture has pages/ with real routes, no app/)
+     *   - "both"    — Parity / interop test: fixture has real routes in both
+     *   - "unknown" — Test has no fixture or we couldn't classify it (config tests,
+     *                 edge runtime tests, build-only tests, or pre-classifier rows)
+     *
+     * Populated by `scripts/classify-nextjs-suites.mjs` at ingest time from the
+     * Next.js checkout used to run the suite. Stored denormalised on the file
+     * row (alongside `kind`) so the UI can filter / group with a single index
+     * scan, and so historical rows keep their classification even if the
+     * heuristic changes later.
+     */
+    router: text("router", { enum: ["app", "pages", "both", "unknown"] })
+      .notNull()
+      .default("unknown"),
     total: integer("total").notNull().default(0),
     passed: integer("passed").notNull().default(0),
     failed: integer("failed").notNull().default(0),
@@ -66,6 +83,7 @@ export const compatFileResults = sqliteTable(
   (table) => ({
     runIdx: index("idx_compat_file_results_run").on(table.runId),
     kindSuiteIdx: index("idx_compat_file_results_kind_suite").on(table.kind, table.suite),
+    kindRouterIdx: index("idx_compat_file_results_kind_router").on(table.kind, table.router),
   }),
 );
 
@@ -75,3 +93,4 @@ export type CompatFileResult = typeof compatFileResults.$inferSelect;
 export type NewCompatFileResult = typeof compatFileResults.$inferInsert;
 
 export type FileStatus = "pass" | "fail" | "partial" | "skip";
+export type RouterKind = "app" | "pages" | "both" | "unknown";

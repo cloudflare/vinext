@@ -119,6 +119,7 @@ async function runQueries(
           .select({
             suite: compatFileResults.suite,
             status: compatFileResults.status,
+            router: compatFileResults.router,
             total: compatFileResults.total,
             passed: compatFileResults.passed,
             failed: compatFileResults.failed,
@@ -130,6 +131,7 @@ async function runQueries(
       ).map((r) => ({
         suite: r.suite,
         status: r.status,
+        router: r.router,
         total: r.total,
         passed: r.passed,
         failed: r.failed,
@@ -157,6 +159,46 @@ async function runQueries(
   return { latestRun, latestFiles, trend };
 }
 
+/**
+ * Per-router test-count breakdown. Each cell contributes to its own bucket
+ * AND, for parity (`both`) cells, to both `app` and `pages` — see the
+ * RouterFilter comment in contribution-grid.tsx for why.
+ */
+function bucketByRouter(
+  files: GridCell[],
+): Record<
+  "app" | "pages" | "parity" | "other",
+  { files: number; passed: number; failed: number; skipped: number }
+> {
+  const empty = () => ({ files: 0, passed: 0, failed: 0, skipped: 0 });
+  const out = { app: empty(), pages: empty(), parity: empty(), other: empty() };
+
+  for (const f of files) {
+    const bumpInto = (b: { files: number; passed: number; failed: number; skipped: number }) => {
+      b.files++;
+      b.passed += f.passed;
+      b.failed += f.failed;
+      b.skipped += f.skipped;
+    };
+    if (f.router === "app") bumpInto(out.app);
+    else if (f.router === "pages") bumpInto(out.pages);
+    else if (f.router === "both") {
+      // Parity tests are counted in their own bucket AND in both router
+      // buckets, so the App Router / Pages Router pass rates accurately
+      // reflect "tests that exercise this router".
+      bumpInto(out.parity);
+      bumpInto(out.app);
+      bumpInto(out.pages);
+    } else bumpInto(out.other);
+  }
+  return out;
+}
+
+function bucketPassRate(b: { passed: number; failed: number }): number {
+  const denom = b.passed + b.failed;
+  return denom > 0 ? (b.passed / denom) * 100 : 0;
+}
+
 export default async function CompatibilityPage() {
   const { latestRun, latestFiles, trend, error } = await loadData(KIND);
 
@@ -167,6 +209,8 @@ export default async function CompatibilityPage() {
     },
     { pass: 0, partial: 0, fail: 0, skip: 0 },
   );
+
+  const byRouter = bucketByRouter(latestFiles);
 
   // Skipped tests don't count against the pass rate; denominator is the
   // tests that actually ran (passed + failed).
@@ -245,6 +289,51 @@ export default async function CompatibilityPage() {
         </div>
       </section>
 
+      <section className="mx-auto w-full max-w-6xl px-6 pb-10">
+        <div className="mb-4 flex items-baseline justify-between">
+          <Text variant="heading2" as="h2">
+            By router
+          </Text>
+          <span className="text-sm text-kumo-subtle">
+            Parity tests are counted in both App and Pages buckets
+          </span>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className={CARD}>
+            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+              {bucketPassRate(byRouter.app).toFixed(1)}%
+            </div>
+            <div className="text-sm text-kumo-subtle">
+              App Router pass rate · {byRouter.app.files} files
+            </div>
+          </div>
+          <div className={CARD}>
+            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+              {bucketPassRate(byRouter.pages).toFixed(1)}%
+            </div>
+            <div className="text-sm text-kumo-subtle">
+              Pages Router pass rate · {byRouter.pages.files} files
+            </div>
+          </div>
+          <div className={CARD}>
+            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+              {bucketPassRate(byRouter.parity).toFixed(1)}%
+            </div>
+            <div className="text-sm text-kumo-subtle">
+              Parity pass rate · {byRouter.parity.files} files
+            </div>
+          </div>
+          <div className={CARD}>
+            <div className="text-3xl font-semibold tracking-tight text-kumo-default">
+              {byRouter.other.files}
+            </div>
+            <div className="text-sm text-kumo-subtle">
+              Other (config / build) · no router fixture
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="mx-auto w-full max-w-6xl px-6 pb-12">
         <div className="mb-4 flex items-baseline justify-between">
           <Text variant="heading2" as="h2">
@@ -281,7 +370,11 @@ export default async function CompatibilityPage() {
           <p className="text-sm leading-relaxed text-kumo-subtle">
             The Next.js deploy test suite runs nightly against vinext. The GitHub Actions workflow
             aggregates each test file&apos;s pass / fail / skip counts and POSTs the results to this
-            app&apos;s ingest endpoint, where they are stored in a D1 database. Results are keyed by{" "}
+            app&apos;s ingest endpoint, where they are stored in a D1 database. Each suite is
+            classified by which router(s) its fixture exercises (App Router, Pages Router, or both —
+            &quot;parity&quot;). Parity suites are counted toward both router pass rates, so adding
+            the App and Pages numbers exceeds the total. Suites without an on-disk fixture (config /
+            build / edge-runtime tests) are bucketed under &quot;Other&quot;. Results are keyed by{" "}
             <code>kind</code> so additional suites (e.g. ecosystem apps, Vitest) can be added later
             without schema changes.
           </p>

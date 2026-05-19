@@ -18,6 +18,7 @@
  *     commitSha?: string,
  *     files: Array<{
  *       suite: string,        // test file path
+ *       router?: "app" | "pages" | "both" | "unknown",  // optional; defaults to "unknown"
  *       total: number,
  *       passed: number,
  *       failed: number,
@@ -29,7 +30,12 @@
  * 0 pass) => "fail", mixed => "partial", all-skip/zero => "skip".
  */
 import { getDb, getIngestSecret } from "@/app/lib/db/client";
-import { compatRuns, compatFileResults, type FileStatus } from "@/app/lib/db/schema";
+import {
+  compatRuns,
+  compatFileResults,
+  type FileStatus,
+  type RouterKind,
+} from "@/app/lib/db/schema";
 import { eq } from "drizzle-orm";
 
 type SubmitFile = {
@@ -38,7 +44,15 @@ type SubmitFile = {
   passed: number;
   failed: number;
   skipped: number;
+  /**
+   * Which Next.js router(s) the test fixture exercises. Optional in the
+   * payload for backward compatibility — pre-classifier workflow runs don't
+   * send it. Missing or invalid values default to "unknown".
+   */
+  router?: RouterKind;
 };
+
+const VALID_ROUTERS: ReadonlySet<RouterKind> = new Set(["app", "pages", "both", "unknown"]);
 
 type SubmitBody = {
   kind: string;
@@ -78,8 +92,20 @@ function isValidBody(body: unknown): body is SubmitBody {
     if (typeof fr.passed !== "number") return false;
     if (typeof fr.failed !== "number") return false;
     if (typeof fr.skipped !== "number") return false;
+    // `router` is optional; if present it must be a known kind.
+    if (fr.router !== undefined) {
+      if (typeof fr.router !== "string") return false;
+      if (!VALID_ROUTERS.has(fr.router as RouterKind)) return false;
+    }
   }
   return true;
+}
+
+function normaliseRouter(r: unknown): RouterKind {
+  if (typeof r === "string" && VALID_ROUTERS.has(r as RouterKind)) {
+    return r as RouterKind;
+  }
+  return "unknown";
 }
 
 /**
@@ -197,9 +223,9 @@ async function writeRun(body: SubmitBody): Promise<Response> {
   // files (visible as an empty grid until the next successful ingest).
   //
   // D1 enforces SQLite's 100-variable cap per statement; each row binds
-  // 8 columns (runId, kind, suite, status, total, passed, failed,
-  // skipped), so we can fit at most 12 rows per INSERT.
-  const COLUMNS_PER_ROW = 8;
+  // 9 columns (runId, kind, suite, status, router, total, passed, failed,
+  // skipped), so we can fit at most 11 rows per INSERT.
+  const COLUMNS_PER_ROW = 9;
   const MAX_VARS = 100;
   const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
 
@@ -208,6 +234,7 @@ async function writeRun(body: SubmitBody): Promise<Response> {
     kind: body.kind,
     suite: f.suite,
     status: deriveStatus(f),
+    router: normaliseRouter(f.router),
     total: f.total,
     passed: f.passed,
     failed: f.failed,
