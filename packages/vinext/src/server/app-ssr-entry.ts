@@ -291,6 +291,17 @@ export async function handleSsr(
         // dynamic-import call. `bootstrapModules` performs the same work
         // natively (and exposes the URL in the DOM), so passing both would
         // load the bootstrap module twice.
+        //
+        // CSP implications of using `bootstrapModules` instead of inline
+        // `bootstrapScriptContent`:
+        //  - Apps no longer need `script-src 'unsafe-inline'` to load the
+        //    bootstrap (improvement — inline imports required `'unsafe-inline'`).
+        //  - Apps that restrict script sources need `'self'` for the
+        //    common case, or the CDN origin when `assetPrefix` is an
+        //    absolute URL like `https://cdn.example.com`.
+        //  - React still applies `nonce` to the emitted
+        //    `<script type="module" src=…>` tag, so nonce-based CSP
+        //    (`script-src 'nonce-…' 'strict-dynamic'`) keeps working.
         bootstrapModules: bootstrapModuleUrl ? [bootstrapModuleUrl] : undefined,
         formState: options?.formState ?? null,
         nonce: options?.scriptNonce,
