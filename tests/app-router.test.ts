@@ -568,6 +568,21 @@ describe("App Router integration", () => {
   // catch-all slot in (group-a) must take over instead of falling back to
   // default.tsx / not-found.
 
+  it("renders the explicit page at the shared root URL of two sibling route groups", async () => {
+    // /parallel-group-catchall has an explicit page in (group-b) and a
+    // layout-only sibling in (group-a). The explicit page must win.
+    const res = await fetch(`${baseUrl}/parallel-group-catchall`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="group-b-layout"');
+    expect(html).toContain('data-testid="group-b-home"');
+    expect(html).toContain("Group B Home");
+    // No catch-all takeover at the explicit page URL.
+    expect(html).not.toContain('data-testid="parallel-catcher"');
+    expect(html).not.toContain('data-testid="group-a-layout"');
+  });
+
   it("matches an explicit sibling page when both route groups define the same URL space", async () => {
     const res = await fetch(`${baseUrl}/parallel-group-catchall/foo`);
     expect(res.status).toBe(200);
