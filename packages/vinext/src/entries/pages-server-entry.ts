@@ -159,11 +159,12 @@ if (typeof _instrumentation.onRequestError === "function") {
   // TypeScript modules so dev/prod paths cannot drift.
   const middlewareExportCode = middlewarePath
     ? `
-export async function runMiddleware(request, ctx) {
+export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     i18nConfig,
+    isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,

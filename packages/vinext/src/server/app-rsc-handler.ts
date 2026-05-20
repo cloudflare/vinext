@@ -281,6 +281,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
   preMiddlewareRequestContext: RequestContext,
+  isDataRequest: boolean,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -353,6 +354,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname,
       context: middlewareContext,
       i18nConfig: options.i18nConfig,
+      isDataRequest,
       isProxy: options.isMiddlewareProxy,
       module: options.middlewareModule,
       request,
@@ -580,6 +582,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
+    // Capture `x-nextjs-data` before filtering — the middleware redirect
+    // protocol needs to know whether the inbound request was a `_next/data`
+    // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
+    const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
@@ -604,7 +610,12 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           let response: Response;
 
           try {
-            response = await handleAppRscRequest(options, request, preMiddlewareRequestContext);
+            response = await handleAppRscRequest(
+              options,
+              request,
+              preMiddlewareRequestContext,
+              isDataRequest,
+            );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {
               flattenErrorCauses(error);

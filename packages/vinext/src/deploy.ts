@@ -606,6 +606,11 @@ export default {
         return new Response("This page could not be found", { status: 404 });
       }
 
+      // Capture x-nextjs-data before filterInternalHeaders strips it -- the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a _next/data fetch to emit x-nextjs-redirect instead of a 3xx.
+      const isDataRequest = request.headers.get("x-nextjs-data") === "1";
+
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
       // Request.headers is immutable in Workers, so build a clean copy.
@@ -691,7 +696,7 @@ export default {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(request, ctx);
+        const result = await runMiddleware(request, ctx, { isDataRequest });
 
         // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
         if (result.waitUntilPromises?.length) {

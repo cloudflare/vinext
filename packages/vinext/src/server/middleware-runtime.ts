@@ -46,6 +46,13 @@ type ExecuteMiddlewareOptions = {
   filePath?: string;
   i18nConfig?: NextI18nConfig | null;
   includeErrorDetails?: boolean;
+  /**
+   * Whether the incoming request was a Next.js `_next/data` fetch (carried
+   * `x-nextjs-data: 1`). The header itself is stripped by `filterInternalHeaders`
+   * before the middleware request is constructed, so callers must capture this
+   * flag from the raw incoming headers and forward it explicitly.
+   */
+  isDataRequest?: boolean;
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
@@ -133,15 +140,11 @@ function relativizeLocation(location: string, requestUrl: string): string {
 function dataRedirectResponse(target: string, originalResponse: Response): Response {
   const headers = new Headers(originalResponse.headers);
   processMiddlewareHeaders(headers);
+  // Headers.delete is case-insensitive per the Fetch spec, so a single call
+  // covers `Location` / `location` / `LOCATION`.
   headers.delete("Location");
-  headers.delete("location");
   headers.set("x-nextjs-redirect", target);
   return new Response(null, { status: 200, headers });
-}
-
-/** True when the request was issued by Next.js's data-fetch client. */
-function isNextDataRequest(request: Request): boolean {
-  return request.headers.get("x-nextjs-data") === "1";
 }
 
 function collectMiddlewareHeaders(response: Response): Headers {
@@ -275,7 +278,10 @@ export async function executeMiddleware(
       // For `_next/data` requests, translate the HTTP redirect into the
       // `x-nextjs-redirect` soft-redirect protocol so the client router can
       // perform the navigation without tripping CORS on cross-origin targets.
-      if (isNextDataRequest(options.request)) {
+      // `x-nextjs-data` lives in INTERNAL_HEADERS and is stripped before the
+      // middleware request is constructed, so the flag is threaded in from the
+      // caller (which sees the raw incoming headers).
+      if (options.isDataRequest) {
         return {
           continue: false,
           response: dataRedirectResponse(relativeLocation, response),

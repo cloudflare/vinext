@@ -88,9 +88,8 @@ describe("middleware redirect protocol", () => {
     const result = await executeMiddleware({
       isProxy: false,
       module,
-      request: new Request("http://localhost:3000/old-home", {
-        headers: { "x-nextjs-data": "1" },
-      }),
+      isDataRequest: true,
+      request: new Request("http://localhost:3000/old-home"),
     });
 
     // The protocol: 200 response, no Location, x-nextjs-redirect header set.
@@ -110,11 +109,10 @@ describe("middleware redirect protocol", () => {
     };
 
     const result = await executeMiddleware({
+      isDataRequest: true,
       isProxy: false,
       module,
-      request: new Request("http://localhost:3000/old-home?override=external", {
-        headers: { "x-nextjs-data": "1" },
-      }),
+      request: new Request("http://localhost:3000/old-home?override=external"),
     });
 
     expect(result.continue).toBe(false);
@@ -122,6 +120,29 @@ describe("middleware redirect protocol", () => {
     expect(result.response?.headers.get("x-nextjs-redirect")).toBe("https://example.vercel.sh/");
     expect(result.response?.headers.get("Location")).toBeNull();
     expect(result.redirectUrl).toBeUndefined();
+  });
+
+  it("ignores a forged x-nextjs-data header when the caller did not opt in", async () => {
+    // `x-nextjs-data` is in INTERNAL_HEADERS and gets stripped by the caller
+    // before this function runs. The soft-redirect protocol is gated on the
+    // explicit `isDataRequest` flag rather than the header on the request, so
+    // forged headers can never reach the redirect translator.
+    const module = {
+      default: (req: Request) => Response.redirect(new URL("/new-home", req.url).toString(), 307),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      // The flag is intentionally NOT set — only the (forged) header is.
+      request: new Request("http://localhost:3000/old-home", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+    });
+
+    expect(result.redirectUrl).toBe("/new-home");
+    expect(result.response?.status).toBe(307);
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBeNull();
   });
 
   it("does not translate redirects to x-nextjs-redirect when x-nextjs-data is absent", async () => {

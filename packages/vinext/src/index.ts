@@ -2878,6 +2878,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
+              // Capture `x-nextjs-data` before filterInternalHeaders strips it
+              // — the middleware redirect protocol needs to know whether the
+              // inbound request was a `_next/data` fetch to emit
+              // `x-nextjs-redirect` instead of a 3xx.
+              const isDataRequest = rawHeaders.get("x-nextjs-data") === "1";
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler
@@ -2958,6 +2963,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  isDataRequest,
                 );
 
                 // Settle waitUntil promises — no ctx.waitUntil() in dev, but

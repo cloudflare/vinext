@@ -1557,6 +1557,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
+      // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
+      const isDataRequest = rawReqHeaders.get("x-nextjs-data") === "1";
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
@@ -1603,7 +1607,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(webRequest, undefined);
+        const result = await runMiddleware(webRequest, undefined, { isDataRequest });
 
         // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
         // Must run BEFORE the !result.continue check so promises survive redirect/response paths
