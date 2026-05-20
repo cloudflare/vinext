@@ -295,6 +295,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, renderMode } =
     normalized;
   let { pathname, cleanPathname } = normalized;
+  // Canonical (external) pathname the user requested. Middleware rewrites and
+  // next.config.js rewrites mutate `cleanPathname` so internal route matching
+  // can find the destination page, but hooks like `usePathname()` must reflect
+  // the original URL the user sees in the address bar.
+  // Matches Next.js: test/e2e/app-dir/hooks/hooks.test.ts —
+  //   "should have the canonical url pathname on rewrite"
+  const canonicalPathname = cleanPathname;
 
   const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
     isPrerenderEnabled() {
@@ -416,7 +423,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   options.setNavigationContext({
-    pathname: cleanPathname,
+    pathname: canonicalPathname,
     searchParams: url.searchParams,
     params: {},
   });
@@ -519,7 +526,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const { route, params } = match;
   options.setNavigationContext({
-    pathname: cleanPathname,
+    pathname: canonicalPathname,
     searchParams: url.searchParams,
     params,
   });
