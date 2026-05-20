@@ -89,6 +89,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -934,6 +935,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } satisfies Plugin,
         ]
       : []),
+    // Allow `import 'server-only'` from middleware (and any module reachable
+    // from it) in non-RSC environments. Registered before `vinext:config` so
+    // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
+    // `rsc:validate-imports` (which rejects bare `server-only` outside RSC).
+    // See packages/vinext/src/plugins/middleware-server-only.ts for the
+    // import-chain taint design.
+    createMiddlewareServerOnlyPlugin({
+      getMiddlewarePath: () => middlewarePath,
+      getCanonicalMiddlewarePath: () =>
+        middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
+      serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
     {
       name: "vinext:config",
       enforce: "pre",
