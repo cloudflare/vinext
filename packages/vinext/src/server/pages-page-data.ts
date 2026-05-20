@@ -354,7 +354,9 @@ export async function resolvePagesPageData(
     if (result?.notFound) {
       return {
         kind: "response",
-        response: buildPagesDataNotFoundResponse(),
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
       };
     }
 
@@ -479,7 +481,9 @@ export async function resolvePagesPageData(
     if (result?.notFound) {
       return {
         kind: "response",
-        response: buildPagesDataNotFoundResponse(),
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
       };
     }
 

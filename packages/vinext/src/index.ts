@@ -2880,6 +2880,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
+                } else {
+                  // Stale buildId or malformed path. Return a JSON 404 here
+                  // (matching the prod-server path) so clients hard-navigate
+                  // instead of trying to parse Vite's HTML 404 as JSON.
+                  res.writeHead(404, { "Content-Type": "application/json" });
+                  res.end("{}");
+                  return;
                 }
               }
 
