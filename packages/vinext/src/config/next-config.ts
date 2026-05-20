@@ -582,6 +582,65 @@ export function reassignsModuleExports(source: string): boolean {
 }
 
 /**
+ * Detect which of the CJS-style identifiers (`__filename`, `__dirname`) the
+ * user already declares themselves with `const`, `let`, or `var`. Used by the
+ * injector to skip duplicate declarations that would otherwise fail with
+ * "Identifier `__dirname` has already been declared" under OXC/Rolldown.
+ *
+ * Skips identifiers that appear inside strings, template literals, and
+ * comments so a docstring like `/* sets __dirname *\/` doesn't suppress the
+ * shim. Recognizes plain bindings (`const __dirname = ...`), comma-continued
+ * declarators (`const x = 1, __dirname = ...`), and identifier destructuring
+ * (`const { __dirname } = ...` / `const { foo: __dirname } = ...`). Bare
+ * declarations without initializer (`let __dirname;`) are also caught — they
+ * still create a binding that collides with the injected `const`.
+ *
+ * False negatives are the safe failure mode: if we fail to detect a
+ * declaration, the existing collision error surfaces (no silent miscompile).
+ * False positives would skip the shim and turn an injected `const` into a
+ * ReferenceError, so the regex deliberately requires a binding keyword and
+ * skips string/template/comment contexts.
+ */
+export function findUserDeclaredCjsGlobals(source: string): {
+  __dirname: boolean;
+  __filename: boolean;
+} {
+  const declared = { __dirname: false, __filename: false };
+
+  // First pass: blank out comments / strings / template literals so
+  // identifiers inside them aren't matched. Replace each masked span with
+  // an equal number of spaces so indices stay aligned with the original
+  // source — useful if this function later returns positions.
+  const masked = source.replace(
+    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
+    (m) => " ".repeat(m.length),
+  );
+
+  // Second pass: for each `const|let|var` declarator statement, look at
+  // the head of the statement (up to the next `;` or top-level statement
+  // boundary) for `__dirname`/`__filename` appearing in a binding position.
+  //
+  // Binding position = preceded (after whitespace) by the declarator
+  // keyword itself, a comma, an opening brace, or a colon (object-pattern
+  // alias). Anything preceded by `=` is the initializer side and ignored,
+  // so `const x = __dirname;` does NOT count as declaring `__dirname`.
+  const declStmt = /\b(const|let|var)\b([^;]*)/g;
+  let stmt: RegExpExecArray | null;
+  while ((stmt = declStmt.exec(masked)) !== null) {
+    const body = stmt[2];
+    const bindingRegex = /(?:^|[,{:]|\b(?:const|let|var)\b)\s*(__dirname|__filename)\b/g;
+    let bind: RegExpExecArray | null;
+    while ((bind = bindingRegex.exec(body)) !== null) {
+      const name = bind[1];
+      if (name === "__dirname") declared.__dirname = true;
+      else if (name === "__filename") declared.__filename = true;
+    }
+    if (declared.__dirname && declared.__filename) break;
+  }
+  return declared;
+}
+
+/**
  * Vite plugin that prepends CJS-style globals (`__filename`, `__dirname`,
  * `module`, `exports`, `require`) to the next.config.* source before
  * Vite's module runner evaluates it.
@@ -648,12 +707,27 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
           `export const ${VINEXT_CJS_INITIAL_KEY} = __vinextInitialExports;\n`
         : "";
 
+      // Skip injecting `__dirname` / `__filename` shims when the user has
+      // already declared the same identifier with `const` / `let` / `var`.
+      // OXC/Rolldown reject a duplicate `const` declaration with
+      // "Identifier `__dirname` has already been declared", which is a real
+      // pattern in next.config.ts files written for Next.js v16 (Next.js
+      // sometimes ships configs containing `const __dirname =
+      // fileURLToPath(import.meta.url)` to polyfill the ESM module scope).
+      // The user's own declaration carries the same value semantics we'd
+      // inject, so dropping our line is correct, not a behavioural change.
+      const userDeclared = findUserDeclaredCjsGlobals(code);
+
       // Preamble runs after ESM imports are hoisted; the const bindings shadow
       // any global lookups the source would otherwise perform.
+      const filenameLine = userDeclared.__filename
+        ? ""
+        : `const __filename = ${filenameLiteral};\n`;
+      const dirnameLine = userDeclared.__dirname ? "" : `const __dirname = ${dirnameLiteral};\n`;
       const preamble =
         `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
+        filenameLine +
+        dirnameLine +
         `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
         moduleLines;
 

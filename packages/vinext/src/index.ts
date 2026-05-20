@@ -137,6 +137,7 @@ import {
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
+import { cjsGlobalsShimPlugin } from "./plugins/cjs-globals-shim.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -2344,6 +2345,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // Inject __dirname / __filename shims into bundled node_modules code that
+    // touches the CJS globals in ESM server output —
+    // see src/plugins/cjs-globals-shim.ts
+    cjsGlobalsShimPlugin,
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
     {
       name: "vinext:instrumentation-client-inject",

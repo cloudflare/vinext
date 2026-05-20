@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   detectNextIntlConfig,
+  findUserDeclaredCjsGlobals,
   loadNextConfig,
   parseBodySizeLimit,
   reassignsModuleExports,
@@ -228,6 +229,47 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     expect(config?.env?.VIA).toBe("module.exports");
   });
 
+  it("does not redeclare __dirname when user already declares it", async () => {
+    // Regression for https://github.com/cloudflare/vinext/issues/1345.
+    // Some next.config.ts files written for the Next.js v16 deploy suite
+    // declare their own ESM-style `__dirname` polyfill. vinext must skip
+    // injecting `const __dirname = ...` for those configs to avoid a
+    // "Identifier `__dirname` has already been declared" parse error.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { fileURLToPath } from "node:url";\n` +
+        `import { dirname } from "node:path";\n` +
+        `const __filename = fileURLToPath(import.meta.url);\n` +
+        `const __dirname = dirname(__filename);\n` +
+        `export default { env: { OWN_DIR: __dirname, OWN_FILE: __filename } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const ownFile = config?.env?.OWN_FILE as string | undefined;
+    expect(typeof config?.env?.OWN_DIR).toBe("string");
+    expect(ownFile?.endsWith("next.config.ts")).toBe(true);
+  });
+
+  it("does not redeclare __dirname when only __dirname is user-declared", async () => {
+    // Mixed case: user declares only __dirname themselves, but still
+    // references __filename. The injector must skip the user-declared
+    // identifier and still provide the other.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { fileURLToPath } from "node:url";\n` +
+        `import { dirname } from "node:path";\n` +
+        `const __dirname = dirname(fileURLToPath(import.meta.url));\n` +
+        `export default { env: { OWN_DIR: __dirname, FNAME: __filename } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const fname = config?.env?.FNAME as string | undefined;
+    expect(typeof config?.env?.OWN_DIR).toBe("string");
+    expect(fname?.endsWith("next.config.ts")).toBe(true);
+  });
+
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
     // No __filename / __dirname / require / module / exports references —
     // the injector transform should short-circuit. We only assert
@@ -277,6 +319,92 @@ describe("referencesCjsGlobals", () => {
     // worst case, never a correctness bug.
     expect(referencesCjsGlobals(`// __dirname is shimmed`)).toBe(true);
     expect(referencesCjsGlobals(`const s = "module.exports = 1";`)).toBe(true);
+  });
+});
+
+describe("findUserDeclaredCjsGlobals", () => {
+  it("returns both false for pure ESM source", () => {
+    expect(findUserDeclaredCjsGlobals(`export default { env: { FOO: "bar" } };\n`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+  });
+
+  it("detects const __dirname declarations", () => {
+    expect(findUserDeclaredCjsGlobals(`const __dirname = fileURLToPath(import.meta.url);`)).toEqual(
+      { __dirname: true, __filename: false },
+    );
+  });
+
+  it("detects const __filename declarations", () => {
+    expect(findUserDeclaredCjsGlobals(`const __filename = "/tmp/foo";`)).toEqual({
+      __dirname: false,
+      __filename: true,
+    });
+  });
+
+  it("detects let / var declarations too", () => {
+    expect(findUserDeclaredCjsGlobals(`let __dirname = "/x";`)).toEqual({
+      __dirname: true,
+      __filename: false,
+    });
+    expect(findUserDeclaredCjsGlobals(`var __filename = "/x";`)).toEqual({
+      __dirname: false,
+      __filename: true,
+    });
+  });
+
+  it("detects bare declarations without initializer", () => {
+    expect(findUserDeclaredCjsGlobals(`let __dirname;`)).toEqual({
+      __dirname: true,
+      __filename: false,
+    });
+  });
+
+  it("detects comma-continued declarators", () => {
+    expect(findUserDeclaredCjsGlobals(`const x = 1, __dirname = "/x";`)).toEqual({
+      __dirname: true,
+      __filename: false,
+    });
+  });
+
+  it("detects object-destructure patterns", () => {
+    expect(findUserDeclaredCjsGlobals(`const { __dirname } = somewhere;`)).toEqual({
+      __dirname: true,
+      __filename: false,
+    });
+  });
+
+  it("does not match inside strings or comments", () => {
+    expect(findUserDeclaredCjsGlobals(`const s = "const __dirname = 1";`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+    expect(findUserDeclaredCjsGlobals(`// const __dirname = "/x";`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+    expect(findUserDeclaredCjsGlobals(`/* const __filename = "x" */`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+  });
+
+  it("does not match bare references", () => {
+    // References to __dirname (without a binding keyword) should not be
+    // treated as user-owned declarations — those still need the shim.
+    expect(findUserDeclaredCjsGlobals(`const x = __dirname;`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+  });
+
+  it("detects both when both are declared", () => {
+    expect(
+      findUserDeclaredCjsGlobals(
+        `const __filename = fileURLToPath(import.meta.url);\nconst __dirname = dirname(__filename);\n`,
+      ),
+    ).toEqual({ __dirname: true, __filename: true });
   });
 });
 
