@@ -91,6 +91,7 @@ import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-refe
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import { wasmModulePlugin } from "./plugins/wasm-module.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -3607,6 +3608,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Handle `import wasm from "./foo.wasm?module"` imports (a Cloudflare
+    // Workers convention) for non-Workers environments (RSC/SSR Node, client).
+    // Workers environments are still handled natively by @cloudflare/vite-plugin —
+    // see src/plugins/wasm-module.ts and cloudflare/vinext#1351.
+    wasmModulePlugin(),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
