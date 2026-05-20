@@ -888,6 +888,60 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Server-Side Rendered");
   });
 
+  // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+  // Closes cloudflare/vinext#1342: original query params must survive a
+  // middleware rewrite. Next.js merges via
+  // Object.assign(parsedUrl.query, rewrittenParsedUrl.query) — original first,
+  // rewrite-target overrides on key conflicts.
+  it("middleware rewrite preserves original query params to getServerSideProps", async () => {
+    const res = await fetch(`${baseUrl}/mw-rewrite-query?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("SSR Query");
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
+  });
+
+  it("middleware rewrite to a dynamic route merges original query with route params", async () => {
+    const res = await fetch(`${baseUrl}/mw-rewrite-dynamic-query?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/Post:\s*(<!--\s*-->)?\s*first/);
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
+  });
+
+  it("middleware rewrite with target-side query lets rewrite-target win on key conflicts", async () => {
+    // Original ?hello=world, rewrite target is /ssr-query?hello=from-rewrite —
+    // rewrite-target query should win, matching Next.js Object.assign semantics.
+    const res = await fetch(`${baseUrl}/mw-rewrite-merge-query?hello=world&other=keep`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toMatchObject({
+      hello: "from-rewrite",
+      other: "keep",
+    });
+  });
+
+  it("middleware rewrite without any original query still renders correctly", async () => {
+    const res = await fetch(`${baseUrl}/mw-rewrite-query`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("SSR Query");
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toEqual({});
+  });
+
   it("middleware blocks /blocked with 403", async () => {
     const res = await fetch(`${baseUrl}/blocked`);
     expect(res.status).toBe(403);

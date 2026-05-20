@@ -26,6 +26,26 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
+  // request's query params on the rewrite target so getServerSideProps
+  // sees them. Mirrors Next.js: test/e2e/edge-pages-support.
+  if (url.pathname === "/mw-rewrite-query") {
+    return NextResponse.rewrite(new URL("/ssr-query", request.url));
+  }
+
+  // Rewrite /mw-rewrite-dynamic-query to /posts/first — the rewrite
+  // target is dynamic, so the resulting query should contain both the
+  // dynamic param (id=first) and the original query (?hello=world).
+  if (url.pathname === "/mw-rewrite-dynamic-query") {
+    return NextResponse.rewrite(new URL("/posts/first", request.url));
+  }
+
+  // Rewrite target carries its own query — rewrite-target params should
+  // win over original request params on key conflicts.
+  if (url.pathname === "/mw-rewrite-merge-query") {
+    return NextResponse.rewrite(new URL("/ssr-query?hello=from-rewrite", request.url));
+  }
+
   if (url.pathname === "/rewrite-with-cookie") {
     const res = NextResponse.rewrite(new URL("/ssr", request.url));
     res.cookies.set("rewrite-cookie", "visible", { path: "/" });

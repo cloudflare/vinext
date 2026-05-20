@@ -80,6 +80,7 @@ import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-r
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
+import { mergeRewriteQuery } from "./utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -3106,8 +3107,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
-                resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ?? url;
+                const rewritten = applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx);
+                if (rewritten) {
+                  // Preserve original query params across the rewrite — Next.js
+                  // semantics: `Object.assign(parsedUrl.query, rewriteQuery)`.
+                  resolvedUrl = mergeRewriteQuery(url, rewritten);
+                }
               }
 
               // External rewrite from beforeFiles — proxy to external URL
@@ -3164,7 +3169,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   reqCtx,
                 );
                 if (afterRewrite) {
-                  resolvedUrl = afterRewrite;
+                  resolvedUrl = mergeRewriteQuery(resolvedUrl, afterRewrite);
                   match = matchRoute(resolvedUrl.split("?")[0], routes);
                 }
               }

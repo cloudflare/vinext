@@ -56,6 +56,10 @@
     "./server/worker-utils": {
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
+    },
+    "./utils/query": {
+      "types": "./dist/utils/query.d.ts",
+      "import": "./dist/utils/query.js"
     }
   },
   "scripts": {

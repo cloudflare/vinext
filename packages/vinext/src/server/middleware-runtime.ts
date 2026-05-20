@@ -17,6 +17,7 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+import { mergeRewriteQuery } from "../utils/query.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -249,10 +250,19 @@ export async function executeMiddleware(
     try {
       const rewriteParsed = new URL(rewriteUrl, options.request.url);
       const requestOrigin = new URL(options.request.url).origin;
-      rewritePath =
-        rewriteParsed.origin === requestOrigin
-          ? rewriteParsed.pathname + rewriteParsed.search
-          : rewriteParsed.href;
+      if (rewriteParsed.origin === requestOrigin) {
+        // Preserve the original request's query params on internal rewrites.
+        // Next.js merges via `Object.assign(parsedUrl.query, rewrittenParsedUrl.query)`
+        // — original query first, rewrite-target overrides on key conflicts.
+        rewritePath = mergeRewriteQuery(
+          options.request.url,
+          rewriteParsed.pathname + rewriteParsed.search,
+        );
+      } else {
+        // External rewrites are proxied as-is; don't smuggle local query params
+        // into the upstream URL.
+        rewritePath = rewriteParsed.href;
+      }
     } catch {
       rewritePath = rewriteUrl;
     }

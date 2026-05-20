@@ -546,6 +546,7 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { mergeRewriteQuery } from "vinext/utils/query";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
@@ -784,8 +785,9 @@ export default {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          // Preserve original query params across rewrites (Next.js parity).
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -808,8 +810,8 @@ export default {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -825,7 +827,12 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null, ctx);
+            response = await renderPage(
+              request,
+              mergeRewriteQuery(resolvedUrl, fallbackRewrite),
+              null,
+              ctx,
+            );
           }
         }
       }
