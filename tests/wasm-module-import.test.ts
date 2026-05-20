@@ -103,12 +103,14 @@ describe("vinext:wasm-module plugin", () => {
     expect(filter.id.test("./add.wasm?module&v=1")).toBe(true);
   });
 
-  it("emits the wasm as a build asset and produces a WebAssembly.Module loader", async () => {
+  it("emits a server build shim that uses dynamic node: imports (no static node: deps)", async () => {
     const plugin = getWasmModulePlugin("build");
     const load = unwrapHook(plugin.load);
 
     let emitted: { type: string; name?: string; source?: unknown } | null = null;
     const ctx = {
+      // Simulate the rsc/ssr environment — non-client.
+      environment: { name: "ssr" as const },
       emitFile(spec: { type: string; name?: string; source?: unknown }) {
         emitted = spec;
         return "ref-id-1";
@@ -128,25 +130,56 @@ describe("vinext:wasm-module plugin", () => {
     expect(Buffer.isBuffer(emitted!.source)).toBe(true);
     expect((emitted!.source as Buffer).equals(MINIMAL_WASM)).toBe(true);
 
-    // The generated JS must use the Rollup file-url placeholder so the bundler
-    // rewrites it to the final asset path, and the default export must be a
-    // `WebAssembly.Module` (matching Workers' native `?module` shape).
+    // The Rollup file-url placeholder is used directly as a string (no double
+    // `new URL(..., import.meta.url)` wrap) — Rollup expands it to an absolute
+    // URL string at chunk-emit time.
     expect(code).toContain("import.meta.ROLLUP_FILE_URL_ref-id-1");
     expect(code).toContain("WebAssembly.compile");
     expect(code).toContain("export default await");
-    // Node fallback: read from disk via node:fs/promises + fileURLToPath.
-    expect(code).toContain("node:fs/promises");
+
+    // Server shim: dynamic node: imports, no static `import ... from "node:*"`.
+    expect(code).toContain('import("node:fs/promises")');
+    expect(code).toContain('import("node:url")');
     expect(code).toContain("fileURLToPath");
-    // Browser fallback: fetch + compileStreaming.
-    expect(code).toContain("compileStreaming");
+    expect(code).not.toMatch(/^import\s+[^;]*from\s+["']node:/m);
   });
 
-  it("compiles directly from the source path in dev (no asset emission)", async () => {
+  it("emits a client build shim that uses fetch and never touches node:* modules", async () => {
+    const plugin = getWasmModulePlugin("build");
+    const load = unwrapHook(plugin.load);
+
+    const ctx = {
+      environment: { name: "client" as const },
+      emitFile() {
+        return "ref-client";
+      },
+      error(message: string) {
+        throw new Error(message);
+      },
+    };
+
+    const code = (await load.call(ctx, `${wasmPath}?module`)) as string;
+
+    // Client shim uses the Rollup file-url placeholder, fetch + compileStreaming.
+    expect(code).toContain("import.meta.ROLLUP_FILE_URL_ref-client");
+    expect(code).toContain("fetch(");
+    expect(code).toContain("compileStreaming");
+
+    // Crucially: no `node:*` references in the client bundle. Vite would
+    // externalise those to empty stubs and a named import would throw.
+    expect(code).not.toContain("node:fs");
+    expect(code).not.toContain("node:url");
+    expect(code).not.toContain("node:module");
+    expect(code).not.toContain("createRequire");
+  });
+
+  it("compiles directly from the source path in dev (no asset emission, server)", async () => {
     const plugin = getWasmModulePlugin("serve");
     const load = unwrapHook(plugin.load);
 
     let emitCalled = false;
     const ctx = {
+      environment: { name: "ssr" as const },
       emitFile() {
         emitCalled = true;
         return "should-not-be-used";
@@ -159,10 +192,31 @@ describe("vinext:wasm-module plugin", () => {
     const code = (await load.call(ctx, `${wasmPath}?module`)) as string;
 
     expect(emitCalled).toBe(false);
-    // Dev shim reads the source file directly from its absolute path.
+    // Dev shim reads the source file directly from its absolute path via a
+    // dynamic node:fs/promises import.
     expect(code).toContain(JSON.stringify(wasmPath));
+    expect(code).toContain('import("node:fs/promises")');
     expect(code).toContain("WebAssembly.compile");
     expect(code).toContain("export default await");
+  });
+
+  it("dev mode: client environment falls back to fetch (no node:fs)", async () => {
+    const plugin = getWasmModulePlugin("serve");
+    const load = unwrapHook(plugin.load);
+
+    const ctx = {
+      environment: { name: "client" as const },
+      emitFile() {
+        throw new Error("emitFile should not be called in dev");
+      },
+      error(message: string) {
+        throw new Error(message);
+      },
+    };
+
+    const code = (await load.call(ctx, `${wasmPath}?module`)) as string;
+    expect(code).toContain("fetch(");
+    expect(code).not.toContain("node:fs");
   });
 
   it("calls this.error when the underlying wasm file is missing", async () => {
@@ -171,6 +225,7 @@ describe("vinext:wasm-module plugin", () => {
 
     let errored: string | null = null;
     const ctx = {
+      environment: { name: "ssr" as const },
       emitFile() {
         return "ref";
       },
@@ -184,6 +239,33 @@ describe("vinext:wasm-module plugin", () => {
     const missing = path.join(tmpDir, "does-not-exist.wasm?module");
     await expect(load.call(ctx, missing)).rejects.toThrow(/Could not read WASM file/);
     expect(errored).toMatch(/does-not-exist\.wasm/);
+  });
+
+  it("guards against undefined source: explicit throw after this.error", async () => {
+    // If a downstream test runner or Rollup variant returns from this.error
+    // instead of throwing, our explicit `throw err` after this.error must still
+    // halt execution so we never call `emitFile({ source: undefined })`.
+    const plugin = getWasmModulePlugin("build");
+    const load = unwrapHook(plugin.load);
+
+    let emitCalled = false;
+    const ctx = {
+      environment: { name: "ssr" as const },
+      emitFile() {
+        emitCalled = true;
+        return "ref";
+      },
+      // Deliberately non-throwing this.error to exercise the explicit throw.
+      error(_message: string) {
+        // no-op
+      },
+    };
+
+    const missing = path.join(tmpDir, "another-missing.wasm?module");
+    await expect(load.call(ctx, missing)).rejects.toBeDefined();
+    // emitFile must NOT have been called — we must not silently emit a
+    // zero-byte asset.
+    expect(emitCalled).toBe(false);
   });
 
   it("returns null for ids without the ?module query so it doesn't steal other wasm imports", async () => {

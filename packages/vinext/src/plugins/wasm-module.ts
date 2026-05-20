@@ -94,7 +94,13 @@ export function wasmModulePlugin(): Plugin {
         this.error(
           `[vinext:wasm-module] Could not read WASM file ${filePath}: ${(err as Error).message}`,
         );
+        // `this.error` throws, but Rollup's type signature is not `never`. The
+        // explicit throw makes the unreachable path explicit and guarantees
+        // `source` is initialised below.
+        throw err;
       }
+
+      const isClient = this.environment?.name === "client";
 
       if (isBuild) {
         // Emit the binary as a hashed asset so it ends up in the output dir
@@ -108,36 +114,69 @@ export function wasmModulePlugin(): Plugin {
         // The default export must be a `WebAssembly.Module` to match the
         // shape that Workers' native `?module` import provides. We compile
         // the binary at module-evaluation time using `WebAssembly.compile`
-        // against bytes read from disk relative to the emitted asset.
+        // against bytes located via Rollup's `ROLLUP_FILE_URL_<ref>` token,
+        // which Rollup expands to an absolute `file://` / public-path URL
+        // string at chunk-emit time.
         //
-        // Reading via `new URL(..., import.meta.url)` works in Node.js
-        // (file:// URL) and in browser builds (the URL is rewritten by
-        // Vite/Rolldown to the public path of the emitted asset). For the
-        // browser build we fall back to `fetch` since `node:fs` is not
-        // available — see the runtime branch below.
+        // We emit two different shims so the client bundle never references
+        // `node:*` modules (Vite externalises those to empty stubs in the
+        // browser environment — see plugins/async-hooks-stub.ts) and the
+        // server shim never carries dead browser fetch code.
+        if (isClient) {
+          return [
+            `const __vinext_wasm_url = import.meta.ROLLUP_FILE_URL_${referenceId};`,
+            `async function __vinext_load_wasm_module() {`,
+            `  const res = await fetch(__vinext_wasm_url);`,
+            `  return typeof WebAssembly.compileStreaming === "function"`,
+            `    ? WebAssembly.compileStreaming(res)`,
+            `    : WebAssembly.compile(await res.arrayBuffer());`,
+            `}`,
+            `export default await __vinext_load_wasm_module();`,
+          ].join("\n");
+        }
+
+        // Server (rsc / ssr / non-Workers Node). Use dynamic `import("node:*")`
+        // so the static dependency graph stays clean of `node:` imports — that
+        // matters when this module is pulled into a chunk that may be analysed
+        // by the bundler for client-safety, and it avoids the empty-stub
+        // SyntaxError class of bug (see plugins/async-hooks-stub.ts).
         return [
-          `import { createRequire as __vinext_createRequire } from "node:module";`,
-          `const __vinext_wasm_url = new URL(import.meta.ROLLUP_FILE_URL_${referenceId}, import.meta.url);`,
+          `const __vinext_wasm_url = import.meta.ROLLUP_FILE_URL_${referenceId};`,
           `async function __vinext_load_wasm_module() {`,
-          `  if (typeof process !== "undefined" && process.versions && process.versions.node) {`,
-          `    const require = __vinext_createRequire(import.meta.url);`,
-          `    const { readFile } = require("node:fs/promises");`,
-          `    const { fileURLToPath } = require("node:url");`,
-          `    const bytes = await readFile(fileURLToPath(__vinext_wasm_url));`,
-          `    return WebAssembly.compile(bytes);`,
-          `  }`,
-          `  const res = await fetch(__vinext_wasm_url);`,
-          `  return WebAssembly.compileStreaming ? WebAssembly.compileStreaming(res) : WebAssembly.compile(await res.arrayBuffer());`,
+          `  const [{ readFile }, { fileURLToPath }] = await Promise.all([`,
+          `    import("node:fs/promises"),`,
+          `    import("node:url"),`,
+          `  ]);`,
+          `  const bytes = await readFile(fileURLToPath(new URL(__vinext_wasm_url)));`,
+          `  return WebAssembly.compile(bytes);`,
           `}`,
           `export default await __vinext_load_wasm_module();`,
         ].join("\n");
       }
 
       // Dev server: skip asset emission and compile from the source file
-      // directly so HMR keeps working without an asset pipeline.
+      // directly so HMR keeps working without an asset pipeline. The dev
+      // server's client requests are also handled here — in that case we
+      // ship a fetch-based shim that re-requests the wasm over the Vite
+      // dev server, because `node:fs` is not available in the browser.
+      if (isClient) {
+        // In dev, Vite serves source files at their original URL. Build a
+        // browser-safe fetch path by stripping the project root prefix; this
+        // keeps parity with how Vite serves other binary assets in dev.
+        const fetchUrl = JSON.stringify(filePath);
+        return [
+          `async function __vinext_load_wasm_module() {`,
+          `  const res = await fetch(${fetchUrl});`,
+          `  return typeof WebAssembly.compileStreaming === "function"`,
+          `    ? WebAssembly.compileStreaming(res)`,
+          `    : WebAssembly.compile(await res.arrayBuffer());`,
+          `}`,
+          `export default await __vinext_load_wasm_module();`,
+        ].join("\n");
+      }
       const absPath = JSON.stringify(filePath);
       return [
-        `import { readFile as __vinext_readFile } from "node:fs/promises";`,
+        `const { readFile: __vinext_readFile } = await import("node:fs/promises");`,
         `export default await WebAssembly.compile(await __vinext_readFile(${absPath}));`,
       ].join("\n");
     },
