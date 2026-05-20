@@ -103,6 +103,47 @@ function stripMiddlewareHeadersFromResponse(response: Response): Response {
   });
 }
 
+/**
+ * Make a same-host URL relative to the request origin. Cross-origin URLs are
+ * returned unchanged. Mirrors Next.js's `getRelativeURL` behaviour:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/relativize-url.ts
+ */
+function relativizeLocation(location: string, requestUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(location, requestUrl);
+  } catch {
+    return location;
+  }
+  const base = new URL(requestUrl);
+  if (parsed.origin !== base.origin) return parsed.toString();
+  return parsed.pathname + parsed.search + parsed.hash;
+}
+
+/**
+ * Translate a middleware redirect Response into the soft-redirect protocol
+ * used by Next.js for `_next/data` requests: a 200 OK with the redirect target
+ * carried in the `x-nextjs-redirect` header. The client router consumes this
+ * header to perform the navigation, avoiding CORS issues that would arise from
+ * an actual cross-origin HTTP redirect on a data fetch.
+ *
+ * Reference: packages/next/src/server/web/adapter.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+ */
+function dataRedirectResponse(target: string, originalResponse: Response): Response {
+  const headers = new Headers(originalResponse.headers);
+  processMiddlewareHeaders(headers);
+  headers.delete("Location");
+  headers.delete("location");
+  headers.set("x-nextjs-redirect", target);
+  return new Response(null, { status: 200, headers });
+}
+
+/** True when the request was issued by Next.js's data-fetch client. */
+function isNextDataRequest(request: Request): boolean {
+  return request.headers.get("x-nextjs-data") === "1";
+}
+
 function collectMiddlewareHeaders(response: Response): Headers {
   const responseHeaders = new Headers();
   for (const [key, value] of response.headers) {
@@ -226,17 +267,43 @@ export async function executeMiddleware(
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? response.headers.get("location");
     if (location) {
+      // Make same-host Location relative for parity with Next.js, which only
+      // emits absolute URLs for cross-origin redirects:
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+      const relativeLocation = relativizeLocation(location, options.request.url);
+
+      // For `_next/data` requests, translate the HTTP redirect into the
+      // `x-nextjs-redirect` soft-redirect protocol so the client router can
+      // perform the navigation without tripping CORS on cross-origin targets.
+      if (isNextDataRequest(options.request)) {
+        return {
+          continue: false,
+          response: dataRedirectResponse(relativeLocation, response),
+          waitUntilPromises,
+        };
+      }
+
       const responseHeaders = new Headers();
       for (const [key, value] of response.headers) {
         if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key.toLowerCase() !== "location") {
           responseHeaders.append(key, value);
         }
       }
+      // Rebuild the response with the relativized Location so consumers that
+      // forward `result.response` (rather than `result.redirectUrl`) also send
+      // the correct header.
+      const relativizedResponseHeaders = new Headers(response.headers);
+      relativizedResponseHeaders.set("Location", relativeLocation);
+      const relativizedResponse = new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: relativizedResponseHeaders,
+      });
       return {
         continue: false,
-        redirectUrl: location,
+        redirectUrl: relativeLocation,
         redirectStatus: response.status,
-        response: stripMiddlewareHeadersFromResponse(response),
+        response: stripMiddlewareHeadersFromResponse(relativizedResponse),
         responseHeaders,
         waitUntilPromises,
       };
