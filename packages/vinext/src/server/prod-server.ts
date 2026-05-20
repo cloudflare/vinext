@@ -1306,7 +1306,7 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url) — API route handling (Web Request → Response)
+ * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1765,7 +1765,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
         let response: Response;
         if (typeof handleApi === "function") {
-          response = await handleApi(webRequest, resolvedUrl);
+          // Pass a Node-shaped ExecutionContext so any after() calls in the
+          // API handler still get a working waitUntil (which fires
+          // background work without blocking the response).
+          response = await handleApi(webRequest, resolvedUrl, createNodeExecutionContext());
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }

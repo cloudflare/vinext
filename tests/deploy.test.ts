@@ -624,10 +624,13 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain('from "vinext/server/request-pipeline"');
   });
 
-  it("routes /api/ to handleApiRoute using resolved URL", () => {
+  it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain('resolvedPathname.startsWith("/api/")');
-    expect(content).toContain("handleApiRoute(request, resolvedUrl)");
+    // Forwarding ctx lets handlePagesApiRoute wrap the handler in
+    // runWithExecutionContext so after() and other shims can reach
+    // ctx.waitUntil(). See #1365.
+    expect(content).toContain("handleApiRoute(request, resolvedUrl, ctx)");
   });
 
   it("includes error handling", () => {

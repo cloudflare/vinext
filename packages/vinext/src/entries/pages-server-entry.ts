@@ -685,9 +685,10 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
   });
 }
 
-export async function handleApiRoute(request, url) {
+export async function handleApiRoute(request, url, ctx) {
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
+    ctx,
     match,
     request,
     url,

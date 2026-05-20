@@ -11,6 +11,7 @@ import {
 } from "./pages-node-compat.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -36,6 +37,14 @@ export type PagesApiRouteMatch = {
 };
 
 type HandlePagesApiRouteOptions = {
+  /**
+   * Per-request Cloudflare Workers `ExecutionContext`. When provided, the
+   * API route runs inside `runWithExecutionContext(ctx, ...)` so any
+   * `after()` (or other shim) call inside the handler can reach
+   * `ctx.waitUntil()` via the ALS and keep the isolate alive past the
+   * response. Omit on Node.js dev where no Workers lifecycle exists.
+   */
+  ctx?: ExecutionContextLike;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -59,6 +68,13 @@ function isNodeApiRouteModule(
 }
 
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
+  if (options.ctx) {
+    return runWithExecutionContext(options.ctx, () => _handlePagesApiRoute(options));
+  }
+  return _handlePagesApiRoute(options);
+}
+
+async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
   if (!options.match) {
     return new Response("404 - API route not found", { status: 404 });
   }
