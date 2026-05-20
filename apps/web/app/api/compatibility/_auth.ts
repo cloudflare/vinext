@@ -49,7 +49,15 @@ export async function requireIngestAuth(request: Request): Promise<Response | nu
   }
 
   const provided = request.headers.get("x-compat-secret") ?? "";
-  if (!(await safeEqual(provided, expected))) {
+  // Fast-path reject for missing/empty headers: skip the two SHA-256
+  // digests in safeEqual since there's nothing to compare. The timing
+  // guarantee we care about — "don't leak the contents of `expected`
+  // via length / prefix matching against `provided`" — is unaffected
+  // because we're only short-circuiting on values we already know
+  // can't match a non-empty secret. This is a micro-optimisation
+  // (workers per request is fine either way) but it makes the
+  // "no auth header" failure mode cheap and obvious.
+  if (!provided || !(await safeEqual(provided, expected))) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   return null;

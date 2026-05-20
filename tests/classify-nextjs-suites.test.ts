@@ -158,6 +158,70 @@ describe("classifySuite", () => {
     expect(classifySuite(root, "test/e2e/missing/missing.test.ts")).toBe("unknown");
   });
 
+  it("treats a fixture-wrapper 'app/' (contains next.config.js) as a project root, not App Router", async () => {
+    // Mirrors test/e2e/og-api/ in Next.js — the outer directory named
+    // `app` holds the Next.js project (next.config.js + pages/) and the
+    // inner `app/` is the real App Router root. Classification must walk
+    // through the wrapper to find both routers inside.
+    const suite = "test/e2e/wrapper-fixture/index.test.ts";
+    await writeFile(path.join(root, suite));
+    // Outer `app/` is the wrapper — next.config.js identifies it
+    await writeFile(path.join(root, "test/e2e/wrapper-fixture/app/next.config.js"));
+    // Real App Router inside
+    await writeFile(path.join(root, "test/e2e/wrapper-fixture/app/app/og/route.js"));
+    // Real Pages Router inside
+    await writeFile(path.join(root, "test/e2e/wrapper-fixture/app/pages/index.js"));
+
+    expect(classifySuite(root, suite)).toBe("both");
+  });
+
+  it("treats a fixture-wrapper 'app/' containing only pages/ as Pages Router", async () => {
+    // Mirrors test/e2e/browserslist/ in Next.js — outer `app/` is the
+    // wrapper, inner `pages/` is the real Pages Router fixture.
+    const suite = "test/e2e/wrapper-pages/index.test.ts";
+    await writeFile(path.join(root, suite));
+    await writeFile(path.join(root, "test/e2e/wrapper-pages/app/next.config.js"));
+    await writeFile(path.join(root, "test/e2e/wrapper-pages/app/pages/index.js"));
+
+    expect(classifySuite(root, suite)).toBe("pages");
+  });
+
+  it("does not treat an App Router route group named 'pages' as Pages Router", async () => {
+    // Regression test for a classifier bug where scanFixture recursed
+    // into `app/` looking for nested `app`/`pages` directories. An App
+    // Router fixture that uses a route group literally named `pages`
+    // (i.e. app/pages/...) would have incorrectly tripped the pages
+    // detector and been classified "both".
+    const suite = "test/e2e/with-app-route-group/with-app-route-group.test.ts";
+    await writeFile(path.join(root, suite));
+    await writeFile(path.join(root, "test/e2e/with-app-route-group/app/page.tsx"));
+    // A route group named "pages" — this is a directory inside app/,
+    // NOT a Pages Router directory, so classification must stay "app".
+    await writeFile(path.join(root, "test/e2e/with-app-route-group/app/pages/inner/page.tsx"));
+
+    expect(classifySuite(root, suite)).toBe("app");
+  });
+
+  it("does not mistake an App Router app/ that contains a noop middleware.js for a wrapper", async () => {
+    // Mirrors test/e2e/app-dir/app-middleware/ — the App Router app/
+    // contains a noop middleware.js file (used to assert that Next.js
+    // doesn't pick it up as middleware). The wrapper detector must NOT
+    // treat that as a project-root signal, because the directory is a
+    // real App Router app/, not a wrapper.
+    const suite = "test/e2e/app-dir/app-with-noop-middleware/app-with-noop-middleware.test.ts";
+    await writeFile(path.join(root, suite));
+    await writeFile(path.join(root, "test/e2e/app-dir/app-with-noop-middleware/app/layout.js"));
+    await writeFile(
+      path.join(root, "test/e2e/app-dir/app-with-noop-middleware/app/headers/page.js"),
+    );
+    // The noop middleware file inside app/ — must not flip wrapper detection
+    await writeFile(path.join(root, "test/e2e/app-dir/app-with-noop-middleware/app/middleware.js"));
+    // Sibling pages/ with a real route
+    await writeFile(path.join(root, "test/e2e/app-dir/app-with-noop-middleware/pages/[slug].js"));
+
+    expect(classifySuite(root, suite)).toBe("both");
+  });
+
   it("does not walk into node_modules / .next when scanning fixtures", async () => {
     const suite = "test/e2e/with-noise/with-noise.test.ts";
     await writeFile(path.join(root, suite));

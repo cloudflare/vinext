@@ -198,6 +198,78 @@ function pagesDirHasRealRoute(dir, maxDepth = 3) {
 }
 
 /**
+ * Some Next.js fixtures wrap their test app inside a directory that is
+ * literally named `app`, like:
+ *
+ *   test/e2e/og-api/
+ *     index.test.ts
+ *     app/                  ← test-app wrapper (NOT App Router)
+ *       next.config.js
+ *       middleware.js
+ *       app/                ← actual App Router root
+ *         og/route.js
+ *       pages/              ← Pages Router fixture
+ *         index.js
+ *
+ * The .test.ts uses `nextTestSetup({ files: __dirname + '/app' })`, so the
+ * outer `app/` is the Next.js project root, not an App Router directory.
+ * Distinguishing it from a real App Router app dir matters: if we treat
+ * the wrapper as App Router we never descend into it and miss both the
+ * inner `app/` and the sibling `pages/`.
+ *
+ * Heuristic: a directory named `app` is the Next.js project root (i.e. a
+ * wrapper) if it contains a top-level `next.config.{js,ts,mjs,cjs}`. Real
+ * App Router app directories don't ship a next.config alongside their
+ * route files.
+ */
+const NEXT_CONFIG_NAMES = new Set([
+  "next.config.js",
+  "next.config.ts",
+  "next.config.mjs",
+  "next.config.cjs",
+]);
+
+/**
+ * Detect whether a directory named `app/` (or `pages/`) is actually a
+ * Next.js project-root wrapper rather than a real router directory.
+ *
+ * Two wrapper signals, either of which is sufficient:
+ *
+ *   1. Contains a top-level `next.config.{js,ts,mjs,cjs}` file. App Router
+ *      app dirs never ship their own next.config.
+ *
+ *   2. Contains BOTH an inner `app/` AND an inner `pages/` directory.
+ *      App Router app dirs don't have recursive `app` children, and even
+ *      though `pages` is a legal App Router route group name, it never
+ *      coexists with a sibling route group named `app`.
+ *
+ * We deliberately do NOT treat a top-level `middleware.{js,ts}` as a
+ * wrapper signal: Next.js tests put noop `middleware.js` files inside
+ * real App Router app dirs to assert the file is ignored there.
+ */
+const FIXTURE_WRAPPER_MARKERS = new Set(NEXT_CONFIG_NAMES);
+
+function looksLikeFixtureWrapper(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  let hasInnerApp = false;
+  let hasInnerPages = false;
+  for (const e of entries) {
+    if (e.isFile() && FIXTURE_WRAPPER_MARKERS.has(e.name)) return true;
+    if (e.isDirectory()) {
+      if (e.name === "app") hasInnerApp = true;
+      else if (e.name === "pages") hasInnerPages = true;
+    }
+  }
+  if (hasInnerApp && hasInnerPages) return true;
+  return false;
+}
+
+/**
  * Walk the fixture root and find every directory named `app` or `pages`
  * within MAX_WALK_DEPTH. For each one, check whether it has real routes.
  *
@@ -222,13 +294,43 @@ function scanFixture(fixtureRoot) {
 
       const childPath = path.join(dir, e.name);
 
-      if (e.name === "app" && !hasApp) {
-        if (appDirHasRealRoute(childPath)) hasApp = true;
-      } else if (e.name === "pages" && !hasPages) {
-        if (pagesDirHasRealRoute(childPath)) hasPages = true;
+      // When we encounter a directory named `app` or `pages`:
+      //   1. If it looks like a fixture wrapper (contains next.config.*),
+      //      it's NOT a Next.js router directory — it's the test app's
+      //      project root. Recurse into it to find the real router
+      //      directories inside.
+      //   2. Otherwise, hand it to the dedicated route-checker.
+      //      - If the route checker finds real routes, mark the flag
+      //        and skip descending. The route checker already covered
+      //        the subtree, and re-walking would risk a false positive
+      //        (an App Router route group named `pages` would trip the
+      //        Pages detector).
+      //      - If the route checker finds nothing, the directory is
+      //        named `app`/`pages` but has neither routes nor a wrapper
+      //        signature. Recurse anyway, on the off chance routes are
+      //        somewhere deeper.
+      if (e.name === "app" || e.name === "pages") {
+        if (looksLikeFixtureWrapper(childPath)) {
+          // Wrapper: descend to find the real app/pages inside.
+          if (depth + 1 <= MAX_WALK_DEPTH) {
+            stack.push({ dir: childPath, depth: depth + 1 });
+          }
+          continue;
+        }
+        if (e.name === "app") {
+          if (!hasApp && appDirHasRealRoute(childPath)) {
+            hasApp = true;
+            if (hasApp && hasPages) return { hasApp, hasPages };
+            continue; // covered by the route checker
+          }
+        } else {
+          if (!hasPages && pagesDirHasRealRoute(childPath)) {
+            hasPages = true;
+            if (hasApp && hasPages) return { hasApp, hasPages };
+            continue;
+          }
+        }
       }
-
-      if (hasApp && hasPages) return { hasApp, hasPages };
 
       if (depth + 1 <= MAX_WALK_DEPTH) {
         stack.push({ dir: childPath, depth: depth + 1 });

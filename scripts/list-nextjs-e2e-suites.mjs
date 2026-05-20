@@ -63,7 +63,12 @@ async function main() {
   console.log(`Enumerated ${out.length} e2e test files → ${outputPath}`);
 }
 
-main().catch((error) => {
-  console.error(error?.stack || error);
-  process.exitCode = 1;
-});
+// Only run as CLI when invoked directly (not when imported). Same guard
+// as scripts/classify-nextjs-suites.mjs — keeps the module safe to import
+// from tests or other tooling without surprise process.argv parsing.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error(error?.stack || error);
+    process.exitCode = 1;
+  });
+}
