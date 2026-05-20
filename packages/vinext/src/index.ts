@@ -42,6 +42,7 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -2853,6 +2854,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // ── `_next/data` normalization (Pages Router) ──────────────
+              // Client-side navigations in the Pages Router fetch
+              // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
+              // page path BEFORE middleware runs so middleware sees `/page`
+              // (matching Next.js — see `handleNextDataRequest` in
+              // base-server.ts). If the buildId is missing (dev) or matches,
+              // accept the request; if it is present and wrong, fall through
+              // to the dot-extension skip below which returns 404.
+              let isDataReq = false;
+              if (isNextDataPathname(pathname)) {
+                const devBuildId = process.env.__VINEXT_BUILD_ID ?? "development";
+                const dataMatch = parseNextDataPathname(pathname, devBuildId);
+                if (dataMatch) {
+                  isDataReq = true;
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = dataMatch.pagePathname + qs;
+                  pathname = dataMatch.pagePathname;
+                  // Rewrite req.url so downstream middleware sees the page
+                  // path, not the raw _next/data URL.
+                  req.url = url;
+                }
+              }
+
               // Skip requests for files with extensions (static assets) after
               // trailing-slash canonicalization so file-looking dynamic routes
               // like /catch-all/hello.world/ still get the Next.js redirect.
@@ -3195,7 +3219,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 if (middlewareRequestHeaders) {
                   applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                 }
-                await handler(req, res, resolvedUrl, mwStatus);
+                await handler(req, res, resolvedUrl, mwStatus, isDataReq);
                 return;
               }
 
@@ -3222,7 +3246,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
-                  await handler(req, res, fallbackRewrite, mwStatus);
+                  await handler(req, res, fallbackRewrite, mwStatus, isDataReq);
                   return;
                 }
               }
@@ -3231,7 +3255,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
               if (hasAppDir) return next();
 
-              await handler(req, res, resolvedUrl, mwStatus);
+              await handler(req, res, resolvedUrl, mwStatus, isDataReq);
             } catch (e) {
               next(e);
             }

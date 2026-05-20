@@ -52,6 +52,11 @@ import {
   normalizeTrailingSlash,
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import {
+  isNextDataPathname,
+  parseNextDataPathname,
+  buildNextDataNotFoundResponse,
+} from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   ASSET_PREFIX_URL_DIR,
@@ -1318,7 +1323,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // the freshly built module rather than a stale cached copy.
   const serverMtime = fs.statSync(serverEntryPath).mtimeMs;
   const serverEntry = await import(`${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`);
-  const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
+  const {
+    renderPage,
+    handleApiRoute: handleApi,
+    runMiddleware,
+    vinextConfig,
+    buildId: pagesBuildId,
+  } = serverEntry;
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
@@ -1545,6 +1556,30 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           res.end();
           return;
         }
+      }
+
+      // ── 3b. `_next/data` normalization ────────────────────────────
+      // Pages Router client-side navigations fetch
+      // `/_next/data/<buildId>/<page>.json`. The page path must be normalized
+      // BEFORE middleware runs so middleware sees `/page`, matching Next.js
+      // (see `handleNextDataRequest` in base-server.ts). If the buildId in the
+      // URL does not match this server's buildId we return a JSON 404 right
+      // here — stale clients can fall back to a hard navigation without
+      // accidentally triggering middleware/SSR on a bogus path.
+      let isDataReq = false;
+      if (isNextDataPathname(pathname)) {
+        const dataMatch = pagesBuildId ? parseNextDataPathname(pathname, pagesBuildId) : null;
+        if (!dataMatch) {
+          // Wrong buildId (or malformed) — surface a JSON 404 so the client
+          // hard-navigates instead of silently rendering an empty page.
+          const notFound = buildNextDataNotFoundResponse();
+          await sendWebResponse(notFound, req, res, compress);
+          return;
+        }
+        isDataReq = true;
+        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = dataMatch.pagePathname + qs;
+        pathname = dataMatch.pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
@@ -1819,12 +1854,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let response: Response | undefined;
       if (typeof renderPage === "function") {
         const middlewareResponseHeaders = toWebHeaders(middlewareHeaders);
+        const renderOptions = isDataReq ? { isDataReq: true } : undefined;
         response = await renderPage(
           webRequest,
           resolvedUrl,
           ssrManifest,
           undefined,
           middlewareResponseHeaders,
+          renderOptions,
         );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
@@ -1846,6 +1883,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               ssrManifest,
               undefined,
               middlewareResponseHeaders,
+              renderOptions,
             );
           }
         }
