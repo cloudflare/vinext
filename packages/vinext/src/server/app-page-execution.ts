@@ -1,6 +1,11 @@
 import type { LayoutFlags } from "./app-elements.js";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { createRscRedirectLocation, VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import {
+  applyRscCompatibilityIdHeader,
+  createRscRedirectLocation,
+  VINEXT_RSC_CONTENT_TYPE,
+} from "./app-rsc-cache-busting.js";
+import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
@@ -41,7 +46,7 @@ export type { ClassificationReason };
  *   test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
  *   ("should support redirect in generateMetadata")
  */
-export const APP_PAGE_METADATA_ERROR_MARKER = Symbol.for("vinext.appPage.metadataError");
+const APP_PAGE_METADATA_ERROR_MARKER = Symbol.for("vinext.appPage.metadataError");
 
 export function tagAppPageMetadataError<T>(error: T): T {
   if (error && typeof error === "object") {
@@ -90,9 +95,7 @@ type AppPageRscStreamCapture = {
  * `text/x-component` content type. The client's `RedirectErrorBoundary`
  * decodes the digest and performs the navigation.
  */
-export type BuildRscRedirectFlightStream = (options: {
-  digest: string;
-}) => ReadableStream<Uint8Array>;
+type BuildRscRedirectFlightStream = (options: { digest: string }) => ReadableStream<Uint8Array>;
 
 type BuildAppPageSpecialErrorResponseOptions = {
   /**
@@ -322,7 +325,15 @@ export async function buildAppPageSpecialErrorResponse(
 
       const headers = new Headers({
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
+        // Side-channel signal so vinext's client loop can detect the redirect
+        // without having to decode the flight body first. See
+        // `VINEXT_RSC_REDIRECT_HEADER` in server/headers.ts for the rationale.
+        [VINEXT_RSC_REDIRECT_HEADER]: digestUrl,
       });
+      // Mirror the regular RSC response by stamping the build-time compatibility
+      // ID. Without it, the client treats the response as cross-build and hard-
+      // navigates instead of following the redirect through the soft-nav loop.
+      applyRscCompatibilityIdHeader(headers);
       // Preserve middleware response headers (Set-Cookie, custom headers, etc.)
       // exactly like the 307 path does — the client will still see them.
       mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);

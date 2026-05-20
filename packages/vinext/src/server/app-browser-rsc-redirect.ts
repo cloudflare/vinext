@@ -4,7 +4,7 @@ import {
   stripRscSuffix,
 } from "./app-rsc-cache-busting.js";
 
-const MAX_RSC_REDIRECT_DEPTH = 10;
+export const MAX_RSC_REDIRECT_DEPTH = 10;
 
 type RscRedirectHistoryUpdateMode = "push" | "replace" | undefined;
 
