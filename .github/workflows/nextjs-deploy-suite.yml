@@ -134,21 +134,19 @@ jobs:
         env:
           COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
           COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
-          NEXT_REF: ${{ inputs.next-ref || 'v16.2.6' }}
         run: |
           if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
             echo "COMPAT_INGEST_SECRET not configured; skipping classification submission."
             exit 0
           fi
           # Convert the suite → router map (object) into the endpoint's
-          # expected `{ nextRef, suites: [{ suite, router }, ...] }` shape.
+          # expected `{ classifiedAt, suites: [{ suite, router }, ...] }` shape.
           # Done with node to avoid a jq dependency and to keep the JSON
           # construction safely string-typed.
           node -e '
             const fs = require("node:fs");
             const map = JSON.parse(fs.readFileSync("nextjs-suite-routers.json", "utf8"));
             const body = {
-              nextRef: process.env.NEXT_REF,
               classifiedAt: Date.now(),
               suites: Object.entries(map).map(([suite, router]) => ({ suite, router })),
             };

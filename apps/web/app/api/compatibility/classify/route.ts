@@ -20,7 +20,6 @@
  *
  * Body:
  *   {
- *     nextRef: string,              // e.g. "v16.2.6" — stored on each row for provenance
  *     classifiedAt?: number,        // optional unix millis; defaults to now
  *     suites: Array<{
  *       suite: string,              // test file path
@@ -41,7 +40,6 @@ type SubmitSuite = {
 };
 
 type SubmitBody = {
-  nextRef: string;
   classifiedAt?: number;
   suites: SubmitSuite[];
 };
@@ -59,7 +57,6 @@ const VALID_ROUTERS: ReadonlySet<RouterKind> = new Set(["app", "pages", "both", 
 function isValidBody(body: unknown): body is SubmitBody {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
-  if (typeof b.nextRef !== "string" || b.nextRef.length === 0) return false;
   if (b.classifiedAt !== undefined && typeof b.classifiedAt !== "number") return false;
   if (!Array.isArray(b.suites)) return false;
   if (b.suites.length === 0) return false;
@@ -116,14 +113,12 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
   const rows = Array.from(bySuite.values()).map((s) => ({
     suite: s.suite,
     router: s.router,
-    nextRef: body.nextRef,
     classifiedAt,
   }));
 
   // D1 enforces SQLite's 100-variable cap per statement; each row binds
-  // 4 columns (suite, router, next_ref, classified_at), so up to 25
-  // rows per INSERT.
-  const COLUMNS_PER_ROW = 4;
+  // 3 columns (suite, router, classified_at), so up to 33 rows per INSERT.
+  const COLUMNS_PER_ROW = 3;
   const MAX_VARS = 100;
   const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
 
@@ -139,7 +134,6 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
           target: compatSuiteMeta.suite,
           set: {
             router: sqlExcluded("router"),
-            nextRef: sqlExcluded("next_ref"),
             classifiedAt: sqlExcluded("classified_at"),
           },
         }),

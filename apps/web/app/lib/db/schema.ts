@@ -85,9 +85,10 @@ export const compatFileResults = sqliteTable(
  * Trade-off: classification changes are retroactive (historical pass
  * rates split-by-router shift when a suite is reclassified). This is
  * usually what you want — corrections heal the whole history — but means
- * the chart isn't a strict point-in-time record. Run-time provenance
- * lives in `next_ref` / `classified_at` so a reclassification can be
- * tied back to a specific Next.js ref bump.
+ * the chart isn't a strict point-in-time record. `classified_at` lets
+ * you tie a reclassification to a moment in time; if you also need the
+ * Next.js ref that produced it, join against the most recent
+ * compat_runs row at or before that timestamp.
  */
 export const compatSuiteMeta = sqliteTable(
   "compat_suite_meta",
@@ -103,8 +104,6 @@ export const compatSuiteMeta = sqliteTable(
      *                 tests, or pre-classifier rows that haven't been ingested yet)
      */
     router: text("router", { enum: ["app", "pages", "both", "unknown"] }).notNull(),
-    /** Next.js ref this classification was produced against, e.g. "v16.2.6". */
-    nextRef: text("next_ref").notNull(),
     /** Unix millis the classification was last (re)computed. */
     classifiedAt: integer("classified_at").notNull(),
   },

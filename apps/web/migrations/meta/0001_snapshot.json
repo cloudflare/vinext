@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c2048bb8-338c-455c-9e22-af54dd4773ed",
+  "id": "9035656e-f70c-4898-949e-cba2a4a0698a",
   "prevId": "88f6f138-c8cc-4997-ad87-bc9076e7ea80",
   "tables": {
     "compat_file_results": {
@@ -216,13 +216,6 @@
         },
         "router": {
           "name": "router",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "next_ref": {
-          "name": "next_ref",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
