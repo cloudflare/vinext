@@ -611,21 +611,20 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       // ── _next/data JSON envelope short-circuit ───────────────────────
       // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
       // and expects { pageProps } as JSON instead of the full HTML page. Skip
-      // rendering the React tree and emit the JSON envelope directly. Headers
-      // and cookies set on the gsspRes by getServerSideProps are forwarded
-      // so middleware/auth flows work the same as the HTML page.
+      // rendering the React tree and emit the JSON envelope directly via the
+      // typed helper so the envelope shape stays in one place. Headers and
+      // cookies set on the gsspRes by getServerSideProps are forwarded so
+      // middleware/auth flows work the same as the HTML page.
       if (isDataReq) {
-        const dataHeaders = { "Content-Type": "application/json" };
+        const init = {};
         if (gsspRes && gsspRes.headers) {
+          init.headers = {};
           for (const [k, v] of Object.entries(gsspRes.headers)) {
             if (v === undefined || v === null) continue;
-            dataHeaders[k] = Array.isArray(v) ? v.join(", ") : String(v);
+            init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
           }
         }
-        return new Response(safeJsonStringify({ pageProps }), {
-          status: 200,
-          headers: dataHeaders,
-        });
+        return __buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
       }
 
       // Include both the matched page module and the global _app module

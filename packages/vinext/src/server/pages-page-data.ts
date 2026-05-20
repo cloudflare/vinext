@@ -301,9 +301,14 @@ export async function resolvePagesPageData(
       );
 
       if (!isValidPath) {
+        // For data requests (`/_next/data/...json`), return a JSON-shaped 404
+        // so the client router can `res.json()` without blowing up — matches
+        // Next.js' behavior. HTML navigations still get the HTML 404 page.
         return {
           kind: "response",
-          response: buildPagesNotFoundResponse(),
+          response: options.isDataReq
+            ? buildPagesDataNotFoundResponse()
+            : buildPagesNotFoundResponse(),
         };
       }
     }

@@ -2864,7 +2864,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // to the dot-extension skip below which returns 404.
               let isDataReq = false;
               if (isNextDataPathname(pathname)) {
-                const devBuildId = process.env.__VINEXT_BUILD_ID ?? "development";
+                // Use the plugin's resolved buildId so a user-supplied
+                // `generateBuildId` in next.config.mjs is honored in dev —
+                // matching the value embedded into the prod entry. Fall back
+                // to the env-var define (set by the plugin) and finally
+                // "development" if the plugin hasn't resolved a config yet.
+                const devBuildId =
+                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
                 const dataMatch = parseNextDataPathname(pathname, devBuildId);
                 if (dataMatch) {
                   isDataReq = true;

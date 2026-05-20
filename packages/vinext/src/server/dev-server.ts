@@ -445,6 +445,13 @@ export function createSSRHandler(
             });
 
             if (!isValidPath) {
+              if (isDataReq) {
+                // Data requests get a JSON 404 so the client router can
+                // hard-navigate instead of trying to parse HTML as JSON.
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end("{}");
+                return;
+              }
               await renderErrorPage(
                 server,
                 runner,
@@ -516,6 +523,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
@@ -786,6 +798,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
