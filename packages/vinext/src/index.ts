@@ -125,6 +125,7 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { createUseClientExportAllPlugin } from "./plugins/use-client-export-all.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -2269,6 +2270,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // Expand `export * from '...'` in 'use client' modules to explicit named
+    // re-exports before @vitejs/plugin-rsc's `rsc:use-client` transform runs.
+    // The upstream transform throws "unsupported ExportAllDeclaration" otherwise.
+    // See src/plugins/use-client-export-all.ts.
+    createUseClientExportAllPlugin(),
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
