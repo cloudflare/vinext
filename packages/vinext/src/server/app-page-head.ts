@@ -2,7 +2,7 @@ import {
   mergeMetadataEntries,
   mergeViewport,
   postProcessMetadata,
-  resolveModuleMetadata,
+  resolveModuleMetadata as _resolveModuleMetadata,
   resolveModuleViewport,
   type Metadata,
   type MetadataMergeEntry,
@@ -11,8 +11,29 @@ import {
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { applyFileBasedMetadata } from "./file-based-metadata.js";
 import type { AppPageParams } from "./app-page-boundary.js";
+import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+
+/**
+ * Wrapped {@link _resolveModuleMetadata} that tags any thrown error with the
+ * `APP_PAGE_METADATA_ERROR_MARKER` symbol. The marker lets downstream special-
+ * error handling distinguish a `generateMetadata()` redirect/notFound from a
+ * page-component redirect/notFound, which matters because metadata is
+ * suspended/streamed in Next.js: its redirects ride inside the flight payload
+ * with a 200 status code even for document SSR, whereas page redirects still
+ * emit a 307 for SSR. See https://github.com/cloudflare/vinext/issues/1347
+ * and Next.js test/e2e/app-dir/metadata-navigation.
+ */
+async function resolveModuleMetadata(
+  ...args: Parameters<typeof _resolveModuleMetadata>
+): Promise<Metadata | null> {
+  try {
+    return await _resolveModuleMetadata(...args);
+  } catch (error) {
+    throw tagAppPageMetadataError(error);
+  }
+}
 
 type AppPageSearchParams = Record<string, string | string[]>;
 

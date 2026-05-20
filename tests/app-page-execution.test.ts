@@ -322,6 +322,123 @@ describe("app page execution helpers", () => {
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
+  it("encodes redirect digest in flight payload + 200 when buildRscRedirectFlightStream is provided (RSC request)", async () => {
+    // Mirrors Next.js's `generateDynamicFlightRenderResult` path: when a
+    // server component throws redirect() during RSC rendering, the redirect
+    // digest is serialized into the flight stream and the response stays
+    // 200. The status line never carries the redirect.
+    //
+    // See: https://github.com/cloudflare/vinext/issues/1347
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${options.digest}`));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
+    expect(response.headers.get("location")).toBeNull();
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;replace;/redirected;307;",
+    });
+    await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("always emits 200 + flight payload for metadata-originated redirects (even on document SSR)", async () => {
+    // generateMetadata() redirects are streamed inside the flight payload
+    // because metadata resolution is suspended in Next.js. The HTTP status
+    // stays 200 for both RSC and full document requests. Mirrors Next.js
+    // test/e2e/app-dir/metadata-navigation:
+    //   "should support redirect in generateMetadata"
+    const buildRscRedirectFlightStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the 307/308 status code in the encoded digest (permanentRedirect)", async () => {
+    const captured: { digest: string }[] = [];
+    const buildRscRedirectFlightStream = (opts: { digest: string }) => {
+      captured.push(opts);
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      });
+    };
+
+    await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/permanent-target",
+        statusCode: 308,
+      },
+    });
+
+    expect(captured).toEqual([{ digest: "NEXT_REDIRECT;replace;/permanent-target;308;" }]);
+  });
+
+  it("falls back to 307 when buildRscRedirectFlightStream is absent (backward compat)", async () => {
+    // Callers that don't yet plumb the flight-stream builder keep the legacy
+    // behavior: HTTP 307 with a Location header. Keeps non-app-router callers
+    // (and any test helpers) working without changes.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toMatch(/redirected\.rsc/);
+  });
+
   it("canonicalizes same-origin RSC redirect locations to .rsc URLs", async () => {
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext: vi.fn(),
