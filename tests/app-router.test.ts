@@ -123,6 +123,17 @@ describe("App Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  // Ported from Next.js: test/e2e/async-modules/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+  it("renders pages that use top-level await (async modules)", async () => {
+    const res = await fetch(`${baseUrl}/async-modules-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('<div id="app-value">hello</div>');
+    expect(html).toContain('<div id="page-value">42</div>');
+  });
+
   // Ported from Next.js: test/e2e/prerender.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
   it("returns Method Not Allowed for non-action mutation requests to App Router pages", async () => {

@@ -50,16 +50,40 @@ export function NextScript() {
 }
 
 /**
- * Default Document component - used when no custom _document.tsx exists.
+ * Default Document component — also the base class user `_document.tsx` files
+ * `extend`. Must be a class (not a function) to match Next.js's `next/document`
+ * default export so `class MyDocument extends Document` produces a constructible
+ * class that React can instantiate during SSR. Returning a function here breaks
+ * any user `_document.tsx` that uses the class-based form because `extends`
+ * against a non-constructor produces a class that can only be called without
+ * `new`, which React refuses to do.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+ * Ported behavior: Next.js's default `Document` is a `class Document extends
+ * React.Component`. Custom documents extend it and override `getInitialProps`
+ * and `render`.
  */
-export default function Document() {
-  return (
-    <Html>
-      <Head />
-      <body>
-        <Main />
-        <NextScript />
-      </body>
-    </Html>
-  );
+export default class Document<P = unknown> extends React.Component<
+  P & { children?: React.ReactNode }
+> {
+  /**
+   * `getInitialProps` is invoked by the SSR pipeline. The default implementation
+   * is a no-op: subclasses replace it. Returning an empty object keeps the
+   * runtime contract compatible with consumers that always call it.
+   */
+  static async getInitialProps(_ctx: unknown): Promise<Record<string, unknown>> {
+    return {};
+  }
+
+  render(): React.ReactNode {
+    return (
+      <Html>
+        <Head />
+        <body>
+          <Main />
+          <NextScript />
+        </body>
+      </Html>
+    );
+  }
 }

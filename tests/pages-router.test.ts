@@ -264,6 +264,17 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  // Ported from Next.js: test/e2e/async-modules/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+  it("renders pages that use top-level await (async modules)", async () => {
+    const res = await fetch(`${baseUrl}/async-modules-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('<div id="app-value">hello</div>');
+    expect(html).toContain('<div id="page-value">42</div>');
+  });
+
   it("adds middleware CSP nonces to Pages Router next data", async () => {
     const res = await fetch(`${baseUrl}/dynamic-page?mw-csp-nonce=pages-response`);
     expect(res.status).toBe(200);
@@ -2506,6 +2517,15 @@ export default function CounterPage() {
       // Test: 404 for unknown route
       const notFoundRes = await fetch(`${prodUrl}/nonexistent`);
       expect(notFoundRes.status).toBe(404);
+
+      // Test: page using top-level await (async module).
+      // Ported from Next.js: test/e2e/async-modules/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+      const asyncModRes = await fetch(`${prodUrl}/async-modules-test`);
+      expect(asyncModRes.status).toBe(200);
+      const asyncModHtml = await asyncModRes.text();
+      expect(asyncModHtml).toContain('<div id="app-value">hello</div>');
+      expect(asyncModHtml).toContain('<div id="page-value">42</div>');
     } finally {
       httpServer.close();
     }
@@ -3878,6 +3898,174 @@ export function middleware(request) {
       expect(await res.text()).toBe("");
     });
   }
+});
+
+// Ported from Next.js: test/e2e/async-modules/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+//
+// Verifies that page modules using top-level await (async modules) render
+// their resolved data, not empty content. This covers the Pages Router
+// production build path where `_app.tsx` and the page module each contain
+// `await` at the module top level. Vite/Rolldown must propagate TLA through
+// the generated SSR entry's static imports so the entry awaits these modules
+// before reading their default exports.
+describe("Pages Router top-level await (async modules) in production", () => {
+  let tmpRoot: string;
+  let outDir: string;
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  beforeAll(async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-async-modules-"));
+    outDir = path.join(tmpRoot, "dist");
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpRoot, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.mkdir(path.join(tmpRoot, "pages", "api"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "_app.tsx"),
+      `const appValue = await Promise.resolve("hello");
+export default function MyApp({ Component, pageProps }: any) {
+  return <Component {...pageProps} appValue={appValue} />;
+}
+`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "index.tsx"),
+      `const value = await Promise.resolve(42);
+export default function Index({ appValue }: any) {
+  return (
+    <main>
+      <div id="app-value">{appValue}</div>
+      <div id="page-value">{value}</div>
+    </main>
+  );
+}
+`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "gssp.tsx"),
+      `const gsspValue = await Promise.resolve(42);
+export async function getServerSideProps() {
+  return { props: { gsspValue } };
+}
+export default function Page({ gsspValue }: any) {
+  return <div id="gssp-value">{gsspValue}</div>;
+}
+`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "gsp.tsx"),
+      `const gspValue = await Promise.resolve(42);
+export async function getStaticProps() {
+  return { props: { gspValue } };
+}
+export default function Page({ gspValue }: any) {
+  return <div id="gsp-value">{gspValue}</div>;
+}
+`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "api", "hello.ts"),
+      `const value = await Promise.resolve(42);
+export default function handler(_req: any, res: any) {
+  res.status(200).json({ value });
+}
+`,
+    );
+
+    // Class-based Document. Mirrors the original Next.js async-modules
+    // fixture (pages/_document.jsx) which uses `class MyDocument extends
+    // Document`. This requires the `next/document` default export to be a
+    // class, not a function — otherwise React refuses to construct
+    // MyDocument and throws "Class constructor cannot be invoked without
+    // 'new'", which surfaces in e2e as an empty/500 SSR response.
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "_document.tsx"),
+      `import Document, { Html, Head, Main, NextScript } from "next/document";
+const docValue = await Promise.resolve("doc value");
+export default class MyDocument extends Document {
+  render() {
+    return (
+      <Html>
+        <Head />
+        <body>
+          <div id="doc-value">{docValue}</div>
+          <Main />
+          <NextScript />
+        </body>
+      </Html>
+    );
+  }
+}
+`,
+    );
+
+    await buildPagesFixtureToOutDir(tmpRoot, outDir);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+      }),
+    );
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  }, 120000);
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+    if (tmpRoot) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("renders an index page whose _app and page both use top-level await", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<div id="app-value">hello</div>');
+    expect(html).toContain('<div id="page-value">42</div>');
+  });
+
+  it("renders a page whose module-level await runs before getServerSideProps", async () => {
+    const res = await fetch(`${prodUrl}/gssp`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<div id="gssp-value">42</div>');
+  });
+
+  it("renders a page whose module-level await runs before getStaticProps", async () => {
+    const res = await fetch(`${prodUrl}/gsp`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<div id="gsp-value">42</div>');
+  });
+
+  it("serves an API route whose module uses top-level await", async () => {
+    const res = await fetch(`${prodUrl}/api/hello`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ value: 42 });
+  });
+
+  it("renders an async class-based _document.tsx with resolved TLA values", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<div id="doc-value">doc value</div>');
+  });
 });
 
 describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
