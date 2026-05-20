@@ -175,6 +175,47 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("materializes synthetic routes from a sibling route-group's parallel slot", async () => {
+    // Two sibling route groups share the same URL pattern at the root:
+    //   (group-a) provides a layout-only route with a catch-all parallel slot
+    //   (group-b) provides the children page at the same URL pattern
+    // The (group-a) layout cannot become a route on its own (collision), but
+    // its slot's nested catch-all page must still materialize a synthetic
+    // route so that URLs not matched by (group-b) fall through to the slot.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "(group-a)/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "(group-a)/@parallel/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "(group-a)/@parallel/[...catcher]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "(group-b)/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "(group-b)/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "(group-b)/foo/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const patterns = graph.routes.map((r) => r.pattern).sort();
+      // Real page routes from (group-b)
+      expect(patterns).toContain("/");
+      expect(patterns).toContain("/foo");
+      // Synthetic catch-all from (group-a)'s @parallel slot
+      expect(patterns).toContain("/:catcher+");
+
+      const catcher = findRoute(graph.routes, "/:catcher+");
+      // The layout-only ghost parent is not added to routes, but the synthetic
+      // sub-route inherits (group-a)'s layout chain.
+      expect(catcher.layouts).toEqual([path.join(appDir, "(group-a)/layout.tsx")]);
+      expect(catcher.parallelSlots).toHaveLength(1);
+      expect(catcher.parallelSlots[0]).toMatchObject({
+        name: "parallel",
+        pagePath: path.join(appDir, "(group-a)/@parallel/[...catcher]/page.tsx"),
+        routeSegments: ["[...catcher]"],
+      });
+
+      // The real /foo route belongs to (group-b) only — it must not pick up
+      // slots from the sibling group.
+      const foo = findRoute(graph.routes, "/foo");
+      expect(foo.parallelSlots).toHaveLength(0);
+    });
+  });
+
   it("skips synthetic routes that structurally conflict with existing page routes", async () => {
     // A slot sub-page like @feed/[name]/page.tsx under /shop would create /shop/:name,
     // but if /shop/[id]/page.tsx already exists (route /shop/:id), the synthetic route

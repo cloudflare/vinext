@@ -844,6 +844,12 @@ export async function buildAppRouteGraph(
   // segment has no children page. Next.js uses this for modal/feed patterns
   // like app/user/[id]/layout + @feed/page + @modal/default.
   const routePatterns = new Set(routes.map((route) => route.pattern));
+  // Ghost parents are layout-only routes whose URL pattern collides with an
+  // existing route (e.g. sibling route groups like (group-a)/layout.tsx and
+  // (group-b)/page.tsx both anchored at "/"). Their slot directories still
+  // contribute synthetic sub-routes (e.g. @parallel/[...catcher]/page.tsx →
+  // /:catcher+), but the ghost itself is not added to the routes table.
+  const ghostParentRoutes: AppRouteGraphRoute[] = [];
   for await (const file of scanWithExtensions(
     "**/layout",
     appDir,
@@ -856,7 +862,11 @@ export async function buildAppRouteGraph(
     if (discoverParallelSlots(routeDir, appDir, matcher).length === 0) continue;
 
     const route = directoryToAppRoute(dir, appDir, matcher, null, null);
-    if (!route || routePatterns.has(route.pattern)) continue;
+    if (!route) continue;
+    if (routePatterns.has(route.pattern)) {
+      ghostParentRoutes.push(route);
+      continue;
+    }
 
     routes.push(route);
     routePatterns.add(route.pattern);
@@ -866,7 +876,7 @@ export async function buildAppRouteGraph(
   // In Next.js, pages nested inside @slot directories create additional URL routes.
   // For example, @audience/demographics/page.tsx at app/parallel-routes/ creates
   // a route at /parallel-routes/demographics.
-  const slotSubRoutes = discoverSlotSubRoutes(routes, matcher);
+  const slotSubRoutes = discoverSlotSubRoutes(routes, matcher, ghostParentRoutes);
   routes.push(...slotSubRoutes);
 
   validatePageRouteConflicts(routes, appDir);
@@ -954,6 +964,7 @@ function formatAppFilePath(filePath: string, appDir: string): string {
 function discoverSlotSubRoutes(
   routes: AppRouteGraphRoute[],
   matcher: ValidFileMatcher,
+  ghostParents: readonly AppRouteGraphRoute[] = [],
 ): AppRouteGraphRoute[] {
   const syntheticRoutes: AppRouteGraphRoute[] = [];
 
@@ -975,7 +986,10 @@ function discoverSlotSubRoutes(
     });
   };
 
-  for (const parentRoute of routes) {
+  // Iterate real routes first so that later ghost-parent passes can detect
+  // synthetic conflicts against routes the real pass minted.
+  const allParents: AppRouteGraphRoute[] = [...routes, ...ghostParents];
+  for (const parentRoute of allParents) {
     if (parentRoute.parallelSlots.length === 0) continue;
 
     // Only page-bearing routes or layout-only UI routes (not route handlers)
