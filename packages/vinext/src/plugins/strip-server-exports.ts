@@ -53,22 +53,32 @@ export function stripServerExports(code: string): string | null {
     }
 
     // Case 3: export { getServerSideProps } or export { getServerSideProps as gSSP }
+    //
+    // We must NOT emit `export const getServerSideProps = undefined` here:
+    // the user typically has a local `const getServerSideProps = ...` (or
+    // `function getServerSideProps() {}`) binding in the same scope that the
+    // specifier re-exports. Re-declaring the binding with `const` would
+    // produce a `Identifier ... has already been declared` parse error under
+    // OXC/Rolldown, which is stricter than the legacy webpack/esbuild
+    // pipeline. Instead, drop the specifier entirely and let the now-unused
+    // local declaration be tree-shaken.
+    //
+    // This matches Next.js's `next-ssg-transform` behavior, which removes
+    // server-export specifiers without emitting a stub.
     if (node.specifiers && node.specifiers.length > 0 && !node.source) {
       const kept: Extract<ASTNode, { type: "ExportSpecifier" }>[] = [];
-      const stripped: string[] = [];
+      let strippedAny = false;
       for (const spec of node.specifiers) {
         // spec.local.name is the binding name, spec.exported.name is the export name
         // oxlint-disable-next-line typescript/no-explicit-any
         const exportedName = (spec.exported as any)?.name ?? (spec.exported as any)?.value;
         if (SERVER_EXPORTS.has(exportedName)) {
-          stripped.push(exportedName);
+          strippedAny = true;
         } else {
           kept.push(spec);
         }
       }
-      if (stripped.length > 0) {
-        // Build replacement: keep non-server specifiers, add stubs for stripped ones
-        const parts: string[] = [];
+      if (strippedAny) {
         if (kept.length > 0) {
           const keptStr = kept
             // oxlint-disable-next-line typescript/no-explicit-any
@@ -78,12 +88,11 @@ export function stripServerExports(code: string): string | null {
               return local === exported ? local : `${local} as ${exported}`;
             })
             .join(", ");
-          parts.push(`export { ${keptStr} };`);
+          s.overwrite(node.start, node.end, `export { ${keptStr} };`);
+        } else {
+          // Drop the entire `export { ... }` statement.
+          s.overwrite(node.start, node.end, "");
         }
-        for (const name of stripped) {
-          parts.push(`export const ${name} = undefined;`);
-        }
-        s.overwrite(node.start, node.end, parts.join("\n"));
         changed = true;
       }
     }
