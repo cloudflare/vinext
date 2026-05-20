@@ -1113,8 +1113,19 @@ export function withRouter<P extends WithRouterProps>(
 // Note: `withRouter` is exposed only as a named export from `next/router`.
 // The default export of that module is the Router singleton declared below.
 
-// Also export a default Router singleton for `import Router from 'next/router'`
-const Router = {
+// Also export a default Router singleton for `import Router from 'next/router'`.
+//
+// State fields (`pathname`, `route`, `query`, `asPath`, etc.) are exposed as
+// live getters so `window.next.router.pathname` reflects the current URL
+// without callers needing to know about React render cycles. Mirrors
+// Next.js's `singletonRouter` shape from
+// .nextjs-ref/packages/next/src/client/router.ts (lines 32–47), which uses
+// `Object.defineProperty` to forward `urlPropertyFields` to the active
+// router instance. The Next.js deploy test suite drives navigations through
+// `browser.eval('next.router.push(...)')` and then reads
+// `browser.eval('next.router.pathname')` to assert success, so the fields
+// must be readable, not just the methods.
+const RouterMethods = {
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
     performNavigation(url, as, options, "push"),
   replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
@@ -1128,9 +1139,79 @@ const Router = {
   events: routerEvents,
 };
 
+const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods> =
+  Object.defineProperties(RouterMethods, {
+    pathname: {
+      enumerable: true,
+      get(): string {
+        return getPathnameAndQuery().pathname;
+      },
+    },
+    route: {
+      enumerable: true,
+      get(): string {
+        const { pathname } = getPathnameAndQuery();
+        if (typeof window === "undefined") return pathname;
+        const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+        return nextData?.page ?? pathname;
+      },
+    },
+    query: {
+      enumerable: true,
+      get(): Record<string, string | string[]> {
+        return getPathnameAndQuery().query;
+      },
+    },
+    asPath: {
+      enumerable: true,
+      get(): string {
+        return getPathnameAndQuery().asPath;
+      },
+    },
+    basePath: { enumerable: true, value: __basePath, writable: false },
+    locale: {
+      enumerable: true,
+      get(): string | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.locale;
+        return window.__VINEXT_LOCALE__;
+      },
+    },
+    locales: {
+      enumerable: true,
+      get(): string[] | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.locales;
+        return window.__VINEXT_LOCALES__;
+      },
+    },
+    defaultLocale: {
+      enumerable: true,
+      get(): string | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.defaultLocale;
+        return window.__VINEXT_DEFAULT_LOCALE__;
+      },
+    },
+    domainLocales: {
+      enumerable: true,
+      get(): VinextNextData["domainLocales"] | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.domainLocales;
+        return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
+      },
+    },
+    isReady: { enumerable: true, value: true, writable: false },
+    isPreview: { enumerable: true, value: false, writable: false },
+    isFallback: {
+      enumerable: true,
+      get(): boolean {
+        if (typeof window === "undefined") return false;
+        return (window.__NEXT_DATA__ as VinextNextData | undefined)?.isFallback === true;
+      },
+    },
+  }) as typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods>;
+
 // Expose `window.next.router` for Next.js parity. Pages Router test suites,
 // userland scripts, and third-party libraries reach for this global directly
-// (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`).
+// (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`,
+// `window.next.router.pathname`).
 // Without this assignment, those callers crash with
 // `TypeError: Cannot read properties of undefined (reading 'router')`.
 //

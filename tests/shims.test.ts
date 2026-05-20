@@ -1450,6 +1450,23 @@ describe("window.next debug global", () => {
       expect(typeof router.events.on).toBe("function");
       expect(typeof router.events.off).toBe("function");
       expect(typeof router.events.emit).toBe("function");
+
+      // State fields — Next.js's singletonRouter exposes pathname/route/query/
+      // asPath/basePath/locale*/isReady/isPreview/isFallback as live getters
+      // off `window.next.router` (urlPropertyFields in
+      // .nextjs-ref/packages/next/src/client/router.ts lines 32-47). The
+      // Next.js deploy suite drives navigations via
+      // `browser.eval('next.router.push(...)')` and then asserts on
+      // `browser.eval('next.router.pathname')`, so these must read like data
+      // properties, not raise.
+      expect(typeof router.pathname).toBe("string");
+      expect(typeof router.asPath).toBe("string");
+      expect(typeof router.query).toBe("object");
+      expect(typeof router.basePath).toBe("string");
+      expect(typeof router.isReady).toBe("boolean");
+      expect(typeof router.isPreview).toBe("boolean");
+      expect(typeof router.isFallback).toBe("boolean");
+      expect(typeof router.route).toBe("string");
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();
