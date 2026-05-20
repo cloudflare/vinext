@@ -105,7 +105,13 @@ type DispatchMatchedPageOptions<TRoute> = {
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
   cleanPathname: string;
   middlewareContext: AppRscMiddlewareContext;
-  params: AppPageParams;
+  /**
+   * `null` for non-dynamic routes. Mirrors Next.js' route handler context
+   * shape: user code that does `params ? await params : null` resolves to
+   * `null` for routes without dynamic segments. Dynamic routes receive the
+   * matched params object.
+   */
+  params: AppPageParams | null;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -533,7 +539,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return options.dispatchMatchedRouteHandler({
       cleanPathname,
       middlewareContext,
-      params,
+      // Non-dynamic routes report params as `null` to match Next.js. Internal
+      // bookkeeping above (navigation context, root params) keeps the matched
+      // object (always `{}` for non-dynamic) so `useParams()` etc. still see
+      // an object shape; only the user-facing handler context surfaces null.
+      params: route.isDynamic ? params : null,
       request,
       route,
       searchParams: url.searchParams,

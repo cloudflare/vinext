@@ -332,6 +332,13 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
+    // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
+    // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
+    // Internal use (query merging, _app router context) keeps the matched
+    // object since those expect a record shape, not null.
+    const userFacingParams: Record<string, string | string[]> | null = route.isDynamic
+      ? params
+      : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
@@ -463,7 +470,7 @@ export function createSSRHandler(
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
 
           const context = {
-            params,
+            params: userFacingParams,
             req,
             res,
             query,
@@ -606,7 +613,7 @@ export function createSSRHandler(
                 return runWithRequestContext(regenContext, async () => {
                   ensureFetchPatch();
                   const freshResult = await pageModule.getStaticProps({
-                    params,
+                    params: userFacingParams,
                     locale: locale ?? currentDefaultLocale,
                     locales: i18nConfig?.locales,
                     defaultLocale: currentDefaultLocale,
@@ -735,7 +742,7 @@ export function createSSRHandler(
 
           // Cache miss — call getStaticProps normally
           const context = {
-            params,
+            params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,

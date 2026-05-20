@@ -474,6 +474,7 @@ describe("createAppRscHandler", () => {
 
   it("dispatches route handlers with matched params", async () => {
     const route = createPageRoute({
+      isDynamic: true,
       page: null,
       pattern: "/api/:id",
       routeHandler: { GET: () => new Response("route") },
@@ -504,8 +505,44 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  // Matches Next.js behavior: non-dynamic route handlers receive params=null.
+  // See test/e2e/app-dir/app-routes/app-custom-routes.test.ts in next.js.
+  it("dispatches non-dynamic route handlers with params: null", async () => {
+    const route = createPageRoute({
+      isDynamic: false,
+      page: null,
+      pattern: "/api/static",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["api", "static"],
+    });
+    const dispatchMatchedRouteHandler = vi.fn(async () => new Response("route", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      matchRoute: (pathname: string) =>
+        pathname === "/api/static"
+          ? {
+              params: {},
+              route,
+            }
+          : null,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/api/static"), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedRouteHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanPathname: "/api/static",
+        params: null,
+        route,
+      }),
+    );
+  });
+
   it("appends App Router RSC vary values to route handler responses", async () => {
     const route = createPageRoute({
+      isDynamic: true,
       page: null,
       pattern: "/api/:id",
       routeHandler: { GET: () => new Response("route") },
