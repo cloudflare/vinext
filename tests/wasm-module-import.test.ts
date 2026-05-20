@@ -164,6 +164,11 @@ describe("vinext:wasm-module plugin", () => {
     expect(code).toContain("import.meta.ROLLUP_FILE_URL_ref-client");
     expect(code).toContain("fetch(");
     expect(code).toContain("compileStreaming");
+    // compileStreaming must be wrapped in try/catch with a buffered-compile
+    // fallback so missing `Content-Type: application/wasm` headers can't
+    // brick wasm loading on hosts/CDNs that strip the type.
+    expect(code).toMatch(/try\s*\{[^}]*compileStreaming/);
+    expect(code).toContain("WebAssembly.compile(await res.arrayBuffer())");
 
     // Crucially: no `node:*` references in the client bundle. Vite would
     // externalise those to empty stubs and a named import would throw.
@@ -200,7 +205,7 @@ describe("vinext:wasm-module plugin", () => {
     expect(code).toContain("export default await");
   });
 
-  it("dev mode: client environment falls back to fetch (no node:fs)", async () => {
+  it("dev mode: client environment fetches via Vite's /@fs/ prefix (no node:fs)", async () => {
     const plugin = getWasmModulePlugin("serve");
     const load = unwrapHook(plugin.load);
 
@@ -215,8 +220,14 @@ describe("vinext:wasm-module plugin", () => {
     };
 
     const code = (await load.call(ctx, `${wasmPath}?module`)) as string;
+    // Browser-safe absolute-path access goes through Vite's `/@fs/` middleware,
+    // not a bare absolute filesystem path (which would resolve against the
+    // page origin and 404).
+    expect(code).toContain(JSON.stringify(`/@fs${wasmPath}`));
     expect(code).toContain("fetch(");
     expect(code).not.toContain("node:fs");
+    // Same try/catch fallback as the build client shim.
+    expect(code).toMatch(/try\s*\{[^}]*compileStreaming/);
   });
 
   it("calls this.error when the underlying wasm file is missing", async () => {

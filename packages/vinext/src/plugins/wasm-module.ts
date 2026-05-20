@@ -123,13 +123,19 @@ export function wasmModulePlugin(): Plugin {
         // browser environment — see plugins/async-hooks-stub.ts) and the
         // server shim never carries dead browser fetch code.
         if (isClient) {
+          // `compileStreaming` requires the response to advertise
+          // `Content-Type: application/wasm`. Not all static hosts/CDNs set
+          // that header, so we fall back to buffering + `compile` if the
+          // streaming path rejects. See:
+          // https://developer.mozilla.org/en-US/docs/WebAssembly/JavaScript_interface/compileStreaming
           return [
             `const __vinext_wasm_url = import.meta.ROLLUP_FILE_URL_${referenceId};`,
             `async function __vinext_load_wasm_module() {`,
             `  const res = await fetch(__vinext_wasm_url);`,
-            `  return typeof WebAssembly.compileStreaming === "function"`,
-            `    ? WebAssembly.compileStreaming(res)`,
-            `    : WebAssembly.compile(await res.arrayBuffer());`,
+            `  if (typeof WebAssembly.compileStreaming === "function") {`,
+            `    try { return await WebAssembly.compileStreaming(res.clone()); } catch {}`,
+            `  }`,
+            `  return WebAssembly.compile(await res.arrayBuffer());`,
             `}`,
             `export default await __vinext_load_wasm_module();`,
           ].join("\n");
@@ -160,16 +166,21 @@ export function wasmModulePlugin(): Plugin {
       // ship a fetch-based shim that re-requests the wasm over the Vite
       // dev server, because `node:fs` is not available in the browser.
       if (isClient) {
-        // In dev, Vite serves source files at their original URL. Build a
-        // browser-safe fetch path by stripping the project root prefix; this
-        // keeps parity with how Vite serves other binary assets in dev.
-        const fetchUrl = JSON.stringify(filePath);
+        // In dev, Vite's middleware serves arbitrary on-disk files via the
+        // `/@fs/<absolute-path>` URL prefix (the same mechanism it uses to
+        // serve `node_modules` and out-of-root sources). This is the safe,
+        // documented way to dereference an absolute path from the browser
+        // during dev — passing the raw absolute path to `fetch()` would
+        // resolve against the page origin and 404.
+        // https://vitejs.dev/guide/api-javascript.html#vite-server
+        const fetchUrl = JSON.stringify(`/@fs${filePath}`);
         return [
           `async function __vinext_load_wasm_module() {`,
           `  const res = await fetch(${fetchUrl});`,
-          `  return typeof WebAssembly.compileStreaming === "function"`,
-          `    ? WebAssembly.compileStreaming(res)`,
-          `    : WebAssembly.compile(await res.arrayBuffer());`,
+          `  if (typeof WebAssembly.compileStreaming === "function") {`,
+          `    try { return await WebAssembly.compileStreaming(res.clone()); } catch {}`,
+          `  }`,
+          `  return WebAssembly.compile(await res.arrayBuffer());`,
           `}`,
           `export default await __vinext_load_wasm_module();`,
         ].join("\n");
