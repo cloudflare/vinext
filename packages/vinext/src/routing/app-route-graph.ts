@@ -1901,7 +1901,7 @@ const INTERCEPT_PATTERNS = [
  * Check whether a directory name begins with an interception route marker.
  *
  * Matches the prefixes listed in {@link INTERCEPT_PATTERNS}: `(.)`, `(..)`,
- * `(...)`, `(..)(..)"`. The marker is not a real URL segment, so the global
+ * `(...)`, `(..)(..)`. The marker is not a real URL segment, so the global
  * page/route scanner must skip these directories to avoid materialising
  * literal patterns like `/templates/(..)showcase`. Interception target
  * registration happens separately via {@link discoverInterceptingRoutes}.

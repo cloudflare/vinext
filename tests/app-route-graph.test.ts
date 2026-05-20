@@ -1082,5 +1082,42 @@ describe("App Router route graph builder", () => {
         }
       });
     });
+
+    it("ignores `(.)` same-level interception marker outside a parallel slot", async () => {
+      // Coverage for the same-level marker — sibling of a regular route,
+      // not inside a `@slot`. Must not register `/gallery/(.)photo` as a page.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "gallery/photo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "gallery/(.)photo/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((route) => route.pattern);
+
+        for (const pattern of patterns) {
+          expect(pattern).not.toMatch(/\(\.{1,3}\)/);
+        }
+      });
+    });
+
+    it("ignores `(...)` root interception marker outside a parallel slot", async () => {
+      // Coverage for the root marker — `(...)` always resolves against the
+      // app root, so the marker must be stripped even when buried deep in
+      // the filesystem tree.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "target/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "deep/path/(...)target/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((route) => route.pattern);
+
+        for (const pattern of patterns) {
+          expect(pattern).not.toMatch(/\(\.{1,3}\)/);
+        }
+      });
+    });
   });
 });
