@@ -946,7 +946,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
-        await writeRouteTypes();
+        if (env?.command === "build") {
+          await writeRouteTypes();
+        }
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
@@ -2221,6 +2223,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (appRouteTypeGenerationPending) regenerateAppRouteTypes();
           });
         }
+
+        regenerateAppRouteTypes();
 
         // Node throws on unhandled 'error' events on sockets. When a browser
         // drops the connection mid-response (common in dev: HMR triggers a

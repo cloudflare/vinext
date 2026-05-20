@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { createServer, type ViteDevServer } from "vite-plus";
+import { createLogger, createServer, type ViteDevServer } from "vite-plus";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -204,6 +204,37 @@ describe("generateRouteTypes", () => {
           expect(await readFile(generatedPath, "utf-8")).toContain(
             'type PageRoute = "/" | "/about" | "/blog" | "/docs";',
           );
+        });
+      } finally {
+        await server?.close();
+      }
+    });
+  });
+
+  it("does not block dev server startup when initial route type generation fails", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, ".next", "not a directory\n");
+      const warnings: string[] = [];
+      const logger = createLogger("silent");
+      logger.warn = (message) => {
+        warnings.push(message);
+      };
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          customLogger: logger,
+          plugins: [vinext({ appDir: root })],
+        });
+
+        expect(server).toBeTruthy();
+        await eventually(async () => {
+          expect(
+            warnings.some((warning) => warning.includes("Failed to regenerate route types")),
+          ).toBe(true);
         });
       } finally {
         await server?.close();
