@@ -368,12 +368,23 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const parallelViewportResults = parallelRouteHeads.flatMap((head) => head.viewportResults);
   const parallelMetadataSources = parallelRouteHeads.flatMap((head) => head.metadataSources);
 
+  // Active parallel slot metadata is suppressed from contributing the primary
+  // <title> when the matched page already provides one. This preserves Next.js
+  // behavior where slot pages (typically modals/sidebars rendered alongside the
+  // main page) don't clobber the page title. When the route has no children
+  // page providing a title (e.g. a parallel layout that doesn't render
+  // `{children}`, or a parent that only has `default.tsx`), the slot page's
+  // title is the most specific signal and is allowed to contribute — matching
+  // Next.js's loader-tree walk which appends slot metadata items in tree order
+  // with no title suppression.
+  // Reference: https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+  const primaryPageHasTitle = pageMetadata != null && pageMetadata.title !== undefined;
   const metadataEntries: MetadataMergeEntry[] = [
     ...layoutMetadataResults.filter(isPresent).map((metadata) => ({ metadata })),
     ...(pageMetadata ? [{ isPage: true, metadata: pageMetadata }] : []),
     ...parallelMetadataResults
       .filter(isPresent)
-      .map((metadata) => ({ contributesTitle: false, metadata })),
+      .map((metadata) => ({ contributesTitle: !primaryPageHasTitle, metadata })),
   ];
   const viewportList = [
     ...layoutViewportResults.filter(isPresent),
