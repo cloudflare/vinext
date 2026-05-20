@@ -1,9 +1,11 @@
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
 import {
   buildCachedRevalidateCacheControl,
+  DEPLOY_CACHE_CONTROL,
   NEVER_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
+import { isDeployRuntime } from "./deploy-runtime.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -60,7 +62,9 @@ function buildRouteHandlerCacheControl(
   if (revalidateSeconds === Infinity) {
     // revalidate = false / Infinity means "cache indefinitely" — emit the
     // same static Cache-Control used by pages, not a dynamic SWR value.
-    return STATIC_CACHE_CONTROL;
+    // In deploy mode, Next.js collapses static cache headers to the deploy
+    // header too; cache-tag invalidation governs freshness at the edge.
+    return isDeployRuntime() ? DEPLOY_CACHE_CONTROL : STATIC_CACHE_CONTROL;
   }
 
   return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);

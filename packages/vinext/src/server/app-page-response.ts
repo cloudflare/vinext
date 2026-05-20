@@ -1,8 +1,10 @@
 import {
   buildRevalidateCacheControl,
+  DEPLOY_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
+import { isDeployRuntime } from "./deploy-runtime.js";
 import {
   VINEXT_CACHE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -115,7 +117,7 @@ export function resolveAppPageRscResponsePolicy(
     options.revalidateSeconds === Infinity
   ) {
     return {
-      cacheControl: STATIC_CACHE_CONTROL,
+      cacheControl: isDeployRuntime() ? DEPLOY_CACHE_CONTROL : STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
     };
   }
@@ -178,7 +180,7 @@ export function resolveAppPageHtmlResponsePolicy(
 
   if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
-      cacheControl: STATIC_CACHE_CONTROL,
+      cacheControl: isDeployRuntime() ? DEPLOY_CACHE_CONTROL : STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
       shouldWriteToCache: false,
     };
@@ -205,7 +207,7 @@ export function resolveAppPageHtmlResponsePolicy(
 
   if (options.revalidateSeconds === Infinity) {
     return {
-      cacheControl: STATIC_CACHE_CONTROL,
+      cacheControl: isDeployRuntime() ? DEPLOY_CACHE_CONTROL : STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
       shouldWriteToCache: false,
     };
