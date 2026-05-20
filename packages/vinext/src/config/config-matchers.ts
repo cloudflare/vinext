@@ -1200,6 +1200,11 @@ export function matchHeaders(
   headers: NextHeader[],
   ctx: RequestContext,
 ): Array<{ key: string; value: string }> {
+  // Header source regexes are compiled without a trailing-slash tolerance,
+  // so the incoming pathname must be normalized the same way config rewrites
+  // and redirects are. See `stripTrailingSlashForConfigMatch`.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are

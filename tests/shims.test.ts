@@ -8567,6 +8567,29 @@ describe("matchHeaders", () => {
     const matched = matchHeaders("/about", rules, makeCtx());
     expect(matched).toEqual([]);
   });
+
+  // Regression for #1331: under `trailingSlash: true` the incoming pathname
+  // arrives as `/about/`, but header source patterns are written without a
+  // trailing slash. `matchHeaders` must strip the slash before matching.
+  it("matches when the request pathname has a trailing slash", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      {
+        source: "/about",
+        headers: [{ key: "x-static-header", value: "1" }],
+      },
+      {
+        source: "/api/:path*",
+        headers: [{ key: "x-api-header", value: "1" }],
+      },
+    ];
+
+    const aboutMatched = matchHeaders("/about/", rules, makeCtx());
+    expect(aboutMatched).toEqual([{ key: "x-static-header", value: "1" }]);
+
+    const apiMatched = matchHeaders("/api/users/", rules, makeCtx());
+    expect(apiMatched).toEqual([{ key: "x-api-header", value: "1" }]);
+  });
 });
 
 describe("matchHeaders compiled source cache", () => {
